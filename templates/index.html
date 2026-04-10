@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amazon Seller Toolkit</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f5f7fa;color:#1a1a2e;padding:1.5rem 1rem}
+    .container{max-width:1200px;margin:0 auto}
+    h1{text-align:center;margin-bottom:.2rem;font-size:1.8rem}
+    .subtitle{text-align:center;color:#666;margin-bottom:1.5rem;font-size:.92rem}
+
+    /* Tabs */
+    .tabs{display:flex;gap:0;border-bottom:2px solid #232f3e;margin-bottom:1.5rem}
+    .tab{padding:.7rem 1.5rem;font-weight:600;font-size:.95rem;cursor:pointer;border:2px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;background:#e8ecf0;color:#555;text-decoration:none;transition:all .2s}
+    .tab:hover{background:#dde3ea}
+    .tab.active{background:#232f3e;color:#fff}
+
+    .card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);padding:1.5rem 2rem;margin-bottom:1.5rem}
+    form label{font-weight:600;display:block;margin-bottom:.4rem}
+    textarea{width:100%;padding:.6rem;border:1px solid #ccc;border-radius:8px;font-size:.93rem;resize:vertical;font-family:inherit}
+    select{padding:.5rem .7rem;border:1px solid #ccc;border-radius:8px;font-size:.93rem}
+    .form-row{display:flex;gap:1.5rem;align-items:flex-end;margin-top:1rem;flex-wrap:wrap}
+    .form-row>div{display:flex;flex-direction:column}
+
+    .btn{padding:.6rem 1.4rem;border:none;border-radius:8px;font-size:.93rem;font-weight:600;cursor:pointer;transition:background .2s}
+    .btn-primary{background:#ff9900;color:#fff}
+    .btn-primary:hover{background:#e68a00}
+    .btn-download{background:#146eb4;color:#fff}
+    .btn-download:hover{background:#0f5a94}
+    .btn-danger{background:#d13212;color:#fff}
+    .btn-danger:hover{background:#b02a0f}
+    .btn-green{background:#0a8754;color:#fff}
+    .btn-green:hover{background:#076a42}
+
+    .hint{font-size:.82rem;color:#888;margin-top:.3rem}
+    table{width:100%;border-collapse:collapse;margin-top:1rem;font-size:.88rem}
+    th{background:#232f3e;color:#fff;padding:.55rem .7rem;text-align:left;white-space:nowrap}
+    td{padding:.5rem .7rem;border-bottom:1px solid #e8e8e8}
+    tr:hover td{background:#fef9f0}
+
+    .status-ok{color:#0a8754;font-weight:600}
+    .status-fail{color:#d13212;font-weight:600}
+    .status-warn{color:#b8860b;font-weight:600}
+
+    .actions{display:flex;gap:.8rem;margin-top:1rem;align-items:center;flex-wrap:wrap}
+    .result-count{color:#666;font-size:.9rem}
+
+    .badge{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.78rem;font-weight:600}
+    .badge-green{background:#d4edda;color:#155724}
+    .badge-red{background:#f8d7da;color:#721c24}
+    .badge-gray{background:#e2e3e5;color:#383d41}
+    .badge-blue{background:#cce5ff;color:#004085}
+
+    @media(max-width:600px){
+      .tabs{flex-wrap:wrap}.tab{flex:1;text-align:center;font-size:.85rem;padding:.6rem .5rem}
+      .form-row{flex-direction:column}
+      table{font-size:.78rem}td,th{padding:.35rem}
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>&#x1f4e6; Amazon Seller Toolkit</h1>
+  <p class="subtitle">BSR Lookup &bull; Keyword Rank Tracker &bull; Hijacker Checker &bull; Pincode Checker</p>
+
+  <div class="tabs">
+    <a class="tab {% if tab == 'bsr' %}active{% endif %}" href="/bsr">&#x1f4ca; BSR Lookup</a>
+    <a class="tab {% if tab == 'rank' %}active{% endif %}" href="/rank">&#x1f50d; Keyword Rank</a>
+    <a class="tab {% if tab == 'hijack' %}active{% endif %}" href="/hijack">&#x1f6e1; Seller Lookup</a>
+    <a class="tab {% if tab == 'pincode' %}active{% endif %}" href="/pincode">&#x1f4cd; Pincode Check</a>
+  </div>
+
+  {# ======================== BSR TAB ======================== #}
+  {% if tab == 'bsr' %}
+  <div class="card">
+    <form method="POST" action="/bsr">
+      <label for="asins">Enter ASINs</label>
+      <textarea id="asins" name="asins" rows="4" placeholder="B0XXXXXXX&#10;B0YYYYYYY">{{ asins_input or '' }}</textarea>
+      <p class="hint">One ASIN per line, or separated by commas / spaces.</p>
+      <div class="form-row">
+        <div>
+          <label for="marketplace">Marketplace</label>
+          <select id="marketplace" name="marketplace">
+            {% for m in marketplaces %}
+            <option value="{{ m }}" {% if m == marketplace %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div><button type="submit" class="btn btn-primary">&#x1f50d; Look Up BSR</button></div>
+      </div>
+    </form>
+  </div>
+  {% if results is defined and results is not none %}
+  <div class="card">
+    <div class="actions">
+      <span class="result-count">{{ results|length }} product{{ "s" if results|length != 1 }}</span>
+      <form method="POST" action="/bsr/download" style="display:inline">
+        <input type="hidden" name="asins" value="{{ asins_input }}">
+        <input type="hidden" name="marketplace" value="{{ marketplace }}">
+        <button type="submit" class="btn btn-download">&#x2B07; Download CSV</button>
+      </form>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>#</th><th>ASIN</th><th>BSR (Main)</th><th>Main Category</th><th>All Ranks</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.asin }}</a></td>
+          <td>{{ "{:,}".format(r.bsr_main) if r.bsr_main else "—" }}</td>
+          <td>{{ r.bsr_main_category or "—" }}</td>
+          <td style="font-size:.82rem">{{ r.bsr_all or "—" }}</td>
+          <td>
+            {% if r.status.startswith("OK") %}<span class="status-ok">{{ r.status }}</span>
+            {% elif r.status == "CAPTCHA" %}<span class="status-warn">{{ r.status }}</span>
+            {% else %}<span class="status-fail">{{ r.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ======================== RANK TAB ======================== #}
+  {% elif tab == 'rank' %}
+  <div class="card">
+    <form method="POST" action="/rank">
+      <label for="pairs">Keyword, ASIN pairs</label>
+      <textarea id="pairs" name="pairs" rows="5" placeholder="yoga mat, B0C141W8X1&#10;exercise mat thick, B0B5RVR7ZF&#10;baby play mat, B0CRHQLDZG">{{ pairs_input or '' }}</textarea>
+      <p class="hint">One pair per line: <strong>keyword, ASIN</strong>. Scans up to 7 pages of search results.</p>
+      <div class="form-row">
+        <div>
+          <label for="marketplace">Marketplace</label>
+          <select id="marketplace" name="marketplace">
+            {% for m in marketplaces %}
+            <option value="{{ m }}" {% if m == marketplace %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div><button type="submit" class="btn btn-green">&#x1f50d; Track Ranks</button></div>
+      </div>
+    </form>
+  </div>
+  {% if results is defined and results is not none %}
+  <div class="card">
+    <div class="actions">
+      <span class="result-count">{{ results|length }} pair{{ "s" if results|length != 1 }} tracked</span>
+      <form method="POST" action="/rank/download" style="display:inline">
+        <input type="hidden" name="pairs" value="{{ pairs_input }}">
+        <input type="hidden" name="marketplace" value="{{ marketplace }}">
+        <button type="submit" class="btn btn-download">&#x2B07; Download CSV</button>
+      </form>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>#</th><th>Keyword</th><th>ASIN</th><th>Found</th><th>Page</th><th>Position</th><th>Sponsored</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ r.keyword }}</td>
+          <td>{{ r.asin }}</td>
+          <td>{% if r.found %}<span class="badge badge-green">Yes</span>{% else %}<span class="badge badge-red">No</span>{% endif %}</td>
+          <td>{{ r.page if r.page else "—" }}</td>
+          <td>{{ r.position if r.position else "—" }}</td>
+          <td>{% if r.is_sponsored %}<span class="badge badge-blue">Sponsored</span>{% else %}—{% endif %}</td>
+          <td>{% if r.scan_status == 'ok' %}<span class="status-ok">OK</span>{% else %}<span class="status-fail">{{ r.scan_status }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ======================== HIJACK TAB ======================== #}
+  {% elif tab == 'hijack' %}
+  <div class="card">
+    <form method="POST" action="/hijack">
+      <label for="items">Enter ASINs</label>
+      <textarea id="items" name="items" rows="5" placeholder="B0C141W8X1&#10;B0B5RVR7ZF&#10;B0CRHQLDZG">{{ items_input or '' }}</textarea>
+      <p class="hint">One ASIN per line. To flag unauthorized sellers, add seller name after a comma: <strong>ASIN, YourStoreName</strong></p>
+      <div class="form-row">
+        <div>
+          <label for="marketplace">Marketplace</label>
+          <select id="marketplace" name="marketplace">
+            {% for m in marketplaces %}
+            <option value="{{ m }}" {% if m == marketplace %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div><button type="submit" class="btn btn-danger">&#x1f6e1; Find All Sellers</button></div>
+      </div>
+    </form>
+  </div>
+  {% if results is defined and results is not none %}
+  <div class="card">
+    <div class="actions">
+      <span class="result-count">{{ results|length }} offer{{ "s" if results|length != 1 }} found</span>
+      <form method="POST" action="/hijack/download" style="display:inline">
+        <input type="hidden" name="items" value="{{ items_input }}">
+        <input type="hidden" name="marketplace" value="{{ marketplace }}">
+        <button type="submit" class="btn btn-download">&#x2B07; Download CSV</button>
+      </form>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>#</th><th>ASIN</th><th>Seller</th><th>Price</th><th>Delivery</th><th>Fulfillment</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ r.asin }}</td>
+          <td>{{ r.seller or "—" }}<br><span style="font-size:.75rem;color:#888">{{ r.seller_id if r.seller_id else '' }}</span></td>
+          <td>{{ r.price or "—" }}</td>
+          <td>{{ r.delivery or "—" }}</td>
+          <td>{% if r.fulfillment == 'FBA' %}<span class="badge badge-blue">FBA</span>{% elif r.fulfillment == 'FBM' %}<span class="badge badge-gray">FBM</span>{% else %}—{% endif %}</td>
+          <td>
+            {% if r.status == 'OK' %}<span class="status-ok">OK</span>
+            {% elif r.status == 'UNAUTHORIZED' %}<span class="status-fail">UNAUTHORIZED</span>
+            {% elif r.status == 'YOU_NOT_PRESENT' %}<span class="status-warn">YOU NOT PRESENT</span>
+            {% else %}<span class="status-fail">{{ r.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  {# ======================== PINCODE TAB ======================== #}
+  {% elif tab == 'pincode' %}
+  <div class="card">
+    <form method="POST" action="/pincode">
+      <label for="asins">Enter ASINs</label>
+      <textarea id="asins" name="asins" rows="3" placeholder="B0XXXXXXX&#10;B0YYYYYYY">{{ asins_input or '' }}</textarea>
+      <p class="hint">One ASIN per line, or separated by commas / spaces. Amazon.in only.</p>
+      <div style="margin-top:1rem">
+        <label for="pincodes">Enter Pincodes</label>
+        <textarea id="pincodes" name="pincodes" rows="3" placeholder="110001&#10;400001&#10;560001">{{ pincodes_input or '' }}</textarea>
+        <p class="hint">One pincode per line, or separated by commas / spaces.</p>
+      </div>
+      <div class="form-row">
+        <div><button type="submit" class="btn btn-primary">&#x1f4cd; Check Availability</button></div>
+      </div>
+    </form>
+  </div>
+  {% if results is defined and results is not none %}
+  <div class="card">
+    <div class="actions">
+      <span class="result-count">{{ results|length }} check{{ "s" if results|length != 1 }} completed</span>
+      <form method="POST" action="/pincode/download" style="display:inline">
+        <input type="hidden" name="asins" value="{{ asins_input }}">
+        <input type="hidden" name="pincodes" value="{{ pincodes_input }}">
+        <button type="submit" class="btn btn-download">&#x2B07; Download CSV</button>
+      </form>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>#</th><th>ASIN</th><th>Pincode</th><th>Title</th><th>Buyable</th><th>FBA</th><th>Delivery</th><th>Delivery Text</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for r in results %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><a href="https://www.amazon.in/dp/{{ r.asin }}" target="_blank" rel="noopener">{{ r.asin }}</a></td>
+          <td>{{ r.pincode }}</td>
+          <td style="font-size:.82rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ r.title }}">{{ r.title or "—" }}</td>
+          <td>{% if r.is_buyable %}<span class="badge badge-green">Yes</span>{% else %}<span class="badge badge-red">No</span>{% endif %}</td>
+          <td>{% if r.amazon_fulfilled %}<span class="badge badge-blue">FBA</span>{% else %}<span class="badge badge-gray">FBM</span>{% endif %}</td>
+          <td>
+            {% if r.delivery_type == 'same_day' %}<span class="badge badge-green">Same Day</span>
+            {% elif r.delivery_type == 'next_day' %}<span class="badge badge-green">Next Day</span>
+            {% elif r.delivery_type == 'two_day' %}<span class="badge badge-blue">2 Day</span>
+            {% elif r.delivery_type == 'other' %}<span class="badge badge-gray">Other</span>
+            {% elif r.delivery_type == 'unavailable' %}<span class="badge badge-red">Unavailable</span>
+            {% elif r.delivery_type == 'error' %}<span class="badge badge-red">Error</span>
+            {% else %}<span class="badge badge-gray">{{ r.delivery_type or "—" }}</span>{% endif %}
+          </td>
+          <td style="font-size:.82rem;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ r.delivery_text }}">{{ r.delivery_text or "—" }}</td>
+          <td>
+            {% if r.status == 'OK' %}<span class="status-ok">OK</span>
+            {% elif r.status == 'CAPTCHA' %}<span class="status-warn">CAPTCHA</span>
+            {% else %}<span class="status-fail">{{ r.status }}</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+  {% endif %}
+
+</div>
+</body>
+</html>
