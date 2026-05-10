@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EMOUNT Daily Dashboard</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh}
+    .header{background:linear-gradient(135deg,#1a1f36,#232f3e);padding:1.2rem 2rem;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #ff9900}
+    .header h1{font-size:1.4rem;color:#fff;font-weight:700}
+    .header h1 span{color:#ff9900}
+    .header .meta{color:#8892a4;font-size:.85rem}
+    .container{max-width:1400px;margin:0 auto;padding:1.5rem}
+
+    /* KPI Cards Row */
+    .kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.5rem}
+    .kpi{background:#1a1f36;border-radius:12px;padding:1.2rem;border:1px solid #2a3050}
+    .kpi .label{font-size:.78rem;color:#8892a4;text-transform:uppercase;letter-spacing:.5px;margin-bottom:.3rem}
+    .kpi .value{font-size:1.8rem;font-weight:700;color:#fff}
+    .kpi .delta{font-size:.82rem;margin-top:.2rem}
+    .kpi .delta.up{color:#10b981}
+    .kpi .delta.down{color:#ef4444}
+
+    /* Sections */
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:1.5rem}
+    .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.5rem;margin-bottom:1.5rem}
+    @media(max-width:900px){.grid-2,.grid-3{grid-template-columns:1fr}}
+
+    .card{background:#1a1f36;border-radius:12px;padding:1.3rem;border:1px solid #2a3050}
+    .card h2{font-size:1rem;color:#ff9900;margin-bottom:1rem;font-weight:600;display:flex;align-items:center;gap:.5rem}
+    .card h2 .icon{font-size:1.1rem}
+
+    /* Tables */
+    table{width:100%;border-collapse:collapse;font-size:.84rem}
+    th{text-align:left;padding:.5rem .6rem;color:#8892a4;font-weight:600;border-bottom:1px solid #2a3050;font-size:.75rem;text-transform:uppercase;letter-spacing:.3px}
+    td{padding:.5rem .6rem;border-bottom:1px solid #1e2440}
+    tr:hover td{background:#1e2440}
+    .text-right{text-align:right}
+    .text-center{text-align:center}
+    .mono{font-family:"SF Mono",Monaco,Consolas,monospace;font-size:.82rem}
+
+    /* Badges */
+    .badge{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.72rem;font-weight:600}
+    .badge-green{background:#064e3b;color:#10b981}
+    .badge-red{background:#450a0a;color:#ef4444}
+    .badge-yellow{background:#422006;color:#f59e0b}
+    .badge-blue{background:#0c1e3e;color:#3b82f6}
+
+    /* Alerts */
+    .alert{padding:.8rem 1rem;border-radius:8px;margin-bottom:.6rem;font-size:.88rem;display:flex;align-items:flex-start;gap:.5rem}
+    .alert-danger{background:#2d0a0a;border:1px solid #dc2626;color:#fca5a5}
+    .alert-warning{background:#2d1f0a;border:1px solid #d97706;color:#fde68a}
+    .alert-success{background:#0a2d1a;border:1px solid #16a34a;color:#86efac}
+
+    /* Progress bars */
+    .progress-bar{height:6px;background:#2a3050;border-radius:3px;overflow:hidden;margin-top:.3rem}
+    .progress-fill{height:100%;border-radius:3px;transition:width .3s}
+    .fill-green{background:#10b981}
+    .fill-red{background:#ef4444}
+    .fill-yellow{background:#f59e0b}
+    .fill-blue{background:#3b82f6}
+
+    .refresh-btn{background:#ff9900;color:#000;border:none;padding:.5rem 1.2rem;border-radius:8px;font-weight:600;cursor:pointer;font-size:.85rem}
+    .refresh-btn:hover{background:#e68a00}
+    .timestamp{color:#6b7280;font-size:.8rem}
+
+    /* Date picker */
+    .date-picker{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+    .date-picker input[type=date]{background:#1a1f36;color:#e0e0e0;border:1px solid #2a3050;padding:.4rem .6rem;border-radius:6px;font-size:.82rem;font-family:inherit}
+    .date-picker label{font-size:.78rem;color:#8892a4}
+    .preset-btn{background:#2a3050;color:#e0e0e0;border:1px solid #3a4060;padding:.3rem .7rem;border-radius:6px;font-size:.75rem;cursor:pointer}
+    .preset-btn:hover,.preset-btn.active{background:#ff9900;color:#000;border-color:#ff9900}
+
+    /* Movement table */
+    .movement-grid{display:grid;grid-template-columns:1fr;gap:1rem;margin-bottom:1.5rem}
+    .movement-row{display:flex;gap:.8rem;overflow-x:auto;padding-bottom:.3rem}
+    .movement-cell{min-width:90px;text-align:center;padding:.4rem .3rem;border-radius:6px;font-size:.78rem}
+    .movement-cell.header{background:transparent;color:#8892a4;font-weight:600}
+    .movement-cell .val{font-weight:700;font-size:.9rem;color:#fff}
+    .movement-cell .lbl{color:#6b7280;font-size:.7rem}
+    .movement-pos{color:#10b981}
+    .movement-neg{color:#ef4444}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>EMOUNT</span> Daily Dashboard</h1>
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+      <form class="date-picker" method="get" action="/dashboard">
+        <label>From</label>
+        <input type="date" name="start" value="{{ range_start }}">
+        <label>To</label>
+        <input type="date" name="end" value="{{ range_end }}">
+        <button type="submit" class="refresh-btn" style="padding:.4rem .8rem">Go</button>
+      </form>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+        <a href="/dashboard" class="preset-btn">Yesterday</a>
+        <a href="/dashboard?start={{ range_end }}&end={{ range_end }}" class="preset-btn" id="btn-today">Today</a>
+        <a href="/dashboard?start=7d" class="preset-btn">7D</a>
+        <a href="/dashboard?start=30d" class="preset-btn">30D</a>
+        <a href="/dashboard?start=90d" class="preset-btn">90D</a>
+        <a href="/dashboard?start=180d" class="preset-btn">6M</a>
+        <a href="/dashboard?start=365d" class="preset-btn">1Y</a>
+      </div>
+      <span class="meta">{{ range_start }}{% if range_start != range_end %} → {{ range_end }}{% endif %} ({{ range_days }}d)</span>
+    </div>
+  </div>
+
+  <div class="container">
+
+    <!-- KPI Cards -->
+    <div class="kpi-row">
+      <div class="kpi">
+        <div class="label">{{ 'Yesterday' if is_single_day else range_days ~ 'D' }} Revenue</div>
+        <div class="value">{{ kpi.revenue }}</div>
+        <div class="delta {{ 'up' if kpi.rev_delta >= 0 else 'down' }}">
+          {{ '▲' if kpi.rev_delta >= 0 else '▼' }} {{ kpi.rev_delta_abs }}% vs 7d avg
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="label">Units Sold</div>
+        <div class="value">{{ kpi.units }}</div>
+        <div class="delta {{ 'up' if kpi.unit_delta >= 0 else 'down' }}">
+          {{ '▲' if kpi.unit_delta >= 0 else '▼' }} {{ kpi.unit_delta_abs }}% vs 7d avg
+        </div>
+      </div>
+      <div class="kpi">
+        <div class="label">Ad Spend{{ ' (' ~ range_days ~ 'D)' if has_daily_ads else ' (MTD)' }}</div>
+        <div class="value">{{ kpi.ad_spend }}</div>
+        <div class="delta">ROAS: {{ kpi.roas }}x</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Ad Sales{{ ' (' ~ range_days ~ 'D)' if has_daily_ads else ' (MTD)' }}</div>
+        <div class="value">{{ kpi.ad_sales }}</div>
+        <div class="delta">ACoS: {{ kpi.acos }}%</div>
+      </div>
+      <div class="kpi">
+        <div class="label">30-Day Revenue</div>
+        <div class="value">{{ kpi.month_revenue }}</div>
+        <div class="delta">{{ kpi.month_units }} units</div>
+      </div>
+      <div class="kpi">
+        <div class="label">FBA Stock</div>
+        <div class="value">{{ kpi.fba_available }}</div>
+        <div class="delta {{ 'down' if kpi.oos_count > 0 else 'up' }}">{{ kpi.oos_count }} out of stock</div>
+      </div>
+    </div>
+
+    <!-- Alerts -->
+    {% if alerts %}
+    <div class="card" style="margin-bottom:1.5rem">
+      <h2><span class="icon">🚨</span> Alerts & Action Items</h2>
+      {% for alert in alerts %}
+      <div class="alert alert-{{ alert.type }}">
+        <span>{{ alert.icon }}</span>
+        <span>{{ alert.text }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Ads vs Organic Split -->
+    {% if ads_organic %}
+    <div class="grid-2" style="margin-bottom:1.5rem">
+      <div class="card">
+        <h2><span class="icon">📊</span> Ads vs Organic — MTD ({{ ads_organic.mtd_days }} days)</h2>
+        <div style="display:flex;gap:2rem;margin-bottom:1rem">
+          <div style="flex:1">
+            <div style="font-size:.78rem;color:#8892a4;text-transform:uppercase;margin-bottom:.3rem">Total Revenue</div>
+            <div style="font-size:1.5rem;font-weight:700;color:#fff">₹{{ ads_organic.mtd_total }}</div>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:.78rem;color:#8892a4;text-transform:uppercase;margin-bottom:.3rem">Blended ROAS</div>
+            <div style="font-size:1.5rem;font-weight:700;color:#fff">{{ ads_organic.mtd_blended_roas }}x</div>
+          </div>
+        </div>
+        <!-- Stacked bar -->
+        <div style="margin-bottom:.8rem">
+          <div style="display:flex;height:32px;border-radius:6px;overflow:hidden">
+            <div style="width:{{ ads_organic.mtd_ad_pct }}%;background:#f59e0b;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:#000;min-width:40px">Ads {{ ads_organic.mtd_ad_pct }}%</div>
+            <div style="width:{{ ads_organic.mtd_organic_pct }}%;background:#10b981;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:#000;min-width:40px">Organic {{ ads_organic.mtd_organic_pct }}%</div>
+          </div>
+        </div>
+        <table>
+          <tr><th></th><th class="text-right">Revenue</th><th class="text-right">% Share</th></tr>
+          <tr><td><span class="badge" style="background:#422006;color:#f59e0b">● Ad Sales</span></td><td class="text-right">₹{{ ads_organic.mtd_ad_sales }}</td><td class="text-right">{{ ads_organic.mtd_ad_pct }}%</td></tr>
+          <tr><td><span class="badge" style="background:#064e3b;color:#10b981">● Organic</span></td><td class="text-right">₹{{ ads_organic.mtd_organic }}</td><td class="text-right">{{ ads_organic.mtd_organic_pct }}%</td></tr>
+          <tr style="border-top:1px solid #2a3050"><td><strong>Total</strong></td><td class="text-right"><strong>₹{{ ads_organic.mtd_total }}</strong></td><td class="text-right">100%</td></tr>
+        </table>
+        <div style="margin-top:.6rem;font-size:.78rem;color:#6b7280">Ad Spend: ₹{{ ads_organic.mtd_ad_spend }}</div>
+      </div>
+
+      <div class="card">
+        <h2><span class="icon">📈</span> Yesterday's Split (Estimated)</h2>
+        <div style="display:flex;gap:2rem;margin-bottom:1rem">
+          <div style="flex:1">
+            <div style="font-size:.78rem;color:#8892a4;text-transform:uppercase;margin-bottom:.3rem">Total Revenue</div>
+            <div style="font-size:1.5rem;font-weight:700;color:#fff">₹{{ ads_organic.yday_total }}</div>
+          </div>
+          <div style="flex:1">
+            <div style="font-size:.78rem;color:#8892a4;text-transform:uppercase;margin-bottom:.3rem">Ad Share</div>
+            <div style="font-size:1.5rem;font-weight:700;color:#f59e0b">{{ ads_organic.yday_ad_pct }}%</div>
+          </div>
+        </div>
+        <!-- Stacked bar -->
+        <div style="margin-bottom:.8rem">
+          <div style="display:flex;height:32px;border-radius:6px;overflow:hidden">
+            <div style="width:{{ ads_organic.yday_ad_pct }}%;background:#f59e0b;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:#000;min-width:40px">Ads</div>
+            <div style="width:{{ 100 - ads_organic.yday_ad_pct }}%;background:#10b981;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;color:#000;min-width:40px">Organic</div>
+          </div>
+        </div>
+        <table>
+          <tr><th></th><th class="text-right">Revenue (Est.)</th></tr>
+          <tr><td><span class="badge" style="background:#422006;color:#f59e0b">● Ads</span></td><td class="text-right">₹{{ ads_organic.yday_ad_est }}</td></tr>
+          <tr><td><span class="badge" style="background:#064e3b;color:#10b981">● Organic</span></td><td class="text-right">₹{{ ads_organic.yday_organic_est }}</td></tr>
+          <tr style="border-top:1px solid #2a3050"><td><strong>Total</strong></td><td class="text-right"><strong>₹{{ ads_organic.yday_total }}</strong></td></tr>
+        </table>
+        <div style="margin-top:.6rem;font-size:.78rem;color:#6b7280">* Yesterday's ad split estimated from MTD daily average</div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- FC Daily Stock Movement -->
+    {% if fc_movement and fc_movement.has_data %}
+    <div class="card" style="margin-bottom:1.5rem">
+      <h2><span class="icon">📈</span> Daily Stock Movement by Location</h2>
+
+      <!-- Seller Flex Movement -->
+      <div style="margin-bottom:1.2rem">
+        <div style="font-size:.9rem;font-weight:600;color:#10b981;margin-bottom:.6rem">🏠 Seller Flex</div>
+        <div style="overflow-x:auto">
+        <table>
+          <tr>
+            <th>Date</th>
+            <th class="text-right">Balance</th>
+            <th class="text-right">Receipts</th>
+            <th class="text-right">Shipments</th>
+            <th class="text-right">Returns</th>
+            <th class="text-right">Transfers</th>
+            <th class="text-right">Net Change</th>
+          </tr>
+          {% for d in fc_movement.sf_daily %}
+          <tr>
+            <td class="mono">{{ d.date[5:] }}</td>
+            <td class="text-right" style="font-weight:700">{{ '{:,}'.format(d.balance) }}</td>
+            <td class="text-right movement-pos">{{ ('+' ~ '{:,}'.format(d.receipts)) if d.receipts > 0 else '—' }}</td>
+            <td class="text-right movement-neg">{{ ('-' ~ '{:,}'.format(d.shipments)) if d.shipments > 0 else '—' }}</td>
+            <td class="text-right movement-pos">{{ ('+' ~ '{:,}'.format(d.returns)) if d.returns > 0 else '—' }}</td>
+            <td class="text-right {{ 'movement-pos' if d.transfers > 0 else 'movement-neg' }}">{{ ('+' if d.transfers >= 0 else '') }}{{ '{:,}'.format(d.transfers) if d.transfers != 0 else '—' }}</td>
+            <td class="text-right" style="font-weight:600;{{ 'color:#10b981' if (d.receipts + d.returns + d.transfers - d.shipments) >= 0 else 'color:#ef4444' }}">
+              {% set net = d.receipts + d.returns + d.transfers - d.shipments %}
+              {{ ('+' if net >= 0 else '') }}{{ '{:,}'.format(net) }}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        </div>
+      </div>
+
+      <!-- Amazon FBA Movement -->
+      <div>
+        <div style="font-size:.9rem;font-weight:600;color:#3b82f6;margin-bottom:.6rem">🏭 Amazon FBA</div>
+        <div style="overflow-x:auto">
+        <table>
+          <tr>
+            <th>Date</th>
+            <th class="text-right">Balance</th>
+            <th class="text-right">Receipts</th>
+            <th class="text-right">Shipments</th>
+            <th class="text-right">Returns</th>
+            <th class="text-right">Transfers</th>
+            <th class="text-right">Net Change</th>
+          </tr>
+          {% for d in fc_movement.fba_daily %}
+          <tr>
+            <td class="mono">{{ d.date[5:] }}</td>
+            <td class="text-right" style="font-weight:700">{{ '{:,}'.format(d.balance) }}</td>
+            <td class="text-right movement-pos">{{ ('+' ~ '{:,}'.format(d.receipts)) if d.receipts > 0 else '—' }}</td>
+            <td class="text-right movement-neg">{{ ('-' ~ '{:,}'.format(d.shipments)) if d.shipments > 0 else '—' }}</td>
+            <td class="text-right movement-pos">{{ ('+' ~ '{:,}'.format(d.returns)) if d.returns > 0 else '—' }}</td>
+            <td class="text-right {{ 'movement-pos' if d.transfers > 0 else 'movement-neg' }}">{{ ('+' if d.transfers >= 0 else '') }}{{ '{:,}'.format(d.transfers) if d.transfers != 0 else '—' }}</td>
+            <td class="text-right" style="font-weight:600;{{ 'color:#10b981' if (d.receipts + d.returns + d.transfers - d.shipments) >= 0 else 'color:#ef4444' }}">
+              {% set net = d.receipts + d.returns + d.transfers - d.shipments %}
+              {{ ('+' if net >= 0 else '') }}{{ '{:,}'.format(net) }}
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Top ASINs + Ads Performance -->
+    <div class="grid-2">
+      <div class="card">
+        <h2><span class="icon">🏆</span> Top 10 ASINs{% if is_single_day %} ({{ data_date }}){% else %} ({{ range_days }} days){% endif %}</h2>
+        <table>
+          <tr><th>ASIN</th><th>SKU</th><th class="text-right">Revenue</th><th class="text-right">Units</th></tr>
+          {% for item in top_asins %}
+          <tr>
+            <td class="mono">{{ item.asin }}</td>
+            <td>{{ item.sku }}</td>
+            <td class="text-right">₹{{ item.revenue }}</td>
+            <td class="text-right">{{ item.units }}</td>
+          </tr>
+          {% endfor %}
+          {% if not top_asins %}<tr><td colspan="4" class="text-center" style="color:#6b7280">No data</td></tr>{% endif %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h2><span class="icon">📢</span> Top 5 Campaigns (by Sales)</h2>
+        <table>
+          <tr><th>Campaign</th><th class="text-right">Spend</th><th class="text-right">Sales</th><th class="text-right">ROAS</th><th class="text-right">ACoS</th></tr>
+          {% for c in top_campaigns %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td class="text-right">₹{{ c.spend }}</td>
+            <td class="text-right">₹{{ c.sales }}</td>
+            <td class="text-right">{{ c.roas }}x</td>
+            <td class="text-right"><span class="badge {{ 'badge-green' if c.acos_val <= 20 else ('badge-yellow' if c.acos_val <= 35 else 'badge-red') }}">{{ c.acos }}%</span></td>
+          </tr>
+          {% endfor %}
+          {% if not top_campaigns %}<tr><td colspan="5" class="text-center" style="color:#6b7280">No data</td></tr>{% endif %}
+        </table>
+      </div>
+    </div>
+
+    <!-- Bleeding + Zero Sales -->
+    <div class="grid-2">
+      <div class="card">
+        <h2><span class="icon">🩸</span> Bleeding Campaigns (ACoS > 30%)</h2>
+        <table>
+          <tr><th>Campaign</th><th class="text-right">ACoS</th><th class="text-right">Spend</th></tr>
+          {% for c in bleeding_campaigns %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td class="text-right"><span class="badge badge-red">{{ c.acos }}%</span></td>
+            <td class="text-right">₹{{ c.spend }}</td>
+          </tr>
+          {% endfor %}
+          {% if not bleeding_campaigns %}<tr><td colspan="3" class="text-center" style="color:#6b7280">All good!</td></tr>{% endif %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h2><span class="icon">💸</span> Zero-Sales Campaigns (₹200+ spent)</h2>
+        <table>
+          <tr><th>Campaign</th><th class="text-right">Spend</th><th class="text-right">Clicks</th></tr>
+          {% for c in zero_sales_campaigns %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td class="text-right">₹{{ c.spend }}</td>
+            <td class="text-right">{{ c.clicks }}</td>
+          </tr>
+          {% endfor %}
+          {% if not zero_sales_campaigns %}<tr><td colspan="3" class="text-center" style="color:#6b7280">All campaigns have sales!</td></tr>{% endif %}
+        </table>
+      </div>
+    </div>
+
+    <!-- Category + Inventory -->
+    <div class="grid-2">
+      <div class="card">
+        <h2><span class="icon">📦</span> Category Breakdown{% if is_single_day %} ({{ data_date }}){% endif %}</h2>
+        <table>
+          <tr><th>Category</th><th class="text-right">Revenue</th><th class="text-right">Units</th><th class="text-right">Orders</th></tr>
+          {% for cat in categories %}
+          <tr>
+            <td>{{ cat.name }}</td>
+            <td class="text-right">₹{{ cat.revenue }}</td>
+            <td class="text-right">{{ cat.units }}</td>
+            <td class="text-right">{{ cat.orders }}</td>
+          </tr>
+          {% endfor %}
+          {% if not categories %}<tr><td colspan="4" class="text-center" style="color:#6b7280">No data</td></tr>{% endif %}
+        </table>
+      </div>
+    </div>
+
+    <!-- Seller Flex vs Amazon FBA Inventory -->
+    {% if fc_inventory and fc_inventory.has_data %}
+    <div class="grid-2">
+      <div class="card">
+        <h2><span class="icon">🏠</span> Seller Flex Stock</h2>
+        <div style="margin-bottom:.8rem">
+          <span style="font-size:1.5rem;font-weight:700;color:#10b981">{{ '{:,}'.format(fc_inventory.sf_total) }}</span>
+          <span style="color:#9ca3af;margin-left:.5rem">units across {{ fc_inventory.seller_flex|length }} locations ({{ fc_inventory.sf_skus }} SKUs)</span>
+        </div>
+        <table>
+          <tr><th>FC Code</th><th class="text-right">Units</th><th class="text-right">SKUs</th></tr>
+          {% for fc in fc_inventory.seller_flex %}
+          <tr>
+            <td class="mono"><span class="badge badge-green">{{ fc.fc }}</span></td>
+            <td class="text-right">{{ '{:,}'.format(fc.qty) }}</td>
+            <td class="text-right">{{ fc.skus }}</td>
+          </tr>
+          {% endfor %}
+          {% if not fc_inventory.seller_flex %}<tr><td colspan="3" class="text-center" style="color:#6b7280">No Seller Flex stock</td></tr>{% endif %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h2><span class="icon">🏭</span> Amazon FBA Stock</h2>
+        <div style="margin-bottom:.8rem">
+          <span style="font-size:1.5rem;font-weight:700;color:#3b82f6">{{ '{:,}'.format(fc_inventory.fba_total) }}</span>
+          <span style="color:#9ca3af;margin-left:.5rem">units across {{ fc_inventory.amazon_fba|length }} FCs ({{ fc_inventory.fba_skus }} SKUs)</span>
+        </div>
+        <table>
+          <tr><th>FC Code</th><th class="text-right">Units</th><th class="text-right">SKUs</th></tr>
+          {% for fc in fc_inventory.amazon_fba %}
+          <tr>
+            <td class="mono"><span class="badge badge-blue">{{ fc.fc }}</span></td>
+            <td class="text-right">{{ '{:,}'.format(fc.qty) }}</td>
+            <td class="text-right">{{ fc.skus }}</td>
+          </tr>
+          {% endfor %}
+          {% if not fc_inventory.amazon_fba %}<tr><td colspan="3" class="text-center" style="color:#6b7280">No Amazon FBA stock</td></tr>{% endif %}
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Low Stock + Category -->
+    <div class="grid-2">
+      <div class="card">
+        <h2><span class="icon">📋</span> FBA Inventory — Low Stock</h2>
+        <table>
+          <tr><th>SKU</th><th class="text-right">Available</th><th>Product</th></tr>
+          {% for item in low_stock %}
+          <tr>
+            <td class="mono">{{ item.sku }}</td>
+            <td class="text-right"><span class="badge {{ 'badge-red' if item.qty == 0 else ('badge-yellow' if item.qty <= 5 else 'badge-blue') }}">{{ item.qty }}</span></td>
+            <td>{{ item.name }}</td>
+          </tr>
+          {% endfor %}
+          {% if not low_stock %}<tr><td colspan="3" class="text-center" style="color:#6b7280">All stocked up!</td></tr>{% endif %}
+        </table>
+      </div>
+    </div>
+
+    <!-- Order Status + Out of Stock -->
+    <div class="grid-2">
+      <div class="card">
+        <h2><span class="icon">📊</span> Order Status{% if is_single_day %} ({{ data_date }}){% endif %}</h2>
+        <table>
+          <tr><th>Status</th><th class="text-right">Orders</th><th class="text-right">Revenue</th></tr>
+          {% for s in order_status %}
+          <tr>
+            <td><span class="badge {{ 'badge-green' if 'Ship' in s.status else ('badge-red' if 'Cancel' in s.status else 'badge-yellow') }}">{{ s.status }}</span></td>
+            <td class="text-right">{{ s.count }}</td>
+            <td class="text-right">₹{{ s.revenue }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+      </div>
+
+      <div class="card">
+        <h2><span class="icon">🔴</span> Out of Stock ({{ oos_items|length }} SKUs)</h2>
+        <div style="max-height:300px;overflow-y:auto">
+        <table>
+          <tr><th>SKU</th><th>Product</th><th class="text-right">Inbound</th></tr>
+          {% for item in oos_items %}
+          <tr>
+            <td class="mono">{{ item.sku }}</td>
+            <td>{{ item.name }}</td>
+            <td class="text-right">{{ item.inbound if item.inbound > 0 else '—' }}</td>
+          </tr>
+          {% endfor %}
+          {% if not oos_items %}<tr><td colspan="3" class="text-center" style="color:#6b7280">None!</td></tr>{% endif %}
+        </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="timestamp" style="text-align:center;margin-top:1rem">
+      Generated {{ generated_at }} IST
+    </div>
+  </div>
+
+  <script>
+    // Highlight active preset button
+    const params = new URLSearchParams(window.location.search);
+    const start = params.get('start'), end = params.get('end');
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+      const href = new URL(btn.href);
+      const bs = href.searchParams.get('start'), be = href.searchParams.get('end');
+      if ((!start && !end && !bs && !be) || (bs === start && (be || '') === (end || ''))) {
+        btn.classList.add('active');
+      }
+    });
+  </script>
+</body>
+</html>

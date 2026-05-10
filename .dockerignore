@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.csv
+debug_*.py
+debug_*.html
+*.egg-info/
+.git/
+.gitignore
+amazon-rank-tracker/
+amazon-tools/
+amazon-pincode-checker/
+amazon_bsr_tracker.py
+bsr_history.csv
