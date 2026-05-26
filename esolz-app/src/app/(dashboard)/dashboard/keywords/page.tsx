@@ -38,7 +38,6 @@ import {
   ArrowDownRight,
 } from 'lucide-react'
 import {
-  MOCK_RESEARCH_KEYWORDS,
   MOCK_TRACKED_KEYWORDS,
   KEYWORD_RANK_HISTORY,
   KEYWORD_GROUPS,

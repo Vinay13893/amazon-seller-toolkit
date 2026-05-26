@@ -22,8 +22,6 @@ import {
   getMockKeywords,
   getMockAlerts,
   MOCK_PINCODES,
-  type BsrPoint,
-  type PricePoint,
   type BuyBoxPoint,
   type KeywordRank,
   type PincodeData,

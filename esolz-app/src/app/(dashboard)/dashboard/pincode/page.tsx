@@ -21,7 +21,6 @@ import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
   MapPin,
-  Package,
   CheckCircle2,
   XCircle,
   AlertTriangle,
