@@ -1,0 +1,175 @@
+Action Type,Item,Campaign,Ad Group,Current Bid,New Bid,ACoS,Clicks,Cost,Sales,Orders,Reason,Executed
+BID_INCREASE,gym mats for floor,SP-KT-EVA Gym Mat- (Gym Mats for Floor),Ad Group - 24/5/2025 11:34:17.967,8.11,9.73,11.1%,869,7337.47,65957.13,,Strong performer: ACoS 11.1% < target 25.0%,False
+BID_INCREASE,gym floor mat rubber,SP-KT-EVA B&G Gym Mat- (Gym floor Mat Rubber),Ad Group - 24/5/2025 11:37:06.999,7.76,9.31,8.1%,110,703.91,8720.94,,Strong performer: ACoS 8.1% < target 25.0%,False
+BID_INCREASE,gym mat,SP-KT-EVA Gym Mat- (Gym Mat),Ad Group - 24/5/2025 11:37:01.833,15.0,18.0,16.5%,465,5370.81,32517.14,,Strong performer: ACoS 16.5% < target 25.0%,False
+BID_INCREASE,gym floor mat,SP-KT-EVA Gym Mat- (Gym Floor Mat),Ad Group - 24/5/2025 11:37:17.806,7.16,8.59,7.4%,79,578.52,7842.87,,Strong performer: ACoS 7.4% < target 25.0%,False
+BID_INCREASE,rubber mat for gym,SP-KT-EVA Gym Mat- (Rubber Mat for Gym),Ad Group - 24/5/2025 12:15:14.966,15.0,18.0,11.7%,269,2845.34,24253.33,,Strong performer: ACoS 11.7% < target 25.0%,False
+BID_PAUSE,gym floor mats for heavy workout,SP-KT-EVA Gym Mat- (Gym Floor Mat for Heavy Workout),Ad Group - 24/5/2025 12:15:32.648,8.3,1.0,inf%,52,313.36,0.0,,No sales after 52 clicks (spent ₹313.36),False
+BID_INCREASE,"asin=""B09SJ6VDN4""",SP-PT-EVA Gym Mat- (B09SJ6VDN4 Nasmodo),Ad Group - 24/5/2025 13:46:42.503,6.0,7.2,15.1%,311,2200.48,14603.8,,Strong performer: ACoS 15.1% < target 25.0%,False
+BID_INCREASE,"asin=""B0D95TB7KV""",SP-PT-EVA Gym Mat- (B0D95TB7KV Xtrim),Ad Group - 24/5/2025 13:46:29.001,10.0,12.0,13.7%,1430,11874.97,86589.48,,Strong performer: ACoS 13.7% < target 25.0%,False
+BID_DECREASE,"asin=""B0D95SFFL9""",SP-PT-EVA Gym Mat- (B0D95SFFL9 Xtrim),Ad Group - 24/5/2025 13:46:35.933,4.0,2.8,50.5%,206,1259.38,2491.43,,High ACoS: 50.5% > target 25.0%,False
+BID_INCREASE,"asin=""B09QMK3PC5""",SP-PT-EVA Gym Mat- (B09QMK3PC5 Nasmodo),Ad Group - 24/5/2025 14:27:48.286,7.0,8.4,15.2%,111,995.02,6532.38,,Strong performer: ACoS 15.2% < target 25.0%,False
+BID_PAUSE,"asin=""B0784MK315""",SP-PT-EVA Gym Mat- (B0784MK315 Kobo),Ad Group - 24/5/2025 14:28:04.922,8.0,1.0,inf%,35,300.1,0.0,,No sales after 35 clicks (spent ₹300.10),False
+BID_INCREASE,loose-match,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,1.0,1.2,1.3%,88,101.97,7599.06,,Strong performer: ACoS 1.3% < target 25.0%,False
+BID_PAUSE,complements,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,3.0,1.0,inf%,88,225.13,0.0,,No sales after 88 clicks (spent ₹225.13),False
+BID_INCREASE,xtrim gym mat for floor,SP-KT-EVA Gym Mat-Competition,Ad Group - 27/5/2025 12:09:35.571,8.0,9.6,3.0%,47,335.91,11302.86,,Strong performer: ACoS 3.0% < target 25.0%,False
+BID_PAUSE,signatron gym mat for floor,SP-KT-EVA Gym Mat-Competition,Ad Group - 27/5/2025 12:09:35.571,8.0,1.0,inf%,32,234.56,0.0,,No sales after 32 clicks (spent ₹234.56),False
+BID_INCREASE,interlocking play mats for kids,SP-KT-EVA Kids Mat- (Interlocking Play Mats for Kids),Ad Group - 27/5/2025 14:45:14.764,10.0,12.0,6.0%,799,5657.13,93549.64,,Strong performer: ACoS 6.0% < target 25.0%,False
+BID_DECREASE,mat for kids,SP-KT-EVA Kids Mat- (Mat for Kids),Ad Group - 27/5/2025 14:45:19.144,9.0,6.3,46.1%,92,785.36,1703.81,,High ACoS: 46.1% > target 25.0%,False
+BID_PAUSE,eva mats for kids play school,SP-KT-EVA Kids Mat- (EVA Mats for Kids Play School),Ad Group - 27/5/2025 14:44:49.388,9.5,1.0,inf%,49,574.29,0.0,,No sales after 49 clicks (spent ₹574.29),False
+BID_DECREASE,interlocking mat,SP-KT-EVA Kids Mat- (Interlocking Mat),Ad Group - 27/5/2025 14:46:40.261,11.0,7.7,57.8%,184,1795.27,3106.66,,High ACoS: 57.8% > target 25.0%,False
+BID_INCREASE,"asin=""B09MYDPF3Y""",SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,7.8,9.36,7.4%,259,1659.21,22457.1,,Strong performer: ACoS 7.4% < target 25.0%,False
+BID_PAUSE,"asin=""B0822G97QZ""",SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,10.0,1.0,inf%,42,326.82,0.0,,No sales after 42 clicks (spent ₹326.82),False
+BID_INCREASE,"asin=""B0822GYVNX""",SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,8.6,10.32,5.0%,233,1723.63,34179.01,,Strong performer: ACoS 5.0% < target 25.0%,False
+BID_INCREASE,"asin=""B0CRHQLDZG""",SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,9.41,11.29,1.7%,71,517.33,30827.6,,Strong performer: ACoS 1.7% < target 25.0%,False
+BID_INCREASE,"asin=""B0F228RM13""",SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,6.0,7.2,4.1%,38,186.19,4556.19,,Strong performer: ACoS 4.1% < target 25.0%,False
+BID_INCREASE,"asin=""B0CDH4X4DD""",SP-PT-EVA Kids Mat- (B0CDH4X4DD Liltoes),Ad Group - 27/5/2025 17:07:14.051,4.62,5.54,17.1%,248,1597.86,9329.52,,Strong performer: ACoS 17.1% < target 25.0%,False
+BID_INCREASE,"asin=""B08GJ2W8H6""",SP-PT-EVA Kids Mat- (B08GJ2W8H6 Liltoes),Ad Group - 27/5/2025 17:39:40.146,6.24,7.49,8.3%,869,4231.33,50957.14,,Strong performer: ACoS 8.3% < target 25.0%,False
+BID_INCREASE,"asin=""B07X33Q9DT""",SP-PT-EVA Kids Mat- (EhomeKart),Ad Group - 27/5/2025 17:39:50.158,6.0,7.2,2.4%,39,257.54,10723.81,,Strong performer: ACoS 2.4% < target 25.0%,False
+BID_INCREASE,"asin=""B08JZ8SS2H""",SP-PT-EVA Kids Mat- (B08JZ8SS2H Liltoes),Ad Group - 27/5/2025 17:37:28.566,8.6,10.32,8.2%,1174,10891.35,132272.4,,Strong performer: ACoS 8.2% < target 25.0%,False
+BID_INCREASE,close-match,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,6.0,7.2,10.3%,2179,14413.76,139994.31,,Strong performer: ACoS 10.3% < target 25.0%,False
+BID_INCREASE,loose-match,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,3.0,3.6,4.8%,367,1093.7,22902.85,,Strong performer: ACoS 4.8% < target 25.0%,False
+BID_INCREASE,substitutes,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,5.0,6.0,14.6%,1893,11127.75,76023.85,,Strong performer: ACoS 14.6% < target 25.0%,False
+BID_INCREASE,substitutes,SPA-ASM Diamond (60x10),Ad Group - 29/5/2025 14:10:06.480,7.0,8.4,12.3%,23,190.01,1550.85,,Strong performer: ACoS 12.3% < target 25.0%,False
+BID_DECREASE,plastic sheet for kitchen shelves,SP-KT-ASM- (Plastic Sheet for Kitchen Shelves ),Ad Group - 2/6/2025 13:09:59.148,12.43,8.7,397.3%,52,905.74,227.97,,High ACoS: 397.3% > target 25.0%,False
+BID_DECREASE,anti slip mat for kitchen,SP-KT-ASM- Broad Keywords,Ad Group - 2/6/2025 13:10:56.332,10.0,7.0,57.9%,35,463.94,800.85,,High ACoS: 57.9% > target 25.0%,False
+BID_INCREASE,shelf liners,SP-KT-ASM- Broad Keywords,Ad Group - 2/6/2025 13:10:56.332,9.45,11.34,5.3%,21,278.42,5244.08,,Strong performer: ACoS 5.3% < target 25.0%,False
+BID_INCREASE,shelf mats for cupboards,SP-KT-ASM- Broad Keywords,Ad Group - 2/6/2025 13:10:56.332,8.11,9.73,5.1%,32,371.28,7285.62,,Strong performer: ACoS 5.1% < target 25.0%,False
+BID_DECREASE,"asin=""B0831486NM""",SP-PT-ASM- (B0831486NM Elastpro),Ad Group - 2/6/2025 15:01:42.815,6.0,4.2,90.4%,139,1110.81,1228.82,,High ACoS: 90.4% > target 25.0%,False
+BID_DECREASE,"asin=""B078X7KLTH""",SP-PT-ASM- (B078X7KLTH Urbanfix),Ad Group - 2/6/2025 15:02:14.930,9.0,6.3,35.0%,71,829.78,2371.21,,High ACoS: 35.0% > target 25.0%,False
+BID_DECREASE,"asin=""B0DDXRHF54""",SP-PT-ASM-(B0DDXRHF54 Niwlix),Ad Group - 2/6/2025 15:01:49.889,7.07,4.95,36.4%,58,608.64,1673.75,,High ACoS: 36.4% > target 25.0%,False
+BID_INCREASE,close-match,SPA-EVA Kids Mat PO9,Ad Group - 13/6/2025 13:50:04.683,7.0,8.4,10.9%,314,2159.42,19797.13,,Strong performer: ACoS 10.9% < target 25.0%,False
+BID_INCREASE,substitutes,SPA-EVA Kids Mat PO9,Ad Group - 13/6/2025 13:50:04.683,5.5,6.6,12.6%,224,1071.61,8519.05,,Strong performer: ACoS 12.6% < target 25.0%,False
+BID_INCREASE,"category=""1380092031"" brand=""19565296031""",SP-Category-ASM-Defensive,Ad Group - 3/7/2025 14:07:40.656,8.0,9.6,13.6%,21,198.67,1465.26,,Strong performer: ACoS 13.6% < target 25.0%,False
+BID_INCREASE,"category=""22691714031"" brand=""19565296031""",SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,6.0,7.2,2.8%,231,1419.18,49972.38,,Strong performer: ACoS 2.8% < target 25.0%,False
+BID_INCREASE,"category=""3404665031"" brand=""19565296031""",SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,6.0,7.2,6.7%,162,891.39,13362.85,,Strong performer: ACoS 6.7% < target 25.0%,False
+BID_PAUSE,floor mat for kids,SP-KT-EVA Kids Mat PO9-(Floor Mat for Kids),Ad Group - 27/8/2025 13:43:31.599,7.0,1.0,inf%,101,932.63,0.0,,No sales after 101 clicks (spent ₹932.63),False
+BID_PAUSE,kids play mat for floor,SP-KT-EVA Kids Mat PO9-(Kids Play Mat for Floor),Ad Group - 27/8/2025 13:46:32.222,7.55,1.0,inf%,58,516.63,0.0,,No sales after 58 clicks (spent ₹516.63),False
+BID_INCREASE,interlocking play mat for kids,SP-KT-EVA Kids Mat PO9-(Interlocking Play Mat for Kids),Ad Group - 27/8/2025 13:40:07.576,7.0,8.4,13.3%,96,753.58,5682.85,,Strong performer: ACoS 13.3% < target 25.0%,False
+BID_DECREASE,drawer mat roll,SP-KT-ASM-Multi Keywords,Ad Group - 19/9/2025 15:36:08.958,11.55,8.09,39.6%,30,326.69,825.43,,High ACoS: 39.6% > target 25.0%,False
+BID_INCREASE,cupboard liners for wardrobe,SP-KT-ASM-Multi Keywords,Ad Group - 19/9/2025 15:36:08.958,13.2,15.84,12.9%,57,725.58,5635.6,,Strong performer: ACoS 12.9% < target 25.0%,False
+BID_INCREASE,"asin=""B0D7W73KZ1""",SP-PT-ASM- (B0D7W73KZ1 Senego),Ad Group - 14/10/2025 12:15:35.600,15.0,18.0,15.1%,188,3366.35,22355.13,,Strong performer: ACoS 15.1% < target 25.0%,False
+BID_INCREASE,"asin=""B0G1YX6GXV""",SP-PT-Storage Bag-Defensive,Ad Group - 9/1/2026 11:42:47.631,10.0,12.0,9.8%,29,337.12,3434.14,,Strong performer: ACoS 9.8% < target 25.0%,False
+BID_INCREASE,close-match,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,6.0,7.2,8.8%,1225,6819.52,77191.43,,Strong performer: ACoS 8.8% < target 25.0%,False
+BID_INCREASE,loose-match,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,3.0,3.6,1.4%,35,96.17,6828.57,,Strong performer: ACoS 1.4% < target 25.0%,False
+BID_INCREASE,substitutes,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,4.0,4.8,8.1%,815,3043.49,37459.99,,Strong performer: ACoS 8.1% < target 25.0%,False
+BID_PAUSE,blanket cover bag,SP-KT-Blanket Cover Bag,Ad Group - 24/1/2026 13:29:19.354,9.54,1.0,inf%,35,364.99,0.0,,No sales after 35 clicks (spent ₹364.99),False
+BID_DECREASE,clothes storage box,SP-KT-Clothes Storage Box,Ad Group - 24/1/2026 13:18:54.595,9.37,6.56,57.7%,45,501.96,869.74,,High ACoS: 57.7% > target 25.0%,False
+BID_DECREASE,blanket storage bags,SP-KT-Blanket Storage Bags,Ad Group - 24/1/2026 13:20:29.798,8.0,5.6,50.6%,86,953.49,1885.72,,High ACoS: 50.6% > target 25.0%,False
+BID_DECREASE,"asin=""B0DBDWG8K4""",SP-PT-SB-(B0DBDWG8K4 Storite),Ad Group - 31/1/2026 15:39:17.258,11.0,7.7,46.6%,99,1223.57,2624.21,,High ACoS: 46.6% > target 25.0%,False
+BID_DECREASE,"asin=""B07BZ1XZ77""",SP-PT-SB-(B07BZ1XZ77 Storite),Ad Group - 31/1/2026 15:44:31.254,14.0,9.8,33.4%,342,5393.0,16148.55,,High ACoS: 33.4% > target 25.0%,False
+BID_DECREASE,"asin=""B07QRQZK1G""",SP-PT-SB-(B07QRQZK1G Storite),Ad Group - 31/1/2026 15:42:54.492,10.0,7.0,60.0%,79,849.16,1415.45,,High ACoS: 60.0% > target 25.0%,False
+BID_INCREASE,"category=""22691714031"" brand=""83162061031""",SP-PT-EVA Gym Mat- (B0D95SFFL9 Xtrim),Ad Group - 24/5/2025 13:46:35.933,6.0,7.2,11.1%,473,2837.58,25520.95,,Strong performer: ACoS 11.1% < target 25.0%,False
+BID_INCREASE,mat for kids playing,SP-KT-EVA Kids Mat-(mat for kids playing),Ad Group - 19/2/2026 14:07:35.628,10.0,12.0,11.5%,241,2005.19,17463.79,,Strong performer: ACoS 11.5% < target 25.0%,False
+BID_INCREASE,kids play mats for floor,SP-KT-EVA Kids Mat-(kids play mats for floor),Ad Group - 19/2/2026 14:11:35.788,4.82,5.78,2.7%,37,182.87,6837.15,,Strong performer: ACoS 2.7% < target 25.0%,False
+BID_DECREASE,kids mats for floor thick,SP-KT-EVA Kids Mat-(kids mats for floor thick),Ad Group - 19/2/2026 14:11:51.979,8.0,5.6,63.2%,231,1649.81,2611.43,,High ACoS: 63.2% > target 25.0%,False
+BID_INCREASE,kids mat,SP-KT-EVA Kids Mat- (kids mat),Ad Group - 27/5/2025 14:43:41.092,8.6,10.32,8.1%,123,967.17,11897.15,,Strong performer: ACoS 8.1% < target 25.0%,False
+BID_DECREASE,gym matt for workout,SP-KT-EVA EHK Gym Mat- (Gym Matt for Workout),Ad Group - 26/2/2026 17:46:32.875,5.5,3.85,36.6%,69,301.79,824.76,,High ACoS: 36.6% > target 25.0%,False
+BID_INCREASE,gym mats for floor,SP-KT-EVA EHK Gym Mat- (Gym Mats for Floor),Ad Group - 26/2/2026 17:44:53.874,8.07,9.68,15.4%,440,2785.32,18065.7,,Strong performer: ACoS 15.4% < target 25.0%,False
+BID_INCREASE,interlocking floor mats,SP-KT-EVA EHK Gym Mat- (Interlocking Floor Mat),Ad Group - 26/2/2026 17:36:36.727,6.0,7.2,7.4%,170,872.88,11780.95,,Strong performer: ACoS 7.4% < target 25.0%,False
+BID_INCREASE,rubber mat for gym,SP-KT-EVA EHK Gym Mat- (Rubber Mat for Gym),Ad Group - 26/2/2026 17:46:29.516,12.0,14.4,17.1%,292,2236.33,13104.76,,Strong performer: ACoS 17.1% < target 25.0%,False
+BID_INCREASE,gym mat,SP-KT-EVA EHK Gym Mat- (Gym Mat),Ad Group - 26/2/2026 17:46:35.156,7.0,8.4,11.0%,132,821.15,7483.81,,Strong performer: ACoS 11.0% < target 25.0%,False
+BID_DECREASE,baby mats for floor,SP-KT-BPM-LT-(Baby Mats for Floor),Ad Group - 13/3/2026 16:24:06.724,3.0,2.1,40.7%,113,693.25,1704.76,,High ACoS: 40.7% > target 25.0%,False
+BID_INCREASE,play mat for babies 0 to 12 months,SP-KT-BPM-LT-(Multi),Ad Group - 13/3/2026 16:24:18.191,5.64,6.77,10.4%,140,890.26,8523.8,,Strong performer: ACoS 10.4% < target 25.0%,False
+BID_INCREASE,kids play mats for floor,SP-KT-BPM-LT-(Multi),Ad Group - 13/3/2026 16:24:18.191,5.67,6.8,14.3%,38,243.67,1704.76,,Strong performer: ACoS 14.3% < target 25.0%,False
+BID_PAUSE,floor mat for kids,SP-KT-BPM-LT-(Floor Mat for Kids),Ad Group - 13/3/2026 16:21:47.998,5.55,1.0,inf%,66,404.01,0.0,,No sales after 66 clicks (spent ₹404.01),False
+BID_DECREASE,kids mats for floor thick,SP-KT-BPM-LT-(Kids Mats for Floor Thick),Ad Group - 13/3/2026 16:23:41.486,7.0,4.9,33.7%,144,1116.27,3315.61,,High ACoS: 33.7% > target 25.0%,False
+BID_DECREASE,close-match,SPA-BPM-LT,Ad Group - 13/3/2026 16:11:29.563,5.0,3.5,35.8%,411,2613.11,7295.79,,High ACoS: 35.8% > target 25.0%,False
+BID_DECREASE,substitutes,SPA-BPM-LT,Ad Group - 13/3/2026 16:11:29.563,4.5,3.15,37.4%,255,1592.94,4261.9,,High ACoS: 37.4% > target 25.0%,False
+BID_PAUSE,play mat for babies 0 to 3 years thick,SP-KT-BPM-LT-(Play Mat for Babies 0 to 3 Years Thick),Ad Group - 13/3/2026 16:21:35.972,5.49,1.0,inf%,52,320.66,0.0,,No sales after 52 clicks (spent ₹320.66),False
+BID_DECREASE,play mat,SP-KT-BPM-LT-(Play Mat),Ad Group - 13/3/2026 16:24:13.043,7.0,4.9,53.8%,120,916.57,1704.76,,High ACoS: 53.8% > target 25.0%,False
+BID_PAUSE,"asin=""B0F4JWGTJX""",SP-PT-EVA Kids Mat PO9-(Xtrim),Ad Group - 27/8/2025 14:15:18.223,7.0,1.0,inf%,39,310.55,0.0,,No sales after 39 clicks (spent ₹310.55),False
+NEGATE_EXACT,b0784mk315,SP-PT-EVA Gym Mat- (B0784MK315 Kobo),Ad Group - 24/5/2025 14:28:04.922,,,,35,300.1,0.0,0,"Wasted spend: 35 clicks, ₹300.10 cost, 0 sales",False
+HARVEST_EXACT,b07b8k3rqk,SP-PT-SB-(B07B8K3RQK Storite),Ad Group - 31/1/2026 15:38:24.556,,,,224,2682.28,9691.18,16,"Converting: 16 orders, ACoS 27.7%",False
+HARVEST_EXACT,b07bz1xz77,SP-PT-SB-(B07BZ1XZ77 Storite),Ad Group - 31/1/2026 15:44:31.254,,,,252,3852.48,12567.6,18,"Converting: 18 orders, ACoS 30.7%",False
+HARVEST_EXACT,b07pvmh91h,SPA-Storage Bag,Storage Bag,,,,21,247.64,1795.68,4,"Converting: 4 orders, ACoS 13.8%",False
+HARVEST_EXACT,b07x33q9dt,SP-PT-EVA Kids Mat- (EhomeKart),Ad Group - 27/5/2025 17:39:50.158,,,,38,250.06,10723.81,3,"Converting: 3 orders, ACoS 2.3%",False
+NEGATE_EXACT,b0822g97qz,SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,,,,42,326.82,0.0,0,"Wasted spend: 42 clicks, ₹326.82 cost, 0 sales",False
+HARVEST_EXACT,b0822gyvnx,SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,,,,202,1503.65,34179.01,11,"Converting: 11 orders, ACoS 4.4%",False
+HARVEST_EXACT,b08gj2w8h6,SP-PT-EVA Kids Mat- (B08GJ2W8H6 Liltoes),Ad Group - 27/5/2025 17:39:40.146,,,,744,3590.59,38570.48,14,"Converting: 14 orders, ACoS 9.3%",False
+HARVEST_EXACT,b08jz8ss2h,SP-PT-EVA Kids Mat- (B08JZ8SS2H Liltoes),Ad Group - 27/5/2025 17:37:28.566,,,,1049,9615.94,105261.91,40,"Converting: 40 orders, ACoS 9.1%",False
+HARVEST_EXACT,b09my5k3sh,SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,,,,151,813.94,5086.67,4,"Converting: 4 orders, ACoS 16.0%",False
+HARVEST_EXACT,b09mydpf3y,SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,,,,254,1624.65,22457.1,10,"Converting: 10 orders, ACoS 7.2%",False
+HARVEST_EXACT,b09sj6vdn4,SP-PT-EVA Gym Mat- (B09SJ6VDN4 Nasmodo),Ad Group - 24/5/2025 13:46:42.503,,,,271,1914.09,13779.04,9,"Converting: 9 orders, ACoS 13.9%",False
+HARVEST_EXACT,b0c1431jnz,SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,,,,25,169.45,9271.44,4,"Converting: 4 orders, ACoS 1.8%",False
+HARVEST_EXACT,b0cdh4x4dd,SP-PT-EVA Kids Mat- (B0CDH4X4DD Liltoes),Ad Group - 27/5/2025 17:07:14.051,,,,236,1525.39,8496.19,4,"Converting: 4 orders, ACoS 18.0%",False
+HARVEST_EXACT,b0chmzcx43,SP-PT-EVA Gym Mat- (B0CHMZCX43 Xtrim),Ad Group - 24/5/2025 13:39:43.695,,,,697,5027.82,25559.03,13,"Converting: 13 orders, ACoS 19.7%",False
+HARVEST_EXACT,b0chmzcx43,SP-PT-EVA Gym Mat- (B0D95SFFL9 Xtrim),Ad Group - 24/5/2025 13:46:35.933,,,,71,442.08,9819.05,4,"Converting: 4 orders, ACoS 4.5%",False
+HARVEST_EXACT,b0crhqldzg,SP-PT-EVA Kids Mat- (Defensive),Ad Group - 27/5/2025 17:45:26.571,,,,71,517.33,30827.6,7,"Converting: 7 orders, ACoS 1.7%",False
+HARVEST_EXACT,b0d7w73kz1,SP-PT-ASM- (B0D7W73KZ1 Senego),Ad Group - 14/10/2025 12:15:35.600,,,,187,3346.85,22355.13,24,"Converting: 24 orders, ACoS 15.0%",False
+HARVEST_EXACT,b0d95sffl9,SP-PT-EVA Gym Mat- (B0D95SFFL9 Xtrim),Ad Group - 24/5/2025 13:46:35.933,,,,177,1081.17,3261.9,3,"Converting: 3 orders, ACoS 33.1%",False
+HARVEST_EXACT,b0d95tb7kv,SP-PT-EVA Gym Mat- (B0D95TB7KV Xtrim),Ad Group - 24/5/2025 13:46:29.001,,,,1194,9910.13,53029.5,31,"Converting: 31 orders, ACoS 18.7%",False
+HARVEST_EXACT,b0d9hb8ltp,SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,,,,52,320.1,15628.56,5,"Converting: 5 orders, ACoS 2.0%",False
+HARVEST_EXACT,b0dbdyx4w6,SP-PT-SB-(B0DBDYX4W6 Storite),Ad Group - 31/1/2026 15:36:05.640,,,,37,526.74,3033.06,4,"Converting: 4 orders, ACoS 17.4%",False
+HARVEST_EXACT,b0ddxrhf54,SP-PT-ASM-(B0DDXRHF54 Niwlix),Ad Group - 2/6/2025 15:01:49.889,,,,57,597.33,1673.75,5,"Converting: 5 orders, ACoS 35.7%",False
+HARVEST_EXACT,b0dx25vngf,SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,,,,46,260.71,9326.66,3,"Converting: 3 orders, ACoS 2.8%",False
+HARVEST_EXACT,b0f2tlck85,SP-PT-EVA Gym Mat-Defensive,Ad Group - 24/5/2025 13:02:24.065,,,,36,229.94,4432.38,3,"Converting: 3 orders, ACoS 5.2%",False
+NEGATE_EXACT,b0f4jwgtjx,SP-PT-EVA Kids Mat PO9-(Xtrim),Ad Group - 27/8/2025 14:15:18.223,,,,37,296.03,0.0,0,"Wasted spend: 37 clicks, ₹296.03 cost, 0 sales",False
+NEGATE_EXACT,b0fk21wghq,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,72,118.11,0.0,0,"Wasted spend: 72 clicks, ₹118.11 cost, 0 sales",False
+HARVEST_EXACT,b0ft2ng4hg,SPA-Storage Bag,Storage Bag,,,,5,59.26,1866.67,3,"Converting: 3 orders, ACoS 3.2%",False
+HARVEST_EXACT,b0g1yx6gxv,SP-PT-Storage Bag-Defensive,Ad Group - 9/1/2026 11:42:47.631,,,,29,337.12,3434.14,7,"Converting: 7 orders, ACoS 9.8%",False
+NEGATE_EXACT,baby mat,SP-KT-BPM-LT-(Baby Mat),Ad Group - 13/3/2026 16:23:36.417,,,,37,213.02,0.0,0,"Wasted spend: 37 clicks, ₹213.02 cost, 0 sales",False
+HARVEST_EXACT,baby mats for floor,SP-KT-BPM-LT-(Baby Mats for Floor),Ad Group - 13/3/2026 16:24:06.724,,,,197,1547.21,7389.69,9,"Converting: 9 orders, ACoS 20.9%",False
+HARVEST_EXACT,baby mats for floor,SP-KT-BPM-LT-(Baby Mat),Ad Group - 13/3/2026 16:23:36.417,,,,84,498.11,2463.23,3,"Converting: 3 orders, ACoS 20.2%",False
+NEGATE_EXACT,baby play mat,SP-KT-BPM-LT-(Baby Playing Mat),Ad Group - 13/3/2026 16:23:59.158,,,,38,217.95,0.0,0,"Wasted spend: 38 clicks, ₹217.95 cost, 0 sales",False
+NEGATE_EXACT,baby play mat for 0 to 2 years,SP-KT-BPM-LT-(Baby Playing Mat),Ad Group - 13/3/2026 16:23:59.158,,,,66,407.85,0.0,0,"Wasted spend: 66 clicks, ₹407.85 cost, 0 sales",False
+NEGATE_EXACT,baby playing mat,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,37,244.49,0.0,0,"Wasted spend: 37 clicks, ₹244.49 cost, 0 sales",False
+HARVEST_EXACT,baby playing mat,SP-KT-BPM-LT-(Baby Playing Mat),Ad Group - 13/3/2026 16:23:59.158,,,,79,465.66,4167.04,4,"Converting: 4 orders, ACoS 11.2%",False
+HARVEST_EXACT,baby toys,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,86,585.7,10345.71,5,"Converting: 5 orders, ACoS 5.7%",False
+NEGATE_EXACT,blanket cover bag,SP-KT-Blanket Cover Bag,Ad Group - 24/1/2026 13:29:19.354,,,,35,364.99,0.0,0,"Wasted spend: 35 clicks, ₹364.99 cost, 0 sales",False
+HARVEST_EXACT,cloth organizer for storage,SPA-Storage Bag,Storage Bag,,,,27,315.54,1376.19,3,"Converting: 3 orders, ACoS 22.9%",False
+HARVEST_EXACT,cloth storage bags for clothes,SP-KT-Cloth Storage Bags for Clothes,Ad Group - 24/1/2026 13:29:25.820,,,,31,448.74,1866.67,3,"Converting: 3 orders, ACoS 24.0%",False
+HARVEST_EXACT,clothes storage bags,SPA-Storage Bag,Storage Bag,,,,26,383.73,1804.76,3,"Converting: 3 orders, ACoS 21.3%",False
+HARVEST_EXACT,cupboard liners for wardrobe,SP-KT-ASM-Multi Keywords,Ad Group - 19/9/2025 15:36:08.958,,,,56,710.47,5635.6,4,"Converting: 4 orders, ACoS 12.6%",False
+HARVEST_EXACT,elastpro shelf liners for kitchen shelves,SP-KT-ASM- *(Shelf Liners),Ad Group - 2/6/2025 13:09:44.603,,,,22,252.03,3000.0,3,"Converting: 3 orders, ACoS 8.4%",False
+NEGATE_EXACT,eva foam interlocking tiles floor mats,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,31,148.37,0.0,0,"Wasted spend: 31 clicks, ₹148.37 cost, 0 sales",False
+HARVEST_EXACT,eva mat,SP-PT-EVA Kids Mat- (B08JZ8SS2H Liltoes),Ad Group - 27/5/2025 17:37:28.566,,,,10,95.07,12240.96,4,"Converting: 4 orders, ACoS 0.8%",False
+NEGATE_EXACT,eva mats for kids play school,SP-KT-EVA Kids Mat- (EVA Mats for Kids Play School),Ad Group - 27/5/2025 14:44:49.388,,,,41,462.95,0.0,0,"Wasted spend: 41 clicks, ₹462.95 cost, 0 sales",False
+NEGATE_EXACT,floor cushion,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,87,273.89,0.0,0,"Wasted spend: 87 clicks, ₹273.89 cost, 0 sales",False
+NEGATE_EXACT,floor mat,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,35,164.45,0.0,0,"Wasted spend: 35 clicks, ₹164.45 cost, 0 sales",False
+NEGATE_EXACT,floor mat for kids,SP-KT-EVA Kids Mat PO9-(Floor Mat for Kids),Ad Group - 27/8/2025 13:43:31.599,,,,84,782.16,0.0,0,"Wasted spend: 84 clicks, ₹782.16 cost, 0 sales",False
+HARVEST_EXACT,floor mat for kids,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,,,,33,166.52,11825.72,3,"Converting: 3 orders, ACoS 1.4%",False
+NEGATE_EXACT,floor mat for kids,SP-KT-BPM-LT-(Floor Mat for Kids),Ad Group - 13/3/2026 16:21:47.998,,,,30,173.98,0.0,0,"Wasted spend: 30 clicks, ₹173.98 cost, 0 sales",False
+NEGATE_EXACT,foam floor mats for kids,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,46,273.74,0.0,0,"Wasted spend: 46 clicks, ₹273.74 cost, 0 sales",False
+NEGATE_EXACT,foam mat for kids,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,34,182.92,0.0,0,"Wasted spend: 34 clicks, ₹182.92 cost, 0 sales",False
+NEGATE_EXACT,gym equipment for home workout,SPA-EVA Gym Mat (Ehk),Ad Group - 8/7/2025 13:00:40.158,,,,46,213.02,0.0,0,"Wasted spend: 46 clicks, ₹213.02 cost, 0 sales",False
+NEGATE_EXACT,gym floor mat,SP-KT-EVA Gym Mat- (Gym Floor Mat),Ad Group - 24/5/2025 11:37:17.806,,,,41,245.46,0.0,0,"Wasted spend: 41 clicks, ₹245.46 cost, 0 sales",False
+HARVEST_EXACT,gym floor mat rubber,SP-KT-EVA B&G Gym Mat- (Gym floor Mat Rubber),Ad Group - 24/5/2025 11:37:06.999,,,,110,703.91,8720.94,4,"Converting: 4 orders, ACoS 8.1%",False
+HARVEST_EXACT,gym floor mat rubber,SP-PT-EVA Gym Mat- (B0D95TB7KV Xtrim),Ad Group - 24/5/2025 13:46:29.001,,,,50,358.66,7613.33,4,"Converting: 4 orders, ACoS 4.7%",False
+NEGATE_EXACT,gym floor mat rubber,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,90,618.72,0.0,0,"Wasted spend: 90 clicks, ₹618.72 cost, 0 sales",False
+NEGATE_EXACT,gym floor mats for heavy workout,SP-KT-EVA Gym Mat- (Gym Floor Mat for Heavy Workout),Ad Group - 24/5/2025 12:15:32.648,,,,51,299.22,0.0,0,"Wasted spend: 51 clicks, ₹299.22 cost, 0 sales",False
+HARVEST_EXACT,gym mat,SP-KT-EVA Gym Mat- (Gym Mat),Ad Group - 24/5/2025 11:37:01.833,,,,384,4446.39,29880.0,13,"Converting: 13 orders, ACoS 14.9%",False
+HARVEST_EXACT,gym mat,SP-PT-EVA Gym Mat- (B0D95TB7KV Xtrim),Ad Group - 24/5/2025 13:46:29.001,,,,38,343.08,13896.18,5,"Converting: 5 orders, ACoS 2.5%",False
+HARVEST_EXACT,gym mat,SP-KT-EVA EHK Gym Mat- (Gym Mat),Ad Group - 26/2/2026 17:46:35.156,,,,126,783.04,7483.81,3,"Converting: 3 orders, ACoS 10.5%",False
+HARVEST_EXACT,gym mats for floor,SP-KT-EVA Gym Mat- (Gym Mats for Floor),Ad Group - 24/5/2025 11:34:17.967,,,,853,7191.38,65957.13,28,"Converting: 28 orders, ACoS 10.9%",False
+HARVEST_EXACT,gym mats for floor,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,237,1152.43,7622.87,3,"Converting: 3 orders, ACoS 15.1%",False
+HARVEST_EXACT,gym mats for floor,SP-KT-EVA EHK Gym Mat- (Gym Mats for Floor),Ad Group - 26/2/2026 17:44:53.874,,,,437,2765.27,18065.7,11,"Converting: 11 orders, ACoS 15.3%",False
+HARVEST_EXACT,interlocking floor mat,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,197,907.93,7255.24,5,"Converting: 5 orders, ACoS 12.5%",False
+HARVEST_EXACT,interlocking floor mat,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,124,719.58,19365.72,7,"Converting: 7 orders, ACoS 3.7%",False
+HARVEST_EXACT,interlocking floor mat,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,,,,223,1080.64,9044.75,5,"Converting: 5 orders, ACoS 11.9%",False
+HARVEST_EXACT,interlocking floor mat,SP-KT-EVA EHK Gym Mat- (Interlocking Floor Mat),Ad Group - 26/2/2026 17:36:36.727,,,,170,872.88,11780.95,4,"Converting: 4 orders, ACoS 7.4%",False
+HARVEST_EXACT,interlocking foam mats for kids,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,108,457.88,26746.7,6,"Converting: 6 orders, ACoS 1.7%",False
+HARVEST_EXACT,interlocking play mat for kids,SP-KT-EVA Kids Mat- (Interlocking Play Mats for Kids),Ad Group - 27/5/2025 14:45:14.764,,,,795,5609.75,93549.64,34,"Converting: 34 orders, ACoS 6.0%",False
+NEGATE_EXACT,kids floor mat for play,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,44,359.86,0.0,0,"Wasted spend: 44 clicks, ₹359.86 cost, 0 sales",False
+HARVEST_EXACT,kids mat,SP-KT-EVA Kids Mat- (kids mat),Ad Group - 27/5/2025 14:43:41.092,,,,104,816.95,11897.15,5,"Converting: 5 orders, ACoS 6.9%",False
+NEGATE_EXACT,kids mats for floor thick,SP-KT-EVA Kids Mat-(kids mats for floor thick),Ad Group - 19/2/2026 14:11:51.979,,,,230,1644.43,0.0,0,"Wasted spend: 230 clicks, ₹1644.43 cost, 0 sales",False
+HARVEST_EXACT,kids mats for floor thick,SP-KT-BPM-LT-(Kids Mats for Floor Thick),Ad Group - 13/3/2026 16:23:41.486,,,,144,1116.27,3315.61,4,"Converting: 4 orders, ACoS 33.7%",False
+NEGATE_EXACT,kids play mats for floor,SP-KT-EVA Kids Mat PO9-(Kids Play Mat for Floor),Ad Group - 27/8/2025 13:46:32.222,,,,58,516.63,0.0,0,"Wasted spend: 58 clicks, ₹516.63 cost, 0 sales",False
+HARVEST_EXACT,kitchen drawer mats,SP-KT-ASM-Multi Keywords,Ad Group - 19/9/2025 15:36:08.958,,,,206,2046.1,6841.57,14,"Converting: 14 orders, ACoS 29.9%",False
+NEGATE_EXACT,mat for baby,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,30,171.99,0.0,0,"Wasted spend: 30 clicks, ₹171.99 cost, 0 sales",False
+NEGATE_EXACT,mat for kids playing,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,,,,30,203.68,0.0,0,"Wasted spend: 30 clicks, ₹203.68 cost, 0 sales",False
+HARVEST_EXACT,mat for kids playing,SP-KT-EVA Kids Mat-(mat for kids playing),Ad Group - 19/2/2026 14:07:35.628,,,,239,1984.84,17463.79,6,"Converting: 6 orders, ACoS 11.4%",False
+NEGATE_EXACT,mats for kids on floor,SPA-EVA Kids Mat,Ad Group - 29/5/2025 12:33:57.553,,,,32,304.52,0.0,0,"Wasted spend: 32 clicks, ₹304.52 cost, 0 sales",False
+NEGATE_EXACT,play mat for babies 0 to 12 months,SPA-Liltoes-EVA Kids Mat,Ad Group - 19/1/2026 14:30:37.316,,,,30,202.39,0.0,0,"Wasted spend: 30 clicks, ₹202.39 cost, 0 sales",False
+HARVEST_EXACT,play mat for babies 0 to 12 months,SP-KT-BPM-LT-(Multi),Ad Group - 13/3/2026 16:24:18.191,,,,128,810.74,7671.42,9,"Converting: 9 orders, ACoS 10.6%",False
+NEGATE_EXACT,play mat for babies 0 to 12 months,SP-KT-BPM-LT-(Mat for Baby),Ad Group - 13/3/2026 16:23:51.382,,,,34,193.4,0.0,0,"Wasted spend: 34 clicks, ₹193.40 cost, 0 sales",False
+NEGATE_EXACT,play mat for babies 0 to 3 years thick,SP-KT-BPM-LT-(Play Mat for Babies 0 to 3 Years Thick),Ad Group - 13/3/2026 16:21:35.972,,,,48,294.58,0.0,0,"Wasted spend: 48 clicks, ₹294.58 cost, 0 sales",False
+NEGATE_EXACT,puzzle mats for floor,SPA-EVA Gym Mat,Ad Group - 26/5/2025 10:56:55.000,,,,34,129.6,0.0,0,"Wasted spend: 34 clicks, ₹129.60 cost, 0 sales",False
+HARVEST_EXACT,rubber mat for gym,SP-KT-EVA Gym Mat- (Rubber Mat for Gym),Ad Group - 24/5/2025 12:15:14.966,,,,250,2625.44,24253.33,8,"Converting: 8 orders, ACoS 10.8%",False
+HARVEST_EXACT,rubber mat for gym,SP-KT-EVA EHK Gym Mat- (Rubber Mat for Gym),Ad Group - 26/2/2026 17:46:29.516,,,,279,2130.2,13104.76,6,"Converting: 6 orders, ACoS 16.3%",False
+HARVEST_EXACT,shelf liners for kitchen shelves,SP-KT-ASM- *(Shelf Liners for Kitchen Shelves),Ad Group - 2/6/2025 13:08:41.064,,,,12,137.64,3057.61,3,"Converting: 3 orders, ACoS 4.5%",False
+NEGATE_EXACT,signatron gym mats for floor,SP-KT-EVA Gym Mat-Competition,Ad Group - 27/5/2025 12:09:35.571,,,,32,234.56,0.0,0,"Wasted spend: 32 clicks, ₹234.56 cost, 0 sales",False
+HARVEST_EXACT,storage bags,SP-KT-Storage Bag,Ad Group - 24/1/2026 13:28:53.635,,,,46,667.45,4032.61,8,"Converting: 8 orders, ACoS 16.6%",False
+HARVEST_EXACT,storage bags for clothes,SP-KT-Storage Bags for Clothes,Ad Group - 24/1/2026 13:29:34.789,,,,93,1195.95,4988.06,8,"Converting: 8 orders, ACoS 24.0%",False
+HARVEST_EXACT,storage bags for clothes large,SP-KT-Storage Bags for Clothes Large,Ad Group - 24/1/2026 13:19:50.598,,,,612,8159.46,28720.75,48,"Converting: 48 orders, ACoS 28.4%",False
+HARVEST_EXACT,wardrobe sheets,SP-KT-ASM-Multi Keywords,Ad Group - 19/9/2025 15:36:08.958,,,,12,179.74,995.77,3,"Converting: 3 orders, ACoS 18.1%",False

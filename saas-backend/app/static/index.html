@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>e-Solz Amazon Tools</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#0f1117;--surface:#1a1f36;--border:#2a3050;--accent:#ff9900;
+    --text:#e0e0e0;--muted:#8892a4;--green:#10b981;--red:#ef4444;--blue:#3b82f6;--purple:#a78bfa;
+  }
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+  /* ── Auth ── */
+  #auth-screen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1rem}
+  .auth-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:2.5rem;width:100%;max-width:400px}
+  .auth-logo{text-align:center;margin-bottom:1.8rem}
+  .auth-logo h1{font-size:1.6rem;font-weight:800;color:#fff}
+  .auth-logo h1 span{color:var(--accent)}
+  .auth-logo p{color:var(--muted);font-size:.88rem;margin-top:.3rem}
+  .auth-tabs{display:flex;gap:.5rem;margin-bottom:1.5rem}
+  .auth-tab{flex:1;padding:.6rem;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;font-size:.88rem;font-weight:600;transition:.15s}
+  .auth-tab.active{background:var(--accent);color:#000;border-color:var(--accent)}
+  .form-group{margin-bottom:1rem}
+  .form-group label{display:block;font-size:.78rem;color:var(--muted);margin-bottom:.4rem;font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+  .form-group input,.form-group select,.form-group textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.7rem 1rem;color:var(--text);font-size:.9rem;font-family:inherit;outline:none;transition:border-color .15s}
+  .form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--accent)}
+  .form-group select option{background:var(--surface)}
+  .form-group textarea{resize:vertical;min-height:80px}
+  .btn-primary{width:100%;background:var(--accent);color:#000;border:none;padding:.8rem;border-radius:8px;font-weight:700;font-size:.95rem;cursor:pointer;margin-top:.5rem;transition:.15s}
+  .btn-primary:hover{background:#e68a00}
+  .btn-primary:disabled{opacity:.5;cursor:default}
+  .auth-error{color:var(--red);font-size:.83rem;margin-top:.8rem;text-align:center;min-height:1.2em}
+
+  /* ── App shell ── */
+  #app-screen{display:none;flex-direction:column;min-height:100vh}
+  #sticky-top{position:sticky;top:0;z-index:200;background:var(--surface)}
+  header{background:linear-gradient(135deg,#1a1f36,#232f3e);padding:1rem 2rem;display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--accent);gap:1rem;flex-wrap:wrap}
+  .header-brand h1{font-size:1.25rem;font-weight:800;color:#fff}
+  .header-brand h1 span{color:var(--accent)}
+  .header-brand p{color:var(--muted);font-size:.78rem;margin-top:.1rem}
+  .header-user{display:flex;align-items:center;gap:.8rem}
+  .plan-badge{padding:.25rem .7rem;border-radius:20px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.5px}
+  .plan-free{background:#1e3a5f;color:#60a5fa}
+  .plan-starter{background:#1e3a1e;color:#4ade80}
+  .plan-growth{background:#3a2a1e;color:#fb923c}
+  .plan-pro,.plan-agency{background:#2a1e3a;color:#c084fc}
+  #user-email{color:var(--muted);font-size:.82rem}
+  .btn-sm{background:var(--border);color:var(--text);border:1px solid #3a4060;padding:.35rem .8rem;border-radius:6px;font-size:.78rem;cursor:pointer}
+  .btn-sm:hover{border-color:var(--muted)}
+
+  /* ── Tool nav ── */
+  .tool-nav{display:flex;gap:0;background:#13182b;border-bottom:1px solid var(--border);overflow-x:auto;padding:0 1.5rem}
+  .tnav-btn{padding:.75rem 1.2rem;border:none;background:transparent;color:var(--muted);font-size:.85rem;font-weight:600;cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:.15s}
+  .tnav-btn:hover{color:var(--text)}
+  .tnav-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+  /* ── Tool panels ── */
+  .tool-panel{display:none;flex-direction:column;gap:1.5rem;padding:1.5rem;max-width:1400px;width:100%;margin:0 auto}
+  .tool-panel.active{display:flex}
+
+  /* ── Cards ── */
+  .card{background:var(--surface);border-radius:12px;padding:1.3rem;border:1px solid var(--border)}
+  .card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem}
+  .card-title{font-size:1rem;color:var(--accent);font-weight:700}
+
+  /* ── KPIs ── */
+  .kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1rem}
+  .kpi{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1rem 1.2rem}
+  .kpi .kpi-label{font-size:.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:.25rem}
+  .kpi .kpi-val{font-size:1.7rem;font-weight:800;color:#fff}
+  .kpi .kpi-sub{font-size:.75rem;color:var(--muted);margin-top:.15rem}
+
+  /* ── Tables ── */
+  .table-wrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:.84rem}
+  th{text-align:left;padding:.55rem .7rem;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);font-size:.73rem;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+  td{padding:.55rem .7rem;border-bottom:1px solid #1e2440;vertical-align:middle}
+  tr:last-child td{border-bottom:none}
+  tbody tr{transition:.1s}
+  tbody tr:hover td{background:#1e2440}
+  tbody tr.selected td{background:#1e2838;border-left:3px solid var(--accent)}
+  .clickable-row{cursor:pointer}
+  .asin-code{font-family:"SF Mono",Monaco,Consolas,monospace;font-size:.78rem;color:var(--blue)}
+  .ts{color:var(--muted);font-size:.75rem}
+  .badge{display:inline-block;padding:.15rem .5rem;border-radius:4px;font-size:.7rem;font-weight:700}
+  .badge-ok{background:#064e3b;color:var(--green)}
+  .badge-warn{background:#3a2a1e;color:#fb923c}
+  .badge-err{background:#3a1e1e;color:var(--red)}
+  .badge-fba{background:#1e2a3a;color:var(--blue)}
+  .badge-fbm{background:#2a1e3a;color:var(--purple)}
+  .btn-icon{background:none;border:none;color:var(--muted);cursor:pointer;padding:.2rem .4rem;border-radius:4px;font-size:1rem}
+  .btn-icon:hover{color:var(--red)}
+
+  /* ── Tool forms ── */
+  .tool-form{display:flex;flex-direction:column;gap:.9rem}
+  .form-row-flex{display:flex;gap:.8rem;flex-wrap:wrap;align-items:flex-end}
+  .form-row-flex .form-group{flex:1;min-width:140px;margin:0}
+  .hint{font-size:.75rem;color:var(--muted);margin-top:.3rem}
+  .btn-run{background:var(--accent);color:#000;border:none;padding:.65rem 1.5rem;border-radius:8px;font-weight:700;font-size:.88rem;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:.4rem}
+  .btn-run:hover{background:#e68a00}
+  .btn-run:disabled{opacity:.5;cursor:default}
+  .form-msg{font-size:.8rem;min-height:1em}
+  .form-msg.err{color:var(--red)}
+  .form-msg.ok{color:var(--green)}
+
+  /* ── Add ASIN (BSR panel) ── */
+  .add-form{display:flex;gap:.7rem;flex-wrap:wrap;align-items:flex-end}
+  .add-form .form-group{margin:0;flex:1;min-width:140px}
+  .btn-add{background:var(--accent);color:#000;border:none;padding:.6rem 1.4rem;border-radius:8px;font-weight:700;font-size:.85rem;cursor:pointer;white-space:nowrap}
+  .btn-add:hover{background:#e68a00}
+
+  /* ── Chart ── */
+  .chart-placeholder{display:flex;align-items:center;justify-content:center;height:200px;color:var(--muted);font-size:.88rem}
+  canvas{max-height:260px}
+
+  /* ── Refresh button ── */
+  .btn-refresh{background:var(--accent);color:#000;border:none;padding:.5rem 1.1rem;border-radius:8px;font-weight:700;font-size:.82rem;cursor:pointer;display:inline-flex;align-items:center;gap:.4rem}
+  .btn-refresh:hover{background:#e68a00}
+  .btn-refresh:disabled{opacity:.5;cursor:default}
+  .spin{display:inline-block;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ── Progress ── */
+  .progress-wrap{padding:1rem 0}
+  .progress-bar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:.5rem}
+  .progress-bar-fill{height:100%;background:var(--accent);border-radius:2px;animation:prog 1.5s ease-in-out infinite}
+  @keyframes prog{0%{width:0%}50%{width:70%}100%{width:100%}}
+
+  /* ── Toast ── */
+  #toast{position:fixed;bottom:1.5rem;right:1.5rem;background:#1a1f36;border:1px solid var(--border);border-radius:10px;padding:.75rem 1.2rem;font-size:.85rem;color:var(--text);box-shadow:0 4px 20px rgba(0,0,0,.5);transform:translateY(80px);opacity:0;transition:.3s;z-index:999;max-width:300px}
+  #toast.show{transform:translateY(0);opacity:1}
+  #toast.success{border-color:var(--green);color:var(--green)}
+  #toast.error{border-color:var(--red);color:var(--red)}
+
+  .empty{text-align:center;padding:2.5rem;color:var(--muted);font-size:.9rem}
+  .empty .icon{font-size:2.5rem;margin-bottom:.5rem}
+  .loading{text-align:center;padding:2rem;color:var(--muted);font-size:.85rem}
+
+  @media(max-width:600px){header{padding:.8rem 1rem}.tool-panel{padding:1rem}}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ AUTH SCREEN ═══════════════ -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-logo">
+      <h1>e-<span>Solz</span></h1>
+      <p>Amazon Seller Intelligence Platform</p>
+    </div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="showAuthTab('login')">Sign In</button>
+      <button class="auth-tab" onclick="showAuthTab('signup')">Create Account</button>
+    </div>
+    <div id="tab-login">
+      <div class="form-group"><label>Email</label><input type="email" id="login-email" placeholder="seller@example.com" autocomplete="email"></div>
+      <div class="form-group"><label>Password</label><input type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password"></div>
+      <button class="btn-primary" id="btn-login" onclick="doLogin()">Sign In</button>
+      <div class="auth-error" id="login-error"></div>
+    </div>
+    <div id="tab-signup" style="display:none">
+      <div class="form-group"><label>Full Name</label><input type="text" id="signup-name" placeholder="Your Name"></div>
+      <div class="form-group"><label>Email</label><input type="email" id="signup-email" placeholder="seller@example.com" autocomplete="email"></div>
+      <div class="form-group"><label>Password</label><input type="password" id="signup-pass" placeholder="Min 8 characters" autocomplete="new-password"></div>
+      <button class="btn-primary" id="btn-signup" onclick="doSignup()">Create Account</button>
+      <div class="auth-error" id="signup-error"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════ APP SCREEN ═══════════════ -->
+<div id="app-screen">
+  <div id="sticky-top">
+  <header>
+    <div class="header-brand">
+      <h1>e-<span>Solz</span> Amazon Tools</h1>
+      <p id="status-line">Loading…</p>
+    </div>
+    <div class="header-user">
+      <span class="plan-badge plan-free" id="plan-badge">FREE</span>
+      <span id="user-email"></span>
+      <button class="btn-sm" onclick="doLogout()">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="tool-nav">
+    <button class="tnav-btn active" data-panel="bsr" onclick="showPanel(this,'bsr')">📦 BSR Tracker</button>
+    <button class="tnav-btn" data-panel="rank" onclick="showPanel(this,'rank')">🔍 Keyword Rank</button>
+    <button class="tnav-btn" data-panel="hijack" onclick="showPanel(this,'hijack')">🚨 Hijack Check</button>
+    <button class="tnav-btn" data-panel="pincode" onclick="showPanel(this,'pincode')">📍 Pincode Check</button>
+    <button class="tnav-btn" id="admin-nav-btn" style="display:none" data-panel="admin" onclick="showPanel(this,'admin')">👑 Admin</button>
+  </div>
+  </div><!-- /#sticky-top -->
+
+  <!-- ══ PANEL: BSR TRACKER ══ -->
+  <div class="tool-panel active" id="panel-bsr">
+    <div class="kpi-row">
+      <div class="kpi"><div class="kpi-label">Tracked ASINs</div><div class="kpi-val" id="kpi-asins">—</div></div>
+      <div class="kpi"><div class="kpi-label">Best Rank</div><div class="kpi-val" id="kpi-best">—</div><div class="kpi-sub" id="kpi-best-cat"></div></div>
+      <div class="kpi"><div class="kpi-label">Worst Rank</div><div class="kpi-val" id="kpi-worst">—</div><div class="kpi-sub" id="kpi-worst-cat"></div></div>
+      <div class="kpi"><div class="kpi-label">Last Scraped</div><div class="kpi-val" style="font-size:1rem" id="kpi-last">—</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📦 BSR Overview</span>
+        <button class="btn-refresh" id="btn-refresh" onclick="triggerRefresh()"><span id="refresh-icon">↻</span> Refresh BSR</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ASIN</th><th>Label</th><th>Main Rank</th><th>Main Category</th><th>Best Sub-Rank</th><th>Sub-Category</th><th>Last Updated</th><th></th></tr></thead>
+          <tbody id="bsr-tbody"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📈 BSR Trend — <span id="chart-asin-label">select an ASIN</span></span>
+        <select id="chart-days" onchange="loadChart()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:.3rem .6rem;border-radius:6px;font-size:.8rem">
+          <option value="7">7 days</option><option value="30" selected>30 days</option>
+          <option value="90">90 days</option><option value="365">1 year</option>
+        </select>
+      </div>
+      <div id="chart-area"><div class="chart-placeholder">Click a row above to see its BSR trend</div></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">➕ Track New ASIN</span></div>
+      <div class="add-form">
+        <div class="form-group"><label>ASIN</label><input type="text" id="new-asin" placeholder="B0BN5NZCGH" maxlength="10" style="text-transform:uppercase"></div>
+        <div class="form-group"><label>Label</label><input type="text" id="new-label" placeholder="Product name / SKU"></div>
+        <div class="form-group"><label>Marketplace</label>
+          <select id="new-marketplace">
+            <option value="IN">🇮🇳 Amazon India</option><option value="US">🇺🇸 Amazon US</option>
+            <option value="UK">🇬🇧 Amazon UK</option><option value="DE">🇩🇪 Amazon DE</option>
+          </select>
+        </div>
+        <button class="btn-add" onclick="addAsin()">Add ASIN</button>
+      </div>
+      <div class="form-msg" id="add-msg"></div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: KEYWORD RANK ══ -->
+  <div class="tool-panel" id="panel-rank">
+    <div class="card">
+      <div class="card-header"><span class="card-title">🔍 Keyword Rank Checker</span></div>
+      <div class="tool-form">
+        <div class="form-row-flex">
+          <div class="form-group">
+            <label>Marketplace</label>
+            <select id="rank-marketplace"><option value="IN">🇮🇳 Amazon India</option><option value="US">🇺🇸 Amazon US</option></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Keyword + ASIN pairs — one per line: <code>keyword,ASIN</code></label>
+          <textarea id="rank-pairs" placeholder="shelf liner kitchen,B0BN5NZCGH&#10;anti slip mat,B0BN5NZCGH"></textarea>
+          <div class="hint">Max 20 pairs · Scans first 7 search pages</div>
+        </div>
+        <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+          <button class="btn-run" id="btn-rank" onclick="runRank()"><span id="rank-icon">▶</span> Check Ranks</button>
+          <span class="form-msg" id="rank-msg"></span>
+        </div>
+        <div id="rank-progress" style="display:none" class="progress-wrap"><div class="progress-bar"><div class="progress-bar-fill"></div></div><div style="color:var(--muted);font-size:.82rem">Scanning search results… 1–2 min per keyword.</div></div>
+      </div>
+    </div>
+    <div class="card" id="rank-results-card" style="display:none">
+      <div class="card-header"><span class="card-title">Results</span><button class="btn-sm" onclick="downloadCSV('rank')">⬇ Download CSV</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Keyword</th><th>ASIN</th><th>Found</th><th>Page</th><th>Position</th><th>Type</th><th>Checked At</th></tr></thead>
+          <tbody id="rank-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: HIJACK CHECK ══ -->
+  <div class="tool-panel" id="panel-hijack">
+    <div class="card">
+      <div class="card-header"><span class="card-title">🚨 Hijacker / Offer Checker</span></div>
+      <div class="tool-form">
+        <div class="form-row-flex">
+          <div class="form-group">
+            <label>Marketplace</label>
+            <select id="hijack-marketplace"><option value="IN">🇮🇳 Amazon India</option><option value="US">🇺🇸 Amazon US</option></select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>ASINs — one per line: <code>ASIN</code> or <code>ASIN,Your Seller Name</code></label>
+          <textarea id="hijack-items" placeholder="B0BN5NZCGH,My Brand Store&#10;B0EXAMPLE1"></textarea>
+          <div class="hint">Max 10 ASINs · Provide your seller name to flag unauthorized sellers</div>
+        </div>
+        <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+          <button class="btn-run" id="btn-hijack" onclick="runHijack()"><span id="hijack-icon">▶</span> Check Offers</button>
+          <span class="form-msg" id="hijack-msg"></span>
+        </div>
+        <div id="hijack-progress" style="display:none" class="progress-wrap"><div class="progress-bar"><div class="progress-bar-fill"></div></div><div style="color:var(--muted);font-size:.82rem">Fetching offer listings… please wait.</div></div>
+      </div>
+    </div>
+    <div class="card" id="hijack-results-card" style="display:none">
+      <div class="card-header"><span class="card-title">Results</span><button class="btn-sm" onclick="downloadCSV('hijack')">⬇ Download CSV</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ASIN</th><th>Seller</th><th>Seller ID</th><th>Price</th><th>Fulfillment</th><th>Delivery</th><th>Status</th></tr></thead>
+          <tbody id="hijack-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: PINCODE CHECK ══ -->
+  <div class="tool-panel" id="panel-pincode">
+    <div class="card">
+      <div class="card-header"><span class="card-title">📍 Pincode Availability Checker</span></div>
+      <div class="tool-form">
+        <div class="form-row-flex">
+          <div class="form-group">
+            <label>ASINs (one per line)</label>
+            <textarea id="pin-asins" placeholder="B0BN5NZCGH&#10;B0EXAMPLE1" style="min-height:80px"></textarea>
+          </div>
+          <div class="form-group">
+            <label>Pincodes (one per line)</label>
+            <textarea id="pin-pincodes" placeholder="110001&#10;400001&#10;560001" style="min-height:80px"></textarea>
+          </div>
+        </div>
+        <div class="hint">Max 10 ASINs × 10 pincodes · Amazon India only</div>
+        <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+          <button class="btn-run" id="btn-pincode" onclick="runPincode()"><span id="pincode-icon">▶</span> Check Availability</button>
+          <span class="form-msg" id="pincode-msg"></span>
+        </div>
+        <div id="pincode-progress" style="display:none" class="progress-wrap"><div class="progress-bar"><div class="progress-bar-fill"></div></div><div style="color:var(--muted);font-size:.82rem">Checking pincodes… may take 2–4 min.</div></div>
+      </div>
+    </div>
+    <div class="card" id="pincode-results-card" style="display:none">
+      <div class="card-header"><span class="card-title">Results</span><button class="btn-sm" onclick="downloadCSV('pincode')">⬇ Download CSV</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ASIN</th><th>Pincode</th><th>Title</th><th>Buyable</th><th>Fulfillment</th><th>Delivery</th><th>Delivery Detail</th><th>Status</th></tr></thead>
+          <tbody id="pincode-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ PANEL: ADMIN ══ -->
+  <div class="tool-panel" id="panel-admin">
+    <!-- KPI row -->
+    <div class="kpi-row" id="admin-kpis">
+      <div class="kpi"><div class="kpi-label">Total Users</div><div class="kpi-val" id="akpi-users">—</div></div>
+      <div class="kpi"><div class="kpi-label">Active Users</div><div class="kpi-val" id="akpi-active">—</div></div>
+      <div class="kpi"><div class="kpi-label">ASINs Tracked</div><div class="kpi-val" id="akpi-asins">—</div></div>
+      <div class="kpi"><div class="kpi-label">Total Tool Runs</div><div class="kpi-val" id="akpi-runs">—</div></div>
+      <div class="kpi"><div class="kpi-label">Runs Today</div><div class="kpi-val" id="akpi-today">—</div></div>
+    </div>
+    <!-- Plan distribution -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">📊 Plan Distribution</span></div>
+      <div id="plan-dist" style="display:flex;gap:1rem;flex-wrap:wrap;padding:.3rem 0"></div>
+    </div>
+    <!-- Daily chart -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📈 Daily Tool Runs</span>
+        <select id="admin-chart-days" onchange="loadAdminChart()" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:.3rem .6rem;border-radius:6px;font-size:.8rem">
+          <option value="14">14 days</option><option value="30" selected>30 days</option><option value="90">90 days</option>
+        </select>
+      </div>
+      <canvas id="admin-chart" style="max-height:220px"></canvas>
+    </div>
+    <!-- Users table -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">👥 All Users</span>
+        <button class="btn-sm" onclick="loadAdminData()">↻ Refresh</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Email</th><th>Name</th><th>Plan</th><th>ASINs</th><th>Joined</th><th>Last Active</th><th>Status</th></tr></thead>
+          <tbody id="admin-users-tbody"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <!-- Usage table -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🔧 Tool Usage (last 30 days)</span>
+        <button class="btn-sm" onclick="downloadCSV('usage')">⬇ Download CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Email</th><th>Plan</th><th>Tool</th><th>Runs</th><th>Total Inputs</th></tr></thead>
+          <tbody id="admin-usage-tbody"><tr><td colspan="5" class="loading">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const API = '';
+let token = localStorage.getItem('esolz_token') || '';
+let currentUser = null;
+let selectedAsinId = null;
+let bsrChart = null;
+const _results = {rank: [], hijack: [], pincode: []};
+
+// Boot
+(async () => {
+  if (token) {
+    try { currentUser = await apiFetch('/api/v1/auth/me'); showApp(); }
+    catch { token = ''; localStorage.removeItem('esolz_token'); showAuth(); }
+  } else { showAuth(); }
+})();
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+function showAuth() {
+  document.getElementById('auth-screen').style.display = 'flex';
+  document.getElementById('app-screen').style.display = 'none';
+}
+function showApp() {
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('app-screen').style.display = 'flex';
+  document.getElementById('user-email').textContent = currentUser.email;
+  const b = document.getElementById('plan-badge');
+  b.textContent = currentUser.plan.toUpperCase();
+  b.className = 'plan-badge plan-' + currentUser.plan;
+  // Show admin tab only for admin user
+  const adminBtn = el('admin-nav-btn');
+  if (adminBtn) adminBtn.style.display = currentUser.is_admin ? '' : 'none';
+  loadDashboard();
+}
+function showAuthTab(tab) {
+  document.getElementById('tab-login').style.display = tab === 'login' ? '' : 'none';
+  document.getElementById('tab-signup').style.display = tab === 'signup' ? '' : 'none';
+  document.querySelectorAll('.auth-tab').forEach((t,i) => t.classList.toggle('active', (i===0) === (tab==='login')));
+}
+async function doLogin() {
+  const email = v('login-email'), pass = v('login-pass');
+  const btn = el('btn-login'), err = el('login-error');
+  err.textContent = '';
+  if (!email || !pass) { err.textContent = 'Please fill in all fields.'; return; }
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  try {
+    const res = await apiFetch('/api/v1/auth/login', 'POST', {email, password: pass});
+    token = res.access_token; localStorage.setItem('esolz_token', token);
+    currentUser = await apiFetch('/api/v1/auth/me'); showApp();
+  } catch (e) { err.textContent = e.message || 'Invalid credentials.'; }
+  finally { btn.disabled = false; btn.textContent = 'Sign In'; }
+}
+async function doSignup() {
+  const name = v('signup-name'), email = v('signup-email'), pass = v('signup-pass');
+  const btn = el('btn-signup'), err = el('signup-error');
+  err.textContent = '';
+  if (!name || !email || !pass) { err.textContent = 'Please fill in all fields.'; return; }
+  if (pass.length < 8) { err.textContent = 'Password must be at least 8 characters.'; return; }
+  btn.disabled = true; btn.textContent = 'Creating account…';
+  try {
+    await apiFetch('/api/v1/auth/signup', 'POST', {full_name: name, email, password: pass});
+    const res = await apiFetch('/api/v1/auth/login', 'POST', {email, password: pass});
+    token = res.access_token; localStorage.setItem('esolz_token', token);
+    currentUser = await apiFetch('/api/v1/auth/me'); showApp();
+  } catch (e) { err.textContent = e.message || 'Signup failed.'; }
+  finally { btn.disabled = false; btn.textContent = 'Create Account'; }
+}
+function doLogout() {
+  token = ''; localStorage.removeItem('esolz_token');
+  currentUser = null; selectedAsinId = null; showAuth();
+}
+
+// ── Panel navigation ─────────────────────────────────────────────────────
+function showPanel(btn, name) {
+  document.querySelectorAll('.tool-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tnav-btn').forEach(b => b.classList.remove('active'));
+  el('panel-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'admin') loadAdminData();
+}
+
+// ── BSR Dashboard ────────────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const s = await apiFetch('/api/v1/bsr/summary');
+    renderBsrTable(s); renderKpis(s);
+    el('status-line').textContent = 'Last loaded: ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    el('bsr-tbody').innerHTML = '<tr><td colspan="8"><div class="empty"><div class="icon">⚠️</div>' + esc(e.message) + '</div></td></tr>';
+  }
+}
+function renderKpis(s) {
+  el('kpi-asins').textContent = s.length;
+  const ranked = s.filter(r => r.bsr_rank != null).sort((a,b) => a.bsr_rank - b.bsr_rank);
+  if (ranked.length) {
+    el('kpi-best').textContent = '#' + ranked[0].bsr_rank.toLocaleString('en-IN');
+    el('kpi-best-cat').textContent = ranked[0].category || '';
+    el('kpi-worst').textContent = '#' + ranked[ranked.length-1].bsr_rank.toLocaleString('en-IN');
+    el('kpi-worst-cat').textContent = ranked[ranked.length-1].category || '';
+  } else { el('kpi-best').textContent = el('kpi-worst').textContent = '—'; }
+  const latest = s.filter(r=>r.captured_at).sort((a,b)=>new Date(b.captured_at)-new Date(a.captured_at))[0];
+  el('kpi-last').textContent = latest ? timeAgo(latest.captured_at) : 'Never';
+}
+function renderBsrTable(s) {
+  if (!s.length) { el('bsr-tbody').innerHTML = '<tr><td colspan="8"><div class="empty"><div class="icon">📦</div>No ASINs tracked yet. Add one below.</div></td></tr>'; return; }
+  el('bsr-tbody').innerHTML = s.map(r => `
+    <tr class="clickable-row" onclick="selectAsin('${r.asin_id}','${esc(r.label||r.asin)}')" id="row-${r.asin_id}" ${selectedAsinId===r.asin_id?'style="background:#1e2838"':''}}>
+      <td><span class="asin-code">${r.asin}</span></td>
+      <td>${esc(r.label||'—')}</td>
+      <td><b>${r.bsr_rank?'#'+r.bsr_rank.toLocaleString('en-IN'):'—'}</b></td>
+      <td><span class="ts">${r.category||'—'}</span></td>
+      <td><b style="color:#4ade80">${r.sub_rank?'#'+r.sub_rank.toLocaleString('en-IN'):'—'}</b></td>
+      <td><span class="ts">${r.sub_category||'—'}</span></td>
+      <td><span class="ts">${r.captured_at?timeAgo(r.captured_at):'Never'}</span></td>
+      <td><button class="btn-icon" onclick="removeAsin(event,'${r.asin_id}')">🗑</button></td>
+    </tr>`).join('');
+}
+function selectAsin(id, label) {
+  selectedAsinId = id;
+  document.querySelectorAll('#bsr-tbody tr').forEach(r => r.style.background = '');
+  const row = el('row-' + id);
+  if (row) row.style.background = '#1e2838';
+  el('chart-asin-label').textContent = label;
+  loadChart();
+}
+async function loadChart() {
+  if (!selectedAsinId) return;
+  const days = el('chart-days').value;
+  const area = el('chart-area');
+  area.innerHTML = '<div class="loading">Loading chart…</div>';
+  try {
+    const data = await apiFetch(`/api/v1/bsr/${selectedAsinId}?days=${days}`);
+    if (!data.data?.length) { area.innerHTML = '<div class="chart-placeholder">No history data for this period</div>'; return; }
+    area.innerHTML = '<canvas id="bsr-chart"></canvas>';
+    if (bsrChart) bsrChart.destroy();
+    bsrChart = new Chart(el('bsr-chart').getContext('2d'), {
+      type: 'line',
+      data: {
+        labels: data.data.map(d => fmtDate(d.captured_at)),
+        datasets: [{label:'BSR Rank',data:data.data.map(d=>d.bsr_rank),borderColor:'#ff9900',
+          backgroundColor:'rgba(255,153,0,.08)',pointBackgroundColor:'#ff9900',
+          pointRadius:data.data.length>60?0:4,fill:true,tension:.3,borderWidth:2}]
+      },
+      options:{responsive:true,maintainAspectRatio:true,interaction:{intersect:false,mode:'index'},
+        scales:{y:{reverse:true,grid:{color:'#2a3050'},ticks:{color:'#8892a4',callback:v=>'#'+v.toLocaleString('en-IN')}},
+          x:{grid:{color:'#1e2440'},ticks:{color:'#8892a4',maxRotation:45,autoSkipPadding:20}}},
+        plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a1f36',borderColor:'#2a3050',borderWidth:1,
+          titleColor:'#e0e0e0',bodyColor:'#ff9900',callbacks:{label:c=>' #'+(c.parsed.y||0).toLocaleString('en-IN')}}}}
+    });
+  } catch { area.innerHTML = '<div class="chart-placeholder">Failed to load chart</div>'; }
+}
+async function addAsin() {
+  const asin = v('new-asin').toUpperCase(), label = v('new-label'), mkt = v('new-marketplace');
+  const msg = el('add-msg');
+  if (!asin) { setMsg(msg,'ASIN is required.','err'); return; }
+  if (asin.length !== 10) { setMsg(msg,'ASIN must be 10 characters.','err'); return; }
+  try {
+    await apiFetch('/api/v1/asins','POST',{asin,label:label||asin,marketplace:mkt});
+    el('new-asin').value = ''; el('new-label').value = '';
+    setMsg(msg, asin + ' added!', 'ok'); loadDashboard();
+    toast('ASIN added — click Refresh BSR to fetch its rank.','success');
+  } catch(e){ setMsg(msg, e.message||'Failed.','err'); }
+}
+async function removeAsin(evt, id) {
+  evt.stopPropagation();
+  try {
+    await apiFetch('/api/v1/asins/'+id,'DELETE');
+    if (selectedAsinId === id) { selectedAsinId = null; el('chart-area').innerHTML = '<div class="chart-placeholder">Click a row above to see its BSR trend</div>'; }
+    loadDashboard(); toast('ASIN removed.','success');
+  } catch(e){ toast(e.message||'Failed.','error'); }
+}
+async function triggerRefresh() {
+  const btn = el('btn-refresh'), icon = el('refresh-icon');
+  btn.disabled = true; icon.classList.add('spin');
+  try {
+    await apiFetch('/api/v1/bsr/refresh','POST');
+    toast('BSR scrape queued! Results appear in ~30–60s.','success');
+    setTimeout(()=>{ loadDashboard(); btn.disabled=false; icon.classList.remove('spin'); }, 40000);
+  } catch(e){ toast(e.message||'Refresh failed.','error'); btn.disabled=false; icon.classList.remove('spin'); }
+}
+
+// ── Generic tool runner ───────────────────────────────────────────────────
+async function runTool(toolId, endpoint, body, renderFn) {
+  const btn = el('btn-'+toolId), icon = el(toolId+'-icon');
+  const msg = el(toolId+'-msg'), prog = el(toolId+'-progress'), resCard = el(toolId+'-results-card');
+  msg.textContent = ''; msg.className = 'form-msg';
+  btn.disabled = true; icon.textContent = '⏳';
+  prog.style.display = ''; if (resCard) resCard.style.display = 'none';
+  try {
+    const {task_id} = await apiFetch(endpoint,'POST',body);
+    const result = await pollResult(task_id, 300);
+    _results[toolId] = result;
+    renderFn(result);
+    if (resCard) resCard.style.display = '';
+    toast('Done! ' + result.length + ' result(s).','success');
+  } catch(e){
+    setMsg(msg, e.message||'Failed.','err');
+    toast(e.message||'Tool failed.','error');
+  } finally {
+    btn.disabled = false; icon.textContent = '▶';
+    prog.style.display = 'none';
+  }
+}
+async function pollResult(task_id, maxSec) {
+  const deadline = Date.now() + maxSec * 1000;
+  while (Date.now() < deadline) {
+    await sleep(4000);
+    const r = await apiFetch('/api/v1/tools/result/'+task_id);
+    if (r.state === 'SUCCESS') return r.result;
+    if (r.state === 'FAILURE') throw new Error(r.error || 'Task failed');
+  }
+  throw new Error('Timed out waiting for results.');
+}
+
+// ── Keyword Rank ──────────────────────────────────────────────────────────
+function runRank() {
+  const lines = v('rank-pairs').split('\n').filter(Boolean);
+  const mkt = v('rank-marketplace');
+  const pairs = lines.map(l => { const p = l.split(','); return p.length>=2 ? {keyword:p[0].trim(), asin:p.slice(1).join(',').trim().toUpperCase()} : null; }).filter(Boolean);
+  if (!pairs.length) { setMsg(el('rank-msg'),'No valid keyword,ASIN pairs.','err'); return; }
+  runTool('rank','/api/v1/tools/rank',{pairs,marketplace:mkt},renderRankResults);
+}
+function renderRankResults(rows) {
+  el('rank-tbody').innerHTML = rows.map(r => `<tr>
+    <td>${esc(r.keyword)}</td><td><span class="asin-code">${r.asin}</span></td>
+    <td>${r.found?'<span class="badge badge-ok">✓ Found</span>':'<span class="badge badge-err">✗ Not Found</span>'}</td>
+    <td>${r.page||'—'}</td><td>${r.position||'—'}</td>
+    <td>${r.is_sponsored?'<span class="badge badge-warn">Sponsored</span>':'<span class="badge badge-ok">Organic</span>'}</td>
+    <td class="ts">${r.checked_at||''}</td>
+  </tr>`).join('');
+}
+
+// ── Hijack Check ──────────────────────────────────────────────────────────
+function runHijack() {
+  const lines = v('hijack-items').split('\n').filter(Boolean);
+  const mkt = v('hijack-marketplace');
+  const items = lines.map(l => { const p = l.split(','); return p[0].trim()?{asin:p[0].trim().toUpperCase(),authorized_seller:(p[1]||'').trim()}:null; }).filter(Boolean);
+  if (!items.length) { setMsg(el('hijack-msg'),'No valid ASINs.','err'); return; }
+  runTool('hijack','/api/v1/tools/hijack',{items,marketplace:mkt},renderHijackResults);
+}
+function renderHijackResults(rows) {
+  el('hijack-tbody').innerHTML = rows.map(r => {
+    const sc = r.status==='OK'?'badge-ok':r.status==='UNAUTHORIZED'?'badge-err':'badge-warn';
+    return `<tr>
+      <td><span class="asin-code">${r.asin}</span></td>
+      <td>${esc(r.seller||'—')}</td><td class="ts">${r.seller_id||'—'}</td>
+      <td>${r.price||'—'}</td>
+      <td>${r.fulfillment?`<span class="badge badge-${r.fulfillment==='FBA'?'fba':'fbm'}">${r.fulfillment}</span>`:'—'}</td>
+      <td class="ts">${esc(r.delivery||'—')}</td>
+      <td><span class="badge ${sc}">${r.status}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Pincode Check ─────────────────────────────────────────────────────────
+function runPincode() {
+  const asins = v('pin-asins').split('\n').map(s=>s.trim().toUpperCase()).filter(Boolean);
+  const pincodes = v('pin-pincodes').split('\n').map(s=>s.trim()).filter(Boolean);
+  if (!asins.length || !pincodes.length) { setMsg(el('pincode-msg'),'Enter at least one ASIN and one pincode.','err'); return; }
+  runTool('pincode','/api/v1/tools/pincode',{asins,pincodes},renderPincodeResults);
+}
+function renderPincodeResults(rows) {
+  el('pincode-tbody').innerHTML = rows.map(r => {
+    const buyBadge = r.is_buyable?'<span class="badge badge-ok">✓ Available</span>':'<span class="badge badge-err">✗ N/A</span>';
+    const fbaB = r.amazon_fulfilled?'<span class="badge badge-fba">FBA</span>':'<span class="badge badge-fbm">FBM</span>';
+    const delB = {same_day:'<span class="badge badge-ok">Same Day</span>',next_day:'<span class="badge badge-ok">Next Day</span>',two_day:'<span class="badge badge-warn">2-Day</span>',other:'<span class="badge badge-warn">Standard</span>',unavailable:'<span class="badge badge-err">N/A</span>',unknown:'—'}[r.delivery_type]||'—';
+    return `<tr>
+      <td><span class="asin-code">${r.asin}</span></td>
+      <td>${r.pincode}</td><td class="ts">${esc(r.title||'—')}</td>
+      <td>${buyBadge}</td><td>${fbaB}</td><td>${delB}</td>
+      <td class="ts">${esc(r.delivery_text||'—')}</td>
+      <td><span class="badge ${r.status==='OK'?'badge-ok':'badge-err'}">${r.status}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ── CSV Download ──────────────────────────────────────────────────────────
+function downloadCSV(tool) {
+  const rows = _results[tool];
+  if (!rows?.length) { toast('No results to download.','error'); return; }
+  const keys = Object.keys(rows[0]);
+  const csv = [keys.join(','), ...rows.map(r => keys.map(k => JSON.stringify(r[k]??'')).join(','))].join('\n');
+  const a = Object.assign(document.createElement('a'), {href: URL.createObjectURL(new Blob([csv],{type:'text/csv'})), download:`esolz-${tool}-${new Date().toISOString().slice(0,10)}.csv`});
+  a.click();
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────
+async function apiFetch(path, method='GET', body=null) {
+  const opts = {method, headers:{'Content-Type':'application/json'}};
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  if (!res.ok) {
+    let msg = 'Error ' + res.status;
+    try { const j = await res.json(); msg = j.detail || JSON.stringify(j); } catch {}
+    throw new Error(msg);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+function toast(msg, type='') {
+  const t = el('toast'); t.textContent = msg; t.className = 'show ' + type;
+  clearTimeout(t._t); t._t = setTimeout(()=>{ t.className=''; }, 4500);
+}
+function timeAgo(iso) {
+  const d = new Date(iso + (iso.endsWith('Z')?'':'Z')), diff = (Date.now()-d)/1000;
+  if (diff<60) return 'just now'; if (diff<3600) return Math.floor(diff/60)+'m ago';
+  if (diff<86400) return Math.floor(diff/3600)+'h ago'; return Math.floor(diff/86400)+'d ago';
+}
+function fmtDate(iso) { const d = new Date(iso+(iso.endsWith('Z')?'':'Z')); return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'}); }
+function esc(s) { return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function el(id) { return document.getElementById(id); }
+function v(id) { return (el(id).value||'').trim(); }
+function setMsg(el, txt, cls) { el.textContent = txt; el.className = 'form-msg ' + (cls||''); }
+function sleep(ms) { return new Promise(r=>setTimeout(r,ms)); }
+
+document.addEventListener('keydown', e => {
+  if (e.key==='Enter' && el('auth-screen').style.display!=='none') {
+    el('tab-login').style.display!=='none' ? doLogin() : doSignup();
+  }
+});
+
+// ── Admin panel ───────────────────────────────────────────────────────────
+let adminChart = null;
+async function loadAdminData() {
+  const [stats, users, usage] = await Promise.all([
+    apiFetch('/api/v1/admin/stats'),
+    apiFetch('/api/v1/admin/users'),
+    apiFetch('/api/v1/admin/usage?days=30'),
+  ]);
+  // KPIs
+  el('akpi-users').textContent  = stats.total_users;
+  el('akpi-active').textContent = stats.active_users;
+  el('akpi-asins').textContent  = stats.total_asins;
+  el('akpi-runs').textContent   = stats.total_tool_runs;
+  el('akpi-today').textContent  = stats.runs_today;
+  // Plan distribution
+  const planColors = {free:'#60a5fa',starter:'#4ade80',growth:'#fb923c',pro:'#c084fc',agency:'#f472b6'};
+  el('plan-dist').innerHTML = Object.entries(stats.plan_distribution).map(([p,n]) =>
+    `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.6rem 1rem;min-width:90px;text-align:center">
+       <div style="font-size:1.4rem;font-weight:800;color:${planColors[p]||'#fff'}">${n}</div>
+       <div style="font-size:.72rem;color:var(--muted);text-transform:uppercase;margin-top:.2rem">${p}</div>
+     </div>`).join('');
+  // Users table
+  el('admin-users-tbody').innerHTML = users.map(u => `<tr>
+    <td>${esc(u.email)}</td>
+    <td class="ts">${esc(u.full_name||'—')}</td>
+    <td><span class="badge plan-${u.plan}" style="padding:.2rem .55rem;border-radius:4px;font-size:.7rem;font-weight:700">${u.plan.toUpperCase()}</span></td>
+    <td>${u.asins_tracked}</td>
+    <td class="ts">${fmtDate(u.joined_at)}</td>
+    <td class="ts">${u.last_active?timeAgo(u.last_active):'Never'}</td>
+    <td>${u.is_active?'<span class="badge badge-ok">Active</span>':'<span class="badge badge-err">Disabled</span>'}</td>
+  </tr>`).join('');
+  // Usage table
+  _results['usage'] = usage;
+  el('admin-usage-tbody').innerHTML = usage.map(r => `<tr>
+    <td class="ts">${esc(r.email)}</td>
+    <td><span class="badge plan-${r.plan}" style="padding:.2rem .55rem;border-radius:4px;font-size:.7rem;font-weight:700">${r.plan.toUpperCase()}</span></td>
+    <td><b>${r.tool}</b></td>
+    <td>${r.runs}</td>
+    <td>${r.total_inputs}</td>
+  </tr>`).join('');
+  // Chart
+  loadAdminChart();
+}
+async function loadAdminChart() {
+  const days = el('admin-chart-days').value;
+  const rows = await apiFetch('/api/v1/admin/usage/daily?days='+days);
+  // Build date series + per-tool datasets
+  const allDates = [...new Set(rows.map(r=>r.day))].sort();
+  const tools = [...new Set(rows.map(r=>r.tool))];
+  const toolColors = {rank:'#3b82f6',hijack:'#ef4444',pincode:'#10b981',bsr_refresh:'#ff9900'};
+  const datasets = tools.map(t => ({
+    label: t,
+    data: allDates.map(d => { const r = rows.find(x=>x.day===d&&x.tool===t); return r?r.runs:0; }),
+    borderColor: toolColors[t]||'#a78bfa', backgroundColor: (toolColors[t]||'#a78bfa')+'33',
+    fill: true, tension: .3, borderWidth: 2, pointRadius: 3,
+  }));
+  if (adminChart) adminChart.destroy();
+  adminChart = new Chart(el('admin-chart').getContext('2d'), {
+    type: 'line',
+    data: {labels: allDates, datasets},
+    options: {responsive:true,maintainAspectRatio:true,
+      scales:{y:{grid:{color:'#2a3050'},ticks:{color:'#8892a4'}},x:{grid:{color:'#1e2440'},ticks:{color:'#8892a4',maxRotation:45,autoSkipPadding:15}}},
+      plugins:{legend:{labels:{color:'#e0e0e0',boxWidth:12}},tooltip:{backgroundColor:'#1a1f36',borderColor:'#2a3050',borderWidth:1,titleColor:'#e0e0e0',bodyColor:'#e0e0e0'}}}
+  });
+}
+
+</script>
+</body>
+</html>

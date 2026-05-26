@@ -1,0 +1,124 @@
+======================================================================
+  EMOUNT VENTURES — DAILY AMAZON DASHBOARD
+  Generated: 2026-05-14 14:21 IST
+  Data through: 2026-05-13
+======================================================================
+
+──────────────────────────────────────────────────────────────────────
+  1. SALES SNAPSHOT (Yesterday vs 7-Day Avg)
+──────────────────────────────────────────────────────────────────────
+  Revenue (yesterday):  ₹0  ▲ 0% vs 7d avg (₹0/day)
+  Units sold:           0  ▲ 0% vs 7d avg (0/day)
+  Order lines:          0
+  Avg order value:      ₹0
+
+  30-Day Total:         ₹0 revenue | 0 units
+
+──────────────────────────────────────────────────────────────────────
+  2. ORDER STATUS MIX (Yesterday)
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  3. TOP 10 ASINs BY REVENUE (Yesterday)
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  4. FBA INVENTORY HEALTH
+──────────────────────────────────────────────────────────────────────
+  Total SKUs:       238
+  In Stock:         210  |  Out of Stock: 28
+  Available Units:  16,018
+  Inbound Units:    799
+
+  ⚠️  LOW STOCK ALERTS (25 SKUs ≤ 10 units):
+     EH_Baby_Play_Mat_R                1 units  EASY HOME Reversible Baby Play Mat, Extr
+     SB_Orange&Navy Blue_33Ltrs_PO1    1 units  EASY HOME 33 litre Under bed Storage Bag
+     LIL_EVA_Blue_Grey_White_PO9       2 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Red_Green_Blue_PO9        3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Orange_Sea_Green_Navy_PO9    3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Brown&Beige_PO9           3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Yellow_Sea_Green_Purple_PO9    3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     EH_Black&Grey_EVA_24mm_PO16       4 units  EASY HOME Gym Mats for Floor for Home an
+     EH_SelfAdv_Corner_P2              4 units  EASY HOME Self Adhesive Bathroom Corner 
+     eva_mats_Grey_25mm_PO16           4 units  EASY HOME Interlocking Floor Gym Mats fo
+     EH_Tower_Black_10x14_PO2          5 units  EASY HOME Tower Planter Pot, 10 inches, 
+     EH_Tower_White_Stonex_10x14_PO2    5 units  EASY HOME Stone Textured Tower Planter P
+     SB_Orange & Navy Blue_70Ltrs_PO2    6 units  EASY HOME 70 litre Under bed Storage Bag
+     EH_Black&Grey_EVA_24mm_PO12       6 units  EASY HOME Gym Mats for Floor for Home an
+     eva_mats_Grey_25mm_PO12           6 units  EASY HOME Interlocking Floor Gym Mats fo
+
+  🔴 OUT OF STOCK (28 SKUs):
+     54-Y94B-A1SC                    EASY HOME Water Tank Cover  
+     Baby_Play_Mat                   EASY HOME Reversible Baby Play Mat, Extra Lar  
+     EH_ASM_Cutlery_45x5             EASY HOME Multipurpose EVA Anti-Slip Mat (45c  
+     EH_ASM_WD_45cm x 10mtr          EASY HOME Multipurpose EVA Anti-Slip Mat (45c  
+     EH_ASM_WD_45cm x 5mtr           EASY HOME Multipurpose EVA Anti-Slip Mat (45c  
+     EH_BOC_4x5_Maroon_P1            EASY HOME Thermal Insulated 100% Room Darkeni  
+     EH_Tower_Beige_Stonex_10x14_PO2  EASY HOME Stone Textured Tower Planter Pot, 1  
+     EH_Tower_Black_10x14_PO4        EASY HOME Tower Planter Pot, 10 inches, Pack   
+     EH_Tower_Black_8x11_PO2         EASY HOME Tower Planter Pot, 8 inches, Pack o  
+     EH_Tower_Black_8x11_PO4         EASY HOME Tower Planter Pot, 8 inches, Pack o  
+     EH_Tower_White_Stonex_10x14_PO4  EASY HOME Stone Textured Tower Planter Pot, 1  
+     EH_Tower_White_Stonex_8x11_PO2  EASY HOME Stone Textured Tower Planter Pot, 8  
+     SB_Black&Grey_33Ltrs_PO1        EASY HOME 33 litre Under bed Storage Bags for  
+     SB_Black&Grey_33Ltrs_PO2        EASY HOME 33 litre Under bed Storage Bags for  
+     SB_Black&Grey_33Ltrs_PO4        EASY HOME 33 litre Under bed Storage Bags for  
+
+──────────────────────────────────────────────────────────────────────
+  5. ADS PERFORMANCE (Latest Period)
+──────────────────────────────────────────────────────────────────────
+  Ad Spend:      ₹129,254
+  Ad Sales:      ₹824,559
+  ROAS:          6.38x
+  ACoS:          15.7%
+  Impressions:   1,794,277
+  Clicks:        14,022
+  CTR:           0.8%
+  CPC:           ₹9
+  CVR:           3.9%
+  Ad Orders:     547
+  Ad Units:      611
+
+  TOP 5 CAMPAIGNS (by Ad Sales):
+  Campaign                                      Spend      Sales   ROAS   ACoS
+  ──────────────────────────────────────── ────────── ────────── ────── ──────
+  SPA-EVA Kids Mat                            ₹10,044    ₹88,849   8.8x  11.3%
+  SP-PT-EVA Kids Mat- (B08JZ8SS2H Liltoe       ₹7,056    ₹73,115  10.4x   9.7%
+  SPA-Liltoes-EVA Kids Mat                     ₹3,005    ₹45,116  15.0x   6.7%
+  SP-PT-EVA Kids Mat- (Defensive)              ₹2,791    ₹42,155  15.1x   6.6%
+  SPA-EVA Gym Mat                              ₹3,295    ₹41,297  12.5x   8.0%
+
+  ⚠️  BLEEDING CAMPAIGNS (ACoS > 30%, spend > ₹500):
+     SPA-ASM-Printed                           ACoS: 305.6%  Spend: ₹1,489
+     SP-KT-ASM- *(Shelf Liners for Kitchen     ACoS: 133.7%  Spend: ₹1,071
+     SP-PT-ASM- (B0831486NM Elastpro)          ACoS: 87.9%  Spend: ₹875
+     SP-KT-Storage Bags for Clothes            ACoS: 65.1%  Spend: ₹1,178
+     SP-KT-ASM- *(Drawer Mat)                  ACoS: 58.8%  Spend: ₹1,393
+
+  🔴 ZERO-SALES CAMPAIGNS (spend > ₹200): 13 campaigns, ₹5,896 wasted
+     SPA-EVA Gym Mat (Ehk)                            ₹837 spent  149 clicks
+     SP-KT-Clothes Storage Box                        ₹680 spent  38 clicks
+     SD-VCPM-EVA Gym Mat-Defensive                    ₹609 spent  27 clicks
+     SP-KT-EVA EHK Gym Mat- (Interlocking Floor Ma    ₹597 spent  108 clicks
+     SP-KT-EVA Kids Mat- (kids mat)                   ₹513 spent  48 clicks
+
+──────────────────────────────────────────────────────────────────────
+  6. ADS vs ORGANIC SPLIT
+──────────────────────────────────────────────────────────────────────
+  Total Revenue:    ₹0
+  Ad-attributed:    ₹824,559 (0.0%)
+  Organic:          ₹0 (0.0%)
+  Blended ROAS:     0.0x
+
+──────────────────────────────────────────────────────────────────────
+  7. CATEGORY BREAKDOWN (Yesterday)
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+  8. ALERTS & ACTION ITEMS
+──────────────────────────────────────────────────────────────────────
+  ⚠️  8 campaigns with ACoS > 35% and spend > ₹1,000
+
+======================================================================
+  END OF DAILY DASHBOARD
+======================================================================

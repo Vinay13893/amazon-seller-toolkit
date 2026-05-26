@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { Bell, Search, Menu } from 'lucide-react'
 import { useRouter, usePathname } from 'next/navigation'
+import { ThemeToggle } from '@/components/ui/theme-toggle'
 
 const ROUTE_TITLES: Record<string, string> = {
   '/dashboard':           'Dashboard',
@@ -64,6 +65,7 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
         <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label="Search">
           <Search className="w-4 h-4" />
         </Button>
+        <ThemeToggle />
         <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground relative" aria-label="Notifications">
           <Bell className="w-4 h-4" />
           <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-primary rounded-full ring-1 ring-background" />

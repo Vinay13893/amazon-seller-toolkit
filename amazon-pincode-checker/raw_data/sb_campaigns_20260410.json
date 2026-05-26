@@ -1,0 +1,86 @@
+[
+  {
+    "unitsSoldClicks": 1,
+    "cost": 334.46,
+    "purchases": 1,
+    "campaignId": 138932377838775,
+    "campaignStatus": "ENABLED",
+    "clicks": 33,
+    "impressions": 4802,
+    "campaignName": "SB-Video-EVA-Gym Mats (Ehk)",
+    "campaignBudgetAmount": 120.0,
+    "sales": 3023.81
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 366.49,
+    "purchases": 0,
+    "campaignId": 56345075190328,
+    "campaignStatus": "ENABLED",
+    "clicks": 38,
+    "impressions": 8365,
+    "campaignName": "SB-Video-EVA Kids Mat",
+    "campaignBudgetAmount": 120.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 125.27,
+    "purchases": 0,
+    "campaignId": 20508703715177,
+    "campaignStatus": "ENABLED",
+    "clicks": 10,
+    "impressions": 1825,
+    "campaignName": "SB-Video-EVA-Gym Mats",
+    "campaignBudgetAmount": 120.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 6,
+    "cost": 1320.16,
+    "purchases": 3,
+    "campaignId": 42352531890054,
+    "campaignStatus": "PAUSED",
+    "clicks": 143,
+    "impressions": 8467,
+    "campaignName": "SB-Video-EVA Kids Mat-PO9",
+    "campaignBudgetAmount": 120.0,
+    "sales": 11651.41
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 524.45,
+    "purchases": 0,
+    "campaignId": 152934263674097,
+    "campaignStatus": "PAUSED",
+    "clicks": 48,
+    "impressions": 4839,
+    "campaignName": "SB-Video-BPM",
+    "campaignBudgetAmount": 200.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 34,
+    "cost": 3687.63,
+    "purchases": 26,
+    "campaignId": 310972045654203,
+    "campaignStatus": "ENABLED",
+    "clicks": 431,
+    "impressions": 39152,
+    "campaignName": "VR_SBV_Anti Slip Mat d287c2",
+    "campaignBudgetAmount": 300.0,
+    "sales": 23348.34
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 521005926914140,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SB-Video-ASM",
+    "campaignBudgetAmount": 200.0,
+    "sales": 0
+  }
+]

@@ -1,0 +1,15 @@
+[Unit]
+Description=Amazon Seller Toolkit
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/amazon-toolkit
+Environment=PATH=/opt/amazon-toolkit/venv/bin:/usr/bin
+ExecStart=/opt/amazon-toolkit/venv/bin/gunicorn app:app --bind 0.0.0.0:5000 --workers 2 --threads 4 --timeout 120
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

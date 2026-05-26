@@ -49,72 +49,108 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  /* ── Day mode — clean light SaaS theme ─────────────────────────────────── */
+  /* Surfaces */
+  --background:          oklch(0.984 0.003 265);   /* #F8FAFC slate-50         */
+  --foreground:          oklch(0.171 0.032 265);   /* #0F172A slate-900        */
+  --card:                oklch(1.000 0.000 0);     /* #FFFFFF                  */
+  --card-foreground:     oklch(0.171 0.032 265);
+  --popover:             oklch(1.000 0.000 0);
+  --popover-foreground:  oklch(0.171 0.032 265);
+
+  /* Brand accent — same orange in both modes */
+  --primary:             oklch(0.741 0.174 66.5);  /* amber-500 #F59E0B        */
+  --primary-foreground:  oklch(1.000 0.000 0);     /* white text on orange     */
+
+  /* Neutrals */
+  --secondary:           oklch(0.960 0.008 265);   /* #F1F5F9 slate-100        */
+  --secondary-foreground: oklch(0.171 0.032 265);
+  --muted:               oklch(0.960 0.008 265);
+  --muted-foreground:    oklch(0.440 0.033 265);   /* #475569 slate-600        */
+
+  /* Accent */
+  --accent:              oklch(0.960 0.008 265);
+  --accent-foreground:   oklch(0.171 0.032 265);
+
+  /* System */
+  --destructive:         oklch(0.577 0.245 27.325);
+  /* Border: slate-300 gives visible lines + workable bg-border/10 hovers    */
+  --border:              oklch(0.856 0.020 265);   /* #CBD5E1 slate-300        */
+  --input:               oklch(0.856 0.020 265);
+  --ring:                oklch(0.741 0.174 66.5);
+
+  /* Charts */
+  --chart-1:             oklch(0.741 0.174 66.5);
+  --chart-2:             oklch(0.520 0.150 168);
+  --chart-3:             oklch(0.480 0.200 264);
+  --chart-4:             oklch(0.600 0.180 300);
+  --chart-5:             oklch(0.580 0.150 30);
+
+  /* Radius */
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  /* Sidebar — white with a subtle border */
+  --sidebar:                    oklch(1.000 0.000 0);     /* #FFFFFF                  */
+  --sidebar-foreground:         oklch(0.171 0.032 265);
+  --sidebar-primary:            oklch(0.741 0.174 66.5);
+  --sidebar-primary-foreground: oklch(1.000 0.000 0);
+  --sidebar-accent:             oklch(0.960 0.008 265);   /* slate-100 hover bg       */
+  --sidebar-accent-foreground:  oklch(0.171 0.032 265);
+  --sidebar-border:             oklch(0.900 0.012 265);   /* #E2E8F0 slate-200        */
+  --sidebar-ring:               oklch(0.741 0.174 66.5);
 }
 
 .dark {
-  --background: oklch(0.108 0.015 265);
-  --foreground: oklch(0.92 0.008 265);
-  --card: oklch(0.148 0.025 265);
-  --card-foreground: oklch(0.92 0.008 265);
-  --popover: oklch(0.148 0.025 265);
-  --popover-foreground: oklch(0.92 0.008 265);
-  --primary: oklch(0.741 0.174 66.5);
-  --primary-foreground: oklch(0.10 0 0);
-  --secondary: oklch(0.210 0.030 265);
-  --secondary-foreground: oklch(0.92 0.008 265);
-  --muted: oklch(0.210 0.030 265);
-  --muted-foreground: oklch(0.60 0.025 265);
-  --accent: oklch(0.741 0.174 66.5);
-  --accent-foreground: oklch(0.10 0 0);
-  --destructive: oklch(0.628 0.221 29.2);
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.741 0.174 66.5);
-  --chart-1: oklch(0.741 0.174 66.5);
-  --chart-2: oklch(0.60 0.15 168);
-  --chart-3: oklch(0.55 0.20 264);
-  --chart-4: oklch(0.70 0.18 300);
-  --chart-5: oklch(0.65 0.15 30);
-  --sidebar: oklch(0.125 0.020 265);
-  --sidebar-foreground: oklch(0.92 0.008 265);
-  --sidebar-primary: oklch(0.741 0.174 66.5);
+  /* ── Surfaces ──────────────────────────────────────────────────────────── */
+  /* Background: #0F172A slate-900 — soft navy, not pure black               */
+  --background:          oklch(0.172 0.032 265);
+  --foreground:          oklch(0.975 0.005 265);   /* #F8FAFC — crisp white  */
+
+  /* Cards sit one level above background — visually separate                */
+  --card:                oklch(0.205 0.042 265);   /* #172033 slate-800 tone  */
+  --card-foreground:     oklch(0.975 0.005 265);
+  --popover:             oklch(0.215 0.042 265);   /* dropdowns slightly above card */
+  --popover-foreground:  oklch(0.975 0.005 265);
+
+  /* ── Brand accent ──────────────────────────────────────────────────────── */
+  --primary:             oklch(0.741 0.174 66.5);  /* amber-500 — unchanged   */
+  --primary-foreground:  oklch(0.10 0 0);
+
+  /* ── Neutrals ──────────────────────────────────────────────────────────── */
+  --secondary:           oklch(0.240 0.042 265);
+  --secondary-foreground: oklch(0.975 0.005 265);
+  --muted:               oklch(0.240 0.042 265);
+  /* #94A3B8 slate-400 equivalent — softer secondary text                    */
+  --muted-foreground:    oklch(0.600 0.028 265);
+
+  /* ── Accent (matches brand) ────────────────────────────────────────────── */
+  --accent:              oklch(0.741 0.174 66.5);
+  --accent-foreground:   oklch(0.10 0 0);
+
+  /* ── System ────────────────────────────────────────────────────────────── */
+  --destructive:         oklch(0.628 0.221 29.2);  /* red-500 tone            */
+  /* Border: solid slate value (lighter than bg) so bg-border/10 hover works */
+  --border:              oklch(0.285 0.045 265);   /* #263244 — visible border */
+  --input:               oklch(0.285 0.045 265);
+  --ring:                oklch(0.741 0.174 66.5);
+
+  /* ── Charts ────────────────────────────────────────────────────────────── */
+  --chart-1:             oklch(0.741 0.174 66.5);  /* amber   */
+  --chart-2:             oklch(0.600 0.150 168);   /* green   */
+  --chart-3:             oklch(0.550 0.200 264);   /* blue    */
+  --chart-4:             oklch(0.700 0.180 300);   /* purple  */
+  --chart-5:             oklch(0.650 0.150 30);    /* coral   */
+
+  /* ── Sidebar ───────────────────────────────────────────────────────────── */
+  /* Sidebar slightly darker than background — creates depth                 */
+  --sidebar:                    oklch(0.148 0.035 265);  /* #0B1120             */
+  --sidebar-foreground:         oklch(0.975 0.005 265);
+  --sidebar-primary:            oklch(0.741 0.174 66.5);
   --sidebar-primary-foreground: oklch(0.10 0 0);
-  --sidebar-accent: oklch(0.210 0.030 265);
-  --sidebar-accent-foreground: oklch(0.92 0.008 265);
-  --sidebar-border: oklch(1 0 0 / 8%);
-  --sidebar-ring: oklch(0.741 0.174 66.5);
+  --sidebar-accent:             oklch(0.235 0.042 265);  /* hover bg            */
+  --sidebar-accent-foreground:  oklch(0.975 0.005 265);
+  --sidebar-border:             oklch(0.235 0.042 265);  /* subtle divider      */
+  --sidebar-ring:               oklch(0.741 0.174 66.5);
 }
 
 @layer base {

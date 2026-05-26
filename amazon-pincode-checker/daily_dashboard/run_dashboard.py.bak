@@ -1,0 +1,148 @@
+"""
+Daily Dashboard — Single Entry Point
+======================================
+Run this to:
+  1. Check data freshness in the data bank
+  2. Fetch only what's missing (incremental)
+  3. Generate the daily dashboard report
+
+Usage:
+    python run_dashboard.py              # Full run (fetch + dashboard)
+    python run_dashboard.py --status     # Just show data bank status
+    python run_dashboard.py --no-fetch   # Dashboard from cached data only
+    python run_dashboard.py --force      # Force re-fetch everything
+"""
+
+import os
+import sys
+import argparse
+from datetime import datetime, timedelta
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+
+from data_manager import (
+    load_bank, save_bank, append_bank,
+    needs_refresh, needs_snapshot_refresh,
+    get_yesterday, print_bank_status,
+)
+from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+from ads_api_fetcher import fetch_ads_campaigns, fetch_ads_products, fetch_ads_campaigns_daily
+from dashboard import generate_dashboard, save_dashboard
+
+
+def refresh_data(force=False):
+    """Check freshness and fetch missing data. Cache-first for all sources."""
+    yesterday = get_yesterday()
+
+    # ── 1. Orders ──────────────────────────────────────────────
+    print("\n" + "=" * 60)
+    print("  REFRESHING DATA BANK")
+    print("=" * 60)
+
+    if force:
+        start = yesterday - timedelta(days=29)
+        print(f"\n  [Orders] FORCE mode: fetching last 30 days")
+        orders_new = fetch_orders(start, yesterday)
+        if not orders_new.empty:
+            save_bank('orders', orders_new)
+    else:
+        needs, start = needs_refresh('orders', 'order_date')
+        if needs and start:
+            orders_new = fetch_orders(start, yesterday)
+            if not orders_new.empty:
+                append_bank('orders', orders_new)
+        else:
+            print("  [Orders] Up to date.")
+
+    # ── 2. FBA Inventory (snapshot) ────────────────────────────
+    if force or needs_snapshot_refresh('fba_inventory'):
+        inv = fetch_fba_inventory()
+        if not inv.empty:
+            save_bank('fba_inventory', inv)
+    else:
+        print("  [Inventory] Up to date.")
+
+    # ── 3. Inventory by FC (Seller Flex vs Amazon FBA) ─────────
+    if force or needs_snapshot_refresh('inventory_by_fc'):
+        try:
+            fc_snapshot, fc_ledger = fetch_inventory_by_fc()
+            if not fc_snapshot.empty:
+                save_bank('inventory_by_fc', fc_snapshot)
+            if not fc_ledger.empty:
+                save_bank('fc_ledger', fc_ledger)
+        except Exception as e:
+            print(f"  ⚠️  Inventory-by-FC fetch failed: {e}")
+    else:
+        print("  [Inventory by FC] Up to date.")
+
+    # ── 4. Ads Data (cache-first from amazon_ads_tool/reports/) ─
+    # These functions check file freshness internally.
+    # They only call the API if cached JSONs are >24h old.
+    print()
+    ads_campaigns = fetch_ads_campaigns()
+    ads_products = fetch_ads_products()
+
+    # ── 5. Daily Ads Data (for date-range filtering on dashboard) ─
+    ads_daily = fetch_ads_campaigns_daily()
+    if not ads_daily.empty:
+        save_bank('ads_campaigns_daily', ads_daily)
+
+    # Save to data bank for dashboard consumption
+    if not ads_campaigns.empty:
+        save_bank('ads_campaigns', ads_campaigns)
+    if not ads_products.empty:
+        save_bank('ads_products', ads_products)
+
+
+def run_dashboard():
+    """Load all data from bank and generate dashboard."""
+    print("\n" + "=" * 60)
+    print("  GENERATING DASHBOARD")
+    print("=" * 60)
+
+    orders = load_bank('orders')
+    inventory = load_bank('fba_inventory')
+    ads_campaigns = load_bank('ads_campaigns')
+    ads_products = load_bank('ads_products')
+
+    print(f"  Loaded: {len(orders)} orders, {len(inventory)} inventory SKUs, "
+          f"{len(ads_campaigns)} ads campaign rows, {len(ads_products)} ads product rows")
+
+    report = generate_dashboard(orders, inventory, ads_campaigns, ads_products)
+    filepath = save_dashboard(report)
+
+    # Print to console too
+    print("\n" + report)
+    return filepath
+
+
+def main():
+    parser = argparse.ArgumentParser(description='EMOUNT Daily Amazon Dashboard')
+    parser.add_argument('--status', action='store_true', help='Show data bank status only')
+    parser.add_argument('--no-fetch', action='store_true', help='Skip fetching, use cached data')
+    parser.add_argument('--force', action='store_true', help='Force re-fetch all data')
+    args = parser.parse_args()
+
+    print("\n" + "╔" + "═" * 58 + "╗")
+    print("║" + "  EMOUNT VENTURES — DAILY AMAZON DASHBOARD".center(58) + "║")
+    print("║" + f"  {datetime.now().strftime('%Y-%m-%d %H:%M IST')}".center(58) + "║")
+    print("╚" + "═" * 58 + "╝")
+
+    if args.status:
+        print_bank_status()
+        return
+
+    if not args.no_fetch:
+        try:
+            refresh_data(force=args.force)
+        except Exception as e:
+            print(f"\n  ⚠️  Data fetch error: {e}")
+            print("  Continuing with cached data...")
+
+    print_bank_status()
+    run_dashboard()
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,74 @@
+[
+  {
+    "unitsSoldClicks": 1,
+    "cost": 1565.63,
+    "purchases": 1,
+    "campaignId": 138932377838775,
+    "campaignStatus": "PAUSED",
+    "clicks": 157,
+    "impressions": 16112,
+    "campaignName": "SB-Video-EVA-Gym Mats (Ehk)",
+    "campaignBudgetAmount": 120.0,
+    "sales": 3490.57
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 618.03,
+    "purchases": 0,
+    "campaignId": 56345075190328,
+    "campaignStatus": "ENABLED",
+    "clicks": 61,
+    "impressions": 6731,
+    "campaignName": "SB-Video-EVA Kids Mat",
+    "campaignBudgetAmount": 120.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 219.52,
+    "purchases": 0,
+    "campaignId": 20508703715177,
+    "campaignStatus": "PAUSED",
+    "clicks": 20,
+    "impressions": 3699,
+    "campaignName": "SB-Video-EVA-Gym Mats",
+    "campaignBudgetAmount": 120.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 42352531890054,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SB-Video-EVA Kids Mat-PO9",
+    "campaignBudgetAmount": 120.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 152934263674097,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SB-Video-BPM",
+    "campaignBudgetAmount": 200.0,
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 37,
+    "cost": 7531.28,
+    "purchases": 32,
+    "campaignId": 310972045654203,
+    "campaignStatus": "ENABLED",
+    "clicks": 743,
+    "impressions": 104636,
+    "campaignName": "VR_SBV_Anti Slip Mat d287c2",
+    "campaignBudgetAmount": 300.0,
+    "sales": 21715.51
+  }
+]

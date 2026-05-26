@@ -1,0 +1,112 @@
+[
+  {
+    "unitsSoldClicks": 0,
+    "cost": 2898.5,
+    "purchases": 0,
+    "campaignId": 217407904149409,
+    "campaignStatus": "ENABLED",
+    "clicks": 46,
+    "impressions": 26986,
+    "campaignName": "SD-VCPM-Day Cream (Forest Essential)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 2159.64,
+    "purchases": 0,
+    "campaignId": 720513318380,
+    "campaignStatus": "ENABLED",
+    "clicks": 33,
+    "impressions": 31413,
+    "campaignName": "SD-VCPM-Hair Revitaliser-(Forest Essential)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 2000.3,
+    "purchases": 0,
+    "campaignId": 226385825541911,
+    "campaignStatus": "ENABLED",
+    "clicks": 17,
+    "impressions": 23634,
+    "campaignName": "SD-VCPM-Face Wash-(Forest Essential)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 416.46,
+    "purchases": 0,
+    "campaignId": 53259516907400,
+    "campaignStatus": "ENABLED",
+    "clicks": 2,
+    "impressions": 2906,
+    "campaignName": "SD-VCPM-Face Oil & Serum-(Forest Essential)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 1826.08,
+    "purchases": 0,
+    "campaignId": 73707165072833,
+    "campaignStatus": "ENABLED",
+    "clicks": 24,
+    "impressions": 23360,
+    "campaignName": "SD-VCPM-Nigt Cream-(Forest Essential)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 4,
+    "cost": 5063.18,
+    "purchases": 10,
+    "campaignId": 148945993344679,
+    "campaignStatus": "ENABLED",
+    "clicks": 212,
+    "impressions": 92409,
+    "campaignName": "SD-VCPM-Views Retargeting",
+    "sales": 4194.9
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 457643010659346,
+    "campaignStatus": "ENABLED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-VCPM-Defensive-Face Cleanser",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 241.07,
+    "purchases": 0,
+    "campaignId": 538975611612128,
+    "campaignStatus": "ENABLED",
+    "clicks": 0,
+    "impressions": 3444,
+    "campaignName": "SD-VCPM-Face Mask (Competition)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 1794.47,
+    "purchases": 0,
+    "campaignId": 374115739481960,
+    "campaignStatus": "ENABLED",
+    "clicks": 34,
+    "impressions": 34064,
+    "campaignName": "SD-VCPM-Face Scrub (Competition)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 2,
+    "cost": 864.17,
+    "purchases": 3,
+    "campaignId": 290208239138286,
+    "campaignStatus": "ENABLED",
+    "clicks": 24,
+    "impressions": 16482,
+    "campaignName": "SD-VCPM-Defensive-Ubtan Face Scrub & Kesar Face Wash",
+    "sales": 1258.47
+  }
+]

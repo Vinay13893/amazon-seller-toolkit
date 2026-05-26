@@ -1,0 +1,156 @@
+[
+  {
+    "unitsSoldClicks": 1,
+    "cost": 357.36,
+    "purchases": 1,
+    "campaignId": 203760006376283,
+    "campaignStatus": "ENABLED",
+    "clicks": 13,
+    "impressions": 4806,
+    "campaignName": "SD-CPC-Dishwash (Comp)",
+    "sales": 151.69
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 90235035345781,
+    "campaignStatus": "ENABLED",
+    "clicks": 0,
+    "impressions": 1,
+    "campaignName": "SD-CPC-Glass Cleaner (Comp)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 65913501785234,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-CPC-Toilet Cleaner (Comp)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 234889607334500,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-CPC-Handwash (Comp)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 3,
+    "cost": 2973.01,
+    "purchases": 9,
+    "campaignId": 99221537314911,
+    "campaignStatus": "ENABLED",
+    "clicks": 74,
+    "impressions": 52561,
+    "campaignName": "SD-VCPM-Hommies Defensive",
+    "sales": 2217.81
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 54368893466800,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-CPC-Floor Cleaner (Comp)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 6283820425993,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-CPC-Bathroom Cleaner",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 2,
+    "cost": 6569.28,
+    "purchases": 5,
+    "campaignId": 304379286960237,
+    "campaignStatus": "ENABLED",
+    "clicks": 149,
+    "impressions": 111751,
+    "campaignName": "SD-VCPM-Toilet Cleaner",
+    "sales": 936.45
+  },
+  {
+    "unitsSoldClicks": 2,
+    "cost": 5152.68,
+    "purchases": 2,
+    "campaignId": 312332048243287,
+    "campaignStatus": "ENABLED",
+    "clicks": 156,
+    "impressions": 95220,
+    "campaignName": "SD-VCPM-Dishwash",
+    "sales": 320.33
+  },
+  {
+    "unitsSoldClicks": 9,
+    "cost": 6182.37,
+    "purchases": 12,
+    "campaignId": 381935978953393,
+    "campaignStatus": "ENABLED",
+    "clicks": 276,
+    "impressions": 153783,
+    "campaignName": "SD-VCPM-Handwash",
+    "sales": 4732.21
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 546161106605021,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-VCPM-Bathroom Cleaner",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 0,
+    "purchases": 0,
+    "campaignId": 306985752515154,
+    "campaignStatus": "PAUSED",
+    "clicks": 0,
+    "impressions": 0,
+    "campaignName": "SD-VCPM-Steamer (Competition)",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 0,
+    "cost": 168.84,
+    "purchases": 0,
+    "campaignId": 361284452303170,
+    "campaignStatus": "ENABLED",
+    "clicks": 2,
+    "impressions": 3094,
+    "campaignName": "SD-VCPM-Glass Cleaner",
+    "sales": 0
+  },
+  {
+    "unitsSoldClicks": 6,
+    "cost": 4487.71,
+    "purchases": 14,
+    "campaignId": 439855929104334,
+    "campaignStatus": "ENABLED",
+    "clicks": 86,
+    "impressions": 65233,
+    "campaignName": "SD-VCPM-Floor Cleaner",
+    "sales": 3815.28
+  }
+]

@@ -1,0 +1,24 @@
+Priority,Category,ASIN_or_Campaign,Action,Reason,Expected_Monthly_Impact
+1-TODAY,ASM,B0F48HZBYQ,PAUSE ADS,"0.39x ROAS = 254% ACoS. Rs 1987 spent, Rs 781 returned. Losing money every day.",Save Rs 600/mo
+1-TODAY,ASM,B0CJJSVBSJ,PAUSE ADS,0.46x ROAS = 217% ACoS. Dead product for ads.,Save Rs 500/mo
+1-TODAY,EVA Gym,B0D9HDFSH3,PAUSE ADS,"0.00x ROAS. Rs 517 spent, ZERO sales. No conversion at all.",Save Rs 500/mo
+1-TODAY,EVA Kids,B09MYDPF3Y,CUT BID 35%,Daily spend: Rs 382(Jan/26d) > Rs 288(Feb/28d) > Rs 995(Mar/31d) > Rs 1408(Apr/11d). ROAS: 12.1x > 7.3x > 9.5x > 5.0x. Spend tripled while ROAS halved vs Jan.,Save Rs 8-10K/mo
+1-TODAY,EVA Gym,B0D9HB8LTP,CUT BID 40%,Daily spend: Rs 67(Jan/26d) > Rs 171(Feb/28d) > Rs 197(Mar/31d) > Rs 287(Apr/11d). ROAS: 14.8x > 8.3x > 8.5x > 2.3x. ROAS crashed 84% since Jan while spend 4x.,Save Rs 3-4K/mo
+1-TODAY,BPM,All BPM campaigns,CAP at Rs 200/day total,SP-KT-BPM daily: Rs 0(Jan) > Rs 0(Feb) > Rs 58(Mar/31d) > Rs 455(Apr/11d) = +684%. ROAS only 4x vs 5.5x target. Scaling before proven.,Save Rs 10-15K/mo
+1-TODAY,ASM,B0BN5NZCGH,PAUSE ADS,"Daily ROAS by month: 3.2x(Jan) > 2.5x(Feb) > 3.2x(Mar) > 1.9x(Apr). Consistently bad, trending down. Rs 31K total spent, Rs 13.8K wasted.",Save Rs 4-5K/mo
+2-THIS WEEK,ALL,All SP campaigns,Switch to Dynamic bids DOWN ONLY,Daily CPC: Rs 7.40(Jan/26d) > Rs 7.28(Feb/28d) > Rs 7.62(Mar/31d) > Rs 9.04(Apr/11d). +22% since Jan. Amazon auto-bidding inflating.,Save Rs 8-12K/mo
+2-THIS WEEK,Storage,All Storage campaigns,CUT spend 50%,ACoS by month: 32.9%(Jan) > 39.0%(Feb) > 27.8%(Mar) > 33.4%(Apr) vs 18% target. CPC: Rs 10.5 > 12.0 > 12.9 > 15.9. Never profitable.,Save Rs 12-15K/mo
+2-THIS WEEK,Storage,B0G1YWZH29,PAUSE ADS,1.62x overall ROAS. Monthly: 3.52x(Mar) > 0.71x(Apr). Collapsing. Rs 6.4K wasted.,Save Rs 2-3K/mo
+2-THIS WEEK,Storage,B0G25TVVSX,PAUSE ADS,1.81x ROAS. 55.3% ACoS. Product cannot convert profitably from ads.,Save Rs 1-2K/mo
+2-THIS WEEK,EVA Kids,B0822GYVNX,SCALE +20% BID,Monthly ROAS: 34.6x(Jan) > 14.3x(Feb) > 25.0x(Mar) > 27.3x(Apr). Stable 15-35x. Daily spend only Rs 131(Mar) > Rs 221(Apr). Massively underspent star.,Gain Rs 8-15K/mo revenue
+2-THIS WEEK,EVA Kids,B0CRHST3YZ,SCALE - DOUBLE BID,"37.23x ROAS = 2.7% ACoS over 4 months. Only Rs 1,501 total spend. Could 5x budget and still be under 10% target ACoS.",Gain Rs 5-10K/mo revenue
+2-THIS WEEK,EVA Kids,B0CRHSF42W,SCALE +20% BID,21.02x ROAS = 4.8% ACoS. Rs 5.5K total spend across 4 months. Star ASIN starved of budget.,Gain Rs 5-10K/mo revenue
+2-THIS WEEK,EVA Gym,B0C1431JNZ,SCALE +20% BID,"ROAS IMPROVING with scale: daily Rs 163(Mar) > Rs 379(Apr), ROAS 7.4x > 15.8x. Rare case where more spend = better ROAS.",Gain Rs 10-15K/mo revenue
+2-THIS WEEK,EVA Gym,B08642G3SR,SCALE +15% BID,ROAS improving: 8.5x(Mar) > 12.2x(Apr) while daily spend Rs 127 > Rs 179. Efficient scaling.,Gain Rs 5-8K/mo revenue
+2-THIS WEEK,ALL SD,All SD campaigns,Increase budget 30%,SD avg 9.13x ROAS vs SP 7.35x across all months (Feb-Apr). Only 4.1% of spend goes to SD. Consistently more efficient.,Better ROAS per rupee
+3-NEXT WEEK,WTC,New campaign needed,Launch SP Rs 200/day exact match,12-month revenue Rs 5.2L with ZERO ads. 100% organic. Untapped. Even 10x ROAS adds Rs 50K+/mo.,Gain Rs 15-25K/mo revenue
+3-NEXT WEEK,ASM,All ASM listings,INVESTIGATE listings,Conv% by month: 8.9%(Jan) > 14.0%(Feb) > 10.4%(Mar) > 7.0%(Apr). Conversion HALVED from Feb peak. Not an ads problem - check pricing/reviews/Buy Box.,Could double ASM ROAS
+3-NEXT WEEK,ALL,All SP-KT campaigns,Search Term Report + negatives,CPC +22% since Jan but CTR flat. Broad match burning budget on irrelevant searches across all categories.,Save Rs 5-10K/mo
+3-NEXT WEEK,Storage,All Storage SP-KT,Switch to EXACT match only,CPC by month: Rs 10.5(Jan) > Rs 12.0(Feb) > Rs 12.9(Mar) > Rs 15.9(Apr). +51% in 3 months. Broad match finding expensive non-converting terms.,Save Rs 5-8K/mo
+3-NEXT WEEK,EVA Kids,All EVA Kids listings,Improve listing SEO + A+ content,Organic share 45.3% vs 60%+ for other categories. Too ads-dependent. Better listing = more free traffic.,Long-term organic growth
+3-NEXT WEEK,BPM,B0GQ9H6BV3,PAUSE ADS,Daily: Rs 20(Mar/31d) > Rs 178(Apr/11d) = +790%. ROAS: 4.0x(Mar) > 2.2x(Apr). 8x daily spend increase with declining ROAS.,Save Rs 3-4K/mo

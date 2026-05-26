@@ -1,0 +1,6 @@
+category,display_name,asin_count,ad_spend,ad_sales,ad_orders,ad_units,acos,ads_roas,ctr,cvr,cpc,target_acos,target_ads_roi,target_blended_roi,total_revenue,organic_sales,blended_roas,fba_available,fba_inbound,ads_status,blended_status,zero_sale_asins,low_roas_asins,impressions,clicks
+ASM,Anti-Slip Mats (Shelf Liners),13,41708.87,169558.87,216,267,24.6,4.07,0.51,6.95,13.42,20.0,5.0,10.0,0.0,0.0,0.0,0,0,CLOSE,NO SP-API DATA,2,5,613037,3108
+EVA_Kids,EVA Kids Floor Mat (Multicolor),23,98150.72,1011161.78,378,503,9.71,10.3,1.05,2.53,6.56,10.0,10.0,18.0,0.0,0.0,0.0,0,0,ON TARGET,NO SP-API DATA,3,1,1426019,14956
+EVA_Gym,EVA Gym Floor Mat (Black/Grey),26,71064.19,538307.57,245,266,13.2,7.57,0.76,2.66,7.7,10.0,10.0,18.0,0.0,0.0,0.0,0,0,BELOW TARGET,NO SP-API DATA,10,3,1216094,9226
+BPM,Baby Play Mat (Reversible/Foldable),5,31634.27,123895.59,144,146,25.53,3.92,0.98,2.95,6.48,18.0,5.5,11.0,0.0,0.0,0.0,0,0,BELOW TARGET,NO SP-API DATA,0,1,499300,4885
+Storage,Storage Bags,15,46717.09,154500.63,261,285,30.24,3.31,0.63,7.73,13.84,18.0,5.5,11.0,0.0,0.0,0.0,0,0,BELOW TARGET,NO SP-API DATA,2,4,539457,3375

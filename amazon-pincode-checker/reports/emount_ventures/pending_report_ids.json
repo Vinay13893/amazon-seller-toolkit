@@ -1,0 +1,41 @@
+{
+  "submitted_at": "2026-05-18T17:52:02.388795",
+  "windows": {
+    "2026-02-17__2026-03-16": {
+      "start": "2026-02-17",
+      "end": "2026-03-16",
+      "reports": {
+        "sp_campaigns": "4e56dd85-921e-4c8b-b1f4-99b9a6fff51b",
+        "sp_targeting": "666b07f2-5622-4707-b340-e3febab5cf87",
+        "sp_search_terms": "95c3ef0a-cb54-4848-826c-8deb08f50420",
+        "sp_advertised_product": "672d1cba-c310-4284-a222-6fa4e49c849b",
+        "sd_campaigns": null,
+        "sb_campaigns": null
+      }
+    },
+    "2026-03-17__2026-04-16": {
+      "start": "2026-03-17",
+      "end": "2026-04-16",
+      "reports": {
+        "sp_campaigns": "340cb2cf-2bc9-470d-8333-e75c459a81eb",
+        "sp_targeting": "623be063-6eb0-46b4-a757-645a0d783ec1",
+        "sp_search_terms": "44d0451d-b4c7-4cb5-a6d0-010ff1e050a1",
+        "sp_advertised_product": "88477e7b-cd86-4b9e-a1bf-41fc4dfbf9c1",
+        "sd_campaigns": "80440121-fa0c-4417-aaed-9dcd4167791b",
+        "sb_campaigns": null
+      }
+    },
+    "2026-04-17__2026-05-17": {
+      "start": "2026-04-17",
+      "end": "2026-05-17",
+      "reports": {
+        "sp_campaigns": "8ee8494a-ba60-48ae-92df-1eb7e53fe089",
+        "sp_targeting": "1f9927c0-80b0-4ccb-be37-2f58150698b6",
+        "sp_search_terms": "f3792ec5-5116-48f8-ace2-4520b7e06ca7",
+        "sp_advertised_product": "fa8193a9-f16b-4004-b3fe-16c28d52ac7f",
+        "sd_campaigns": "d837aa69-3ed8-4dd3-88d2-5786c6c88391",
+        "sb_campaigns": "7b4f65fd-bceb-444f-ad6c-ba25c40cd36c"
+      }
+    }
+  }
+}

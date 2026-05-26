@@ -1,0 +1,688 @@
+﻿[2026-04-13 07:00:03] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 29, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-04-13 07:00:03] === Completed successfully ===
+[2026-04-21 14:14:50] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-04-21 14:14:50] === Completed successfully ===
+[2026-04-23 11:01:27] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-04-23 11:01:27] === Completed successfully ===
+[2026-05-01 07:00:03] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-05-01 07:00:03] === Completed successfully ===
+[2026-05-02 08:46:13] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-05-02 08:46:13] === Completed successfully ===
+[2026-05-05 11:21:19] === Auto-refresh started ===
+[2026-05-08 10:12:37] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-05-08 10:12:37] === Completed successfully ===
+[2026-05-10 07:00:02] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-05-10 07:00:02] === Completed successfully ===
+[2026-05-11 11:44:30] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-05-11 11:44:30] === Completed successfully ===
+[2026-05-12 20:04:39] === Auto-refresh started ===
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 31, in <module>
+    from sp_api_fetcher import fetch_orders, fetch_fba_inventory, fetch_inventory_by_fc
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\sp_api_fetcher.py", line 20, in <module>
+    import requests as req
+ModuleNotFoundError: No module named 'requests'
+
+[2026-05-12 20:04:39] === Completed successfully ===
+[2026-05-13 12:12:36] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-13 12:12 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-13 12:12:36] === Completed successfully ===
+[2026-05-14 14:20:53] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-14 14:21 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-14 14:20:53] === Completed successfully ===
+[2026-05-15 10:34:42] === Auto-refresh started ===
+[2026-05-16 10:27:44] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-16 10:30 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-16 10:27:44] === Completed successfully ===
+[2026-05-17 22:43:01] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-17 22:43 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-17 22:43:01] === Completed successfully ===
+[2026-05-18 12:57:55] === Auto-refresh started ===
+[2026-05-19 10:05:29] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-19 10:05 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-19 10:05:29] === Completed successfully ===
+[2026-05-20 13:19:00] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-20 13:19 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-20 13:19:00] === Completed successfully ===
+[2026-05-23 10:31:24] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-23 10:31 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-23 10:31:24] === Completed successfully ===
+[2026-05-24 14:09:43] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-24 14:09 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-24 14:09:43] === Completed successfully ===
+[2026-05-25 11:53:10] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-25 11:53 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-25 11:53:10] === Completed successfully ===
+[2026-05-26 09:31:34] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-26 09:31 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-26 09:31:34] === Completed successfully ===

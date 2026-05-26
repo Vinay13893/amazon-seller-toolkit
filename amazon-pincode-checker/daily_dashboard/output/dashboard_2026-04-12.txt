@@ -1,0 +1,151 @@
+======================================================================
+  EMOUNT VENTURES — DAILY AMAZON DASHBOARD
+  Generated: 2026-04-12 21:31 IST
+  Data through: 2026-04-11
+======================================================================
+
+──────────────────────────────────────────────────────────────────────
+  1. SALES SNAPSHOT (Yesterday vs 7-Day Avg)
+──────────────────────────────────────────────────────────────────────
+  Revenue (yesterday):  ₹177,450  ▲ 14% vs 7d avg (₹155,703/day)
+  Units sold:           165  ▲ 23% vs 7d avg (134/day)
+  Order lines:          142
+  Avg order value:      ₹1,250
+
+  30-Day Total:         ₹4,686,442 revenue | 3,860 units
+
+──────────────────────────────────────────────────────────────────────
+  2. ORDER STATUS MIX (Yesterday)
+──────────────────────────────────────────────────────────────────────
+  Shipped                                129 orders      ₹164,225
+  Unshipped                               11 orders       ₹13,225
+  Cancelled                                9 orders            ₹0
+  Unknown                                  2 orders            ₹0
+
+──────────────────────────────────────────────────────────────────────
+  3. TOP 10 ASINs BY REVENUE (Yesterday)
+──────────────────────────────────────────────────────────────────────
+  ASIN           SKU                                    Revenue  Units
+  ────────────── ─────────────────────────────────── ────────── ──────
+  B0822GYVNX     eva_mats_multi_16                      ₹14,625      5
+  B0822G97QZ     eva_mat_multi_12                        ₹9,696      4
+  B0D9HD34MM     eHK_Black&Grey_EVA_PO24                 ₹8,970      2
+  B0G1YW28HY     SB_Grey&Black_33Ltrs_PO4                ₹8,505      9
+  B0B6VDFMJT     eva_mats_multi-8                        ₹7,975      5
+  B0GQ4L7R75     LT_Baby_Play_Mat_A                      ₹7,160      8
+  B0GSVW2GQ2     LT_Baby_Play_Mat_R_L                    ₹6,965      7
+  B0F228RM13     eh_DIAMOND_EVA_MULTI_PO9                ₹6,267      3
+  B09MYDPF3Y     EH-Multicolor-Interlock-Mat-4           ₹6,125      7
+  B0CN177JS7     AntiSkidMat_Diamond_Grey_60cmx10mtr     ₹4,725      5
+
+──────────────────────────────────────────────────────────────────────
+  4. FBA INVENTORY HEALTH
+──────────────────────────────────────────────────────────────────────
+  Total SKUs:       238
+  In Stock:         210  |  Out of Stock: 28
+  Available Units:  16,323
+  Inbound Units:    799
+
+  ⚠️  LOW STOCK ALERTS (21 SKUs ≤ 10 units):
+     SB_Orange&Navy Blue_33Ltrs_PO1    1 units  EASY HOME 33 litre Under bed Storage Bag
+     EH_Baby_Play_Mat_R                2 units  EASY HOME Reversible Baby Play Mat, Extr
+     LIL_EVA_Blue_Grey_White_PO9       2 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Brown&Beige_PO9           3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Orange_Sea_Green_Navy_PO9    3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Yellow_Sea_Green_Purple_PO9    3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     LIL_EVA_Red_Green_Blue_PO9        3 units  LILTOES Interlocking Mat - 12mm Thick | 
+     EH_SelfAdv_Corner_P2              4 units  EASY HOME Self Adhesive Bathroom Corner 
+     EH_Tower_Black_10x14_PO2          5 units  EASY HOME Tower Planter Pot, 10 inches, 
+     EH_Tower_White_Stonex_10x14_PO2    5 units  EASY HOME Stone Textured Tower Planter P
+     eva_mats_Grey_25mm_PO16           5 units  EASY HOME Interlocking Floor Gym Mats fo
+     EH_Black&Grey_EVA_24mm_PO16       5 units  EASY HOME Gym Mats for Floor for Home an
+     EH_Black&Grey_EVA_24mm_PO12       7 units  EASY HOME Gym Mats for Floor for Home an
+     eva_mats_Grey_25mm_PO12           7 units  EASY HOME Interlocking Floor Gym Mats fo
+     SB_Orange & Navy Blue_70Ltrs_PO2    8 units  EASY HOME 70 litre Under bed Storage Bag
+
+  🔴 OUT OF STOCK (28 SKUs):
+     54-Y94B-A1SC                    EASY HOME Water Tank Cover  
+     Baby_Play_Mat                   EASY HOME Reversible Baby Play Mat, Extra Lar  
+     EH_ASM_Cutlery_45x5             EASY HOME Multipurpose EVA Anti-Slip Mat (45c  
+     EH_ASM_WD_45cm x 10mtr          EASY HOME Multipurpose EVA Anti-Slip Mat (45c  
+     EH_ASM_WD_45cm x 5mtr           EASY HOME Multipurpose EVA Anti-Slip Mat (45c  
+     EH_BOC_4x5_Maroon_P1            EASY HOME Thermal Insulated 100% Room Darkeni  
+     EH_Tower_Beige_Stonex_10x14_PO2  EASY HOME Stone Textured Tower Planter Pot, 1  
+     EH_Tower_Black_10x14_PO4        EASY HOME Tower Planter Pot, 10 inches, Pack   
+     EH_Tower_Black_8x11_PO2         EASY HOME Tower Planter Pot, 8 inches, Pack o  
+     EH_Tower_Black_8x11_PO4         EASY HOME Tower Planter Pot, 8 inches, Pack o  
+     EH_Tower_White_Stonex_10x14_PO4  EASY HOME Stone Textured Tower Planter Pot, 1  
+     EH_Tower_White_Stonex_8x11_PO2  EASY HOME Stone Textured Tower Planter Pot, 8  
+     SB_Black&Grey_33Ltrs_PO1        EASY HOME 33 litre Under bed Storage Bags for  
+     SB_Black&Grey_33Ltrs_PO2        EASY HOME 33 litre Under bed Storage Bags for  
+     SB_Black&Grey_33Ltrs_PO4        EASY HOME 33 litre Under bed Storage Bags for  
+
+──────────────────────────────────────────────────────────────────────
+  5. ADS PERFORMANCE (Latest Period)
+──────────────────────────────────────────────────────────────────────
+  Ad Spend:      ₹129,254
+  Ad Sales:      ₹824,559
+  ROAS:          6.38x
+  ACoS:          15.7%
+  Impressions:   1,794,277
+  Clicks:        14,022
+  CTR:           0.8%
+  CPC:           ₹9
+  CVR:           3.9%
+  Ad Orders:     547
+  Ad Units:      611
+
+  TOP 5 CAMPAIGNS (by Ad Sales):
+  Campaign                                      Spend      Sales   ROAS   ACoS
+  ──────────────────────────────────────── ────────── ────────── ────── ──────
+  SPA-EVA Kids Mat                            ₹10,044    ₹88,849   8.8x  11.3%
+  SP-PT-EVA Kids Mat- (B08JZ8SS2H Liltoe       ₹7,056    ₹73,115  10.4x   9.7%
+  SPA-Liltoes-EVA Kids Mat                     ₹3,005    ₹45,116  15.0x   6.7%
+  SP-PT-EVA Kids Mat- (Defensive)              ₹2,791    ₹42,155  15.1x   6.6%
+  SPA-EVA Gym Mat                              ₹3,295    ₹41,297  12.5x   8.0%
+
+  ⚠️  BLEEDING CAMPAIGNS (ACoS > 30%, spend > ₹500):
+     SPA-ASM-Printed                           ACoS: 305.6%  Spend: ₹1,489
+     SP-KT-ASM- *(Shelf Liners for Kitchen     ACoS: 133.7%  Spend: ₹1,071
+     SP-PT-ASM- (B0831486NM Elastpro)          ACoS: 87.9%  Spend: ₹875
+     SP-KT-Storage Bags for Clothes            ACoS: 65.1%  Spend: ₹1,178
+     SP-KT-ASM- *(Drawer Mat)                  ACoS: 58.8%  Spend: ₹1,393
+
+  🔴 ZERO-SALES CAMPAIGNS (spend > ₹200): 13 campaigns, ₹5,896 wasted
+     SPA-EVA Gym Mat (Ehk)                            ₹837 spent  149 clicks
+     SP-KT-Clothes Storage Box                        ₹680 spent  38 clicks
+     SD-VCPM-EVA Gym Mat-Defensive                    ₹609 spent  27 clicks
+     SP-KT-EVA EHK Gym Mat- (Interlocking Floor Ma    ₹597 spent  108 clicks
+     SP-KT-EVA Kids Mat- (kids mat)                   ₹513 spent  48 clicks
+
+──────────────────────────────────────────────────────────────────────
+  6. ADS vs ORGANIC SPLIT
+──────────────────────────────────────────────────────────────────────
+  Total Revenue:    ₹177,450
+  Ad-attributed:    ₹824,559 (464.7%)
+  Organic:          ₹0 (-364.7%)
+  Blended ROAS:     1.4x
+
+──────────────────────────────────────────────────────────────────────
+  7. CATEGORY BREAKDOWN (Yesterday)
+──────────────────────────────────────────────────────────────────────
+  Category                Revenue  Units  Orders
+  ──────────────────── ────────── ────── ───────
+  EVA_Kids                ₹55,821     29      25
+  EVA_Gym                 ₹35,904     15      16
+  Storage                 ₹25,869     39      28
+  BPM                     ₹24,868     28      28
+  ASM                     ₹22,036     40      32
+  Other                   ₹12,952     14      13
+
+──────────────────────────────────────────────────────────────────────
+  8. ALERTS & ACTION ITEMS
+──────────────────────────────────────────────────────────────────────
+  🔴 2 actively-selling SKUs are OUT OF STOCK!
+     → Baby_Play_Mat
+     → SB_Grey&Black_33Ltrs_PO1
+  ⚠️  8 campaigns with ACoS > 35% and spend > ₹1,000
+
+======================================================================
+  END OF DAILY DASHBOARD
+======================================================================

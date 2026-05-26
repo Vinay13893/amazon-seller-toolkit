@@ -1,0 +1,197 @@
+======================================================================
+  EMOUNT VENTURES — CATEGORY PERFORMANCE ANALYSIS
+  Generated: 2026-04-11 16:49
+======================================================================
+
+  OVERALL PORTFOLIO:
+    Total Ad Spend:     ₹  289,275.14
+    Total Ad Sales:     ₹1,997,424.44
+    Total Revenue:      ₹3,209,582.98
+    Overall ACoS:             14.48%
+    Overall Ads ROAS:          6.90x
+    Overall Blended:          11.10x
+
+──────────────────────────────────────────────────────────────────────
+  EVA Kids Floor Mat (Multicolor)  (EVA_Kids)
+──────────────────────────────────────────────────────────────────────
+  ASINs in portfolio:  23
+
+  ADS PERFORMANCE:
+    Spend:           ₹   98,150.72
+    Ad Sales:        ₹1,011,161.78
+    Orders / Units:      378 / 503
+    ACoS:                 9.71%   (Target: 10.0%)
+    Ads ROAS:            10.30x   (Target: 10.0x)
+    CTR / CVR:        1.05% / 2.53%
+    Avg CPC:          ₹6.56
+    Status:           [✓] ON TARGET
+
+  BLENDED PERFORMANCE (Ads + Organic):
+    Total Revenue:   ₹1,533,492.02
+    Organic Sales:   ₹  828,836.12
+    Ad % of Revenue:  65.9%
+    Blended ROAS:        15.62x   (Target: 18.0x)
+    Status:           [~] CLOSE
+
+  ISSUES:
+    • 3 ASIN(s) with zero ad sales (wasted spend)
+    • 1 ASIN(s) with ROAS < 5.0x (half of target)
+
+  TOP PERFORMERS:
+    B09MYDPF3Y  EH-Multicolor-Interlock-Mat-4             Sales ₹292,449.56  ROAS 8.03x
+    B0822GYVNX  eva_mats_multi_16                         Sales ₹141,833.29  ROAS 29.52x
+    B0F228RM13  eh_DIAMOND_EVA_MULTI_PO9                  Sales ₹ 94,126.66  ROAS 9.31x
+
+──────────────────────────────────────────────────────────────────────
+  EVA Gym Floor Mat (Black/Grey)  (EVA_Gym)
+──────────────────────────────────────────────────────────────────────
+  ASINs in portfolio:  26
+
+  ADS PERFORMANCE:
+    Spend:           ₹   71,064.19
+    Ad Sales:        ₹  538,307.57
+    Orders / Units:      245 / 266
+    ACoS:                13.20%   (Target: 10.0%)
+    Ads ROAS:             7.57x   (Target: 10.0x)
+    CTR / CVR:        0.76% / 2.66%
+    Avg CPC:          ₹7.70
+    Status:           [✗] BELOW TARGET
+
+  BLENDED PERFORMANCE (Ads + Organic):
+    Total Revenue:   ₹  790,240.95
+    Organic Sales:   ₹  460,353.97
+    Ad % of Revenue:  68.1%
+    Blended ROAS:        11.12x   (Target: 18.0x)
+    Status:           [✗] BELOW TARGET
+
+  ISSUES:
+    • 10 ASIN(s) with zero ad sales (wasted spend)
+    • 3 ASIN(s) with ROAS < 5.0x (half of target)
+    • Ads ROAS 2.43x below target
+
+  TOP PERFORMERS:
+    B0CRKV5XTR  eHK_EVA_Black_4                           Sales ₹ 96,114.31  ROAS 5.30x
+    B0C1431JNZ  EH_EVA_Black_Mat_PO4                      Sales ₹ 91,484.75  ROAS 12.87x
+    B0D9HH4VYG  eHK_Black&Grey_EVA_PO8                    Sales ₹ 57,782.85  ROAS 8.01x
+
+──────────────────────────────────────────────────────────────────────
+  Storage Bags  (Storage)
+──────────────────────────────────────────────────────────────────────
+  ASINs in portfolio:  15
+
+  ADS PERFORMANCE:
+    Spend:           ₹   46,717.09
+    Ad Sales:        ₹  154,500.63
+    Orders / Units:      261 / 285
+    ACoS:                30.24%   (Target: 18.0%)
+    Ads ROAS:             3.31x   (Target: 5.5x)
+    CTR / CVR:        0.63% / 7.73%
+    Avg CPC:          ₹13.84
+    Status:           [✗] BELOW TARGET
+
+  BLENDED PERFORMANCE (Ads + Organic):
+    Total Revenue:   ₹  218,929.00
+    Organic Sales:   ₹   85,481.67
+    Ad % of Revenue:  70.6%
+    Blended ROAS:         4.69x   (Target: 11.0x)
+    Status:           [✗] BELOW TARGET
+
+  ISSUES:
+    • 2 ASIN(s) with zero ad sales (wasted spend)
+    • 4 ASIN(s) with ROAS < 2.8x (half of target)
+    • Ads ROAS 2.19x below target
+
+  TOP PERFORMERS:
+    B0G1YX6GXV  SB_Orange&Navy Blue_33Ltrs_PO2            Sales ₹ 70,450.27  ROAS 3.43x
+    B0G1YHH1ZN  SB_Orange & Navy Blue_70Ltrs_PO2          Sales ₹ 31,549.54  ROAS 3.30x
+    B0G1YT2S5N  SB_Grey&Black_70Ltrs_PO2                  Sales ₹ 21,219.46  ROAS 3.67x
+
+──────────────────────────────────────────────────────────────────────
+  Anti-Slip Mats (Shelf Liners)  (ASM)
+──────────────────────────────────────────────────────────────────────
+  ASINs in portfolio:  13
+
+  ADS PERFORMANCE:
+    Spend:           ₹   41,708.87
+    Ad Sales:        ₹  169,558.87
+    Orders / Units:      216 / 267
+    ACoS:                24.60%   (Target: 20.0%)
+    Ads ROAS:             4.07x   (Target: 5.0x)
+    CTR / CVR:        0.51% / 6.95%
+    Avg CPC:          ₹13.42
+    Status:           [~] CLOSE
+
+  BLENDED PERFORMANCE (Ads + Organic):
+    Total Revenue:   ₹  375,487.40
+    Organic Sales:   ₹  205,928.53
+    Ad % of Revenue:  45.2%
+    Blended ROAS:         9.00x   (Target: 10.0x)
+    Status:           [~] CLOSE
+
+  ISSUES:
+    • 2 ASIN(s) with zero ad sales (wasted spend)
+    • 5 ASIN(s) with ROAS < 2.5x (half of target)
+
+  TOP PERFORMERS:
+    B0CN177JS7  AntiSkidMat_Diamond_Grey_60cmx10mtr       Sales ₹ 78,212.03  ROAS 5.15x
+    B0BN631JD4  AntiSkidMat_Diamond_Clear_60cmx10mtr      Sales ₹ 55,822.12  ROAS 5.08x
+    B0BN5NZCGH  AntiSkidMat_Diamond_Grey_45cmx5mtr        Sales ₹ 13,740.77  ROAS 2.48x
+
+──────────────────────────────────────────────────────────────────────
+  Baby Play Mat (Reversible/Foldable)  (BPM)
+──────────────────────────────────────────────────────────────────────
+  ASINs in portfolio:  5
+
+  ADS PERFORMANCE:
+    Spend:           ₹   31,634.27
+    Ad Sales:        ₹  123,895.59
+    Orders / Units:      144 / 146
+    ACoS:                25.53%   (Target: 18.0%)
+    Ads ROAS:             3.92x   (Target: 5.5x)
+    CTR / CVR:        0.98% / 2.95%
+    Avg CPC:          ₹6.48
+    Status:           [✗] BELOW TARGET
+
+  BLENDED PERFORMANCE (Ads + Organic):
+    Total Revenue:   ₹  291,433.61
+    Organic Sales:   ₹  167,538.02
+    Ad % of Revenue:  42.5%
+    Blended ROAS:         9.21x   (Target: 11.0x)
+    Status:           [~] CLOSE
+
+  ISSUES:
+    • 1 ASIN(s) with ROAS < 2.8x (half of target)
+    • Ads ROAS 1.58x below target
+
+  TOP PERFORMERS:
+    B0D92MQ123  LT_Baby_Play_Mat_R                        Sales ₹ 41,578.80  ROAS 3.49x
+    B0GQ4L7R75  LT_Baby_Play_Mat_A                        Sales ₹ 30,687.01  ROAS 4.69x
+    B0D9QXVWLL  LT_Baby_Play_Mat_N                        Sales ₹ 29,739.39  ROAS 5.02x
+
+======================================================================
+  STRATEGIC RECOMMENDATIONS
+======================================================================
+
+  EVA_Kids (EVA Kids Floor Mat (Multicolor)):
+    → Performing well. Consider scaling budget by 15-20%.
+    → Pause 3 zero-sale ASIN(s) to reduce waste.
+
+  EVA_Gym (EVA Gym Floor Mat (Black/Grey)):
+    → Below target ROAS (7.57x vs 10.0x target).
+    → Review search terms for irrelevant traffic. Add negatives.
+    → Consider pausing worst performers and reallocating budget.
+
+  Storage (Storage Bags):
+    → Below target ROAS (3.31x vs 5.5x target).
+    → Review search terms for irrelevant traffic. Add negatives.
+    → Consider pausing worst performers and reallocating budget.
+    → High CPC (₹13.84). Check bid strategy and competition.
+
+  ASM (Anti-Slip Mats (Shelf Liners)):
+    → Close to target. Optimize keywords and bids.
+    → Focus on top-converting ASINs, cut bids on underperformers.
+
+  BPM (Baby Play Mat (Reversible/Foldable)):
+    → Below target ROAS (3.92x vs 5.5x target).
+    → Review search terms for irrelevant traffic. Add negatives.
+    → Consider pausing worst performers and reallocating budget.

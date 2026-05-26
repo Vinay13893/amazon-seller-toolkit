@@ -1,9 +1,45 @@
 services:
+  # ── Web / API (FastAPI + uvicorn) ─────────────────────────────────────────
   - type: web
-    name: amazon-seller-toolkit
+    name: esolz-web
     runtime: docker
     plan: starter
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./saas-backend/Dockerfile
+    dockerContext: ./saas-backend
+    healthCheckPath: /health
     envVars:
-      - key: PORT
-        value: 5000
+      - key: DATABASE_URL
+        sync: false           # paste your Supabase URL in Render dashboard
+      - key: REDIS_URL
+        sync: false           # paste your Upstash Redis URL here
+      - key: SECRET_KEY
+        generateValue: true   # Render auto-generates a secure random value
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: ADMIN_EMAIL
+        sync: false           # e.g. admin@yourcompany.com
+      - key: DEBUG
+        value: "false"
+
+  # ── Celery worker + beat scheduler ───────────────────────────────────────
+  - type: worker
+    name: esolz-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./saas-backend/Dockerfile
+    dockerContext: ./saas-backend
+    # -B runs the beat scheduler in the same process (daily BSR auto-refresh)
+    startCommand: celery -A app.celery_app.celery worker -B --loglevel=info --pool=solo --concurrency=1
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: DEBUG
+        value: "false"
