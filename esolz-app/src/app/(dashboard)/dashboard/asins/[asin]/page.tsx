@@ -1,7 +1,8 @@
 'use client'
 
-import { use, useMemo, useState, useEffect } from 'react'
+import { use, useMemo, useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import {
   LineChart,
   Line,
@@ -14,12 +15,10 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
-import { MOCK_PRODUCT_SNAPSHOTS } from '@/lib/mock-data'
 import {
   generateBsrHistory,
   generatePriceHistory,
   generateBuyBoxHistory,
-  getMockKeywords,
   getMockAlerts,
   MOCK_PINCODES,
   type BuyBoxPoint,
@@ -29,6 +28,10 @@ import {
 } from '@/lib/mock-asin-detail'
 import { formatPrice, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
+import { getWorkspaceId, getAsinDetail, type AsinDetailRow } from '@/lib/supabase/asins'
+import { createClient } from '@/lib/supabase/client'
+import { Marketplace } from '@/types'
 import {
   ArrowLeft,
   Package,
@@ -52,6 +55,9 @@ import {
   Check,
   X,
   Users,
+  Loader2,
+  RefreshCw,
+  Plus,
 } from 'lucide-react'
 
 // ─── Tooltip components ───────────────────────────────────────────────────────
@@ -193,15 +199,27 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
         <tbody>
           {keywords.map((kw, i) => (
             <tr key={i} className="border-b border-border/50 last:border-0">
-              <td className="py-3 text-foreground font-medium">{kw.keyword}</td>
+              <td className="py-3 text-foreground font-medium">
+                <div>{kw.keyword}</div>
+                {kw.checked_at && (
+                  <div className="text-xs text-muted-foreground/60 mt-0.5">
+                    checked {timeAgo(kw.checked_at)}
+                  </div>
+                )}
+              </td>
               <td className="py-3 text-right font-mono font-semibold text-foreground">
-                {kw.rank !== null ? `#${kw.rank}` : '—'}
+                {kw.rank !== null
+                  ? `#${kw.rank}`
+                  : kw.page_status === 'not_ranking'
+                    ? <span className="text-xs font-normal text-muted-foreground bg-muted px-1.5 py-0.5 rounded">Not ranking</span>
+                    : '—'
+                }
               </td>
               <td className="py-3 text-right text-muted-foreground font-mono text-xs hidden sm:table-cell">
                 {kw.prev_rank !== null ? `#${kw.prev_rank}` : '—'}
               </td>
               <td className="py-3 text-right text-muted-foreground text-xs hidden md:table-cell">
-                {kw.search_volume.toLocaleString('en-IN')}
+                {kw.search_volume ? kw.search_volume.toLocaleString('en-IN') : '—'}
               </td>
               <td className="py-3 text-center">
                 {kw.trend === 'up' && (
@@ -271,35 +289,354 @@ function PincodesTable({ pincodes }: { pincodes: PincodeData[] }) {
   )
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function currencyFor(mp: string) {
+  if (mp === 'US') return 'USD'
+  if (mp === 'UK') return 'GBP'
+  if (mp === 'DE') return 'EUR'
+  return 'INR'
+}
+
+function availLabelFrom(score: number | null): string {
+  if (score === null) return '—'
+  if (score >= 70) return 'In Stock'
+  if (score >= 30) return 'Limited Stock'
+  return 'Out of Stock'
+}
+
+function formatDateShort(iso: string): string {
+  const d = new Date(iso)
+  return d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AsinDetailPage({ params }: { params: Promise<{ asin: string }> }) {
   const { asin } = use(params)
 
-  const product = useMemo(
-    () => MOCK_PRODUCT_SNAPSHOTS.find(p => p.asin === asin) ?? null,
-    [asin],
-  )
+  const [detail,  setDetail]  = useState<AsinDetailRow | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [notFound, setNotFound] = useState(false)
 
-  const bsrHistory   = useMemo(() => generateBsrHistory(asin, product?.bsr_rank ?? null),       [asin, product?.bsr_rank])
-  const priceHistory = useMemo(() => generatePriceHistory(asin, product?.price ?? null),         [asin, product?.price])
-  const buyboxHist   = useMemo(() => generateBuyBoxHistory(product?.buybox_is_self ?? null, product?.buybox_winner ?? null), [product?.buybox_is_self, product?.buybox_winner])
-  const keywords     = useMemo(() => getMockKeywords(asin),  [asin])
-  const alerts       = useMemo(() => getMockAlerts(asin),    [asin])
-
+  const [refreshing, setRefreshing] = useState(false)
   const [bsrRange,   setBsrRange]   = useState<7 | 14 | 30>(30)
   const [priceRange, setPriceRange] = useState<7 | 14 | 30>(30)
   const [mounted,    setMounted]    = useState(false)
 
+  // Pincode check state
+  const [pincodeInput, setPincodeInput] = useState('')
+  const [checking, setChecking] = useState(false)
+  const [pincodeHistory, setPincodeHistory] = useState<any[]>([])
+  const [latestCheck, setLatestCheck] = useState<any | null>(null)
+
+  // Buy Box check state
+  const [buyboxChecking, setBuyboxChecking] = useState(false)
+  const [buyboxHistory, setBuyboxHistory] = useState<any[]>([])
+  const [latestBuyBox, setLatestBuyBox] = useState<any | null>(null)
+
+  // Keyword ranks (real data from Supabase)
+  const [asinKeywords, setAsinKeywords] = useState<KeywordRank[]>([])
+  const [kwInput, setKwInput] = useState('')
+  const [trackingAsinKw, setTrackingAsinKw] = useState(false)
+  const [kwRefreshing, setKwRefreshing] = useState(false)
+
   useEffect(() => { setMounted(true) }, [])
 
-  // ── Not found ──────────────────────────────────────────────────────────────
-  if (!product) {
+  const load = useCallback(async () => {
+    setLoading(true)
+    const wsId = await getWorkspaceId()
+    if (!wsId) { setNotFound(true); setLoading(false); return }
+    const data = await getAsinDetail(wsId, asin)
+    if (!data) { setNotFound(true) } else { setDetail(data) }
+    setLoading(false)
+  }, [asin])
+
+  const loadPincodeHistory = useCallback(async () => {
+    const wsId = await getWorkspaceId()
+    if (!wsId || !detail) return
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('pincode_checks')
+      .select('*')
+      .eq('workspace_id', wsId)
+      .eq('tracked_asin_id', detail.id)
+      .order('checked_at', { ascending: false })
+      .limit(10)
+    if (data) {
+      setPincodeHistory(data)
+      if (data.length > 0) setLatestCheck(data[0])
+    }
+  }, [detail])
+
+  const loadBuyBoxHistory = useCallback(async () => {
+    const wsId = await getWorkspaceId()
+    if (!wsId || !detail) return
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('buybox_snapshots')
+      .select('*')
+      .eq('workspace_id', wsId)
+      .eq('tracked_asin_id', detail.id)
+      .order('checked_at', { ascending: false })
+      .limit(10)
+    if (data) {
+      setBuyboxHistory(data)
+      if (data.length > 0) setLatestBuyBox(data[0])
+    }
+  }, [detail])
+
+  const loadAsinKeywords = useCallback(async () => {
+    if (!detail) return
+    const supabase = createClient()
+
+    const { data: kws } = await supabase
+      .from('tracked_keywords')
+      .select('id, keyword, search_volume')
+      .eq('tracked_asin_id', detail.id)
+
+    if (!kws || kws.length === 0) {
+      setAsinKeywords([])
+      return
+    }
+
+    const { data: snaps } = await supabase
+      .from('keyword_rank_snapshots')
+      .select('tracked_keyword_id, organic_rank, page_status, checked_at')
+      .in('tracked_keyword_id', kws.map(k => k.id))
+      .order('checked_at', { ascending: false })
+
+    const byKw: Record<string, { organic_rank: number | null; page_status: string | null; checked_at: string | null }[]> = {}
+    for (const s of snaps ?? []) {
+      if (!byKw[s.tracked_keyword_id]) byKw[s.tracked_keyword_id] = []
+      byKw[s.tracked_keyword_id].push(s)
+    }
+
+    const mapped: KeywordRank[] = kws.map(kw => {
+      const kwSnaps   = byKw[kw.id] ?? []
+      const cur       = kwSnaps[0]?.organic_rank ?? null
+      const prev      = kwSnaps[1]?.organic_rank ?? null
+      const trend: 'up' | 'down' | 'flat' =
+        cur !== null && prev !== null
+          ? cur < prev ? 'up' : cur > prev ? 'down' : 'flat'
+          : 'flat'
+      return {
+        keyword:      kw.keyword,
+        rank:         cur,
+        prev_rank:    prev,
+        search_volume: kw.search_volume ?? 0,
+        trend,
+        page_status:  kwSnaps[0]?.page_status ?? null,
+        checked_at:   kwSnaps[0]?.checked_at  ?? null,
+      }
+    })
+
+    setAsinKeywords(mapped)
+  }, [detail])
+
+  const handleTrackAsinKeyword = useCallback(async () => {
+    if (!kwInput.trim()) return
+    setTrackingAsinKw(true)
+    try {
+      const res = await fetch(`/api/asins/${asin}/keywords/track`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          keyword:     kwInput.trim(),
+          marketplace: detail?.marketplace ?? 'IN',
+        }),
+      })
+      const data = await res.json() as { keyword?: unknown; error?: string; debug?: unknown }
+      console.log('[asin/keywords/track] response:', { status: res.status, data })
+      if (!res.ok) {
+        toast.error(data.error ?? 'Failed to track keyword')
+      } else {
+        toast.success(`Tracking "${kwInput.trim()}"`)
+        setKwInput('')
+        await loadAsinKeywords()
+      }
+    } catch (err) {
+      console.error('[asin/keywords/track] network error:', err)
+      toast.error('Network error — could not track keyword')
+    } finally {
+      setTrackingAsinKw(false)
+    }
+  }, [asin, kwInput, detail?.marketplace, loadAsinKeywords])
+
+  const handleRefreshKeywordRanks = useCallback(async () => {
+    if (asinKeywords.length === 0) return
+    setKwRefreshing(true)
+    try {
+      const res = await fetch(`/api/asins/${asin}/keywords/refresh`, { method: 'POST' })
+      const data = await res.json() as { checked?: number; results?: unknown[]; error?: string }
+      console.log('[asin/keywords/refresh] response:', { status: res.status, data })
+      if (!res.ok) {
+        toast.error(data.error ?? 'Rank refresh failed')
+      } else {
+        toast.success(`Refreshed ${data.checked ?? 0} keyword ranks`)
+        await loadAsinKeywords()
+      }
+    } catch (err) {
+      console.error('[asin/keywords/refresh] network error:', err)
+      toast.error('Network error — could not refresh ranks')
+    } finally {
+      setKwRefreshing(false)
+    }
+  }, [asin, asinKeywords.length, loadAsinKeywords])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => { if (detail) loadPincodeHistory() }, [detail, loadPincodeHistory])
+  useEffect(() => { if (detail) loadBuyBoxHistory() }, [detail, loadBuyBoxHistory])
+  useEffect(() => { if (detail) loadAsinKeywords() }, [detail, loadAsinKeywords])
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      const res  = await fetch(`/api/asins/${asin}/refresh`, { method: 'POST' })
+      const data = await res.json() as { error?: string; detail?: string; scrape_status?: string }
+      if (!res.ok) {
+        const msg = [data.error, data.detail, data.scrape_status].filter(Boolean).join(' — ')
+        console.error('[bsr-refresh] API error:', data)
+        toast.error(msg || 'Refresh failed')
+      } else {
+        toast.success('Snapshot updated successfully')
+        await load()
+      }
+    } catch (err) {
+      console.error('[bsr-refresh] network error:', err)
+      toast.error('Network error — could not refresh')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [asin, load])
+
+  const handleCheckPincode = useCallback(async () => {
+    if (!pincodeInput.trim()) {
+      toast.error('Please enter a pincode')
+      return
+    }
+    if (detail?.marketplace === 'IN' && !/^\d{6}$/.test(pincodeInput)) {
+      toast.error('Invalid pincode format (expected 6 digits)')
+      return
+    }
+    setChecking(true)
+    try {
+      const res = await fetch(`/api/asins/${asin}/pincode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pincode: pincodeInput.trim() })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error || 'Pincode check failed')
+      } else {
+        toast.success('Pincode check completed')
+        setLatestCheck(data.check)
+        await loadPincodeHistory()
+        setPincodeInput('')
+      }
+    } catch (err) {
+      console.error('[pincode-check] error:', err)
+      toast.error('Failed to check pincode')
+    } finally {
+      setChecking(false)
+    }
+  }, [asin, pincodeInput, detail?.marketplace, loadPincodeHistory])
+
+  const handleCheckBuyBox = useCallback(async () => {
+    setBuyboxChecking(true)
+    try {
+      const res = await fetch(`/api/asins/${asin}/buybox`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error || 'Buy Box check failed')
+      } else {
+        toast.success(`Buy Box owner: ${data.result.buy_box_owner || 'Unknown'}`)
+        await loadBuyBoxHistory()
+      }
+    } catch (err) {
+      console.error('[buybox-check] error:', err)
+      toast.error('Failed to run Buy Box check')
+    } finally {
+      setBuyboxChecking(false)
+    }
+  }, [asin, loadBuyBoxHistory])
+
+  // ── Derive product shape from real data ────────────────────────────────
+  const snapshots = detail?.snapshots ?? []
+  const latest    = snapshots[0] ?? null
+  const prev      = snapshots[1] ?? null
+
+  // Last non-null BSR — older snapshots used when latest has null BSR
+  const lastBsrSnap  = snapshots.find(s => s.bsr != null) ?? null
+  const prevBsrSnap  = snapshots.filter(s => s.bsr != null)[1] ?? null
+
+  const product = detail ? {
+    id:                 detail.id,
+    asin:               detail.asin,
+    label:              detail.product_title || detail.asin,
+    marketplace:        detail.marketplace as Marketplace,
+    is_active:          detail.status === 'active',
+    created_at:         detail.created_at,
+    bsr_rank:           lastBsrSnap?.bsr      ?? null,
+    bsr_rank_prev:      prevBsrSnap?.bsr      ?? null,
+    bsr_captured_at:    lastBsrSnap?.checked_at ?? null,
+    category:           detail.category,
+    sub_rank:           null as null,
+    sub_category:       null as null,
+    price:              latest?.price != null  ? Number(latest.price)  : null,
+    price_currency:     currencyFor(detail.marketplace),
+    rating:             latest?.rating != null ? Number(latest.rating) : null,
+    review_count:       latest?.review_count  ?? null,
+    buybox_winner:      latest?.buy_box_owner ?? null,
+    buybox_is_self:     null as null,
+    availability:       (latest?.availability_score != null
+      ? (latest.availability_score >= 70 ? 'in_stock' : latest.availability_score >= 30 ? 'limited' : 'out_of_stock')
+      : null) as 'in_stock' | 'limited' | 'out_of_stock' | null,
+    availability_score: latest?.availability_score ?? null,
+    captured_at:        latest?.checked_at    ?? null,
+  } : null
+
+  // ── Chart data: real snapshots → fall back to mock ──────────────────────
+  const realBsrHistory = snapshots
+    .filter(s => s.bsr !== null)
+    .map(s => ({ date: formatDateShort(s.checked_at), rank: s.bsr! }))
+    .reverse()
+
+  const realPriceHistory = snapshots
+    .filter(s => s.price !== null)
+    .map(s => ({ date: formatDateShort(s.checked_at), price: Number(s.price) }))
+    .reverse()
+
+  const bsrHistory   = realBsrHistory.length   > 0 ? realBsrHistory   : generateBsrHistory(asin,   product?.bsr_rank ?? null)
+  const priceHistory = realPriceHistory.length  > 0 ? realPriceHistory : generatePriceHistory(asin, product?.price ?? null)
+
+  const buyboxHist = useMemo(
+    () => generateBuyBoxHistory(product?.buybox_is_self ?? null, product?.buybox_winner ?? null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [product?.buybox_is_self, product?.buybox_winner],
+  )
+  const keywords = asinKeywords
+  const alerts   = useMemo(() => getMockAlerts(asin),    [asin])
+
+  // ── Loading ────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-32">
+        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // ── Not found ──────────────────────────────────────────────────────────
+  if (notFound || !product) {
     return (
       <div className="flex flex-col items-center justify-center py-24 gap-4 text-center">
         <Package className="size-12 text-muted-foreground/30" />
         <h1 className="text-lg font-semibold text-foreground">ASIN not found</h1>
-        <p className="text-sm text-muted-foreground">No product data for <span className="font-mono text-primary">{asin}</span></p>
+        <p className="text-sm text-muted-foreground">
+          No tracked product for <span className="font-mono text-primary">{asin}</span>
+        </p>
         <Button variant="outline" size="sm" render={<Link href="/dashboard/asins" />}>
           <ArrowLeft className="size-4" />
           Back to ASIN Tracking
@@ -311,21 +648,24 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
   const bsrChange  = product.bsr_rank !== null && product.bsr_rank_prev !== null
     ? product.bsr_rank - product.bsr_rank_prev
     : null
-  const bsrDisplay = product.bsr_rank !== null ? `#${product.bsr_rank.toLocaleString('en-IN')}` : '—'
+  const bsrDisplay = product.bsr_rank !== null ? `#${product.bsr_rank.toLocaleString('en-IN')}` : 'BSR not available'
+  // Show "last seen X ago" when BSR is from an older snapshot (latest had null)
+  const bsrIsStale = product.bsr_rank !== null && product.bsr_captured_at !== product.captured_at
+  const bsrSubLabel = bsrIsStale
+    ? `Last seen ${timeAgo(product.bsr_captured_at!)}`
+    : bsrChange !== null
+      ? bsrChange < 0 ? `▲ ${Math.abs(bsrChange).toLocaleString('en-IN')} improved` : bsrChange > 0 ? `▼ ${bsrChange.toLocaleString('en-IN')} dropped` : 'No change'
+      : 'No data yet'
 
   const buyboxValue = product.buybox_is_self === true
     ? 'You ✓'
     : product.buybox_is_self === false
       ? (product.buybox_winner ?? 'Competitor') + ' ✗'
-      : '—'
-
-  const availLabel = product.availability === 'in_stock'
-    ? 'In Stock'
-    : product.availability === 'limited'
-      ? 'Limited Stock'
-      : product.availability === 'out_of_stock'
-        ? 'Out of Stock'
+      : product.buybox_winner
+        ? product.buybox_winner
         : '—'
+
+  const availLabel = availLabelFrom(product.availability_score)
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -348,9 +688,23 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
       <div className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-start gap-4">
-            <div className="size-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
-              <Package className="size-6 text-primary" />
-            </div>
+            {/* Image or fallback icon */}
+            {detail?.image_url ? (
+              <div className="size-14 rounded-xl border border-border overflow-hidden shrink-0 bg-muted">
+                <Image
+                  src={detail.image_url}
+                  alt={product.label}
+                  width={56}
+                  height={56}
+                  className="object-contain w-full h-full"
+                  unoptimized
+                />
+              </div>
+            ) : (
+              <div className="size-14 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                <Package className="size-7 text-primary" />
+              </div>
+            )}
             <div className="min-w-0">
               {/* Chips row */}
               <div className="flex items-center gap-2 flex-wrap mb-2">
@@ -360,6 +714,11 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
                 <Badge variant="outline" className="text-xs h-5 px-1.5">
                   {product.marketplace}
                 </Badge>
+                {detail?.brand && (
+                  <span className="text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-md">
+                    {detail.brand}
+                  </span>
+                )}
                 <span className={cn('flex items-center gap-1 text-xs font-medium', product.is_active ? 'text-green-400' : 'text-muted-foreground')}>
                   <span className={cn('size-1.5 rounded-full', product.is_active ? 'bg-green-400' : 'bg-muted-foreground')} />
                   {product.is_active ? 'Active' : 'Inactive'}
@@ -369,19 +728,33 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <h1 className="text-xl font-bold text-foreground leading-snug mb-1">
                 {product.label}
               </h1>
-              {/* Category breadcrumb */}
+              {/* Category */}
               {product.category && (
-                <p className="text-sm text-muted-foreground">
-                  {product.category}
-                  {product.sub_category && <> › <span className="text-foreground/70">{product.sub_category}</span></>}
-                </p>
+                <p className="text-sm text-muted-foreground">{product.category}</p>
               )}
             </div>
           </div>
-          {/* Last checked */}
-          <div className="text-right shrink-0">
-            <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold mb-0.5">Last checked</p>
-            <p className="text-sm font-medium text-foreground">{timeAgo(product.captured_at)}</p>
+          {/* Last checked + Refresh */}
+          <div className="text-right shrink-0 flex flex-col items-end gap-2">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold mb-0.5">Last checked</p>
+              <p className="text-sm font-medium text-foreground">{timeAgo(product.captured_at)}</p>
+              {snapshots.length === 0 && (
+                <p className="text-[10px] text-muted-foreground mt-1">No snapshots yet</p>
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs"
+              onClick={handleRefresh}
+              disabled={refreshing || loading}
+            >
+              {refreshing
+                ? <Loader2 className="size-3.5 animate-spin" />
+                : <RefreshCw className="size-3.5" />}
+              {refreshing ? 'Refreshing…' : 'Refresh Data'}
+            </Button>
           </div>
         </div>
       </div>
@@ -391,14 +764,14 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         <KpiCard
           label="Current BSR"
           value={bsrDisplay}
-          sub={product.category ?? undefined}
+          sub={bsrIsStale ? bsrSubLabel : (product.category ?? bsrSubLabel)}
           icon={TrendingDown}
-          trend={bsrChange !== null ? { value: bsrChange, label: 'from yesterday' } : undefined}
+          trend={!bsrIsStale && bsrChange !== null ? { value: bsrChange, label: 'from yesterday' } : undefined}
         />
         <KpiCard
           label="Sub-Category Rank"
-          value={product.sub_rank !== null ? `#${product.sub_rank}` : '—'}
-          sub={product.sub_category ?? undefined}
+          value="—"
+          sub="No data yet"
           icon={BarChart2}
         />
         <KpiCard
@@ -410,13 +783,13 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         <KpiCard
           label="Rating"
           value={product.rating !== null ? `${product.rating.toFixed(1)} ★` : '—'}
-          sub={product.review_count !== null ? `${product.review_count.toLocaleString('en-IN')} reviews` : undefined}
+          sub={product.review_count !== null ? `${product.review_count.toLocaleString('en-IN')} reviews` : 'No data yet'}
           icon={Star}
         />
         <KpiCard
           label="Buy Box"
           value={buyboxValue}
-          sub={product.buybox_is_self === false ? `Owned by ${product.buybox_winner ?? 'competitor'}` : product.buybox_is_self === true ? 'You own it' : 'No data'}
+          sub={product.buybox_winner ? `Owner: ${product.buybox_winner}` : 'No data yet'}
           icon={product.buybox_is_self === true ? ShieldCheck : product.buybox_is_self === false ? ShieldAlert : ShieldOff}
         />
         <KpiCard
@@ -438,44 +811,53 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
               <div>
                 <h2 className="font-semibold text-foreground">BSR History</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">Rank trend — lower is better</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {realBsrHistory.length > 0 ? 'Rank trend — lower is better' : 'No BSR data collected yet'}
+                </p>
               </div>
-              <RangeToggle value={bsrRange} onChange={setBsrRange} />
+              {realBsrHistory.length > 0 && <RangeToggle value={bsrRange} onChange={setBsrRange} />}
             </div>
             {mounted ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart
-                  data={bsrHistory.slice(-bsrRange)}
-                  margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: '#94a3b8', fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    interval="preserveStartEnd"
-                  />
-                  <YAxis
-                    reversed
-                    domain={['auto', 'auto']}
-                    tick={{ fill: '#94a3b8', fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v: number) => v >= 1000 ? `#${(v / 1000).toFixed(1)}k` : `#${v}`}
-                    width={48}
-                  />
-                  <Tooltip content={<BsrTooltip />} />
-                  <Line
-                    type="monotone"
-                    dataKey="rank"
-                    stroke="#f59e0b"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4, fill: '#f59e0b', stroke: '#f59e0b' }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              realBsrHistory.length === 0 ? (
+                <div className="h-[220px] flex flex-col items-center justify-center gap-2">
+                  <TrendingDown className="size-8 text-muted-foreground/30" />
+                  <p className="text-sm text-muted-foreground">No BSR data yet — data populates after first scrape</p>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart
+                    data={bsrHistory.slice(-bsrRange)}
+                    margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: '#94a3b8', fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      interval="preserveStartEnd"
+                    />
+                    <YAxis
+                      reversed
+                      domain={['auto', 'auto']}
+                      tick={{ fill: '#94a3b8', fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      tickFormatter={(v: number) => v >= 1000 ? `#${(v / 1000).toFixed(1)}k` : `#${v}`}
+                      width={48}
+                    />
+                    <Tooltip content={<BsrTooltip />} />
+                    <Line
+                      type="monotone"
+                      dataKey="rank"
+                      stroke="#f59e0b"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, fill: '#f59e0b', stroke: '#f59e0b' }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              )
             ) : (
               <ChartSkeleton />
             )}
@@ -486,49 +868,51 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
               <div>
                 <h2 className="font-semibold text-foreground">Price History</h2>
-                <p className="text-xs text-muted-foreground mt-0.5">Listed price over time</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {realPriceHistory.length > 0 ? 'Listed price over time' : 'No price data collected yet'}
+                </p>
               </div>
-              <RangeToggle value={priceRange} onChange={setPriceRange} />
+              {realPriceHistory.length > 0 && <RangeToggle value={priceRange} onChange={setPriceRange} />}
             </div>
             {mounted ? (
-              priceHistory.length === 0 ? (
+              realPriceHistory.length === 0 ? (
                 <div className="h-[220px] flex flex-col items-center justify-center gap-2">
                   <IndianRupee className="size-8 text-muted-foreground/30" />
-                  <p className="text-sm text-muted-foreground">No price data collected yet</p>
+                  <p className="text-sm text-muted-foreground">No price data yet — data populates after first scrape</p>
                 </div>
               ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <LineChart
-                  data={priceHistory.slice(-priceRange)}
-                  margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: '#94a3b8', fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    interval="preserveStartEnd"
-                  />
-                  <YAxis
-                    domain={['auto', 'auto']}
-                    tick={{ fill: '#94a3b8', fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v: number) => `₹${v.toLocaleString('en-IN')}`}
-                    width={56}
-                  />
-                  <Tooltip content={<PriceTooltip />} />
-                  <Line
-                    type="monotone"
-                    dataKey="price"
-                    stroke="#38bdf8"
-                    strokeWidth={2}
-                    dot={false}
-                    activeDot={{ r: 4, fill: '#38bdf8', stroke: '#38bdf8' }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart
+                    data={priceHistory.slice(-priceRange)}
+                    margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fill: '#94a3b8', fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      interval="preserveStartEnd"
+                    />
+                    <YAxis
+                      domain={['auto', 'auto']}
+                      tick={{ fill: '#94a3b8', fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      tickFormatter={(v: number) => `₹${v.toLocaleString('en-IN')}`}
+                      width={56}
+                    />
+                    <Tooltip content={<PriceTooltip />} />
+                    <Line
+                      type="monotone"
+                      dataKey="price"
+                      stroke="#38bdf8"
+                      strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4, fill: '#38bdf8', stroke: '#38bdf8' }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
               )
             ) : (
               <ChartSkeleton />
@@ -545,7 +929,11 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <ShieldCheck className="size-4 text-primary shrink-0" />
               <h2 className="font-semibold text-foreground">Buy Box — 7 Days</h2>
             </div>
-            <BuyBoxTimeline history={buyboxHist} />
+            {snapshots.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">No Buy Box data yet</p>
+            ) : (
+              <BuyBoxTimeline history={buyboxHist} />
+            )}
           </div>
 
           {/* Alerts */}
@@ -565,13 +953,50 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
 
       {/* ── Keyword rank snapshot ── */}
       <div className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-center gap-2 mb-5">
-          <TrendingUp className="size-4 text-primary shrink-0" />
-          <div>
-            <h2 className="font-semibold text-foreground">Keyword Rank Snapshot</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Organic search position on Amazon India</p>
+        <div className="flex items-center justify-between gap-4 mb-5 flex-wrap">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="size-4 text-primary shrink-0" />
+            <div>
+              <h2 className="font-semibold text-foreground">Keyword Rank Snapshot</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Organic search position on Amazon India</p>
+            </div>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshKeywordRanks}
+            disabled={kwRefreshing || asinKeywords.length === 0}
+          >
+            {kwRefreshing
+              ? <><RefreshCw className="size-3.5 animate-spin" /> Refreshing…</>
+              : <><RefreshCw className="size-3.5" /> Refresh Ranks</>
+            }
+          </Button>
         </div>
+
+        {/* ── Track keyword input ── */}
+        <div className="flex gap-2 mb-5">
+          <input
+            type="text"
+            placeholder="Add keyword to track (e.g. desi ghee 500ml)"
+            value={kwInput}
+            onChange={e => setKwInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !trackingAsinKw) handleTrackAsinKeyword() }}
+            disabled={trackingAsinKw}
+            className="flex-1 px-3 py-2 text-sm rounded-lg border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50 disabled:cursor-not-allowed"
+          />
+          <Button
+            onClick={handleTrackAsinKeyword}
+            disabled={trackingAsinKw || !kwInput.trim()}
+            size="sm"
+          >
+            {trackingAsinKw
+              ? <><Loader2 className="size-3.5 animate-spin" /> Saving…</>
+              : <><Plus className="size-3.5" /> Track</>
+            }
+          </Button>
+        </div>
+
         <KeywordsTable keywords={keywords} />
       </div>
 
@@ -581,10 +1006,242 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
           <MapPin className="size-4 text-primary shrink-0" />
           <div>
             <h2 className="font-semibold text-foreground">Pincode Availability</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Product availability across tracked pincodes</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Check product availability and delivery options</p>
           </div>
         </div>
-        <PincodesTable pincodes={MOCK_PINCODES} />
+
+        {/* Input + Check button */}
+        <div className="flex gap-2 mb-6">
+          <input
+            type="text"
+            placeholder="Enter pincode (e.g., 110001)"
+            value={pincodeInput}
+            onChange={e => setPincodeInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && !checking) handleCheckPincode() }}
+            disabled={checking}
+            className="flex-1 px-3 py-2 text-sm rounded-lg border border-border bg-background text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/40 disabled:opacity-50 disabled:cursor-not-allowed"
+          />
+          <Button
+            onClick={handleCheckPincode}
+            disabled={checking || !pincodeInput.trim()}
+            className="gap-1.5"
+          >
+            {checking ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                Checking…
+              </>
+            ) : (
+              <>
+                <MapPin className="size-4" />
+                Check
+              </>
+            )}
+          </Button>
+        </div>
+
+        {/* Latest check result */}
+        {latestCheck && (
+          <div className="mb-6 p-4 rounded-lg border border-border bg-muted/30">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground font-semibold mb-1">Latest Check</p>
+                <p className="font-mono text-sm text-foreground">Pincode: {latestCheck.pincode}</p>
+              </div>
+              <p className="text-[10px] text-muted-foreground">{timeAgo(latestCheck.checked_at)}</p>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Availability</p>
+                <p className={cn('text-sm font-medium', latestCheck.available ? 'text-green-400' : 'text-red-400')}>
+                  {latestCheck.available ? '✓ Available' : '✗ Not Available'}
+                </p>
+              </div>
+              <div className="col-span-2 sm:col-span-1">
+                <p className="text-xs text-muted-foreground mb-1">Delivery Options</p>
+                {latestCheck.delivery_promise
+                  ? latestCheck.delivery_promise.split('\n').map((line: string, i: number) => (
+                      <p key={i} className="text-sm font-medium text-foreground leading-snug">{line}</p>
+                    ))
+                  : <p className="text-sm text-muted-foreground">—</p>
+                }
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Fulfillment</p>
+                <p className="text-sm font-medium text-foreground">{latestCheck.fulfillment_type || '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Seller</p>
+                <p className="text-sm font-medium text-foreground truncate" title={latestCheck.buy_box_seller || '—'}>
+                  {latestCheck.buy_box_seller || '—'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Check history */}
+        {pincodeHistory.length > 0 ? (
+          <div>
+            <h3 className="text-sm font-semibold text-foreground mb-3">Recent Checks</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">Pincode</th>
+                    <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Available</th>
+                    <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground hidden sm:table-cell">Delivery</th>
+                    <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground hidden md:table-cell">Fulfillment</th>
+                    <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Checked</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pincodeHistory.map((check, i) => (
+                    <tr key={check.id || i} className="border-b border-border/50 last:border-0">
+                      <td className="py-3 font-mono text-xs text-foreground">{check.pincode}</td>
+                      <td className="py-3 text-center">
+                        {check.available ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
+                            <Check className="size-3" />
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
+                            <X className="size-3" />
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-3 text-sm text-muted-foreground hidden sm:table-cell">
+                        {check.delivery_promise
+                          ? check.delivery_promise.split('\n').map((line: string, i: number) => (
+                              <span key={i} className="block">{line}</span>
+                            ))
+                          : '—'
+                        }
+                      </td>
+                      <td className="py-3 text-center text-xs text-muted-foreground hidden md:table-cell">
+                        {check.fulfillment_type || '—'}
+                      </td>
+                      <td className="py-3 text-right text-xs text-muted-foreground">
+                        {timeAgo(check.checked_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-8">
+            <MapPin className="size-8 text-muted-foreground/30 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">No pincode checks yet</p>
+            <p className="text-xs text-muted-foreground mt-1">Enter a pincode above to check availability</p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Buy Box Checker ── */}
+      <div className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-center justify-between gap-3 mb-5">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-primary shrink-0" />
+            <div>
+              <h2 className="font-semibold text-foreground">Buy Box Checker</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Live offer listing — who currently owns the Buy Box</p>
+            </div>
+          </div>
+          <Button
+            onClick={handleCheckBuyBox}
+            disabled={buyboxChecking}
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+          >
+            {buyboxChecking ? (
+              <><Loader2 className="size-3.5 animate-spin" />Checking&hellip;</>
+            ) : (
+              <><ShieldCheck className="size-3.5" />Run Check</>
+            )}
+          </Button>
+        </div>
+
+        {latestBuyBox && (
+          <div className="mb-5 p-4 rounded-lg border border-border bg-muted/30">
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">Latest Result</p>
+              <p className="text-[10px] text-muted-foreground">{timeAgo(latestBuyBox.checked_at)}</p>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Buy Box Owner</p>
+                <p className="text-sm font-medium text-foreground truncate" title={latestBuyBox.buy_box_owner || '—'}>
+                  {latestBuyBox.buy_box_owner || '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Buy Box Price</p>
+                <p className="text-sm font-medium text-foreground">
+                  {latestBuyBox.buy_box_price != null
+                    ? formatPrice(latestBuyBox.buy_box_price, product.price_currency)
+                    : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Fulfillment</p>
+                <p className="text-sm font-medium text-foreground">{latestBuyBox.fulfillment_type || '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Status</p>
+                <p className="text-sm font-medium text-foreground capitalize">{latestBuyBox.buy_box_status || '—'}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {buyboxHistory.length > 0 ? (
+          <div>
+            <h3 className="text-sm font-semibold text-foreground mb-3">Recent Checks</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">Owner</th>
+                    <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground hidden sm:table-cell">Price</th>
+                    <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Fulfillment</th>
+                    <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground hidden md:table-cell">Status</th>
+                    <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Checked</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {buyboxHistory.map((snap, i) => (
+                    <tr key={snap.id || i} className="border-b border-border/50 last:border-0">
+                      <td className="py-3 text-foreground font-medium max-w-[160px] truncate">
+                        {snap.buy_box_owner || '—'}
+                      </td>
+                      <td className="py-3 text-right text-muted-foreground hidden sm:table-cell">
+                        {snap.buy_box_price != null ? formatPrice(snap.buy_box_price, product.price_currency) : '—'}
+                      </td>
+                      <td className="py-3 text-center text-xs text-muted-foreground">
+                        {snap.fulfillment_type || '—'}
+                      </td>
+                      <td className="py-3 text-center text-xs text-muted-foreground hidden md:table-cell capitalize">
+                        {snap.buy_box_status || '—'}
+                      </td>
+                      <td className="py-3 text-right text-xs text-muted-foreground">
+                        {timeAgo(snap.checked_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : !buyboxChecking ? (
+          <div className="text-center py-8">
+            <ShieldCheck className="size-8 text-muted-foreground/30 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">No Buy Box checks yet</p>
+            <p className="text-xs text-muted-foreground mt-1">Click &quot;Run Check&quot; to see who owns the Buy Box</p>
+          </div>
+        ) : null}
       </div>
 
       {/* ── Competitor comparison placeholder ── */}

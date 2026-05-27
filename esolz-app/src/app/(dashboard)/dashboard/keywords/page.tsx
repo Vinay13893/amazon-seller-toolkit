@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import {
   LineChart,
@@ -38,21 +38,32 @@ import {
   ArrowDownRight,
 } from 'lucide-react'
 import {
-  MOCK_TRACKED_KEYWORDS,
-  KEYWORD_RANK_HISTORY,
   KEYWORD_GROUPS,
   KEYWORD_ALERTS,
-  researchKeywords,
-  refreshKeywordRanks,
-  type ResearchKeyword,
   type TrackedKeyword,
   type KeywordAlert,
   type KeywordGroup,
 } from '@/lib/mock-keywords'
+import { createClient } from '@/lib/supabase/client'
+import { normalizeEmbed } from '@/lib/supabase/normalize'
+import { toast } from 'sonner'
+
+// ─── API research result type ─────────────────────────────────────────────────
+// Metrics are null — no existing keyword-research tool provides volume/CPC data.
+interface ApiResearchResult {
+  id: string
+  keyword: string
+  search_volume: number | null
+  cpc_estimate: number | null
+  competition_score: number | null
+  difficulty: number | null
+  intent: string | null
+  top_ranking_asin: string | null
+}
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
 
-function IntentBadge({ intent }: { intent: ResearchKeyword['intent'] }) {
+function IntentBadge({ intent }: { intent: 'generic' | 'long_tail' | 'competitor' | 'problem_based' }) {
   const map = {
     generic: 'bg-zinc-500/15 text-zinc-400 border-zinc-500/20',
     long_tail: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
@@ -70,7 +81,7 @@ function IntentBadge({ intent }: { intent: ResearchKeyword['intent'] }) {
   )
 }
 
-function CompetitionBadge({ level }: { level: ResearchKeyword['competition'] }) {
+function CompetitionBadge({ level }: { level: 'low' | 'medium' | 'high' }) {
   const map = {
     low: 'bg-green-500/15 text-green-400 border-green-500/20',
     medium: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
@@ -278,11 +289,14 @@ export default function KeywordsPage() {
   const [marketplace, setMarketplace] = useState<'amazon.in' | 'amazon.com'>('amazon.in')
   const [category, setCategory] = useState('all')
   const [isResearching, setIsResearching] = useState(false)
-  const [researchResults, setResearchResults] = useState<ResearchKeyword[] | null>(null)
-  const [trackedData, setTrackedData] = useState<TrackedKeyword[]>(MOCK_TRACKED_KEYWORDS)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [researchResults, setResearchResults] = useState<ApiResearchResult[] | null>(null)
+  const [trackedData, setTrackedData] = useState<TrackedKeyword[]>([])
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [tracked, setTracked] = useState<Set<string>>(new Set())
-  const [selectedKeywordId, setSelectedKeywordId] = useState('tk1')
+  const [trackingKw, setTrackingKw] = useState<string | null>(null)
+  const [selectedKeywordId, setSelectedKeywordId] = useState<string>('')
+  const [historyMap, setHistoryMap] = useState<Record<string, { date: string; rank: number | null }[]>>({})
   const [chartRange, setChartRange] = useState<7 | 14 | 30>(7)
   const [isMounted, setIsMounted] = useState(false)
   const researchRef = useRef<HTMLDivElement>(null)
@@ -291,13 +305,122 @@ export default function KeywordsPage() {
     setIsMounted(true)
   }, [])
 
+  // ── Load workspace + tracked keywords ─────────────────────────────────────────────
+  const loadTrackedKeywords = useCallback(async (wsId: string) => {
+    const supabase = createClient()
+    const { data: kws } = await supabase
+      .from('tracked_keywords')
+      .select('id, keyword, search_volume, marketplace, tracked_asins(asin, product_title)')
+      .eq('workspace_id', wsId)
+      .order('created_at', { ascending: false })
+
+    if (!kws || kws.length === 0) {
+      setTrackedData([])
+      return
+    }
+
+    const { data: snaps } = await supabase
+      .from('keyword_rank_snapshots')
+      .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at')
+      .in('tracked_keyword_id', kws.map(k => k.id))
+      .order('checked_at', { ascending: false })
+
+    const snapsByKw: Record<string, { organic_rank: number | null; sponsored_rank: number | null; page_status: string | null; checked_at: string }[]> = {}
+    for (const s of snaps ?? []) {
+      if (!snapsByKw[s.tracked_keyword_id]) snapsByKw[s.tracked_keyword_id] = []
+      snapsByKw[s.tracked_keyword_id].push(s)
+    }
+
+    const mapped: TrackedKeyword[] = kws.map(kw => {
+      const kwSnaps = snapsByKw[kw.id] ?? []
+      const latest  = kwSnaps[0]
+      const prev    = kwSnaps[1]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const asinRow = normalizeEmbed<{ asin: string; product_title: string | null }>((kw as any).tracked_asins)
+      return {
+        id:                kw.id,
+        keyword:           kw.keyword,
+        asin:              asinRow?.asin ?? '—',
+        product_name:      asinRow?.product_title ?? '—',
+        organic_rank:      latest?.organic_rank    ?? null,
+        prev_organic_rank: prev?.organic_rank      ?? null,
+        sponsored_rank:    latest?.sponsored_rank  ?? null,
+        page_status:       (latest?.page_status    ?? 'not_ranking') as TrackedKeyword['page_status'],
+        search_volume:     kw.search_volume        ?? 0,
+        last_checked:      latest?.checked_at      ?? new Date(0).toISOString(),
+      }
+    })
+
+    setTrackedData(mapped)
+    setSelectedKeywordId(prev => (mapped.find(k => k.id === prev) ? prev : mapped[0]?.id ?? ''))
+  }, [])
+
+  const loadKeywordHistory = useCallback(async (kwId: string) => {
+    if (!kwId) return
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('keyword_rank_snapshots')
+      .select('organic_rank, checked_at')
+      .eq('tracked_keyword_id', kwId)
+      .order('checked_at', { ascending: true })
+      .limit(90)
+    if (data && data.length > 0) {
+      const history = data.map(s => ({
+        date: new Date(s.checked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
+        rank: s.organic_rank,
+      }))
+      setHistoryMap(prev => ({ ...prev, [kwId]: history }))
+    }
+  }, [])
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      supabase
+        .from('workspace_members')
+        .select('workspace_id')
+        .eq('user_id', user.id)
+        .limit(1)
+        .maybeSingle()
+        .then(({ data: member }) => {
+          if (member?.workspace_id) {
+            setWorkspaceId(member.workspace_id)
+            loadTrackedKeywords(member.workspace_id)
+          }
+        })
+    })
+  }, [loadTrackedKeywords])
+
+  useEffect(() => {
+    if (selectedKeywordId && !historyMap[selectedKeywordId]) {
+      loadKeywordHistory(selectedKeywordId)
+    }
+  }, [selectedKeywordId, historyMap, loadKeywordHistory])
+
   async function handleResearch(e: React.FormEvent) {
     e.preventDefault()
     if (!seedKeyword.trim()) return
     setIsResearching(true)
+    setResearchResults(null)
     try {
-      const results = await researchKeywords(seedKeyword.trim(), marketplace, category)
-      setResearchResults(results)
+      const res = await fetch('/api/keywords/research', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ seedKeyword: seedKeyword.trim(), marketplace, category }),
+      })
+      const data = await res.json() as { results?: ApiResearchResult[]; error?: string }
+      if (!res.ok || data.error) {
+        toast.error(data.error ?? 'Research failed')
+      } else {
+        const results = (data.results ?? []).map((r, i) => ({
+          ...r,
+          id: `r${i}-${r.keyword.slice(0, 20).replace(/\s+/g, '_')}`,
+        }))
+        setResearchResults(results)
+      }
+    } catch {
+      toast.error('Failed to research keywords')
     } finally {
       setIsResearching(false)
     }
@@ -306,22 +429,51 @@ export default function KeywordsPage() {
   async function handleRefresh() {
     setIsRefreshing(true)
     try {
-      const keywords = trackedData.map(k => k.keyword)
-      const asins = [...new Set(trackedData.map(k => k.asin))]
-      const result = await refreshKeywordRanks(keywords, asins)
-      setTrackedData(result)
+      const res = await fetch('/api/keywords/refresh', { method: 'POST' })
+      const data = await res.json() as { checked?: number; message?: string; error?: string }
+      if (!res.ok) {
+        toast.error(data.error ?? 'Refresh failed')
+      } else if (data.message) {
+        toast.info(data.message)
+      } else {
+        toast.success(`Refreshed ${data.checked ?? 0} keywords`)
+        if (workspaceId) await loadTrackedKeywords(workspaceId)
+      }
+    } catch {
+      toast.error('Failed to refresh keyword ranks')
     } finally {
       setIsRefreshing(false)
     }
   }
 
-  function toggleTrack(id: string) {
-    setTracked(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+  async function toggleTrack(kw: ApiResearchResult) {
+    if (tracked.has(kw.id) || trackingKw) return
+    setTrackingKw(kw.id)
+    try {
+      const res = await fetch('/api/keywords/track', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keyword:      kw.keyword,
+          marketplace:  marketplace === 'amazon.in' ? 'IN' : 'US',
+          search_volume: kw.search_volume,
+          cpc_estimate:  kw.cpc_estimate,
+          difficulty:    kw.difficulty,
+        }),
+      })
+      const data = await res.json() as { error?: string }
+      if (!res.ok) {
+        toast.error(data.error ?? 'Failed to track keyword')
+      } else {
+        setTracked(prev => new Set([...prev, kw.id]))
+        toast.success(`Tracking "${kw.keyword}"`)
+        if (workspaceId) loadTrackedKeywords(workspaceId)
+      }
+    } catch {
+      toast.error('Failed to track keyword')
+    } finally {
+      setTrackingKw(null)
+    }
   }
 
   // KPI computations
@@ -350,7 +502,7 @@ export default function KeywordsPage() {
       : null
 
   // Chart data
-  const chartHistory = KEYWORD_RANK_HISTORY[selectedKeywordId] ?? []
+  const chartHistory = historyMap[selectedKeywordId] ?? []
   const chartData = chartHistory.slice(-chartRange)
   const hasChartData = chartData.some(d => d.rank !== null)
   const selectedKw = trackedData.find(k => k.id === selectedKeywordId)
@@ -488,43 +640,53 @@ export default function KeywordsPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className="text-xs text-foreground font-semibold tabular-nums">
-                          {kw.search_volume.toLocaleString('en-IN')}
+                          {kw.search_volume != null ? kw.search_volume.toLocaleString('en-IN') : '—'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right">
                         <span className="text-xs text-muted-foreground tabular-nums">
-                          ₹{kw.cpc_estimate.toFixed(1)}
+                          {kw.cpc_estimate != null ? `₹${kw.cpc_estimate.toFixed(1)}` : '—'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <CompetitionBadge level={kw.competition} />
+                        <span className="text-xs text-muted-foreground">—</span>
                       </td>
                       <td className="px-4 py-3">
-                        <DifficultyBar score={kw.difficulty} />
+                        {kw.difficulty != null
+                          ? <DifficultyBar score={kw.difficulty} />
+                          : <span className="text-xs text-muted-foreground">—</span>}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <IntentBadge intent={kw.intent} />
+                        <span className="text-xs text-muted-foreground">{kw.intent ?? '—'}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <Link
-                          href={`/dashboard/asins/${kw.top_asin}`}
-                          className="font-mono text-[11px] text-primary/70 hover:text-primary hover:underline"
-                        >
-                          {kw.top_asin}
-                        </Link>
+                        {kw.top_ranking_asin
+                          ? (
+                            <Link
+                              href={`/dashboard/asins/${kw.top_ranking_asin}`}
+                              className="font-mono text-[11px] text-primary/70 hover:text-primary hover:underline"
+                            >
+                              {kw.top_ranking_asin}
+                            </Link>
+                          )
+                          : <span className="text-xs text-muted-foreground font-mono">—</span>
+                        }
                       </td>
                       <td className="px-4 py-3 text-center">
                         <button
                           type="button"
-                          onClick={() => toggleTrack(kw.id)}
+                          onClick={() => toggleTrack(kw)}
+                          disabled={trackingKw === kw.id}
                           className={cn(
-                            'inline-flex items-center gap-1 text-xs rounded-md px-2 py-1 font-medium transition-colors border',
+                            'inline-flex items-center gap-1 text-xs rounded-md px-2 py-1 font-medium transition-colors border disabled:opacity-50',
                             tracked.has(kw.id)
                               ? 'bg-green-500/10 text-green-400 border-green-500/20'
                               : 'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20',
                           )}
                         >
-                          {tracked.has(kw.id) ? (
+                          {trackingKw === kw.id ? (
+                            <><RefreshCw className="size-3 animate-spin" /> Saving…</>
+                          ) : tracked.has(kw.id) ? (
                             <><CheckCircle2 className="size-3" /> Tracking</>
                           ) : (
                             <><Plus className="size-3" /> Track</>

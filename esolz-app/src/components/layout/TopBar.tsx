@@ -1,5 +1,6 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Bell, Search, Menu } from 'lucide-react'
 import { useRouter, usePathname } from 'next/navigation'
@@ -40,6 +41,20 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
   const pathname = usePathname()
   const displayTitle = title ?? ROUTE_TITLES[pathname] ?? (/^\/dashboard\/asins\/[^/]+$/.test(pathname) ? 'ASIN Detail' : 'Dashboard')
 
+  const [userInfo, setUserInfo] = useState<{ name: string; email: string } | null>(null)
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        setUserInfo({
+          email: user.email ?? '',
+          name: (user.user_metadata?.full_name as string) || user.email || 'User',
+        })
+      }
+    })
+  }, [])
+
   async function handleLogout() {
     const supabase = createClient()
     await supabase.auth.signOut()
@@ -77,11 +92,18 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
             aria-label="Account menu"
           >
             <Avatar className="w-8 h-8">
-              <AvatarFallback className="bg-primary/20 text-primary text-xs font-bold">S</AvatarFallback>
+              <AvatarFallback className="bg-primary/20 text-primary text-xs font-bold">
+                {userInfo ? userInfo.name.charAt(0).toUpperCase() : '?'}
+              </AvatarFallback>
             </Avatar>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuLabel>My Account</DropdownMenuLabel>
+            <DropdownMenuLabel className="font-normal">
+              <div className="font-semibold text-sm text-foreground">{userInfo?.name ?? 'My Account'}</div>
+              {userInfo?.email && (
+                <div className="text-xs text-muted-foreground truncate max-w-[160px] mt-0.5">{userInfo.email}</div>
+              )}
+            </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem render={<Link href="/dashboard/settings" />}>
               Settings

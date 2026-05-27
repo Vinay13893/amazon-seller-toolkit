@@ -11,6 +11,7 @@ import { createClient } from '@/lib/supabase/client'
 export default function SignupPage() {
   const router = useRouter()
   const [name, setName] = useState('')
+  const [company, setCompany] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -29,10 +30,10 @@ export default function SignupPage() {
       const { error: signupError } = await supabase.auth.signUp({
         email,
         password,
-        options: { data: { full_name: name } },
+        options: { data: { full_name: name, company_name: company } },
       })
       if (signupError) throw signupError
-      router.push('/dashboard')
+      router.push('/dashboard/asins')
       router.refresh()
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Signup failed. Please try again.')
@@ -63,6 +64,17 @@ export default function SignupPage() {
             onChange={e => setName(e.target.value)}
             required
             autoComplete="name"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="company">Company / Brand Name</Label>
+          <Input
+            id="company"
+            type="text"
+            placeholder="Your Brand or Company"
+            value={company}
+            onChange={e => setCompany(e.target.value)}
+            autoComplete="organization"
           />
         </div>
         <div className="space-y-2">

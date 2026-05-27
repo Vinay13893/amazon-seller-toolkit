@@ -1,15 +1,23 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { AddAsinDialog } from '@/components/asins/AddAsinDialog'
 import { AsinDashboardTable } from '@/components/asins/AsinDashboardTable'
 import { ProductCard } from '@/components/asins/ProductCard'
 import { Button } from '@/components/ui/button'
-import { MOCK_PRODUCT_SNAPSHOTS } from '@/lib/mock-data'
-import { PLAN_LIMITS } from '@/lib/plan-limits'
-import { ProductSnapshot, Marketplace } from '@/types'
+import { ProductSnapshot } from '@/types'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { toast } from 'sonner'
+import {
+  getWorkspaceId,
+  getAsinLimit,
+  getTrackedAsins,
+  addTrackedAsin,
+  archiveTrackedAsin,
+  incrementAsinUsage,
+  type AddAsinInput,
+} from '@/lib/supabase/asins'
 import {
   Package,
   LayoutGrid,
@@ -19,54 +27,57 @@ import {
   Star,
   PackageOpen,
   Activity,
+  Loader2,
 } from 'lucide-react'
-
-// Mock current plan — will come from Supabase user profile later
-const CURRENT_PLAN = 'free' as const
-const limits = PLAN_LIMITS[CURRENT_PLAN]
 
 type ViewMode = 'table' | 'cards'
 
 export default function AsinsPage() {
-  const [products, setProducts] = useState<ProductSnapshot[]>(MOCK_PRODUCT_SNAPSHOTS)
-  const [viewMode, setViewMode] = useState<ViewMode>('table')
+  const [products, setProducts]       = useState<ProductSnapshot[]>([])
+  const [viewMode, setViewMode]       = useState<ViewMode>('table')
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [maxAsins, setMaxAsins]       = useState(5)
+  const [loading, setLoading]         = useState(true)
 
-  function handleAddAsin(asin: string, label: string, marketplace: Marketplace) {
-    const newProduct: ProductSnapshot = {
-      id: String(Date.now()),
-      asin,
-      label,
-      marketplace,
-      is_active: true,
-      created_at: new Date().toISOString(),
-      bsr_rank: null,
-      bsr_rank_prev: null,
-      category: null,
-      sub_rank: null,
-      sub_category: null,
-      price: null,
-      price_currency:
-        marketplace === 'US' ? 'USD'
-        : marketplace === 'UK' ? 'GBP'
-        : marketplace === 'DE' ? 'EUR'
-        : 'INR',
-      rating: null,
-      review_count: null,
-      buybox_winner: null,
-      buybox_is_self: null,
-      availability: null,
-      availability_score: null,
-      captured_at: null,
-    }
-    setProducts(prev => [...prev, newProduct])
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    const wsId = await getWorkspaceId()
+    if (!wsId) { setLoading(false); return }
+    setWorkspaceId(wsId)
+    const [limit, asins] = await Promise.all([
+      getAsinLimit(wsId),
+      getTrackedAsins(wsId),
+    ])
+    setMaxAsins(limit)
+    setProducts(asins)
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { void loadData() }, [loadData])
+
+  async function handleAddAsin(data: AddAsinInput): Promise<{ error?: string }> {
+    if (!workspaceId) return { error: 'Not signed in' }
+    const newProduct = await addTrackedAsin(workspaceId, data)
+    if (!newProduct) return { error: 'Failed to save ASIN. It may already be tracked, or a database error occurred.' }
+    setProducts(prev => [newProduct, ...prev])
+    void incrementAsinUsage(workspaceId)
+    toast.success(`"${data.productTitle}" is now being tracked.`)
+    return {}
   }
 
-  function handleDeleteAsin(id: string) {
-    setProducts(prev => prev.filter(p => p.id !== id))
+  async function handleDeleteAsin(id: string) {
+    if (!workspaceId) return
+    const ok = await archiveTrackedAsin(id, workspaceId)
+    if (ok) {
+      setProducts(prev => prev.filter(p => p.id !== id))
+      toast.success('ASIN removed from tracking.')
+    } else {
+      toast.error('Failed to remove ASIN. Please try again.')
+    }
   }
 
   const used = products.length
-  const max = limits.max_asins
+  const max  = maxAsins
   const pct = Math.min(100, Math.round((used / max) * 100))
   const atLimit = used >= max
 
@@ -87,6 +98,14 @@ export default function AsinsPage() {
     scoredProducts.length > 0
       ? Math.round(scoredProducts.reduce((s, p) => s + (p.availability_score ?? 0), 0) / scoredProducts.length)
       : null
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-32">
+        <Loader2 className="size-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-6">

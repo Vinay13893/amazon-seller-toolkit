@@ -15,6 +15,9 @@ export interface KeywordRank {
   prev_rank: number | null
   search_volume: number
   trend: 'up' | 'down' | 'flat'
+  /** 'not_ranking' | 'page_1' | 'page_2' | 'page_3' | null (null = never checked) */
+  page_status?: string | null
+  checked_at?: string | null
 }
 
 export interface PincodeData {
