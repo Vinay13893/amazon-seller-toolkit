@@ -23,7 +23,7 @@ export async function POST(
   // ── 1. Auth ────────────────────────────────────────────────────────────────
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   console.log(`[asins/${asin}/keywords/track] auth:`, user?.id ?? null, authErr?.message ?? null)
-  if (!user) return NextResponse.json({ error: 'Unauthorized', debug: { authErr } }, { status: 401 })
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json() as {
     keyword:        string
@@ -49,7 +49,7 @@ export async function POST(
   console.log(`[asins/${asin}/keywords/track] workspace:`, member?.workspace_id ?? null, memberErr?.message ?? null)
   if (!member?.workspace_id) {
     return NextResponse.json(
-      { error: 'No workspace found', debug: { user: user.id, memberErr } },
+      { error: 'No workspace found' },
       { status: 404 },
     )
   }
@@ -70,7 +70,7 @@ export async function POST(
   // ASIN must be tracked — we cannot link a keyword to an untracked ASIN
   if (!tracked?.id) {
     return NextResponse.json(
-      { error: `ASIN ${asin} is not tracked in this workspace. Add it to ASIN tracking first.`, debug: { asinErr } },
+      { error: `ASIN ${asin} is not tracked in this workspace. Add it to ASIN tracking first.` },
       { status: 404 },
     )
   }
@@ -103,7 +103,7 @@ export async function POST(
 
   if (error) {
     return NextResponse.json(
-      { error: error.message, debug: { code: error.code, details: error.details } },
+      { error: 'Failed to save keyword' },
       { status: 500 },
     )
   }

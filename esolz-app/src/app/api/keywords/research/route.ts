@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
   const supabase = await createClient()
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   console.log('[keywords/research] auth:', user?.id ?? null, authErr?.message ?? null)
-  if (!user) return NextResponse.json({ error: 'Unauthorized', debug: { authErr } }, { status: 401 })
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json() as {
     seedKeyword:  string

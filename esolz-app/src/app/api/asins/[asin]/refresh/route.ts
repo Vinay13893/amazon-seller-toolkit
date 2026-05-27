@@ -65,7 +65,7 @@ export async function POST(
   } catch (err) {
     console.error('[bsr-refresh][5] FAIL scraper:', String(err))
     return NextResponse.json(
-      { error: 'Scrape failed', detail: String(err) },
+      { error: 'Scrape failed' },
       { status: 502 },
     )
   }
@@ -107,7 +107,7 @@ export async function POST(
   } catch (adminErr) {
     console.error('[bsr-refresh][7] FAIL admin client:', String(adminErr))
     return NextResponse.json(
-      { error: 'Server misconfiguration', detail: String(adminErr) },
+      { error: 'Server misconfiguration' },
       { status: 500 },
     )
   }

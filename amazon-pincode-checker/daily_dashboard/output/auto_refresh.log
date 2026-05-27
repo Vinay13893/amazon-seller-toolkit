@@ -686,3 +686,58 @@ At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps
 UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
 
 [2026-05-26 09:31:34] === Completed successfully ===
+[2026-05-27 12:14:04] === Auto-refresh started ===
+
++==========================================================+
+|          EMOUNT VENTURES - DAILY AMAZON DASHBOARD        |
+|                    2026-05-27 12:14 IST                  |
++==========================================================+
+
+============================================================
+  REFRESHING DATA BANK
+============================================================
+
+  WARNING: Data fetch error: 'charmap' codec can't encode character '\u2192' in position 63: character maps to <undefined>
+  Continuing with cached data...
+
+============================================================
+  DATA BANK STATUS
+============================================================
+  orders                    |   40,891 rows | STALE | (2025-04-13 .. 2026-04-12)
+  ads_campaigns             |      180 rows | EMPTY | 
+  ads_products              |      566 rows | EMPTY | 
+  ads_campaigns_daily       |        0 rows | EMPTY | 
+  ads_products_daily        |        0 rows | EMPTY | 
+  fc_ledger                 |   14,325 rows | STALE | (2026-03-14 .. 2026-04-11)
+  fba_inventory             |      238 rows | SNAP  | updated 2026-04-13 09:21
+  inventory_by_fc           |      557 rows | SNAP  | updated 2026-04-13 09:22
+============================================================
+
+============================================================
+  GENERATING DASHBOARD
+============================================================
+  Loaded: 40891 orders, 238 inventory SKUs, 180 ads campaign rows, 566 ads product rows
+python : Traceback (most recent call last):
+At E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\daily_refresh.ps1:20 char:15
++     $output = python $dashboardScript 2>&1 | Out-String
++               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Traceback (most recent call last)::String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 206, in <module>
+    main()
+    ~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 202, in main
+    run_dashboard()
+    ~~~~~~~~~~~~~^^
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\run_dashboard.py", line 152, in run_dashboard
+    filepath = save_dashboard(report)
+  File "E:\amazon-bsr-tracker\amazon-pincode-checker\daily_dashboard\dashboard.py", line 386, in save_dashboard
+    print(f"\n  Dashboard saved \u2192 {filepath}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\python314\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 20: character maps to <undefined>
+
+[2026-05-27 12:14:04] === Completed successfully ===

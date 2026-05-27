@@ -102,7 +102,7 @@ export async function POST(
   } catch (err) {
     console.error('[pincode-check][6] FAIL checker:', String(err))
     return NextResponse.json(
-      { error: 'Pincode check failed', detail: String(err) },
+      { error: 'Pincode check failed' },
       { status: 502 },
     )
   }
@@ -178,7 +178,7 @@ export async function POST(
   } catch (adminErr) {
     console.error('[pincode-check][7] FAIL admin client:', String(adminErr))
     return NextResponse.json(
-      { error: 'Server misconfiguration', detail: String(adminErr) },
+      { error: 'Server misconfiguration' },
       { status: 500 },
     )
   }

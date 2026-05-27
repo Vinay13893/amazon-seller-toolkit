@@ -25,7 +25,7 @@ export async function POST(
   // ── Auth ───────────────────────────────────────────────────────────────────
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   console.log(`[asins/${asin}/keywords/refresh] auth:`, user?.id ?? null, authErr?.message ?? null)
-  if (!user) return NextResponse.json({ error: 'Unauthorized', debug: { authErr } }, { status: 401 })
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   // ── Workspace ──────────────────────────────────────────────────────────────
   const { data: member, error: memberErr } = await supabase
@@ -37,7 +37,7 @@ export async function POST(
 
   console.log(`[asins/${asin}/keywords/refresh] workspace:`, member?.workspace_id ?? null, memberErr?.message ?? null)
   if (!member?.workspace_id) {
-    return NextResponse.json({ error: 'No workspace found', debug: { memberErr } }, { status: 404 })
+    return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
 
   // ── Resolve tracked_asins row ──────────────────────────────────────────────
@@ -51,7 +51,7 @@ export async function POST(
 
   console.log(`[asins/${asin}/keywords/refresh] tracked_asin:`, tracked?.id ?? null, asinErr?.message ?? null)
   if (!tracked) {
-    return NextResponse.json({ error: 'ASIN not tracked in this workspace', debug: { asinErr } }, { status: 404 })
+    return NextResponse.json({ error: 'ASIN not tracked in this workspace' }, { status: 404 })
   }
 
   // ── Load tracked keywords for this ASIN ───────────────────────────────────

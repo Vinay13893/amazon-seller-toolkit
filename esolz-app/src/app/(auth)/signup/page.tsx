@@ -33,8 +33,7 @@ export default function SignupPage() {
         options: { data: { full_name: name, company_name: company } },
       })
       if (signupError) throw signupError
-      router.push('/dashboard/asins')
-      router.refresh()
+      router.push(`/signup/check-email?email=${encodeURIComponent(email)}`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Signup failed. Please try again.')
     } finally {
