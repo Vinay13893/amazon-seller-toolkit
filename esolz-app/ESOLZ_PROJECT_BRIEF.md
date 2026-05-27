@@ -52,8 +52,12 @@
 | `usage_counters` | `workspace_id`, `period_start`, `period_end`, `asin_count`, `keyword_count`, `pincode_checks_used`, `reports_generated`, `competitor_count` | Upserted after each resource add |
 
 ### RLS Architecture
-- All tables use policy: `workspace_id IN (SELECT public.user_workspace_ids())`
+- **All 22 tables have RLS enabled** (verified live in Supabase dashboard — migration `004_lock_legacy_tables.sql` applied)
+- Production tables (15) use policy: `workspace_id IN (SELECT public.user_workspace_ids())`
 - `user_workspace_ids()` is a `SECURITY DEFINER` function querying `workspace_members WHERE user_id = auth.uid()`
+- Legacy tables (7) are locked with RLS enabled and **zero policies** = full lockdown via REST API. Service-role client still has access.
+  - Locked legacy tables: `seller_credentials`, `users`, `asins`, `bsr_history`, `job_logs`, `keyword_ranks`, `tool_usage`
+  - These are safe to `DROP` once confirmed no external scripts reference them
 - Two Supabase client types:
   - `createClient()` → SSR client reading session from cookies (used in pages and most API routes for auth checks)
   - `createAdminClient()` → service-role client bypassing RLS (used in API routes for INSERT/UPDATE)
@@ -63,7 +67,8 @@
 ## WHAT IS FULLY BUILT AND WORKING (real data, end-to-end)
 
 ### Auth Flow
-- **Signup** (`/signup`): email + password + full_name + company_name → `supabase.auth.signUp()`. Email confirmation required. Page redirects to `/dashboard/asins` immediately after call (before email confirmed — UX gap exists here).
+- **Signup** (`/signup`): email + password + full_name + company_name → `supabase.auth.signUp()`. Email confirmation required. After call, redirects to `/signup/check-email?email=<encoded>` ✅
+- **Check Email page** (`/signup/check-email`): shows "Check your email" confirmation with the email address from the `?email=` query param. Has "Already confirmed? Sign in" link ✅
 - **Login** (`/login`): email/password. Redirect param validated (must start with `/`). Redirects to `/dashboard/asins`.
 - **Logout:** Works from TopBar dropdown and Settings page. `signOut()` + router redirect.
 - **Auth callback** (`/auth/callback`): exchanges `?code=` for session (email confirm, password reset, magic link). Has open-redirect protection.
@@ -203,12 +208,16 @@ These pages have full built-out UI with charts, filters, and interactions but us
 4. **`usage/init` body field mismatch** → route expected `workspaceId` (camelCase) but `usage.ts` sends `workspace_id` (snake_case) → fixed to accept both
 5. **No debug logging in keyword routes** → added step-by-step numbered logging in all 4 keyword routes
 6. **Ambiguous "—" in rank table** → "Never checked" and "Not ranking" now shown with distinct badges and "Checked X ago" text
+7. **[SECURITY] 7 legacy tables had RLS disabled** → applied `supabase/migrations/004_lock_legacy_tables.sql` live. `seller_credentials` and `users` (PII) were publicly readable via API keys. All 22 tables now confirmed RLS ENABLED.
+8. **[SECURITY] API routes leaked internals** — 17 occurrences of `debug: { authErr }`, `debug: { user.id }`, `debug: { memberErr }`, `detail: String(err)` in JSON error responses → stripped from all 9 API routes. Routes fixed: keywords/track, keywords/refresh, keywords/research, asins/[asin]/refresh, asins/[asin]/pincode, asins/[asin]/keywords/refresh, asins/[asin]/keywords/track
+9. **[SECURITY] Signup redirected before email confirmed** → now redirects to `/signup/check-email?email=...` with proper confirmation page. User no longer lands on blank dashboard with no session.
+10. **[SECURITY] `.env.local.example` had `NEXT_PUBLIC_DEV_AUTH_BYPASS=true`** → changed to `false` so it is not accidentally copied to production.
 
 ---
 
 ## TESTING DONE
 
-- **TypeScript**: `npx tsc --noEmit` → **0 errors** (verified after all changes)
+- **TypeScript**: `npx tsc --noEmit` → **0 errors** (verified after all security + rebrand changes)
 - **Manual E2E on localhost:3000**:
   - Signup → login → add ASIN → view ASIN detail ✅
   - BSR refresh (Python scraper ran, snapshot inserted into Supabase) ✅
@@ -220,7 +229,8 @@ These pages have full built-out UI with charts, filters, and interactions but us
   - Logout + unauthenticated redirect ✅
   - Session protection on `/dashboard/*` via `proxy.ts` ✅
 - **Python rank checker**: tested directly via CLI — returns correct `page_status` JSON
-- **Supabase RLS**: all queries verified to scope by `workspace_id`
+- **Supabase RLS**: all 22 tables confirmed RLS ENABLED in Supabase Policies dashboard. 7 legacy tables locked via migration 004.
+- **Security audit**: full audit of all 22 tables, 9 API routes, auth flows, env files — 4 issues found and fixed (see Bugs Fixed #7–10)
 - **No automated tests** (no Jest, no Playwright E2E, no Vitest) — zero test coverage
 
 ---
@@ -242,23 +252,22 @@ These pages have full built-out UI with charts, filters, and interactions but us
 ### Critical (blocks launch)
 1. **Razorpay billing integration** — plan upgrade flow, payment, webhook to update `workspace_subscriptions`, failed payment handling
 2. **Workspace creation trigger verification** — assumed to be a Supabase DB trigger on `auth.users` insert but not confirmed. If missing, every new signup gets no workspace → blank pages everywhere → broken onboarding
-3. **Signup UX after email confirmation** — currently redirects to dashboard BEFORE email is confirmed. User has no session, sees blank state with no explanation of what to do. Need a "Check your email" page.
 
 ### High Priority
-4. **Aggregate dashboard pages connected to real data** — `/dashboard` (overview), `/dashboard/bsr`, `/dashboard/buybox`, `/dashboard/pincode` all show mock data. These are core selling-point pages.
-5. **Scheduled / automatic refreshes** — BSR, keyword ranks, pincode checks are all manual (button-click only). No cron, no background scheduler. Users won't return daily to click buttons.
-6. **Alert system backend** — alerts page is full UI/mock. No logic evaluates thresholds, no notifications are sent.
+3. **Aggregate dashboard pages connected to real data** — `/dashboard` (overview), `/dashboard/bsr`, `/dashboard/buybox`, `/dashboard/pincode` all show mock data. These are core selling-point pages.
+4. **Scheduled / automatic refreshes** — BSR, keyword ranks, pincode checks are all manual (button-click only). No cron, no background scheduler. Users won't return daily to click buttons.
+5. **Alert system backend** — alerts page is full UI/mock. No logic evaluates thresholds, no notifications are sent.
 
 ### Medium Priority
-7. **Report generation** — reports page is full UI/mock. No PDF/Excel export, no actual data compilation.
-8. **Competitor tracking real data** — competitor page is full mock. No add/track flow connected to DB.
-9. **Amazon Tool Settings persistence** — default marketplace and default pincodes in Settings don't save (no DB column or API call).
-10. **Notification delivery** — notification toggles in Settings are local state only. No email/SMS sending.
+6. **Report generation** — reports page is full UI/mock. No PDF/Excel export, no actual data compilation.
+7. **Competitor tracking real data** — competitor page is full mock. No add/track flow connected to DB.
+8. **Amazon Tool Settings persistence** — default marketplace and default pincodes in Settings don't save (no DB column or API call).
+9. **Notification delivery** — notification toggles in Settings are local state only. No email/SMS sending.
 
 ### Lower Priority (post-MVP)
-11. **Multi-user workspace invites** — `workspace_members` table supports it but no invite UI exists.
-12. **Automated test suite** — zero unit/integration/E2E tests currently.
-13. **BSR history chart from real DB data** — ASIN detail BSR chart uses mock generator seeded from latest real value, not actual historical snapshots from `asin_snapshots`.
+10. **Multi-user workspace invites** — `workspace_members` table supports it but no invite UI exists.
+11. **Automated test suite** — zero unit/integration/E2E tests currently.
+12. **BSR history chart from real DB data** — ASIN detail BSR chart uses mock generator seeded from latest real value, not actual historical snapshots from `asin_snapshots`.
 
 ---
 
