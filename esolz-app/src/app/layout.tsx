@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "e-Solz — Amazon Intelligence Platform",
-  description: "Track BSR, monitor competitors, check pincodes and grow your Amazon India business.",
+  title: "Sociomonkey — Amazon Intelligence",
+  description: "Track BSR, monitor competitors, check pincodes and grow your Amazon India business with Sociomonkey.",
 };
 
 export default function RootLayout({

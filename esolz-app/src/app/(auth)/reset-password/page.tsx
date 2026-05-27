@@ -65,9 +65,9 @@ export default function ResetPasswordPage() {
     <div className="bg-card border border-border rounded-2xl p-8 shadow-xl">
       <div className="text-center mb-8">
         <Link href="/" className="text-2xl font-black">
-          e-<span className="text-primary">Solz</span>
+          Socio<span className="text-primary">monkey</span>
         </Link>
-        <p className="text-muted-foreground text-sm mt-1">Amazon Seller Intelligence</p>
+        <p className="text-muted-foreground text-sm mt-1">Amazon Intelligence</p>
       </div>
 
       <h1 className="text-xl font-bold mb-2">Set a new password</h1>

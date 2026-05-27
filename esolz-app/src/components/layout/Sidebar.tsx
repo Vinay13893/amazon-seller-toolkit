@@ -57,7 +57,7 @@ export function Sidebar({ className }: SidebarProps) {
       {/* Logo */}
       <div className="p-5 border-b border-sidebar-border flex-shrink-0">
         <Link href="/dashboard" className="text-xl font-black block">
-          e-<span className="text-primary">Solz</span>
+          Socio<span className="text-primary">monkey</span>
         </Link>
         <p className="text-xs text-muted-foreground mt-0.5">Amazon Intelligence</p>
       </div>

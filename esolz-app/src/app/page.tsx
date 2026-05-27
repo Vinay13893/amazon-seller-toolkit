@@ -81,7 +81,7 @@ export default function LandingPage() {
       <nav className="border-b border-border/50 sticky top-0 z-50 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <Link href="/" className="text-xl font-black flex-shrink-0">
-            e-<span className="text-primary">Solz</span>
+            Socio<span className="text-primary">monkey</span>
           </Link>
           <div className="hidden md:flex items-center gap-6 text-sm text-muted-foreground">
             <Link href="#features" className="hover:text-foreground transition-colors">Features</Link>
@@ -105,7 +105,7 @@ export default function LandingPage() {
           Built for Amazon India Sellers
         </Badge>
         <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight mb-6 leading-tight">
-          The Amazon Intelligence
+          Sociomonkey Amazon Intelligence
           <br />
           <span className="text-primary">Platform for Indian Sellers</span>
         </h1>
@@ -219,7 +219,7 @@ export default function LandingPage() {
             Ready to grow your <span className="text-primary">Amazon business?</span>
           </h2>
           <p className="text-muted-foreground mb-8 max-w-lg mx-auto">
-            Join hundreds of Amazon India sellers who use e-Solz to track, optimise, and scale.
+            Join hundreds of Amazon India sellers who use Sociomonkey to track, optimise, and scale.
           </p>
           <Button size="lg" render={<Link href="/signup" />} className="px-10 text-base">
             Create Free Account <ArrowRight className="ml-2 w-4 h-4" />
@@ -231,7 +231,7 @@ export default function LandingPage() {
       <footer className="border-t border-border/50 py-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row justify-between items-center gap-4 text-sm text-muted-foreground">
           <div className="font-black text-foreground">
-            e-<span className="text-primary">Solz</span>
+            Socio<span className="text-primary">monkey</span>
             <span className="font-normal text-muted-foreground ml-2 text-sm">Amazon Intelligence</span>
           </div>
           <div className="flex gap-6">
@@ -239,7 +239,7 @@ export default function LandingPage() {
             <Link href="#" className="hover:text-foreground transition-colors">Privacy</Link>
             <Link href="#" className="hover:text-foreground transition-colors">Terms</Link>
           </div>
-          <p>© 2025 e-Solz. All rights reserved.</p>
+          <p>© 2026 Sociomonkey. All rights reserved.</p>
         </div>
       </footer>
     </div>

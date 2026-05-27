@@ -12,9 +12,9 @@ export default async function CheckEmailPage({ searchParams }: Props) {
     <div className="bg-card border border-border rounded-2xl p-8 shadow-xl text-center max-w-sm mx-auto">
       <div className="mb-6">
         <Link href="/" className="text-2xl font-black">
-          e-<span className="text-primary">Solz</span>
+          Socio<span className="text-primary">monkey</span>
         </Link>
-        <p className="text-muted-foreground text-sm mt-1">Amazon Seller Intelligence</p>
+        <p className="text-muted-foreground text-sm mt-1">Amazon Intelligence</p>
       </div>
 
       <div className="flex justify-center mb-4">

@@ -310,7 +310,7 @@ export default function SettingsPage() {
       ) : (
         <>
           {/* ── 1. Profile Settings ──────────────────────────────────────── */}
-          <Section icon={User} title="Profile" description="Your public identity on e-Solz">
+          <Section icon={User} title="Profile" description="Your public identity on Sociomonkey">
             <div className="flex flex-col gap-4">
               <FieldRow label="Full name">
                 <Input
