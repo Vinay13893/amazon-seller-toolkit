@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Single ASIN x Pincode checker for e-Solz integration.
+Single ASIN x Pincode checker for Sociomonkey integration.
 
 Wraps the existing amazon_pincode_checker.py tool to support single-check workflow.
 Outputs JSON to stdout for consumption by Node.js TypeScript adapter.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone Amazon ASIN snapshot scraper for e-Solz.
+Standalone Amazon ASIN snapshot scraper for Sociomonkey.
 
 Fetching strategy mirrors saas-backend/app/tasks/bsr.py:
   1. Fast path: plain HTTPS request (requests library)

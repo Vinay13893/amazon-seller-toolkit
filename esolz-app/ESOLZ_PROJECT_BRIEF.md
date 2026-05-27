@@ -1,11 +1,12 @@
-# e-Solz — Amazon Seller Intelligence Platform
+# Sociomonkey — Amazon Seller Intelligence Platform
 ## Complete Project Brief for AI Assistance
 
 ---
 
 ## PRODUCT OVERVIEW
 
-**Product name:** e-Solz
+**Product name:** Sociomonkey
+**Subline:** Amazon Intelligence
 **What it does:** Amazon Seller Intelligence SaaS — lets sellers track BSR (Best Seller Rank), monitor Buy Box ownership, check product availability by pincode, track and research keyword rankings, all from one dashboard.
 **Target market:** Amazon India sellers (small-to-mid size), managing 1–20 ASINs on amazon.in
 **Monetisation:** Subscription SaaS, tiered plans priced in INR (Free / Starter / Growth / Pro / Agency). Payment gateway planned: **Razorpay** — NOT yet built.

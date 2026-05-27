@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Single ASIN Buy Box checker for e-Solz integration.
+Single ASIN Buy Box checker for Sociomonkey integration.
 
 Uses the same Playwright + offer-listing scraping approach as
 saas-backend/app/tasks/tools.py (hijack_check) without Celery dependency.
