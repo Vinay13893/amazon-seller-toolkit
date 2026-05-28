@@ -8,6 +8,7 @@ import { getOrCreateCurrentUsageCounter, type UsageCounter } from '@/lib/supabas
 import { Button } from '@/components/ui/button'
 import { Loader2, CheckCircle2, Lock, Zap, Crown, Building2, Star } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { toast } from 'sonner'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,45 @@ interface Subscription {
   current_period_start: string
   current_period_end: string
   plan: Plan
+}
+
+// ─── Razorpay ────────────────────────────────────────────────────────────────
+
+interface RazorpayPaymentResponse {
+  razorpay_payment_id: string
+  razorpay_order_id:   string
+  razorpay_signature:  string
+}
+
+interface RazorpayOptions {
+  key: string
+  amount: number | string
+  currency: string
+  order_id: string
+  name: string
+  description: string
+  handler: (response: RazorpayPaymentResponse) => void
+  theme?: { color?: string }
+  modal?: { ondismiss?: () => void }
+}
+
+declare global {
+  interface Window {
+    Razorpay: new (options: RazorpayOptions) => { open(): void }
+  }
+}
+
+function loadRazorpayScript(): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') { resolve(false); return }
+    if (document.getElementById('razorpay-checkout-js')) { resolve(true); return }
+    const script = document.createElement('script')
+    script.id  = 'razorpay-checkout-js'
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    script.onload  = () => resolve(true)
+    script.onerror = () => resolve(false)
+    document.body.appendChild(script)
+  })
 }
 
 // ─── Progress bar ─────────────────────────────────────────────────────────────
@@ -84,7 +124,17 @@ function FeatureRow({ enabled, label }: { enabled: boolean; label: string }) {
 
 // ─── Plan card ────────────────────────────────────────────────────────────────
 
-function PlanCard({ plan, isCurrent }: { plan: Plan; isCurrent: boolean }) {
+function PlanCard({
+  plan,
+  isCurrent,
+  onUpgrade,
+  isUpgrading,
+}: {
+  plan: Plan
+  isCurrent: boolean
+  onUpgrade?: () => void
+  isUpgrading?: boolean
+}) {
   const Icon = PLAN_ICONS[plan.name] ?? Zap
   const f = plan.features ?? {}
 
@@ -148,15 +198,27 @@ function PlanCard({ plan, isCurrent }: { plan: Plan; isCurrent: boolean }) {
           <div className="h-8 flex items-center justify-center rounded-lg border border-primary/30 bg-primary/5 text-xs font-medium text-primary">
             Active plan
           </div>
+        ) : plan.name === 'Agency' ? (
+          <Button variant="outline" size="sm" className="w-full" disabled>
+            Contact Sales
+          </Button>
+        ) : plan.price_monthly === 0 ? (
+          <Button variant="outline" size="sm" className="w-full" disabled>
+            Downgrade
+          </Button>
         ) : (
           <Button
-            variant="outline"
+            variant="default"
             size="sm"
             className="w-full"
-            disabled
-            title="Razorpay payments coming soon"
+            onClick={onUpgrade}
+            disabled={isUpgrading || !onUpgrade}
           >
-            Upgrade — Coming soon
+            {isUpgrading ? (
+              <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" />Processing…</>
+            ) : (
+              `Upgrade to ${plan.name}`
+            )}
           </Button>
         )}
       </div>
@@ -179,6 +241,7 @@ export default function BillingPage() {
   const [allPlans, setAllPlans] = useState<Plan[]>([])
   const [usage, setUsage] = useState<UsageCounter | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [upgradingPlanId, setUpgradingPlanId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -253,6 +316,72 @@ export default function BillingPage() {
 
   useEffect(() => { load() }, [load])
 
+  const handleUpgrade = useCallback(async (planId: string) => {
+    setUpgradingPlanId(planId)
+    try {
+      // 1. Create Razorpay order server-side (price validated there)
+      const orderRes = await fetch('/api/billing/create-order', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ plan_id: planId }),
+      })
+      const orderData = await orderRes.json() as {
+        order_id?: string; amount?: number; currency?: string
+        key_id?: string; plan_name?: string; error?: string
+      }
+      if (!orderRes.ok) {
+        toast.error(orderData.error ?? 'Failed to create order')
+        return
+      }
+
+      // 2. Load Razorpay checkout.js from CDN
+      const loaded = await loadRazorpayScript()
+      if (!loaded) {
+        toast.error('Failed to load payment gateway. Check your internet connection.')
+        return
+      }
+
+      // 3. Clear spinner — modal is about to open
+      setUpgradingPlanId(null)
+
+      // 4. Open Razorpay checkout modal
+      const rzp = new window.Razorpay({
+        key:         orderData.key_id!,
+        amount:      orderData.amount!,
+        currency:    orderData.currency!,
+        order_id:    orderData.order_id!,
+        name:        'Sociomonkey',
+        description: `${orderData.plan_name} Plan · Monthly`,
+        handler:     async (response: RazorpayPaymentResponse) => {
+          const verifyRes = await fetch('/api/billing/verify-payment', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              razorpay_order_id:   response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature:  response.razorpay_signature,
+              plan_id:             planId,
+            }),
+          })
+          const verifyData = await verifyRes.json() as { success?: boolean; error?: string }
+          if (verifyRes.ok && verifyData.success) {
+            toast.success(`Upgraded to ${orderData.plan_name} plan!`)
+            load()
+          } else {
+            toast.error(verifyData.error ?? 'Payment verification failed. Contact support.')
+          }
+        },
+        theme: { color: '#6366f1' },
+        modal: { ondismiss: () => setUpgradingPlanId(null) },
+      })
+      rzp.open()
+    } catch {
+      toast.error('Something went wrong. Please try again.')
+    } finally {
+      setUpgradingPlanId(null)
+    }
+  }, [load])
+
   // ── Derived ────────────────────────────────────────────────────────────
   const periodEnd = sub?.current_period_end
     ? new Date(sub.current_period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -312,9 +441,7 @@ export default function BillingPage() {
               </p>
             </div>
           </div>
-          <p className="text-xs text-muted-foreground shrink-0">
-            Razorpay payments coming soon
-          </p>
+
         </div>
       ) : null}
 
@@ -379,6 +506,8 @@ export default function BillingPage() {
                 key={plan.id}
                 plan={plan}
                 isCurrent={sub?.plan.id === plan.id}
+                onUpgrade={() => handleUpgrade(plan.id)}
+                isUpgrading={upgradingPlanId === plan.id}
               />
             ))}
           </div>
@@ -387,10 +516,6 @@ export default function BillingPage() {
         )}
       </div>
 
-      {/* ── Footer note ───────────────────────────────────────────────── */}
-      <div className="rounded-lg border border-dashed border-border px-4 py-3 text-xs text-muted-foreground text-center">
-        Payments via Razorpay will be enabled soon. Plan upgrades and billing management will be available here.
-      </div>
     </div>
   )
 }

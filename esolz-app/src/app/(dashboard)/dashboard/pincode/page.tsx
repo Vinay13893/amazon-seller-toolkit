@@ -1,42 +1,56 @@
 'use client'
 
-import { useState, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import {
   CITY_PRESETS,
-  MOCK_PINCODE_RESULTS,
-  PINCODE_ALERTS,
   parsePincodes,
-  availabilityScore,
   scoreToStatus,
-  checkAsinPincodeAvailability,
-  type PincodeResult,
-  type PincodeAlert,
   type AvailabilityStatus,
 } from '@/lib/mock-pincode'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { getWorkspaceId } from '@/lib/supabase/asins'
+import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 import {
-  MapPin,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Info,
-  Clock,
-  Truck,
-  IndianRupee,
-  ShieldCheck,
-  ShieldAlert,
-  BarChart2,
-  Play,
-  RefreshCw,
-  ExternalLink,
-  Bell,
+  MapPin, CheckCircle2, XCircle, Clock, Truck,
+  ShieldCheck, ShieldAlert, BarChart2, Play, RefreshCw,
+  ExternalLink, Loader2,
 } from 'lucide-react'
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface TrackedAsin {
+  id:            string
+  asin:          string
+  product_title: string | null
+}
+
+interface DbPincodeCheck {
+  id:               string
+  tracked_asin_id:  string
+  pincode:          string
+  city:             string | null
+  available:        boolean
+  delivery_promise: string | null
+  price:            number | null
+  buy_box_seller:   string | null
+  fulfillment_type: string | null
+  checked_at:       string
+}
+
+// ─── Pincode → city lookup ────────────────────────────────────────────────────
+
+const PINCODE_TO_CITY: Record<string, string> = {}
+CITY_PRESETS.forEach(cp => cp.pincodes.forEach(p => { PINCODE_TO_CITY[p] = cp.city }))
+
+function deriveCity(row: DbPincodeCheck): string {
+  return row.city ?? PINCODE_TO_CITY[row.pincode] ?? 'Other'
+}
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -48,527 +62,494 @@ function StatusBadge({ status }: { status: AvailabilityStatus }) {
   }
   const { label, cls } = map[status]
   return (
-    <span className={cn('inline-flex items-center text-[10px] font-semibold rounded-full px-2 py-0.5 border', cls)}>
+    <span className={cn(
+      'inline-flex items-center text-[10px] font-semibold rounded-full px-2 py-0.5 border',
+      cls,
+    )}>
       {label}
     </span>
   )
 }
 
-function FulfillmentBadge({ type }: { type: 'FBA' | 'FBM' | null }) {
+function FulfillmentBadge({ type }: { type: string | null }) {
   if (!type) return <span className="text-xs text-muted-foreground">—</span>
   return (
     <span className={cn(
       'inline-flex items-center text-[10px] font-bold rounded px-1.5 py-0.5',
-      type === 'FBA'
-        ? 'bg-primary/15 text-primary'
-        : 'bg-muted text-muted-foreground',
+      type === 'FBA' ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground',
     )}>
       {type}
     </span>
   )
 }
 
-function StockBadge({ status }: { status: 'in_stock' | 'limited' | 'oos' | null }) {
-  if (!status) return <span className="text-xs text-muted-foreground">—</span>
-  const map = {
-    in_stock: { label: 'In Stock',  cls: 'text-green-400' },
-    limited:  { label: 'Limited',   cls: 'text-yellow-400' },
-    oos:      { label: 'Out of Stock', cls: 'text-red-400' },
-  }
-  const { label, cls } = map[status]
-  return <span className={cn('text-xs font-medium', cls)}>{label}</span>
-}
-
-function AlertRow({ alert }: { alert: PincodeAlert }) {
-  const iconMap = {
-    success: <CheckCircle2 className="size-3.5 shrink-0 text-green-400" />,
-    warning: <AlertTriangle className="size-3.5 shrink-0 text-yellow-400" />,
-    error:   <XCircle       className="size-3.5 shrink-0 text-red-400" />,
-    info:    <Info          className="size-3.5 shrink-0 text-blue-400" />,
-  }
-  const bgMap = {
-    success: 'border-green-500/20 bg-green-500/5',
-    warning: 'border-yellow-500/20 bg-yellow-500/5',
-    error:   'border-red-500/20 bg-red-500/5',
-    info:    'border-blue-500/20 bg-blue-500/5',
-  }
-  return (
-    <div className={cn('flex items-start gap-3 rounded-lg border px-3 py-2.5', bgMap[alert.severity])}>
-      <div className="mt-0.5">{iconMap[alert.severity]}</div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-          <span className="text-xs font-semibold text-foreground">{alert.city}</span>
-          {alert.pincode && (
-            <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1">
-              {alert.pincode}
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground leading-snug">{alert.message}</p>
-        <p className="text-[10px] text-muted-foreground/60 mt-1 flex items-center gap-1">
-          <Clock className="size-2.5" />{timeAgo(alert.timestamp)}
-        </p>
-      </div>
-    </div>
-  )
-}
-
-// ─── Main page ────────────────────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function PincodePage() {
-  const formRef = useRef<HTMLDivElement>(null)
+  const [workspaceId, setWorkspaceId]           = useState<string | null>(null)
+  const [trackedAsins, setTrackedAsins]         = useState<TrackedAsin[]>([])
+  const [selectedAsinId, setSelectedAsinId]     = useState<string>('')
+  const [loading, setLoading]                   = useState(true)
+  const [selectedCities, setSelectedCities]     = useState<Set<string>>(new Set())
+  const [pincodeText, setPincodeText]           = useState('')
+  const [isChecking, setIsChecking]             = useState(false)
+  const [checkProgress, setCheckProgress]       = useState<{ done: number; total: number } | null>(null)
+  const [results, setResults]                   = useState<DbPincodeCheck[]>([])
+  const [pincodeChecksUsed, setPincodeChecksUsed] = useState(0)
 
-  // Form state
-  const [asin, setAsin] = useState('B0BN5NZCGH')
-  const [selectedCities, setSelectedCities] = useState<Set<string>>(
-    () => new Set(CITY_PRESETS.map(c => c.city)),
+  // ── Derived values ─────────────────────────────────────────────────────────
+
+  const selectedAsin  = useMemo(
+    () => trackedAsins.find(a => a.id === selectedAsinId)?.asin ?? '',
+    [trackedAsins, selectedAsinId],
   )
-  const [pincodeText, setPincodeText] = useState(
-    () => CITY_PRESETS.flatMap(c => c.pincodes).join('\n'),
+  const selectedLabel = useMemo(
+    () => trackedAsins.find(a => a.id === selectedAsinId)?.product_title ?? selectedAsin,
+    [trackedAsins, selectedAsinId, selectedAsin],
   )
-  const [isChecking, setIsChecking] = useState(false)
-  const [results, setResults] = useState<PincodeResult[]>(MOCK_PINCODE_RESULTS)
-  const [checkedAsin, setCheckedAsin] = useState('B0BN5NZCGH')
-
-  // Toggle a city preset on/off, syncing pincodes to textarea
-  function toggleCity(city: string) {
-    const next = new Set(selectedCities)
-    if (next.has(city)) {
-      next.delete(city)
-    } else {
-      next.add(city)
-    }
-    setSelectedCities(next)
-    const pins = CITY_PRESETS
-      .filter(cp => next.has(cp.city))
-      .flatMap(cp => cp.pincodes)
-    setPincodeText(pins.join('\n'))
-  }
-
-  // Run availability check (uses integration placeholder — returns mock data)
-  async function handleCheck() {
-    const pincodes = parsePincodes(pincodeText)
-    if (!pincodes.length) return
-    setIsChecking(true)
-    try {
-      const data = await checkAsinPincodeAvailability(asin, pincodes)
-      setResults(data)
-      setCheckedAsin(asin)
-    } finally {
-      setIsChecking(false)
-    }
-  }
-
-  function handleRunNew() {
-    formRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
-
-  // ── Derived data ────────────────────────────────────────────────────────────
-
-  const available   = useMemo(() => results.filter(r => r.available), [results])
-  const unavailable = useMemo(() => results.filter(r => !r.available), [results])
-  const score       = useMemo(() => availabilityScore(results), [results])
-
-  const avgDeliveryDays = useMemo(() => {
-    const days = available.map(r => r.delivery_days).filter((d): d is number => d !== null)
-    if (!days.length) return null
-    return (days.reduce((a, b) => a + b, 0) / days.length).toFixed(1)
-  }, [available])
-
-  const buyboxConsistency = useMemo(() => {
-    if (!available.length) return null
-    const selfCount = available.filter(r => r.buybox_is_self).length
-    return Math.round((selfCount / available.length) * 100)
-  }, [available])
-
+  const available     = useMemo(() => results.filter(r => r.available),  [results])
+  const unavailable   = useMemo(() => results.filter(r => !r.available), [results])
+  const score         = useMemo(
+    () => results.length ? Math.round((available.length / results.length) * 100) : 0,
+    [results, available],
+  )
+  const latestChecked = useMemo(
+    () => results.length ? results[0].checked_at : null,
+    [results],
+  )
   const cityBreakdown = useMemo(() => {
-    return CITY_PRESETS.map(cp => {
-      const rows = results.filter(r => r.city === cp.city)
-      const avail = rows.filter(r => r.available)
-      const pct   = rows.length ? Math.round((avail.length / rows.length) * 100) : 0
-      const prices = avail.map(r => r.price).filter((p): p is number => p !== null)
-      const hasMismatch = prices.length > 1 && new Set(prices).size > 1
-      const hasSeller   = avail.some(r => !r.buybox_is_self)
-      const fastest     = avail.reduce<number | null>((best, r) => {
-        if (r.delivery_days === null) return best
-        return best === null ? r.delivery_days : Math.min(best, r.delivery_days)
-      }, null)
-      const sellers = avail.map(r => r.buybox_seller).filter(Boolean)
+    const map = new Map<string, DbPincodeCheck[]>()
+    results.forEach(r => {
+      const city = deriveCity(r)
+      if (!map.has(city)) map.set(city, [])
+      map.get(city)!.push(r)
+    })
+    return Array.from(map.entries()).map(([city, rows]) => {
+      const avail      = rows.filter(r => r.available)
+      const pct        = Math.round((avail.length / rows.length) * 100)
+      const status: AvailabilityStatus = pct >= 80 ? 'healthy' : pct >= 50 ? 'warning' : 'critical'
+      const sellers    = rows.map(r => r.buy_box_seller).filter(Boolean) as string[]
+      const freq       = sellers.reduce<Record<string, number>>((acc, s) => { acc[s] = (acc[s] ?? 0) + 1; return acc }, {})
       const primarySeller = sellers.length
-        ? (sellers.sort((a, b) =>
-            sellers.filter(s => s === b).length - sellers.filter(s => s === a).length
-          )[0] ?? null)
+        ? Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0]
         : null
-      const status = scoreToStatus(
-        hasMismatch || hasSeller ? Math.min(pct, 79) : pct,
-      )
-      return { city: cp.city, rows, avail, pct, fastest, primarySeller, hasMismatch, status }
+      return { city, rows, avail, pct, status, primarySeller }
     })
   }, [results])
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  // ── Data loaders ───────────────────────────────────────────────────────────
+
+  const loadInitial = useCallback(async () => {
+    setLoading(true)
+    try {
+      const wid = await getWorkspaceId()
+      setWorkspaceId(wid)
+      if (!wid) return
+
+      const supabase = createClient()
+      const [asinsRes, usageRes] = await Promise.all([
+        supabase
+          .from('tracked_asins')
+          .select('id, asin, product_title')
+          .eq('workspace_id', wid)
+          .eq('is_active', true)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('usage_counters')
+          .select('pincode_checks_used')
+          .eq('workspace_id', wid)
+          .single(),
+      ])
+
+      const asins = asinsRes.data ?? []
+      setTrackedAsins(asins)
+      if (asins.length > 0) setSelectedAsinId(asins[0].id)
+      if (usageRes.data) setPincodeChecksUsed(usageRes.data.pincode_checks_used ?? 0)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  const loadResults = useCallback(async (asinId: string) => {
+    if (!asinId) { setResults([]); return }
+    const supabase = createClient()
+    const { data, error } = await supabase
+      .from('pincode_checks')
+      .select('*')
+      .eq('tracked_asin_id', asinId)
+      .order('checked_at', { ascending: false })
+      .limit(200)
+    if (error) { console.error(error); return }
+    setResults(data ?? [])
+  }, [])
+
+  useEffect(() => { loadInitial() }, [loadInitial])
+  useEffect(() => { loadResults(selectedAsinId) }, [selectedAsinId, loadResults])
+
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  function toggleCity(city: string, pincodes: string[]) {
+    const next = new Set(selectedCities)
+    const allSelected = pincodes.every(p => next.has(p))
+    if (allSelected) {
+      pincodes.forEach(p => next.delete(p))
+    } else {
+      pincodes.forEach(p => next.add(p))
+    }
+    setSelectedCities(next)
+    // Sync pincodeText
+    const allPins = Array.from(next).join('\n')
+    setPincodeText(allPins)
+  }
+
+  async function handleCheck() {
+    const pincodes = parsePincodes(pincodeText)
+    if (!pincodes.length || !selectedAsin) return
+    setIsChecking(true)
+    setCheckProgress({ done: 0, total: pincodes.length })
+    let successCount = 0
+    for (let i = 0; i < pincodes.length; i++) {
+      try {
+        const res = await fetch(`/api/asins/${selectedAsin}/pincode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pincode: pincodes[i] }),
+        })
+        if (res.ok) successCount++
+      } catch { /* swallow individual errors */ }
+      setCheckProgress({ done: i + 1, total: pincodes.length })
+    }
+    toast.success(`${successCount} of ${pincodes.length} pincode check${pincodes.length > 1 ? 's' : ''} completed.`)
+    await loadResults(selectedAsinId)
+    // refresh usage counter
+    const wid = workspaceId
+    if (wid) {
+      const supabase = createClient()
+      const { data } = await supabase
+        .from('usage_counters')
+        .select('pincode_checks_used')
+        .eq('workspace_id', wid)
+        .single()
+      if (data) setPincodeChecksUsed(data.pincode_checks_used ?? 0)
+    }
+    setIsChecking(false)
+    setCheckProgress(null)
+  }
+
+  async function handleRunNew() {
+    await loadResults(selectedAsinId)
+  }
+
+  // ── Loading state ──────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (!workspaceId || trackedAsins.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-3 text-center">
+        <MapPin className="w-10 h-10 text-muted-foreground/30" />
+        <p className="text-sm text-muted-foreground">No tracked ASINs found. Add an ASIN first.</p>
+        <Link
+          href="/dashboard/asins"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm font-medium text-foreground hover:bg-muted transition-colors"
+        >
+          Go to ASINs
+        </Link>
+      </div>
+    )
+  }
+
+  // ── Main render ────────────────────────────────────────────────────────────
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto space-y-8">
-
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
+    <div className="flex flex-col gap-6 p-6">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Pincode Availability Checker</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Check product availability, delivery promise, Buy Box owner and pricing across Indian pincodes.
+          <h1 className="text-xl font-bold text-foreground">Pincode Availability</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Check product availability across Indian pincodes
           </p>
         </div>
-        <Button type="button" onClick={handleRunNew} className="gap-2 shrink-0">
-          <Play className="size-4" />
-          Run New Check
+        <Button variant="outline" size="sm" onClick={handleRunNew} className="gap-2">
+          <RefreshCw className="size-3.5" />
+          Refresh
         </Button>
       </div>
 
-      {/* ── Check form ─────────────────────────────────────────────────────── */}
-      <div ref={formRef} className="rounded-xl border border-border bg-card p-5 space-y-5">
-        <h2 className="font-semibold text-foreground">Configure Check</h2>
-
-        {/* Row 1: ASIN + Marketplace */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">ASIN</label>
-            <input
-              type="text"
-              value={asin}
-              onChange={e => setAsin(e.target.value.toUpperCase().trim())}
-              placeholder="e.g. B0BN5NZCGH"
-              maxLength={10}
-              className="text-sm bg-muted/50 border border-border rounded-md px-3 py-2 text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">Marketplace</label>
+      {/* ASIN selector + check form */}
+      <div className="rounded-xl border border-border bg-card p-5 flex flex-col gap-5">
+        {/* ASIN picker */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex-1">
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+              Select ASIN
+            </label>
             <select
-              className="text-sm bg-muted/50 border border-border rounded-md px-3 py-2 text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
-              defaultValue="IN"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+              value={selectedAsinId}
+              onChange={e => setSelectedAsinId(e.target.value)}
             >
-              <option value="IN">🇮🇳 Amazon India (amazon.in)</option>
-              <option value="US" disabled>🇺🇸 Amazon US (coming soon)</option>
+              {trackedAsins.map(a => (
+                <option key={a.id} value={a.id}>
+                  {a.asin}{a.product_title ? ` — ${a.product_title.slice(0, 40)}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="sm:w-32">
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+              Marketplace
+            </label>
+            <select
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground"
+              defaultValue="IN"
+              disabled
+            >
+              <option value="IN">Amazon.in</option>
             </select>
           </div>
         </div>
 
-        {/* Row 2: City presets */}
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-muted-foreground">Preset Cities</label>
+        {/* City presets */}
+        <div>
+          <label className="text-xs font-medium text-muted-foreground mb-2 block">
+            Quick City Presets
+          </label>
           <div className="flex flex-wrap gap-2">
-            {CITY_PRESETS.map(cp => (
-              <button
-                key={cp.city}
-                type="button"
-                onClick={() => toggleCity(cp.city)}
-                className={cn(
-                  'px-3 py-1.5 rounded-lg text-xs font-medium border transition-all',
-                  selectedCities.has(cp.city)
-                    ? 'bg-primary text-primary-foreground border-primary shadow-sm'
-                    : 'bg-muted/40 text-muted-foreground border-border hover:border-primary/40 hover:text-foreground',
-                )}
-              >
-                {cp.city}
-              </button>
-            ))}
+            {CITY_PRESETS.map(cp => {
+              const allSelected = cp.pincodes.every(p => selectedCities.has(p))
+              return (
+                <button
+                  key={cp.city}
+                  type="button"
+                  onClick={() => toggleCity(cp.city, cp.pincodes)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 text-xs font-medium rounded-full px-3 py-1 border transition-colors',
+                    allSelected
+                      ? 'bg-primary/15 text-primary border-primary/30'
+                      : 'bg-muted/50 text-muted-foreground border-border hover:border-primary/30 hover:text-foreground',
+                  )}
+                >
+                  <MapPin className="size-2.5" />
+                  {cp.city}
+                  <Badge variant="secondary" className="text-[10px] px-1 py-0 ml-0.5">
+                    {cp.pincodes.length}
+                  </Badge>
+                </button>
+              )
+            })}
           </div>
         </div>
 
-        {/* Row 3: Pincodes textarea + Check button */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-end">
-          <div className="lg:col-span-2 flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-muted-foreground">
-              Pincodes{' '}
-              <span className="text-muted-foreground/60">
-                ({parsePincodes(pincodeText).length} entered)
+        {/* Pincode textarea + button */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex-1">
+            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+              Pincodes
+              <span className="ml-2 text-primary font-semibold">
+                {parsePincodes(pincodeText).length} selected
               </span>
             </label>
             <textarea
+              rows={3}
+              placeholder="Enter pincodes (comma, space, or newline separated)&#10;e.g. 110001, 400001, 560001"
               value={pincodeText}
               onChange={e => setPincodeText(e.target.value)}
-              placeholder="One 6-digit pincode per line&#10;110001&#10;400001&#10;560001"
-              rows={4}
-              className="text-sm bg-muted/50 border border-border rounded-md px-3 py-2 text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary font-mono resize-none"
+              className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-none"
             />
+            <p className="text-[10px] text-muted-foreground mt-1">
+              {parsePincodes(pincodeText).length > 1
+                ? `${parsePincodes(pincodeText).length} checks — runs sequentially`
+                : 'One pincode per check'}
+            </p>
           </div>
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 sm:pt-6">
             <Button
               type="button"
               onClick={handleCheck}
-              disabled={isChecking || parsePincodes(pincodeText).length === 0}
+              disabled={isChecking || parsePincodes(pincodeText).length === 0 || !selectedAsinId}
               className="w-full gap-2"
             >
               {isChecking ? (
-                <><RefreshCw className="size-4 animate-spin" /> Checking…</>
+                <>
+                  <RefreshCw className="size-4 animate-spin" />
+                  {checkProgress ? `${checkProgress.done}/${checkProgress.total}` : 'Checking...'}
+                </>
               ) : (
                 <><Play className="size-4" /> Check Availability</>
               )}
             </Button>
-            <p className="text-[10px] text-muted-foreground text-center leading-relaxed">
-              Demo mode — using mock data for {checkedAsin}
-            </p>
           </div>
         </div>
       </div>
 
-      {/* ── Summary KPI cards ───────────────────────────────────────────────── */}
+      {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        <KpiCard
-          label="Total Pincodes"
-          value={String(results.length)}
-          sub="pincodes checked"
-          icon={MapPin}
-        />
-        <KpiCard
-          label="Available"
-          value={String(available.length)}
-          sub={`of ${results.length} pincodes`}
-          icon={CheckCircle2}
-          trend={available.length === results.length ? { value: -1, label: '100% coverage' } : undefined}
-        />
-        <KpiCard
-          label="Unavailable"
-          value={String(unavailable.length)}
-          sub="pincodes out of stock"
-          icon={XCircle}
-          trend={unavailable.length > 0 ? { value: unavailable.length, label: 'need attention' } : undefined}
-        />
-        <KpiCard
-          label="Avg Delivery"
-          value={avgDeliveryDays !== null ? `${avgDeliveryDays}d` : '—'}
-          sub="avg delivery time"
-          icon={Truck}
-        />
-        <KpiCard
-          label="Buy Box"
-          value={buyboxConsistency !== null ? `${buyboxConsistency}%` : '—'}
-          sub="pincodes you own"
-          icon={ShieldCheck}
-          trend={
-            buyboxConsistency !== null
-              ? { value: buyboxConsistency >= 80 ? -1 : 1, label: `${buyboxConsistency}% self` }
-              : undefined
-          }
-        />
-        <KpiCard
-          label="Availability Score"
-          value={`${score}%`}
-          sub={scoreToStatus(score) === 'healthy' ? 'Healthy' : scoreToStatus(score) === 'warning' ? 'Warning' : 'Critical'}
-          icon={BarChart2}
-          trend={{ value: score >= 80 ? -1 : 1, label: `${score}% score` }}
-        />
+        <KpiCard label="Total Checked"      value={String(results.length)}    sub="pincode checks"                                                                icon={MapPin} />
+        <KpiCard label="Available"          value={String(available.length)}  sub={results.length ? `of ${results.length} pincodes` : 'no data yet'}             icon={CheckCircle2} />
+        <KpiCard label="Unavailable"        value={String(unavailable.length)} sub="pincodes unavailable"
+          trend={unavailable.length > 0 ? { value: unavailable.length, label: 'need attention' } : undefined} icon={XCircle} />
+        <KpiCard label="Avg Availability"   value={results.length ? `${score}%` : '—'}
+          sub={results.length ? scoreToStatus(score) : 'no checks yet'}                                                                                          icon={BarChart2} />
+        <KpiCard label="Last Checked"       value={latestChecked ? timeAgo(latestChecked) : '—'}
+          sub={latestChecked ? 'latest check' : 'no checks yet'}                                                                                                 icon={Clock} />
+        <KpiCard label="Checks This Month"  value={String(pincodeChecksUsed)} sub="used this month"                                                              icon={Truck} />
       </div>
 
-      {/* ── City-wise cards ─────────────────────────────────────────────────── */}
-      <div>
-        <h2 className="font-semibold text-foreground mb-4">City-wise Overview</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {cityBreakdown.map(c => (
-            <div
-              key={c.city}
-              className={cn(
-                'rounded-xl border bg-card p-4 flex flex-col gap-3',
-                c.status === 'healthy'  && 'border-border',
-                c.status === 'warning'  && 'border-yellow-500/30',
-                c.status === 'critical' && 'border-red-500/30',
-              )}
-            >
-              {/* City header */}
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <MapPin className="size-3.5 text-primary shrink-0" />
-                  <span className="text-sm font-semibold text-foreground">{c.city}</span>
-                </div>
-                <StatusBadge status={c.status} />
-              </div>
-
-              {/* Availability bar */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] text-muted-foreground">Availability</span>
-                  <span className={cn(
-                    'text-xs font-bold',
-                    c.pct >= 80 ? 'text-green-400' : c.pct >= 50 ? 'text-yellow-400' : 'text-red-400',
+      {/* Results */}
+      {results.length === 0 ? (
+        <div className="bg-card border border-border rounded-xl flex flex-col items-center justify-center py-16 text-center gap-2 text-muted-foreground">
+          <MapPin className="w-8 h-8 opacity-30" />
+          <p className="text-sm font-medium">No pincode checks yet for {selectedLabel || selectedAsin}</p>
+          <p className="text-xs">Select city presets above and click &quot;Check Availability&quot; to collect data.</p>
+        </div>
+      ) : (
+        <>
+          {/* City cards */}
+          {cityBreakdown.length > 0 && (
+            <div>
+              <h2 className="font-semibold text-foreground mb-4">City-wise Overview</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {cityBreakdown.map(c => (
+                  <div key={c.city} className={cn(
+                    'rounded-xl border bg-card p-4 flex flex-col gap-3',
+                    c.status === 'healthy'  && 'border-border',
+                    c.status === 'warning'  && 'border-yellow-500/30',
+                    c.status === 'critical' && 'border-red-500/30',
                   )}>
-                    {c.pct}%
-                  </span>
-                </div>
-                <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className={cn(
-                      'h-full rounded-full transition-all',
-                      c.pct >= 80 ? 'bg-green-500' : c.pct >= 50 ? 'bg-yellow-500' : 'bg-red-500',
-                    )}
-                    style={{ width: `${c.pct}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* Stats */}
-              <div className="flex flex-col gap-1.5 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground flex items-center gap-1">
-                    <Truck className="size-3" /> Fastest
-                  </span>
-                  <span className="text-foreground font-medium">
-                    {c.fastest !== null ? `${c.fastest}d` : '—'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground flex items-center gap-1">
-                    <IndianRupee className="size-3" /> Price
-                  </span>
-                  <span className={cn('font-medium', c.hasMismatch ? 'text-yellow-400' : 'text-foreground')}>
-                    {c.avail[0]?.price ? `₹${c.avail[0].price.toLocaleString('en-IN')}` : '—'}
-                    {c.hasMismatch && ' ⚠️'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground flex items-center gap-1">
-                    {c.avail.every(r => r.buybox_is_self)
-                      ? <ShieldCheck className="size-3 text-green-400" />
-                      : <ShieldAlert className="size-3 text-yellow-400" />}
-                    Buy Box
-                  </span>
-                  <span className="text-foreground font-medium truncate max-w-[100px] text-right">
-                    {c.primarySeller ?? '—'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Pincode count */}
-              <div className="flex items-center gap-2 pt-1 border-t border-border/50">
-                <span className="text-[10px] text-muted-foreground">
-                  {c.avail.length}/{c.rows.length} pincodes available
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* ── Results table ───────────────────────────────────────────────────── */}
-      <div className="rounded-xl border border-border bg-card overflow-hidden">
-        <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
-          <div>
-            <h2 className="font-semibold text-foreground">Pincode Results</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Full availability breakdown — {checkedAsin}
-            </p>
-          </div>
-          <Badge variant="secondary" className="text-xs">{results.length} pincodes</Badge>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/30">
-                <th className="text-left text-xs text-muted-foreground font-medium px-5 py-3">City</th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3">Pincode</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3">Availability</th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden md:table-cell">Delivery</th>
-                <th className="text-right text-xs text-muted-foreground font-medium px-4 py-3 hidden sm:table-cell">Price</th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden lg:table-cell">Buy Box Seller</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3 hidden md:table-cell">FBA/FBM</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3 hidden sm:table-cell">Stock</th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">Checked</th>
-                <th className="text-right text-xs text-muted-foreground font-medium px-5 py-3">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/50">
-              {results.map(r => (
-                <tr key={`${r.city}-${r.pincode}`} className="hover:bg-muted/20 transition-colors">
-                  <td className="px-5 py-3 text-sm font-medium text-foreground">{r.city}</td>
-                  <td className="px-4 py-3">
-                    <span className="font-mono text-xs text-foreground bg-muted/50 rounded px-1.5 py-0.5">
-                      {r.pincode}
-                    </span>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">{r.state}</p>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    {r.available ? (
-                      <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
-                        <CheckCircle2 className="size-3.5" /> Available
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
-                        <XCircle className="size-3.5" /> Unavailable
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 hidden md:table-cell">
-                    <span className={cn(
-                      'text-xs',
-                      r.delivery_days && r.delivery_days >= 4 ? 'text-yellow-400' : 'text-foreground',
-                    )}>
-                      {r.delivery_promise ?? '—'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right hidden sm:table-cell">
-                    {r.price !== null ? (
-                      <span className="text-sm font-semibold text-foreground tabular-nums">
-                        ₹{r.price.toLocaleString('en-IN')}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground text-xs">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 hidden lg:table-cell">
-                    {r.buybox_seller ? (
-                      <div className="flex items-center gap-1.5">
-                        {r.buybox_is_self
-                          ? <ShieldCheck className="size-3.5 text-green-400 shrink-0" />
-                          : <ShieldAlert className="size-3.5 text-yellow-400 shrink-0" />}
-                        <span className="text-xs text-foreground truncate max-w-[120px]">
-                          {r.buybox_seller}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <MapPin className="size-3.5 text-primary shrink-0" />
+                        <span className="text-sm font-semibold text-foreground">{c.city}</span>
+                      </div>
+                      <StatusBadge status={c.status} />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] text-muted-foreground">Availability</span>
+                        <span className={cn(
+                          'text-xs font-bold',
+                          c.pct >= 80 ? 'text-green-400' : c.pct >= 50 ? 'text-yellow-400' : 'text-red-400',
+                        )}>
+                          {c.pct}%
                         </span>
                       </div>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-center hidden md:table-cell">
-                    <FulfillmentBadge type={r.fulfillment} />
-                  </td>
-                  <td className="px-4 py-3 text-center hidden sm:table-cell">
-                    <StockBadge status={r.stock_status} />
-                  </td>
-                  <td className="px-4 py-3 hidden xl:table-cell">
-                    <span className="text-xs text-muted-foreground flex items-center gap-1">
-                      <Clock className="size-3" />{timeAgo(r.checked_at)}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 text-right">
-                    <Link
-                      href={`/dashboard/asins/B0BN5NZCGH`}
-                      className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
-                    >
-                      <ExternalLink className="size-3.5" />
-                      <span className="hidden sm:inline">View</span>
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className={cn(
+                            'h-full rounded-full transition-all',
+                            c.pct >= 80 ? 'bg-green-500' : c.pct >= 50 ? 'bg-yellow-500' : 'bg-red-500',
+                          )}
+                          style={{ width: `${c.pct}%` }}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-muted-foreground flex items-center gap-1">
+                        {c.primarySeller
+                          ? <ShieldCheck className="size-3 text-green-400" />
+                          : <ShieldAlert className="size-3 text-muted-foreground" />}
+                        Buy Box
+                      </span>
+                      <span className="text-foreground font-medium truncate max-w-[100px] text-right">
+                        {c.primarySeller ?? '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1 border-t border-border/50">
+                      <span className="text-[10px] text-muted-foreground">
+                        {c.avail.length}/{c.rows.length} pincodes available
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-      {/* ── Alerts ─────────────────────────────────────────────────────────── */}
-      <div className="rounded-xl border border-border bg-card p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Bell className="size-4 text-primary shrink-0" />
-          <h2 className="font-semibold text-foreground">Pincode Alerts</h2>
-          <Badge variant="secondary" className="ml-auto text-xs">{PINCODE_ALERTS.length}</Badge>
-        </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
-          {PINCODE_ALERTS.map(alert => (
-            <AlertRow key={alert.id} alert={alert} />
-          ))}
-        </div>
-      </div>
+          {/* Results table */}
+          <div className="rounded-xl border border-border bg-card overflow-hidden">
+            <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-foreground">Pincode Results</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">{selectedLabel || selectedAsin}</p>
+              </div>
+              <Badge variant="secondary" className="text-xs">{results.length} checks</Badge>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/30">
+                    <th className="text-left text-xs text-muted-foreground font-medium px-5 py-3">City</th>
+                    <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3">Pincode</th>
+                    <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3">Availability</th>
+                    <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden md:table-cell">Delivery</th>
+                    <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden lg:table-cell">Buy Box Seller</th>
+                    <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3 hidden md:table-cell">FBA/FBM</th>
+                    <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">Checked</th>
+                    <th className="text-right text-xs text-muted-foreground font-medium px-5 py-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/50">
+                  {results.map(r => (
+                    <tr key={r.id} className="hover:bg-muted/20 transition-colors">
+                      <td className="px-5 py-3 text-sm font-medium text-foreground">{deriveCity(r)}</td>
+                      <td className="px-4 py-3">
+                        <span className="font-mono text-xs text-foreground bg-muted/50 rounded px-1.5 py-0.5">
+                          {r.pincode}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        {r.available ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
+                            <CheckCircle2 className="size-3.5" /> Available
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
+                            <XCircle className="size-3.5" /> Unavailable
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 hidden md:table-cell">
+                        <span className="text-xs text-foreground">{r.delivery_promise ?? '—'}</span>
+                      </td>
+                      <td className="px-4 py-3 hidden lg:table-cell">
+                        {r.buy_box_seller
+                          ? <span className="text-xs text-foreground truncate max-w-[120px] block">{r.buy_box_seller}</span>
+                          : <span className="text-xs text-muted-foreground">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-center hidden md:table-cell">
+                        <FulfillmentBadge type={r.fulfillment_type} />
+                      </td>
+                      <td className="px-4 py-3 hidden xl:table-cell">
+                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Clock className="size-3" />
+                          {timeAgo(r.checked_at)}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3 text-right">
+                        <Link
+                          href={`/dashboard/asins/${selectedAsin}`}
+                          className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+                        >
+                          <ExternalLink className="size-3.5" />
+                          <span className="hidden sm:inline">View</span>
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

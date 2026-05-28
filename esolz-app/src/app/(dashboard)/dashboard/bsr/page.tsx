@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import Link from 'next/link'
 import {
   LineChart,
@@ -14,11 +14,11 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
-import { MOCK_PRODUCT_SNAPSHOTS } from '@/lib/mock-data'
-import { generateBsrHistory } from '@/lib/mock-asin-detail'
-import { BSR_TRACKER_ALERTS, type BsrTrackerAlert } from '@/lib/mock-bsr-tracker'
+import { createClient } from '@/lib/supabase/client'
+import { getWorkspaceId, getTrackedAsins } from '@/lib/supabase/asins'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { ProductSnapshot } from '@/types'
 import {
   Package,
   TrendingUp,
@@ -27,16 +27,17 @@ import {
   BarChart2,
   ExternalLink,
   Bell,
-  AlertTriangle,
-  CheckCircle2,
-  Info,
-  XCircle,
   Plus,
   ArrowUpRight,
   ArrowDownRight,
   Tag,
   Clock,
+  Loader2,
 } from 'lucide-react'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface BsrPoint { date: string; rank: number }
 
 // ─── Tooltip ──────────────────────────────────────────────────────────────────
 
@@ -131,62 +132,69 @@ function MovementChip({ movement }: { movement: number | null }) {
   )
 }
 
-// ─── Alert row ────────────────────────────────────────────────────────────────
-
-function AlertRow({ alert }: { alert: BsrTrackerAlert }) {
-  const iconMap = {
-    success: <CheckCircle2 className="size-3.5 shrink-0 text-green-400" />,
-    warning: <AlertTriangle className="size-3.5 shrink-0 text-yellow-400" />,
-    error: <XCircle className="size-3.5 shrink-0 text-red-400" />,
-    info: <Info className="size-3.5 shrink-0 text-blue-400" />,
-  }
-  const bgMap = {
-    success: 'border-green-500/20 bg-green-500/5',
-    warning: 'border-yellow-500/20 bg-yellow-500/5',
-    error: 'border-red-500/20 bg-red-500/5',
-    info: 'border-blue-500/20 bg-blue-500/5',
-  }
-  return (
-    <div
-      className={cn(
-        'flex items-start gap-3 rounded-lg border px-3 py-2.5',
-        bgMap[alert.severity],
-      )}
-    >
-      <div className="mt-0.5">{iconMap[alert.severity]}</div>
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium text-foreground truncate">{alert.label}</p>
-        <p className="text-xs text-muted-foreground mt-0.5 leading-snug">{alert.message}</p>
-        <p className="text-[10px] text-muted-foreground/60 mt-1 flex items-center gap-1">
-          <Clock className="size-2.5" />
-          {timeAgo(alert.timestamp)}
-        </p>
-      </div>
-      <Link
-        href={`/dashboard/asins/${alert.asin}`}
-        className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-        title="View ASIN"
-      >
-        <ExternalLink className="size-3.5" />
-      </Link>
-    </div>
-  )
-}
-
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function BsrTrackerPage() {
-  const [selectedAsin, setSelectedAsin] = useState('B0BN5NZCGH')
-  const [chartRange, setChartRange] = useState<7 | 14 | 30>(30)
-  const [mounted, setMounted] = useState(false)
+  const [products, setProducts]                 = useState<ProductSnapshot[]>([])
+  const [loading, setLoading]                   = useState(true)
+  const [selectedAsinCode, setSelectedAsinCode] = useState<string>('')
+  const [selectedAsinId, setSelectedAsinId]     = useState<string>('')
+  const [chartRange, setChartRange]             = useState<7 | 14 | 30>(30)
+  const [bsrHistory, setBsrHistory]             = useState<BsrPoint[]>([])
+  const [chartLoading, setChartLoading]         = useState(false)
+  const [mounted, setMounted]                   = useState(false)
 
-  useEffect(() => {
-    setMounted(true)
+  useEffect(() => { setMounted(true) }, [])
+
+  // ── Load workspace products ────────────────────────────────────────────────
+
+  const loadProducts = useCallback(async () => {
+    setLoading(true)
+    const wsId = await getWorkspaceId()
+    if (!wsId) { setLoading(false); return }
+    const asins = await getTrackedAsins(wsId)
+    setProducts(asins)
+    const first = asins.find(a => a.bsr_rank !== null) ?? asins[0]
+    if (first) {
+      setSelectedAsinCode(first.asin)
+      setSelectedAsinId(first.id)
+    }
+    setLoading(false)
   }, [])
 
-  // ── Derived data ────────────────────────────────────────────────────────────
+  useEffect(() => { void loadProducts() }, [loadProducts])
 
-  const products = MOCK_PRODUCT_SNAPSHOTS
+  // ── Load real BSR history from asin_snapshots ─────────────────────────────
+
+  const loadHistory = useCallback(async (asinId: string, days: number) => {
+    if (!asinId) return
+    setChartLoading(true)
+    const supabase = createClient()
+    const since = new Date(Date.now() - days * 86_400_000).toISOString()
+
+    const { data } = await supabase
+      .from('asin_snapshots')
+      .select('bsr, checked_at')
+      .eq('tracked_asin_id', asinId)
+      .gte('checked_at', since)
+      .not('bsr', 'is', null)
+      .order('checked_at', { ascending: true })
+
+    const points: BsrPoint[] = (data ?? []).map(row => ({
+      date: new Date(row.checked_at as string).toLocaleDateString('en-GB', {
+        day: 'numeric', month: 'short',
+      }),
+      rank: row.bsr as number,
+    }))
+    setBsrHistory(points)
+    setChartLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (selectedAsinId) void loadHistory(selectedAsinId, chartRange)
+  }, [selectedAsinId, chartRange, loadHistory])
+
+  // ── Derived data ───────────────────────────────────────────────────────────
 
   const productsWithBsr = useMemo(
     () => products.filter(p => p.bsr_rank !== null),
@@ -224,21 +232,18 @@ export default function BsrTrackerPage() {
     [movementsWithData],
   )
 
-  const biggestGainer = gainers[0] ?? null
-  const biggestLoser = losers[0] ?? null
+  const biggestGainer  = gainers[0] ?? null
+  const biggestLoser   = losers[0] ?? null
+  const improvingCount = movementsWithData.filter(p => p.movement > 0).length
+  const decliningCount = movementsWithData.filter(p => p.movement < 0).length
 
   const selectedProduct = useMemo(
-    () => products.find(p => p.asin === selectedAsin) ?? null,
-    [products, selectedAsin],
-  )
-
-  const bsrHistory = useMemo(
-    () => generateBsrHistory(selectedAsin, selectedProduct?.bsr_rank ?? null),
-    [selectedAsin, selectedProduct],
+    () => products.find(p => p.asin === selectedAsinCode) ?? null,
+    [products, selectedAsinCode],
   )
 
   const categoryBreakdown = useMemo(() => {
-    const map = new Map<string, { products: typeof products; count: number }>()
+    const map = new Map<string, { products: ProductSnapshot[]; count: number }>()
     for (const p of products) {
       if (!p.category) continue
       if (!map.has(p.category)) map.set(p.category, { products: [], count: 0 })
@@ -259,10 +264,37 @@ export default function BsrTrackerPage() {
     })
   }, [products])
 
-  const improvingCount = movementsWithData.filter(p => p.movement > 0).length
-  const decliningCount = movementsWithData.filter(p => p.movement < 0).length
+  // ── Loading / empty states ─────────────────────────────────────────────────
 
-  // ── Render ──────────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground gap-2">
+        <Loader2 className="w-5 h-5 animate-spin" />
+        <span className="text-sm">Loading BSR data…</span>
+      </div>
+    )
+  }
+
+  if (products.length === 0) {
+    return (
+      <div className="p-6 max-w-[1400px] mx-auto">
+        <div className="flex flex-col items-center justify-center py-20 text-center gap-4 bg-card border border-border rounded-xl">
+          <BarChart2 className="size-12 text-muted-foreground/30" />
+          <div>
+            <p className="font-semibold text-lg">No ASINs tracked yet</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Add your first ASIN to start tracking BSR.
+            </p>
+          </div>
+          <Button render={<Link href="/dashboard/asins" />} className="mt-2">
+            <Plus className="size-4 mr-1.5" /> Add ASIN to Track
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto space-y-8">
@@ -286,19 +318,19 @@ export default function BsrTrackerPage() {
         <KpiCard
           label="Tracked ASINs"
           value={String(products.length)}
-          sub={`${productsWithBsr.length} with data`}
+          sub={`${productsWithBsr.length} with BSR data`}
           icon={Package}
         />
         <KpiCard
           label="Average BSR"
           value={avgBsr !== null ? `#${avgBsr.toLocaleString('en-IN')}` : '—'}
-          sub="across all categories"
+          sub={avgBsr !== null ? 'across all categories' : 'Refresh an ASIN first'}
           icon={BarChart2}
         />
         <KpiCard
           label="Biggest Gainer"
           value={biggestGainer ? `#${biggestGainer.bsr_rank!.toLocaleString('en-IN')}` : '—'}
-          sub={biggestGainer ? biggestGainer.label : 'No movement data'}
+          sub={biggestGainer ? biggestGainer.label : 'Need 2+ snapshots per ASIN'}
           icon={TrendingUp}
           trend={
             biggestGainer
@@ -352,34 +384,41 @@ export default function BsrTrackerPage() {
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <select
-              value={selectedAsin}
-              onChange={e => setSelectedAsin(e.target.value)}
+              value={selectedAsinCode}
+              onChange={e => {
+                const code = e.target.value
+                const prod = products.find(p => p.asin === code)
+                setSelectedAsinCode(code)
+                if (prod) setSelectedAsinId(prod.id)
+              }}
               className="text-xs bg-muted border border-border rounded-md px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
             >
-              {products
-                .filter(p => p.bsr_rank !== null)
-                .map(p => (
-                  <option key={p.asin} value={p.asin}>
-                    {p.label}
-                  </option>
-                ))}
+              {products.map(p => (
+                <option key={p.asin} value={p.asin}>
+                  {p.label}
+                </option>
+              ))}
             </select>
             <RangeToggle value={chartRange} onChange={setChartRange} />
           </div>
         </div>
 
-        {mounted ? (
-          bsrHistory.length === 0 ? (
-            <div className="h-[260px] flex flex-col items-center justify-center gap-2">
-              <BarChart2 className="size-8 text-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">No BSR data collected yet</p>
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart
-                data={bsrHistory.slice(-chartRange)}
-                margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
-              >
+        {!mounted || chartLoading ? (
+          <ChartSkeleton />
+        ) : bsrHistory.length < 2 ? (
+          <div className="h-[260px] flex flex-col items-center justify-center gap-2">
+            <BarChart2 className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No BSR history yet</p>
+            <p className="text-xs text-muted-foreground/70">
+              Refresh this ASIN over time to build BSR history.
+            </p>
+          </div>
+        ) : (
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart
+              data={bsrHistory}
+              margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
+            >
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
                 <XAxis
                   dataKey="date"
@@ -410,22 +449,21 @@ export default function BsrTrackerPage() {
                 />
               </LineChart>
             </ResponsiveContainer>
-          )
-        ) : (
-          <ChartSkeleton />
-        )}
+          )}
 
         <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
           <span>
             Showing last {chartRange} days ·{' '}
-            {selectedProduct?.category ?? 'Unknown category'}
+            {selectedProduct?.category ?? 'No category data'}
           </span>
-          <Link
-            href={`/dashboard/asins/${selectedAsin}`}
-            className="flex items-center gap-1 hover:text-foreground transition-colors"
-          >
-            View full detail <ExternalLink className="size-3" />
-          </Link>
+          {selectedAsinCode && (
+            <Link
+              href={`/dashboard/asins/${selectedAsinCode}`}
+              className="flex items-center gap-1 hover:text-foreground transition-colors"
+            >
+              View full detail <ExternalLink className="size-3" />
+            </Link>
+          )}
         </div>
       </div>
 
@@ -449,7 +487,9 @@ export default function BsrTrackerPage() {
 
           {gainers.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-6">
-              No improvements detected
+              {productsWithBsr.length === 0
+                ? 'Click Refresh Data on an ASIN detail page to collect BSR data.'
+                : 'No improvements detected — need 2+ snapshots per ASIN.'}
             </p>
           ) : (
             <div className="flex flex-col gap-2">
@@ -500,7 +540,11 @@ export default function BsrTrackerPage() {
           </div>
 
           {losers.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-6">No drops detected</p>
+            <p className="text-sm text-muted-foreground text-center py-6">
+              {productsWithBsr.length === 0
+                ? 'Click Refresh Data on an ASIN detail page to collect BSR data.'
+                : 'No drops detected yet.'}
+            </p>
           ) : (
             <div className="flex flex-col gap-2">
               {losers.map(p => (
@@ -683,6 +727,11 @@ export default function BsrTrackerPage() {
             <h2 className="font-semibold text-foreground">Category Breakdown</h2>
           </div>
 
+          {categoryBreakdown.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-8">
+              Category data will appear after refreshing an ASIN.
+            </p>
+          ) : (
           <div className="flex flex-col gap-3">
             {categoryBreakdown.map(cat => (
               <div
@@ -763,22 +812,25 @@ export default function BsrTrackerPage() {
               </div>
             )}
           </div>
+          )}
         </div>
 
-        {/* Alerts */}
+        {/* BSR Alerts — placeholder until alerts engine is built */}
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex items-center gap-2 mb-4">
             <Bell className="size-4 text-primary shrink-0" />
             <h2 className="font-semibold text-foreground">BSR Alerts</h2>
             <Badge variant="secondary" className="ml-auto text-xs">
-              {BSR_TRACKER_ALERTS.length}
+              Coming soon
             </Badge>
           </div>
 
-          <div className="flex flex-col gap-2 overflow-y-auto max-h-[460px]">
-            {BSR_TRACKER_ALERTS.map(alert => (
-              <AlertRow key={alert.id} alert={alert} />
-            ))}
+          <div className="flex flex-col items-center justify-center py-10 text-center gap-2">
+            <Bell className="size-8 text-muted-foreground/20" />
+            <p className="text-sm text-muted-foreground font-medium">Alert detection coming soon</p>
+            <p className="text-xs text-muted-foreground/70 max-w-[260px]">
+              Automatic BSR drop and rank gain alerts will notify you when significant changes occur.
+            </p>
           </div>
         </div>
       </div>

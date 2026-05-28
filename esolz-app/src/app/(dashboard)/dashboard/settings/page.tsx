@@ -11,10 +11,11 @@ import { toast } from 'sonner'
 import {
   User, Building2, Palette, Bell, ShoppingBag,
   Shield, ChevronDown, Loader2, Check, Sun, Moon,
-  LogOut, Key, Globe, MapPin, RefreshCw,
+  LogOut, Key, RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from 'next-themes'
+import AmazonConnectionCard from './AmazonConnectionCard'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -461,20 +462,14 @@ export default function SettingsPage() {
                   <span className="text-sm text-muted-foreground">Determined by your plan. Upgrade to increase frequency.</span>
                 </div>
               </FieldRow>
-              <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3 flex items-start gap-2.5 mt-1">
-                <Globe className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
-                <div>
-                  <p className="text-xs font-medium text-foreground">Amazon Scraper Credentials</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Seller account credentials and Amazon SP-API keys will be configured here in a future update.
-                    No credentials are stored at this time.
-                  </p>
-                </div>
-              </div>
+
             </div>
           </Section>
 
-          {/* ── 6. Security ──────────────────────────────────────────────── */}
+          {/* ── 6. Amazon Connection ──────────────────────────────────── */}
+          <AmazonConnectionCard />
+
+          {/* ── 7. Security ──────────────────────────────────────────────── */}
           <Section icon={Shield} title="Security" description="Manage your account security and session">
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between gap-4">

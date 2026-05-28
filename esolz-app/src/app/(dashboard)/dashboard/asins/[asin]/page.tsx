@@ -15,17 +15,28 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
-import {
-  generateBsrHistory,
-  generatePriceHistory,
-  generateBuyBoxHistory,
-  getMockAlerts,
-  MOCK_PINCODES,
-  type BuyBoxPoint,
-  type KeywordRank,
-  type PincodeData,
-  type AsinAlert,
-} from '@/lib/mock-asin-detail'
+// ─── Local types (no longer from mock-asin-detail) ──────────────────────────
+interface BuyBoxPoint {
+  date: string
+  winner: string
+  is_self: boolean
+}
+interface KeywordRank {
+  keyword: string
+  rank: number | null
+  prev_rank: number | null
+  search_volume: number
+  trend: 'up' | 'down' | 'flat'
+  page_status?: string | null
+  checked_at?: string | null
+}
+interface AsinAlert {
+  id: string
+  type: 'bsr_drop' | 'bsr_rise' | 'buybox_lost' | 'buybox_won' | 'price_change' | 'low_stock' | 'oos'
+  message: string
+  severity: 'info' | 'warning' | 'error' | 'success'
+  timestamp: string
+}
 import { formatPrice, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
@@ -246,49 +257,6 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
   )
 }
 
-// ─── Pincodes table ───────────────────────────────────────────────────────────
-
-function PincodesTable({ pincodes }: { pincodes: PincodeData[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-border">
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">Pincode</th>
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">City</th>
-            <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground hidden sm:table-cell">State</th>
-            <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</th>
-            <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Delivery</th>
-          </tr>
-        </thead>
-        <tbody>
-          {pincodes.map((p, i) => (
-            <tr key={i} className="border-b border-border/50 last:border-0">
-              <td className="py-3 font-mono text-xs text-foreground">{p.pincode}</td>
-              <td className="py-3 text-foreground">{p.city}</td>
-              <td className="py-3 text-muted-foreground hidden sm:table-cell">{p.state}</td>
-              <td className="py-3 text-center">
-                {p.available ? (
-                  <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
-                    <Check className="size-3" />Available
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
-                    <X className="size-3" />Unavailable
-                  </span>
-                )}
-              </td>
-              <td className="py-3 text-right text-sm text-muted-foreground">
-                {p.available && p.delivery_days ? `${p.delivery_days} days` : '—'}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function currencyFor(mp: string) {
@@ -340,6 +308,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
   const [kwInput, setKwInput] = useState('')
   const [trackingAsinKw, setTrackingAsinKw] = useState(false)
   const [kwRefreshing, setKwRefreshing] = useState(false)
+  const [asinAlerts, setAsinAlerts] = useState<AsinAlert[]>([])
 
   useEffect(() => { setMounted(true) }, [])
 
@@ -484,10 +453,41 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     }
   }, [asin, asinKeywords.length, loadAsinKeywords])
 
+  const loadAsinAlerts = useCallback(async () => {
+    if (!detail) return
+    const wsId = await getWorkspaceId()
+    if (!wsId) return
+    const supabase = createClient()
+    const { data } = await supabase
+      .from('alerts')
+      .select('id, title, description, severity, created_at')
+      .eq('workspace_id', wsId)
+      .eq('tracked_asin_id', detail.id)
+      .neq('status', 'resolved')
+      .order('created_at', { ascending: false })
+      .limit(5)
+    setAsinAlerts(
+      (data ?? []).map(a => ({
+        id: a.id as string,
+        type: 'bsr_drop' as AsinAlert['type'],
+        message: (a.description as string | null)
+          ? `${a.title as string} — ${a.description as string}`
+          : (a.title as string),
+        severity: (
+          a.severity === 'critical' ? 'error'
+          : a.severity === 'opportunity' ? 'success'
+          : a.severity
+        ) as AsinAlert['severity'],
+        timestamp: a.created_at as string,
+      }))
+    )
+  }, [detail])
+
   useEffect(() => { load() }, [load])
   useEffect(() => { if (detail) loadPincodeHistory() }, [detail, loadPincodeHistory])
   useEffect(() => { if (detail) loadBuyBoxHistory() }, [detail, loadBuyBoxHistory])
   useEffect(() => { if (detail) loadAsinKeywords() }, [detail, loadAsinKeywords])
+  useEffect(() => { if (detail) loadAsinAlerts() }, [detail, loadAsinAlerts])
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true)
@@ -597,7 +597,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     captured_at:        latest?.checked_at    ?? null,
   } : null
 
-  // ── Chart data: real snapshots → fall back to mock ──────────────────────
+  // ── Chart data: real snapshots ────────────────────────────────────────────
   const realBsrHistory = snapshots
     .filter(s => s.bsr !== null)
     .map(s => ({ date: formatDateShort(s.checked_at), rank: s.bsr! }))
@@ -608,16 +608,18 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     .map(s => ({ date: formatDateShort(s.checked_at), price: Number(s.price) }))
     .reverse()
 
-  const bsrHistory   = realBsrHistory.length   > 0 ? realBsrHistory   : generateBsrHistory(asin,   product?.bsr_rank ?? null)
-  const priceHistory = realPriceHistory.length  > 0 ? realPriceHistory : generatePriceHistory(asin, product?.price ?? null)
+  const liveBuyboxHist = useMemo((): BuyBoxPoint[] =>
+    buyboxHistory
+      .slice(0, 7)
+      .map(snap => ({
+        date: new Date(snap.checked_at as string).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
+        winner: (snap.buy_box_owner as string | null) ?? '—',
+        is_self: snap.buy_box_status === 'won',
+      }))
+      .reverse()
+  , [buyboxHistory])
 
-  const buyboxHist = useMemo(
-    () => generateBuyBoxHistory(product?.buybox_is_self ?? null, product?.buybox_winner ?? null),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [product?.buybox_is_self, product?.buybox_winner],
-  )
   const keywords = asinKeywords
-  const alerts   = useMemo(() => getMockAlerts(asin),    [asin])
 
   // ── Loading ────────────────────────────────────────────────────────────
   if (loading) {
@@ -826,7 +828,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               ) : (
                 <ResponsiveContainer width="100%" height={220}>
                   <LineChart
-                    data={bsrHistory.slice(-bsrRange)}
+                    data={realBsrHistory.slice(-bsrRange)}
                     margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
@@ -883,7 +885,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               ) : (
                 <ResponsiveContainer width="100%" height={220}>
                   <LineChart
-                    data={priceHistory.slice(-priceRange)}
+                    data={realPriceHistory.slice(-priceRange)}
                     margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
                   >
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
@@ -929,10 +931,10 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <ShieldCheck className="size-4 text-primary shrink-0" />
               <h2 className="font-semibold text-foreground">Buy Box — 7 Days</h2>
             </div>
-            {snapshots.length === 0 ? (
+            {buyboxHistory.length === 0 ? (
               <p className="text-sm text-muted-foreground text-center py-4">No Buy Box data yet</p>
             ) : (
-              <BuyBoxTimeline history={buyboxHist} />
+              <BuyBoxTimeline history={liveBuyboxHist} />
             )}
           </div>
 
@@ -943,9 +945,13 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <h2 className="font-semibold text-foreground">Recent Alerts</h2>
             </div>
             <div className="flex flex-col gap-2">
-              {alerts.map(a => (
-                <AlertItem key={a.id} alert={a} />
-              ))}
+              {asinAlerts.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No active alerts</p>
+              ) : (
+                asinAlerts.map(a => (
+                  <AlertItem key={a.id} alert={a} />
+                ))
+              )}
             </div>
           </div>
         </div>

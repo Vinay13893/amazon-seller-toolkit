@@ -1,7 +1,8 @@
 import { cn } from '@/lib/utils'
 import { Insight } from '@/types'
 
-function timeAgo(iso: string): string {
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return '—'
   const diff = (Date.now() - new Date(iso).getTime()) / 1000
   if (diff < 60) return 'just now'
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`

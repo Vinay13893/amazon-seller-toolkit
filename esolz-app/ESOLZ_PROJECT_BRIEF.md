@@ -9,7 +9,7 @@
 **Subline:** Amazon Intelligence
 **What it does:** Amazon Seller Intelligence SaaS — lets sellers track BSR (Best Seller Rank), monitor Buy Box ownership, check product availability by pincode, track and research keyword rankings, all from one dashboard.
 **Target market:** Amazon India sellers (small-to-mid size), managing 1–20 ASINs on amazon.in
-**Monetisation:** Subscription SaaS, tiered plans priced in INR (Free / Starter / Growth / Pro / Agency). Payment gateway planned: **Razorpay** — NOT yet built.
+**Monetisation:** Subscription SaaS, tiered plans priced in INR (Free / Starter / Growth / Pro / Agency). Payment gateway: **Razorpay** ✅ built May 2026. Self-serve upgrade flow: order creation → Razorpay modal → HMAC signature verify → subscription update.
 
 ---
 
@@ -46,10 +46,12 @@
 | `tracked_asins` | `id`, `workspace_id`, `asin`, `product_title`, `marketplace`, `status` (active/archived) | Manual add by user |
 | `asin_snapshots` | `tracked_asin_id`, `asin`, `bsr_rank`, `bsr_category`, `price`, `rating`, `review_count`, `availability_score`, `buybox_is_self`, `buybox_seller_name`, `checked_at` | Inserted on each manual refresh |
 | `pincode_snapshots` | `tracked_asin_id`, `pincode`, `available`, `delivery_date`, `checked_at` | Inserted on each pincode check |
-| `buybox_snapshots` | `tracked_asin_id`, `is_self`, `seller_name`, `seller_id`, `price`, `fulfillment_type`, `checked_at` | Inserted on each buy box check |
+| `buybox_snapshots` | `id`, `workspace_id`, `tracked_asin_id`, `buy_box_owner`, `buy_box_status` ('won'\|'lost'\|'suppressed'\|'unknown'), `buy_box_price`, `your_price`, `price_gap`, `fulfillment_type`, `checked_at` | Inserted on each buy box check |
 | `tracked_keywords` | `id`, `workspace_id`, `tracked_asin_id`, `keyword`, `marketplace` | Upserted on keyword track |
 | `keyword_rank_snapshots` | `tracked_asin_id`, `keyword`, `organic_rank`, `sponsored_rank`, `page_status`, `scan_status`, `checked_at` | Inserted by Python rank checker |
 | `usage_counters` | `workspace_id`, `period_start`, `period_end`, `asin_count`, `keyword_count`, `pincode_checks_used`, `reports_generated`, `competitor_count` | Upserted after each resource add |
+| `alerts` | `id`, `workspace_id`, `module` ('bsr'\|'buybox'\|'pincode'\|'keywords'), `rule`, `asin`, `title`, `description`, `severity` ('critical'\|'warning'\|'opportunity'\|'info'), `status` ('open'\|'read'\|'resolved'), `created_at` | Written by `POST /api/alerts/generate`; read by `/dashboard/alerts` and `/dashboard/buybox` |
+| `reports` | `id`, `workspace_id`, `report_type`, `file_name`, `row_count`, `created_at` | Written by `POST /api/reports/generate` |
 
 ### RLS Architecture
 - **All 22 tables have RLS enabled** (verified live in Supabase dashboard — migration `004_lock_legacy_tables.sql` applied)
@@ -65,6 +67,8 @@
 ---
 
 ## WHAT IS FULLY BUILT AND WORKING (real data, end-to-end)
+> **Beta Sprint completed May 2026** — all mock dashboard pages are now connected to real Supabase data.
+> **Hardening Sprint completed May 2026** — ASIN detail page fully migrated to real data (buybox timeline, alerts, BSR/price charts). Error boundary added. Zero mock function calls remain in any dashboard page.
 
 ### Auth Flow
 - **Signup** (`/signup`): email + password + full_name + company_name → `supabase.auth.signUp()`. Email confirmation required. After call, redirects to `/signup/check-email?email=<encoded>` ✅
@@ -84,6 +88,42 @@
 - **Theme toggle** → `next-themes`, persists in localStorage ✅
 - ❌ NOT CONNECTED (local state only, has in-UI disclaimer): notification prefs, default marketplace, default pincodes
 
+### Dashboard Overview (`/dashboard`)
+- Real data: keyword count, BSR refresh count, buy box won/lost/suppressed, activity feed, recent alerts
+- Queries: `tracked_asins`, `asin_snapshots`, `tracked_keywords`, `buybox_snapshots`, `alerts`
+- Loading states ✅, empty states ✅
+
+### BSR Tracker (`/dashboard/bsr`)
+- Real data: tracked ASINs list with latest BSR rank, BSR history chart per ASIN (last 30 days from `asin_snapshots`)
+- Source: `getTrackedAsins()` + `asin_snapshots` time-series query
+- No mock data ✅
+
+### Pincode Checker (`/dashboard/pincode`)
+- Real data: latest pincode check results per ASIN from `pincode_snapshots`
+- No "Demo mode" label; real DB reads ✅
+
+### Alerts Center (`/dashboard/alerts`)
+- Real data from `alerts` table
+- **Generate Alerts** button → `POST /api/alerts/generate` — evaluates 4 rules: BSR spike, buybox lost, pincode unavailable, keyword rank drop
+- Mark as Read / Resolve buttons persist to DB ✅
+- Deduplication: won't insert duplicate alerts within 24h for same workspace+rule+asin ✅
+
+### Reports (`/dashboard/reports`)
+- Real data: recent reports from `reports` table; Generate buttons call `POST /api/reports/generate`
+- 6 report types: BSR Summary, Keyword Performance, Pincode Availability, Buy Box Status, Full ASIN Report, Monthly Trend
+- CSV generation with RFC 4180 escaping → browser download ✅
+- Increments `usage_counters.reports_generated` on each generate ✅
+
+### Buy Box Monitor (`/dashboard/buybox`)
+- Real data from `buybox_snapshots` + `tracked_asins`
+- KPI cards: total tracked, won, lost, suppressed, competitor sellers, win rate — all from DB
+- Status table: latest snapshot per ASIN ✅
+- History chart (last 7 days): `buybox_snapshots` time-series grouped by day ✅
+- Competitor sellers panel: aggregated from lost snapshots by `buy_box_owner` ✅
+- Alerts panel: `alerts` table filtered by `module='buybox'` ✅
+- Check Buy Box form: dropdown of tracked ASINs → calls real `POST /api/asins/[asin]/buybox` ✅
+- No mock data ✅
+
 ### ASIN Management (`/dashboard/asins`)
 - Lists all tracked ASINs from `tracked_asins` with latest snapshot joined
 - **Add ASIN** → inserts into `tracked_asins`, increments `usage_counters.asin_count` ✅
@@ -97,7 +137,7 @@ Most feature-rich real-data page. Loads `getAsinDetail()` joining `asin_snapshot
 
 **BSR section:**
 - Latest BSR rank + delta vs previous snapshot ✅
-- Chart (7/14/30 day toggle) — chart uses mock generator seeded from real latest BSR value (not true time-series from DB yet)
+- Chart (7/14/30 day toggle) — real time-series from `asin_snapshots` (all snapshots, sliced by selected range). Shows empty-state placeholder if no snapshots yet. ✅
 - **Refresh BSR button** → `POST /api/asins/[asin]/refresh` → Python scraper → inserts row into `asin_snapshots` ✅
 
 **Pincode Availability section:**
@@ -107,6 +147,8 @@ Most feature-rich real-data page. Loads `getAsinDetail()` joining `asin_snapshot
 
 **Buy Box section:**
 - Latest status from `buybox_snapshots` ✅
+- **7-day Buy Box timeline** (sidebar) — real `buybox_snapshots` rows mapped to winner/is_self shape. Shows empty-state if no checks yet. ✅
+- **Recent Alerts** (sidebar) — real `alerts` table filtered by `tracked_asin_id` + workspace, non-resolved only. ✅
 - **Check Buy Box button** → `POST /api/asins/[asin]/buybox` → Python → inserts row into `buybox_snapshots` ✅
 - `?mock=1` dev shortcut skips Python
 
@@ -130,11 +172,17 @@ Most feature-rich real-data page. Loads `getAsinDetail()` joining `asin_snapshot
 - Loads all plans from `subscription_plans` for comparison table ✅
 - Loads usage from `usage_counters` via `getOrCreateCurrentUsageCounter()` ✅
 - `UsageBar` for each resource (ASINs, keywords, pincode checks, reports, competitors) — warning at 80%, critical at 95% ✅
-- **Upgrade buttons**: all disabled with "Coming soon" tooltip — Razorpay not built yet (intentional) ✅
+- **Upgrade buttons**: live Razorpay checkout — `POST /api/billing/create-order` → Razorpay modal → `POST /api/billing/verify-payment` → subscription updated ✅
+- Free plan and Agency plan cannot be self-served (blocked server-side) ✅
+- Requires env vars: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` (see `.env.local.example`)
 
 ### Sidebar Plan Card
 - Shows current plan name + ASIN count from live DB query ✅
 - Graceful loading state ✅
+
+### Error Boundary (`src/app/(dashboard)/error.tsx`)
+- Catches any unhandled render/fetch error in the entire `(dashboard)` layout group ✅
+- Shows a user-friendly message with optional Error ID (Render digest) and a **Try again** button that calls Next.js `reset()` ✅
 
 ### Day/Night Mode
 - `next-themes` ThemeProvider in root layout ✅
@@ -157,13 +205,17 @@ All routes have:
 |---|---|---|
 | `/api/asins/[asin]/refresh` | POST | Python scraper → `asin_snapshots` |
 | `/api/asins/[asin]/pincode` | POST | Playwright check → `pincode_snapshots` |
-| `/api/asins/[asin]/buybox` | POST | Python check → `buybox_snapshots` |
+| `/api/asins/[asin]/buybox` | POST | Python check → `buybox_snapshots`. Accepts `?mock=1` in dev to skip scraper. |
 | `/api/asins/[asin]/keywords/track` | POST | Upsert `tracked_keywords` for ASIN + increment `keyword_count` |
 | `/api/asins/[asin]/keywords/refresh` | POST | Python rank check → `keyword_rank_snapshots` for this ASIN |
 | `/api/keywords/research` | POST | Amazon autocomplete API → suggestions |
 | `/api/keywords/track` | POST | Upsert `tracked_keywords` at workspace level |
 | `/api/keywords/refresh` | POST | Python rank check for all workspace keywords |
 | `/api/usage/init` | POST | Upsert `usage_counters` row (accepts both `workspace_id` and `workspaceId`) |
+| `/api/alerts/generate` | POST | Evaluates 4 alert rules across all workspace ASINs → inserts into `alerts` table (with 24h dedup). Returns `{ created: N }` |
+| `/api/reports/generate` | POST | Body: `{ type: ReportType }`. Generates CSV from DB data, saves to `reports` table, increments `usage_counters.reports_generated`, streams CSV download |
+| `/api/billing/create-order` | POST | Body: `{ plan_id }`. Validates role (owner/admin), fetches price server-side, creates Razorpay order. Returns `{ order_id, amount, currency, key_id, plan_name }` |
+| `/api/billing/verify-payment` | POST | Body: `{ razorpay_order_id, razorpay_payment_id, razorpay_signature, plan_id }`. HMAC-SHA256 signature verification → upserts `workspace_subscriptions`. Returns `{ success: true }` |
 
 ---
 
@@ -184,19 +236,15 @@ Scripts in `esolz-app/scripts/` and project root:
 
 ---
 
-## WHAT IS UI-ONLY / MOCK DATA (placeholder pages)
+## REMAINING MOCK / PLACEHOLDER PAGES
 
-These pages have full built-out UI with charts, filters, and interactions but use hardcoded mock arrays from `/lib/mock-*.ts` files. **No DB queries. No real data.**
+Only one dashboard section remains on mock data:
 
-| Page | Route | Mock source |
-|---|---|---|
-| Dashboard Overview | `/dashboard` | `MOCK_BSR_SUMMARY`, `MOCK_INSIGHTS` |
-| BSR Tracker | `/dashboard/bsr` | `MOCK_PRODUCT_SNAPSHOTS`, `generateBsrHistory()` |
-| Pincode Checker | `/dashboard/pincode` | `MOCK_PINCODE_RESULTS` (shows "Demo mode" label in UI) |
-| Buy Box Monitor | `/dashboard/buybox` | `MOCK_BUYBOX_ENTRIES`, `MOCK_BUYBOX_HISTORY`, `MOCK_COMPETITORS`, `MOCK_BUYBOX_ALERTS` |
-| Alerts Center | `/dashboard/alerts` | `MOCK_ALERTS` |
-| Reports | `/dashboard/reports` | `REPORT_TEMPLATES`, `RECENT_REPORTS` — download buttons do nothing |
-| Competitors | `/dashboard/competitors` | `MOCK_COMPETITOR_ASINS`, `MOCK_BUYBOX_THREATS`, `MOCK_KEYWORD_OVERLAP` |
+| Page | Route | Mock source | Notes |
+|---|---|---|---|
+| Competitors | `/dashboard/competitors` | `MOCK_COMPETITOR_ASINS`, `MOCK_BUYBOX_THREATS`, `MOCK_KEYWORD_OVERLAP` | No competitor tracking in DB yet — deferred post-MVP |
+
+All other dashboard pages are connected to real Supabase data as of May 2026.
 
 ---
 
@@ -212,12 +260,17 @@ These pages have full built-out UI with charts, filters, and interactions but us
 8. **[SECURITY] API routes leaked internals** — 17 occurrences of `debug: { authErr }`, `debug: { user.id }`, `debug: { memberErr }`, `detail: String(err)` in JSON error responses → stripped from all 9 API routes. Routes fixed: keywords/track, keywords/refresh, keywords/research, asins/[asin]/refresh, asins/[asin]/pincode, asins/[asin]/keywords/refresh, asins/[asin]/keywords/track
 9. **[SECURITY] Signup redirected before email confirmed** → now redirects to `/signup/check-email?email=...` with proper confirmation page. User no longer lands on blank dashboard with no session.
 10. **[SECURITY] `.env.local.example` had `NEXT_PUBLIC_DEV_AUTH_BYPASS=true`** → changed to `false` so it is not accidentally copied to production.
+11. **ASIN detail page mock data** → `generateBsrHistory`, `generatePriceHistory`, `generateBuyBoxHistory`, `getMockAlerts` all removed. BSR/price charts use real `asin_snapshots` (empty-state if no data). Buy Box 7-day timeline uses real `buybox_snapshots`. Recent Alerts uses real `alerts` table filtered by `tracked_asin_id`. Bug caught: original code was querying `.eq('asin', textString)` on alerts table — fixed to `.eq('tracked_asin_id', detail.id)` (UUID) matching the actual DB schema.
+12. **Error boundary added** → `src/app/(dashboard)/error.tsx` created. Catches all dashboard-level render errors with graceful UI + reset button.
+13. **Onboarding trigger hardened** → `supabase/migrations/005_verify_and_harden_onboarding_trigger.sql` written and **applied to production Supabase (27 May 2026)**. Adds ON CONFLICT guards, exception handlers, RAISE WARNING for missing Free plan, backfills all 4 onboarding rows for existing users. ✅
+14. **`timeAgo` epoch-zero bug** → Keywords page showed "~20600d ago" for keywords never rank-checked. Cause: `new Date(0).toISOString()` (Unix epoch) used as fallback instead of `null`. Fixed in `keywords/page.tsx` (fallback → `null`), `mock-keywords.ts` (type `string | null`), and added `null` guard to inline `timeAgo` in `dashboard/page.tsx` and `InsightFeed.tsx`. Never-checked keywords now display `—`.
+15. **Razorpay billing MVP** → `POST /api/billing/create-order` and `POST /api/billing/verify-payment` created. Billing page upgrade buttons wired to Razorpay checkout.js modal. Plan price always fetched server-side. HMAC-SHA256 signature verified before subscription update. Free and Agency plans blocked server-side. `.env.local.example` updated with `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `NEXT_PUBLIC_RAZORPAY_KEY_ID`.
 
 ---
 
 ## TESTING DONE
 
-- **TypeScript**: `npx tsc --noEmit` → **0 errors** (verified after all security + rebrand changes)
+- **TypeScript**: `npx tsc --noEmit` → **0 errors** (verified after Beta Sprint + Hardening Sprint + Razorpay Sprint, May 2026)
 - **Manual E2E on localhost:3000**:
   - Signup → login → add ASIN → view ASIN detail ✅
   - BSR refresh (Python scraper ran, snapshot inserted into Supabase) ✅
@@ -250,24 +303,23 @@ These pages have full built-out UI with charts, filters, and interactions but us
 ## WHAT IS NOT BUILT YET — MVP GAPS
 
 ### Critical (blocks launch)
-1. **Razorpay billing integration** — plan upgrade flow, payment, webhook to update `workspace_subscriptions`, failed payment handling
-2. **Workspace creation trigger verification** — assumed to be a Supabase DB trigger on `auth.users` insert but not confirmed. If missing, every new signup gets no workspace → blank pages everywhere → broken onboarding
+1. ~~**Razorpay billing integration**~~ ✅ **DONE (27 May 2026)** — self-serve upgrade flow built. `POST /api/billing/create-order` + `POST /api/billing/verify-payment`. Razorpay checkout modal, HMAC signature verification, `workspace_subscriptions` upsert on success. No webhooks (MVP intentional). Requires `RAZORPAY_KEY_ID` + `RAZORPAY_KEY_SECRET` env vars.
+2. ~~**Apply migration 005 to production Supabase**~~ ✅ **DONE (27 May 2026)** — migration applied. Triggers hardened, subscription_plans seeded (5 plans), all existing users backfilled. New signups now get the full onboarding chain reliably.
 
 ### High Priority
-3. **Aggregate dashboard pages connected to real data** — `/dashboard` (overview), `/dashboard/bsr`, `/dashboard/buybox`, `/dashboard/pincode` all show mock data. These are core selling-point pages.
+3. ~~**Aggregate dashboard pages connected to real data**~~ ✅ **DONE** — all dashboard pages now use real Supabase data (completed May 2026 Beta Sprint)
 4. **Scheduled / automatic refreshes** — BSR, keyword ranks, pincode checks are all manual (button-click only). No cron, no background scheduler. Users won't return daily to click buttons.
-5. **Alert system backend** — alerts page is full UI/mock. No logic evaluates thresholds, no notifications are sent.
+5. ~~**Alert system backend**~~ ✅ **DONE** — `POST /api/alerts/generate` evaluates 4 real rules and persists to `alerts` table
 
 ### Medium Priority
-6. **Report generation** — reports page is full UI/mock. No PDF/Excel export, no actual data compilation.
-7. **Competitor tracking real data** — competitor page is full mock. No add/track flow connected to DB.
+6. ~~**Report generation**~~ ✅ **DONE** — 6 CSV report types, download via browser, saved to `reports` table
+7. **Competitor tracking real data** — competitor page is still mock. No add/track flow connected to DB.
 8. **Amazon Tool Settings persistence** — default marketplace and default pincodes in Settings don't save (no DB column or API call).
 9. **Notification delivery** — notification toggles in Settings are local state only. No email/SMS sending.
 
 ### Lower Priority (post-MVP)
 10. **Multi-user workspace invites** — `workspace_members` table supports it but no invite UI exists.
 11. **Automated test suite** — zero unit/integration/E2E tests currently.
-12. **BSR history chart from real DB data** — ASIN detail BSR chart uses mock generator seeded from latest real value, not actual historical snapshots from `asin_snapshots`.
 
 ---
 

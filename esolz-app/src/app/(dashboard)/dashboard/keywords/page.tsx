@@ -25,24 +25,16 @@ import {
   TrendingDown,
   BarChart2,
   CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Info,
   ExternalLink,
   Plus,
   Tag,
   RefreshCw,
-  Bell,
   Minus,
   ArrowUpRight,
   ArrowDownRight,
 } from 'lucide-react'
 import {
-  KEYWORD_GROUPS,
-  KEYWORD_ALERTS,
   type TrackedKeyword,
-  type KeywordAlert,
-  type KeywordGroup,
 } from '@/lib/mock-keywords'
 import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
@@ -156,32 +148,6 @@ function DifficultyBar({ score }: { score: number }) {
   )
 }
 
-function AlertRow({ alert }: { alert: KeywordAlert }) {
-  const config = {
-    error: { icon: XCircle, color: 'text-red-400', border: 'border-l-red-500' },
-    warning: { icon: AlertTriangle, color: 'text-yellow-400', border: 'border-l-yellow-500' },
-    success: { icon: CheckCircle2, color: 'text-green-400', border: 'border-l-green-500' },
-    info: { icon: Info, color: 'text-blue-400', border: 'border-l-blue-500' },
-  }[alert.severity]
-  const Icon = config.icon
-  return (
-    <div
-      className={cn(
-        'flex gap-3 p-3 rounded-lg bg-card border border-border border-l-2',
-        config.border,
-      )}
-    >
-      <Icon className={cn('size-4 mt-0.5 flex-shrink-0', config.color)} />
-      <div className="flex-1 min-w-0">
-        <p className="text-xs text-foreground leading-relaxed">{alert.message}</p>
-        <p className="text-[10px] text-muted-foreground mt-1 font-mono">
-          {alert.asin} · {timeAgo(alert.timestamp)}
-        </p>
-      </div>
-    </div>
-  )
-}
-
 function RangeToggle({
   value,
   onChange,
@@ -227,57 +193,6 @@ function KwChartTooltip({
       <p className="font-semibold text-foreground">
         {rank != null ? `Rank #${rank}` : 'Not ranking'}
       </p>
-    </div>
-  )
-}
-
-function GroupCard({ group }: { group: KeywordGroup }) {
-  const intentColors: Record<string, string> = {
-    'High Intent': 'text-primary',
-    'Long-tail': 'text-blue-400',
-    Competitor: 'text-purple-400',
-    'Problem-based': 'text-orange-400',
-    Generic: 'text-zinc-400',
-  }
-  const visible = group.keywords.slice(0, 3)
-  const overflow = group.keywords.length - visible.length
-  return (
-    <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-3">
-      <div>
-        <p className={cn('text-xs font-bold uppercase tracking-wider', intentColors[group.name] ?? 'text-foreground')}>
-          {group.name}
-        </p>
-        <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">{group.description}</p>
-      </div>
-      <div className="flex gap-4 text-xs">
-        <span className="text-muted-foreground">
-          <span className="font-semibold text-foreground">{group.keywords.length}</span> keywords
-        </span>
-        <span className="text-muted-foreground">
-          <span className="font-semibold text-foreground">
-            {group.total_volume.toLocaleString('en-IN')}
-          </span>{' '}
-          vol/mo
-        </span>
-        <span className="text-muted-foreground">
-          <span className="font-semibold text-green-400">{group.page_1_count}</span> on P1
-        </span>
-      </div>
-      <div className="flex gap-1.5 flex-wrap">
-        {visible.map(kw => (
-          <span
-            key={kw}
-            className="inline-block px-2 py-0.5 rounded-full bg-border/50 text-[11px] text-muted-foreground border border-border"
-          >
-            {kw}
-          </span>
-        ))}
-        {overflow > 0 && (
-          <span className="inline-block px-2 py-0.5 rounded-full bg-border/50 text-[11px] text-muted-foreground border border-border">
-            +{overflow} more
-          </span>
-        )}
-      </div>
     </div>
   )
 }
@@ -347,7 +262,7 @@ export default function KeywordsPage() {
         sponsored_rank:    latest?.sponsored_rank  ?? null,
         page_status:       (latest?.page_status    ?? 'not_ranking') as TrackedKeyword['page_status'],
         search_volume:     kw.search_volume        ?? 0,
-        last_checked:      latest?.checked_at      ?? new Date(0).toISOString(),
+        last_checked:      latest?.checked_at      ?? null,
       }
     })
 
@@ -913,44 +828,6 @@ export default function KeywordsPage() {
         )}
       </div>
 
-      {/* ── 6. Keyword groups ─────────────────────────────────────────────── */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-sm font-semibold text-foreground">Keyword Groups</h2>
-          <span className="text-xs text-muted-foreground">
-            {KEYWORD_GROUPS.length} groups ·{' '}
-            {KEYWORD_GROUPS.reduce((a, g) => a + g.keywords.length, 0)} total keywords
-          </span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          {KEYWORD_GROUPS.map(g => (
-            <GroupCard key={g.id} group={g} />
-          ))}
-        </div>
-      </div>
-
-      {/* ── 7. Alerts ─────────────────────────────────────────────────────── */}
-      <div className="bg-card border border-border rounded-xl">
-        <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-2">
-            <Bell className="size-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold text-foreground">Keyword Alerts</h2>
-          </div>
-          <div className="flex gap-2">
-            <Badge className="bg-red-500/15 text-red-400 border-red-500/20 text-xs">
-              {KEYWORD_ALERTS.filter(a => a.severity === 'error').length} critical
-            </Badge>
-            <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/20 text-xs">
-              {KEYWORD_ALERTS.filter(a => a.severity === 'warning').length} warning
-            </Badge>
-          </div>
-        </div>
-        <div className="p-4 grid grid-cols-1 lg:grid-cols-2 gap-2">
-          {KEYWORD_ALERTS.map(alert => (
-            <AlertRow key={alert.id} alert={alert} />
-          ))}
-        </div>
-      </div>
     </div>
   )
 }

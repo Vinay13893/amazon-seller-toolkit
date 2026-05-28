@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -8,6 +8,9 @@ import { Input } from '@/components/ui/input'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { getWorkspaceId } from '@/lib/supabase/asins'
+import { createClient } from '@/lib/supabase/client'
+import { toast } from 'sonner'
 import {
   Bell,
   BellOff,
@@ -28,9 +31,11 @@ import {
   DollarSign,
   Star,
   Users,
+  Loader2,
+  RefreshCw,
+  Sparkles,
 } from 'lucide-react'
 import {
-  MOCK_ALERTS,
   getAlertStats,
   type CenterAlert,
   type AlertSeverity,
@@ -70,14 +75,64 @@ const MODULE_COLORS: Record<AlertModule, string> = {
   competitor: 'text-pink-400 bg-pink-500/10',
 }
 
+const WHY_IT_MATTERS: Record<AlertModule, string> = {
+  bsr: 'BSR is the key indicator of your sales velocity relative to competitors. A worsening rank means fewer organic sales.',
+  buybox: 'Buy Box ownership drives ~82% of Amazon sales. Any change directly impacts your conversion and revenue.',
+  pincode: 'Product unavailability in key pincodes means lost sales and lower customer satisfaction scores.',
+  keywords: 'Keyword rankings determine organic visibility. Page 1 rankings are critical for discoverability.',
+  price: 'Pricing changes affect Buy Box eligibility, customer conversion, and overall margins.',
+  reviews: 'Review count and star rating are core ranking signals and directly affect customer trust.',
+  competitor: 'Competitor actions can erode your market share, rankings, and keyword positioning.',
+}
+
+// ─── DB alert shape (from join) ───────────────────────────────────────────────
+
+interface RawDbAlert {
+  id:                string
+  workspace_id:      string
+  tracked_asin_id:   string | null
+  title:             string
+  description:       string | null
+  severity:          AlertSeverity
+  module:            AlertModule
+  status:            AlertStatus
+  recommended_action: string | null
+  created_at:        string
+  tracked_asins:     {
+    asin:          string
+    product_title: string | null
+    marketplace:   string
+  } | null
+}
+
+function mapDbAlert(r: RawDbAlert): CenterAlert {
+  const asn = r.tracked_asins
+  return {
+    id:                 r.id,
+    title:              r.title,
+    description:        r.description ?? '',
+    severity:           r.severity,
+    module:             r.module,
+    status:             r.status,
+    marketplace:        'amazon.in',
+    asin:               asn?.asin ?? '—',
+    product_name:       asn?.product_title ?? 'Unknown Product',
+    timestamp:          r.created_at,
+    recommended_action: r.recommended_action ?? '',
+    what_happened:      r.description ?? r.title,
+    why_it_matters:     WHY_IT_MATTERS[r.module] ?? 'This change may impact your sales.',
+    metric:             undefined,
+  }
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function SeverityBadge({ severity }: { severity: AlertSeverity }) {
   const map: Record<AlertSeverity, { icon: React.ComponentType<{ className?: string }>; cls: string; label: string }> = {
-    critical: { icon: XCircle, cls: 'bg-red-500/15 text-red-400 border-red-500/25', label: 'Critical' },
-    warning: { icon: AlertTriangle, cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25', label: 'Warning' },
-    opportunity: { icon: CheckCircle2, cls: 'bg-green-500/15 text-green-400 border-green-500/25', label: 'Opportunity' },
-    info: { icon: Info, cls: 'bg-blue-500/15 text-blue-400 border-blue-500/25', label: 'Info' },
+    critical:    { icon: XCircle,       cls: 'bg-red-500/15 text-red-400 border-red-500/25',       label: 'Critical' },
+    warning:     { icon: AlertTriangle, cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/25', label: 'Warning' },
+    opportunity: { icon: CheckCircle2,  cls: 'bg-green-500/15 text-green-400 border-green-500/25', label: 'Opportunity' },
+    info:        { icon: Info,          cls: 'bg-blue-500/15 text-blue-400 border-blue-500/25',    label: 'Info' },
   }
   const { icon: Icon, cls, label } = map[severity]
   return (
@@ -89,7 +144,7 @@ function SeverityBadge({ severity }: { severity: AlertSeverity }) {
 }
 
 function ModuleBadge({ module: mod }: { module: AlertModule }) {
-  const Icon = MODULE_ICONS[mod]
+  const Icon  = MODULE_ICONS[mod]
   const color = MODULE_COLORS[mod]
   return (
     <span className={cn('inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full', color)}>
@@ -101,12 +156,10 @@ function ModuleBadge({ module: mod }: { module: AlertModule }) {
 
 function StatusDot({ status }: { status: AlertStatus }) {
   return (
-    <span
-      className={cn(
-        'inline-block size-2 rounded-full flex-shrink-0',
-        status === 'new' ? 'bg-primary' : status === 'read' ? 'bg-border' : 'bg-green-500',
-      )}
-    />
+    <span className={cn(
+      'inline-block size-2 rounded-full flex-shrink-0',
+      status === 'new' ? 'bg-primary' : status === 'read' ? 'bg-border' : 'bg-green-500',
+    )} />
   )
 }
 
@@ -117,27 +170,25 @@ function AlertRow({
   onMarkRead,
   onResolve,
 }: {
-  alert: CenterAlert
-  expanded: boolean
-  onToggle: () => void
+  alert:      CenterAlert
+  expanded:   boolean
+  onToggle:   () => void
   onMarkRead: (id: string) => void
-  onResolve: (id: string) => void
+  onResolve:  (id: string) => void
 }) {
   const severityBorderColor: Record<AlertSeverity, string> = {
-    critical: 'border-l-red-500',
-    warning: 'border-l-yellow-500',
+    critical:    'border-l-red-500',
+    warning:     'border-l-yellow-500',
     opportunity: 'border-l-green-500',
-    info: 'border-l-blue-500',
+    info:        'border-l-blue-500',
   }
 
   return (
-    <div
-      className={cn(
-        'border border-border border-l-2 rounded-xl overflow-hidden transition-colors',
-        severityBorderColor[alert.severity],
-        alert.status === 'resolved' && 'opacity-60',
-      )}
-    >
+    <div className={cn(
+      'border border-border border-l-2 rounded-xl overflow-hidden transition-colors',
+      severityBorderColor[alert.severity],
+      alert.status === 'resolved' && 'opacity-60',
+    )}>
       {/* Main row */}
       <button
         type="button"
@@ -155,16 +206,16 @@ function AlertRow({
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <span className="text-xs text-muted-foreground">{timeAgo(alert.timestamp)}</span>
-                {expanded ? (
-                  <ChevronUp className="size-4 text-muted-foreground" />
-                ) : (
-                  <ChevronDown className="size-4 text-muted-foreground" />
-                )}
+                {expanded
+                  ? <ChevronUp className="size-4 text-muted-foreground" />
+                  : <ChevronDown className="size-4 text-muted-foreground" />}
               </div>
             </div>
             <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{alert.description}</p>
             <div className="flex items-center gap-3 mt-2 flex-wrap">
-              <span className="font-mono text-[11px] text-muted-foreground/70">{alert.asin}</span>
+              {alert.asin !== '—' && (
+                <span className="font-mono text-[11px] text-muted-foreground/70">{alert.asin}</span>
+              )}
               <span className="text-[11px] text-muted-foreground truncate max-w-[200px]">
                 {alert.product_name}
               </span>
@@ -199,7 +250,7 @@ function AlertRow({
                 <p className="text-xs text-foreground leading-relaxed">{alert.recommended_action}</p>
               </div>
             </div>
-            {/* Right: metric + actions */}
+            {/* Right: actions */}
             <div className="flex flex-col gap-3">
               {alert.metric && (
                 <div className="rounded-lg border border-border p-3">
@@ -209,27 +260,25 @@ function AlertRow({
                   <div className="flex items-center gap-3 text-xs">
                     <div className="flex flex-col items-center">
                       <span className="text-[10px] text-muted-foreground mb-1">Before</span>
-                      <span className="font-mono font-semibold text-muted-foreground">
-                        {alert.metric.before}
-                      </span>
+                      <span className="font-mono font-semibold text-muted-foreground">{alert.metric.before}</span>
                     </div>
                     <span className="text-muted-foreground/40">→</span>
                     <div className="flex flex-col items-center">
                       <span className="text-[10px] text-muted-foreground mb-1">After</span>
-                      <span className="font-mono font-semibold text-foreground">
-                        {alert.metric.after}
-                      </span>
+                      <span className="font-mono font-semibold text-foreground">{alert.metric.after}</span>
                     </div>
                   </div>
                 </div>
               )}
               <div className="flex flex-wrap gap-2">
-                <Link href={`/dashboard/asins/${alert.asin}`}>
-                  <Button type="button" variant="outline" size="sm">
-                    <ExternalLink className="size-3" />
-                    View ASIN
-                  </Button>
-                </Link>
+                {alert.asin !== '—' && (
+                  <Link href={`/dashboard/asins/${alert.asin}`}>
+                    <Button type="button" variant="outline" size="sm">
+                      <ExternalLink className="size-3" />
+                      View ASIN
+                    </Button>
+                  </Link>
+                )}
                 {alert.status !== 'read' && alert.status !== 'resolved' && (
                   <Button
                     type="button"
@@ -269,10 +318,10 @@ function FilterPill<T extends string>({
   onClick,
   label,
 }: {
-  value: T
+  value:    T
   selected: boolean
-  onClick: (v: T) => void
-  label: string
+  onClick:  (v: T) => void
+  label:    string
 }) {
   return (
     <button
@@ -300,15 +349,15 @@ function CategorySection({
   onMarkRead,
   onResolve,
 }: {
-  module: AlertModule
-  alerts: CenterAlert[]
+  module:     AlertModule
+  alerts:     CenterAlert[]
   expandedId: string | null
-  onToggle: (id: string) => void
+  onToggle:   (id: string) => void
   onMarkRead: (id: string) => void
-  onResolve: (id: string) => void
+  onResolve:  (id: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
-  const Icon = MODULE_ICONS[mod]
+  const Icon  = MODULE_ICONS[mod]
   const color = MODULE_COLORS[mod]
   if (alerts.length === 0) return null
   return (
@@ -325,11 +374,9 @@ function CategorySection({
           <span className="text-sm font-semibold text-foreground">{MODULE_LABELS[mod]}</span>
           <span className="text-xs text-muted-foreground">({alerts.length})</span>
         </div>
-        {collapsed ? (
-          <ChevronDown className="size-4 text-muted-foreground" />
-        ) : (
-          <ChevronUp className="size-4 text-muted-foreground" />
-        )}
+        {collapsed
+          ? <ChevronDown className="size-4 text-muted-foreground" />
+          : <ChevronUp className="size-4 text-muted-foreground" />}
       </button>
       {!collapsed && (
         <div className="flex flex-col gap-2">
@@ -356,40 +403,107 @@ const ALL_MODULES: AlertModule[] = [
 ]
 
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<CenterAlert[]>(MOCK_ALERTS)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [alerts, setAlerts]             = useState<CenterAlert[]>([])
+  const [loading, setLoading]           = useState(true)
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [workspaceId, setWorkspaceId]   = useState<string | null>(null)
+  const [expandedId, setExpandedId]     = useState<string | null>(null)
   const [severityFilter, setSeverityFilter] = useState<AlertSeverity | 'all'>('all')
-  const [moduleFilter, setModuleFilter] = useState<AlertModule | 'all'>('all')
-  const [statusFilter, setStatusFilter] = useState<AlertStatus | 'all'>('all')
+  const [moduleFilter, setModuleFilter]     = useState<AlertModule | 'all'>('all')
+  const [statusFilter, setStatusFilter]     = useState<AlertStatus | 'all'>('all')
   const [search, setSearch] = useState('')
 
   const stats = useMemo(() => getAlertStats(alerts), [alerts])
+
+  // ── Load alerts ───────────────────────────────────────────────────────────
+
+  const loadAlerts = useCallback(async (wid?: string) => {
+    const id = wid ?? workspaceId
+    if (!id) return
+    const supabase = createClient()
+    const { data, error } = await supabase
+      .from('alerts')
+      .select(`
+        id, workspace_id, tracked_asin_id, title, description,
+        severity, module, status, recommended_action, created_at,
+        tracked_asins(asin, product_title, marketplace)
+      `)
+      .eq('workspace_id', id)
+      .order('created_at', { ascending: false })
+      .limit(500)
+
+    if (error) {
+      console.error('[alerts-page] load error:', error.message)
+      return
+    }
+    setAlerts((data ?? []).map(r => mapDbAlert(r as unknown as RawDbAlert)))
+  }, [workspaceId])
+
+  useEffect(() => {
+    let cancelled = false
+    async function init() {
+      setLoading(true)
+      const wid = await getWorkspaceId()
+      if (cancelled) return
+      setWorkspaceId(wid)
+      if (wid) await loadAlerts(wid)
+      setLoading(false)
+    }
+    init()
+    return () => { cancelled = true }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  async function handleMarkRead(id: string) {
+    const supabase = createClient()
+    await supabase.from('alerts').update({ status: 'read' }).eq('id', id)
+    setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'read' as AlertStatus } : a))
+  }
+
+  async function handleResolve(id: string) {
+    const supabase = createClient()
+    await supabase.from('alerts').update({ status: 'resolved' }).eq('id', id)
+    setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'resolved' as AlertStatus } : a))
+  }
+
+  async function handleMarkAllRead() {
+    const supabase = createClient()
+    const newIds = alerts.filter(a => a.status === 'new').map(a => a.id)
+    if (newIds.length > 0) {
+      await supabase.from('alerts').update({ status: 'read' }).in('id', newIds)
+    }
+    setAlerts(prev => prev.map(a => a.status === 'new' ? { ...a, status: 'read' as AlertStatus } : a))
+  }
+
+  async function handleGenerate() {
+    setIsGenerating(true)
+    try {
+      const res = await fetch('/api/alerts/generate', { method: 'POST' })
+      const body = await res.json()
+      if (!res.ok) {
+        toast.error(body.error ?? 'Failed to generate alerts')
+      } else if (body.created === 0) {
+        toast.success('No new alerts detected — all rules passed or data is unchanged.')
+      } else {
+        toast.success(`${body.created} new alert${body.created !== 1 ? 's' : ''} generated.`)
+        await loadAlerts()
+      }
+    } catch {
+      toast.error('Network error while generating alerts')
+    }
+    setIsGenerating(false)
+  }
 
   function toggleExpand(id: string) {
     setExpandedId(prev => (prev === id ? null : id))
   }
 
-  function handleMarkRead(id: string) {
-    setAlerts(prev =>
-      prev.map(a => (a.id === id ? { ...a, status: 'read' as AlertStatus } : a)),
-    )
-  }
-
-  function handleResolve(id: string) {
-    setAlerts(prev =>
-      prev.map(a => (a.id === id ? { ...a, status: 'resolved' as AlertStatus } : a)),
-    )
-  }
-
-  function handleMarkAllRead() {
-    setAlerts(prev => prev.map(a => (a.status === 'new' ? { ...a, status: 'read' as AlertStatus } : a)))
-  }
-
   const filtered = useMemo(() => {
     return alerts.filter(a => {
       if (severityFilter !== 'all' && a.severity !== severityFilter) return false
-      if (moduleFilter !== 'all' && a.module !== moduleFilter) return false
-      if (statusFilter !== 'all' && a.status !== statusFilter) return false
+      if (moduleFilter  !== 'all' && a.module   !== moduleFilter)   return false
+      if (statusFilter  !== 'all' && a.status   !== statusFilter)   return false
       if (search) {
         const q = search.toLowerCase()
         return (
@@ -403,6 +517,18 @@ export default function AlertsPage() {
     })
   }, [alerts, severityFilter, moduleFilter, statusFilter, search])
 
+  // ── Loading ───────────────────────────────────────────────────────────────
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
   return (
     <div className="flex flex-col gap-8">
       {/* ── 1. Header ─────────────────────────────────────────────────────── */}
@@ -413,33 +539,39 @@ export default function AlertsPage() {
             Monitor critical changes across your Amazon products, rankings, Buy Box, availability and keywords.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {stats.unread > 0 && (
             <Button type="button" variant="outline" onClick={handleMarkAllRead}>
               <CheckCheck className="size-4" />
               Mark All Read
             </Button>
           )}
-          <Button type="button" variant="outline">
-            <Bell className="size-4" />
-            Configure Alerts
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+          >
+            {isGenerating
+              ? <RefreshCw className="size-4 animate-spin" />
+              : <Sparkles className="size-4" />}
+            {isGenerating ? 'Generating…' : 'Generate Alerts'}
           </Button>
         </div>
       </div>
 
       {/* ── 2. KPI cards ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
-        <KpiCard label="Total Alerts" value={stats.total} icon={Bell} />
-        <KpiCard label="Critical" value={stats.critical} icon={XCircle} />
-        <KpiCard label="Warnings" value={stats.warning} icon={AlertTriangle} />
-        <KpiCard label="Opportunities" value={stats.opportunity} icon={CheckCircle2} />
-        <KpiCard label="Resolved" value={stats.resolved} icon={CheckCheck} />
-        <KpiCard label="Unread" value={stats.unread} icon={BellOff} />
+        <KpiCard label="Total Alerts"  value={stats.total}       icon={Bell} />
+        <KpiCard label="Critical"      value={stats.critical}    icon={XCircle} />
+        <KpiCard label="Warnings"      value={stats.warning}     icon={AlertTriangle} />
+        <KpiCard label="Opportunities" value={stats.opportunity}  icon={CheckCircle2} />
+        <KpiCard label="Resolved"      value={stats.resolved}    icon={CheckCheck} />
+        <KpiCard label="Unread"        value={stats.unread}      icon={BellOff} />
       </div>
 
       {/* ── 3. Filters ────────────────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-4 flex flex-col gap-3">
-        {/* Search */}
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
           <Input
@@ -449,11 +581,8 @@ export default function AlertsPage() {
             className="pl-9"
           />
         </div>
-        {/* Severity */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider w-16 flex-shrink-0">
-            Severity
-          </span>
+          <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider w-16 flex-shrink-0">Severity</span>
           <div className="flex gap-1.5 flex-wrap">
             {(['all', 'critical', 'warning', 'opportunity', 'info'] as const).map(s => (
               <FilterPill
@@ -466,11 +595,8 @@ export default function AlertsPage() {
             ))}
           </div>
         </div>
-        {/* Module */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider w-16 flex-shrink-0">
-            Module
-          </span>
+          <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider w-16 flex-shrink-0">Module</span>
           <div className="flex gap-1.5 flex-wrap">
             <FilterPill value="all" selected={moduleFilter === 'all'} onClick={v => setModuleFilter(v)} label="All" />
             {ALL_MODULES.map(m => (
@@ -484,11 +610,8 @@ export default function AlertsPage() {
             ))}
           </div>
         </div>
-        {/* Status */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider w-16 flex-shrink-0">
-            Status
-          </span>
+          <span className="text-[11px] text-muted-foreground font-semibold uppercase tracking-wider w-16 flex-shrink-0">Status</span>
           <div className="flex gap-1.5 flex-wrap">
             {(['all', 'new', 'read', 'resolved'] as const).map(s => (
               <FilterPill
@@ -508,8 +631,32 @@ export default function AlertsPage() {
         )}
       </div>
 
-      {/* ── 4. Flat list (when filters/search active) ─────────────────────── */}
-      {(severityFilter !== 'all' || moduleFilter !== 'all' || statusFilter !== 'all' || search) ? (
+      {/* ── 4. Empty state ────────────────────────────────────────────────── */}
+      {alerts.length === 0 && (
+        <div className="flex flex-col items-center justify-center py-16 rounded-xl border border-dashed border-border gap-3 text-center">
+          <Bell className="size-8 text-muted-foreground/30" />
+          <p className="text-sm font-medium text-foreground">No alerts yet</p>
+          <p className="text-xs text-muted-foreground max-w-xs">
+            Click &quot;Generate Alerts&quot; after collecting ASIN, BSR, Buy Box, pincode, or keyword data to detect issues automatically.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-1 gap-1.5"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+          >
+            {isGenerating
+              ? <RefreshCw className="size-3.5 animate-spin" />
+              : <Sparkles className="size-3.5" />}
+            {isGenerating ? 'Generating…' : 'Generate Alerts'}
+          </Button>
+        </div>
+      )}
+
+      {/* ── 5. Flat list (filter/search active) ───────────────────────────── */}
+      {alerts.length > 0 && (severityFilter !== 'all' || moduleFilter !== 'all' || statusFilter !== 'all' || search) && (
         <div className="flex flex-col gap-3">
           <h2 className="text-sm font-semibold text-foreground">
             Filtered Results ({filtered.length})
@@ -532,8 +679,10 @@ export default function AlertsPage() {
             ))
           )}
         </div>
-      ) : (
-        /* ── 5. Category sections (default view) ───────────────────────────── */
+      )}
+
+      {/* ── 6. Category sections (default view) ───────────────────────────── */}
+      {alerts.length > 0 && severityFilter === 'all' && moduleFilter === 'all' && statusFilter === 'all' && !search && (
         <div className="flex flex-col gap-8">
           {ALL_MODULES.map(mod => (
             <CategorySection

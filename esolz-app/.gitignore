@@ -34,6 +34,12 @@ yarn-error.log*
 .env*
 !.env.local.example
 
+# local context / handoff docs that may contain secrets
+SPAPI_HANDOFF.txt
+SAAS_CONTEXT.txt
+*_HANDOFF.txt
+*_CONTEXT.txt
+
 # vercel
 .vercel
 

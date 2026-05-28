@@ -24,6 +24,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -98,12 +99,14 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
             </Avatar>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuLabel className="font-normal">
-              <div className="font-semibold text-sm text-foreground">{userInfo?.name ?? 'My Account'}</div>
-              {userInfo?.email && (
-                <div className="text-xs text-muted-foreground truncate max-w-[160px] mt-0.5">{userInfo.email}</div>
-              )}
-            </DropdownMenuLabel>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="font-normal">
+                <div className="font-semibold text-sm text-foreground">{userInfo?.name ?? 'My Account'}</div>
+                {userInfo?.email && (
+                  <div className="text-xs text-muted-foreground truncate max-w-[160px] mt-0.5">{userInfo.email}</div>
+                )}
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem render={<Link href="/dashboard/settings" />}>
               Settings

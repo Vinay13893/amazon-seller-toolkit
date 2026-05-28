@@ -29,7 +29,7 @@ export interface TrackedKeyword {
   sponsored_rank: number | null
   page_status: PageStatus
   search_volume: number
-  last_checked: string
+  last_checked: string | null
 }
 
 export interface KeywordHistoryPoint {
