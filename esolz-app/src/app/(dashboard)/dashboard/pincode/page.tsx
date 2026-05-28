@@ -152,7 +152,7 @@ export default function PincodePage() {
           .from('tracked_asins')
           .select('id, asin, product_title')
           .eq('workspace_id', wid)
-          .eq('is_active', true)
+          .neq('status', 'archived')
           .order('created_at', { ascending: false }),
         supabase
           .from('usage_counters')
@@ -208,6 +208,7 @@ export default function PincodePage() {
     setIsChecking(true)
     setCheckProgress({ done: 0, total: pincodes.length })
     let successCount = 0
+    let firstError: string | null = null
     for (let i = 0; i < pincodes.length; i++) {
       try {
         const res = await fetch(`/api/asins/${selectedAsin}/pincode`, {
@@ -215,11 +216,26 @@ export default function PincodePage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ pincode: pincodes[i] }),
         })
-        if (res.ok) successCount++
-      } catch { /* swallow individual errors */ }
+        if (res.ok) {
+          successCount++
+        } else if (!firstError) {
+          try {
+            const body = await res.json()
+            firstError = body?.error ?? `HTTP ${res.status}`
+          } catch {
+            firstError = `HTTP ${res.status}`
+          }
+        }
+      } catch (err) {
+        if (!firstError) firstError = String(err)
+      }
       setCheckProgress({ done: i + 1, total: pincodes.length })
     }
-    toast.success(`${successCount} of ${pincodes.length} pincode check${pincodes.length > 1 ? 's' : ''} completed.`)
+    if (successCount > 0) {
+      toast.success(`${successCount} of ${pincodes.length} pincode check${pincodes.length > 1 ? 's' : ''} completed.`)
+    } else {
+      toast.error(firstError ?? 'Pincode checks failed. Check server configuration.')
+    }
     await loadResults(selectedAsinId)
     // refresh usage counter
     const wid = workspaceId
