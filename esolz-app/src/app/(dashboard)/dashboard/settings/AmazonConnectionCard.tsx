@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
   ShoppingBag, Loader2, CheckCircle2, AlertCircle,
-  Clock, Link2Off,
+  Clock, Link2Off, RefreshCw, Package,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -79,6 +79,8 @@ export default function AmazonConnectionCard() {
   const [status, setStatus]             = useState<AmazonStatus | null>(null)
   const [connecting, setConnecting]     = useState(false)
   const [disconnecting, setDisconnecting] = useState(false)
+  const [syncing, setSyncing]             = useState(false)
+  const [syncingListings, setSyncingListings] = useState(false)
   const [localhostBlock, setLocalhostBlock] = useState(false)
 
   function fetchStatus() {
@@ -117,6 +119,54 @@ export default function AmazonConnectionCard() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  async function handleSync() {
+    setSyncing(true)
+    try {
+      const res = await fetch('/api/amazon/sync/basic', { method: 'POST' })
+      // Parse body safely — server may return HTML on unexpected crash
+      let data: { error?: string; ok?: boolean } = {}
+      try { data = await res.json() } catch { /* body not JSON */ }
+      if (res.ok) {
+        toast.success('Sync complete — marketplace data updated.')
+        fetchStatus()
+      } else {
+        const msg = data?.error ?? `Sync failed (HTTP ${res.status}). Please try again.`
+        toast.error(msg)
+      }
+    } catch {
+      toast.error('Network error — please try again.')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  async function handleSyncListings() {
+    setSyncingListings(true)
+    try {
+      const res  = await fetch('/api/amazon/sync/listings/start', { method: 'POST' })
+      let data: { error?: string; ok?: boolean; job_id?: string } = {}
+      try { data = await res.json() } catch { /* body not JSON */ }
+
+      if (res.ok && data.ok && data.job_id) {
+        // Save job_id so AmazonSyncWatcher can resume if user navigates away
+        try { localStorage.setItem('amazon_listings_sync_job_id', data.job_id) } catch { /* SSR guard */ }
+        // Tell the watcher to start processing immediately
+        window.dispatchEvent(new CustomEvent('amazon:listings-sync-started', {
+          detail: { job_id: data.job_id }
+        }))
+        toast.info('Listings sync started — importing in the background…')
+        fetchStatus()
+      } else {
+        const msg = data?.error ?? `Failed to start listings sync (HTTP ${res.status}).`
+        toast.error(msg)
+      }
+    } catch {
+      toast.error('Network error — please try again.')
+    } finally {
+      setSyncingListings(false)
+    }
+  }
 
   async function handleDisconnect() {
     if (!confirm('Disconnect your Amazon account? This will remove all stored tokens.')) return
@@ -205,11 +255,33 @@ export default function AmazonConnectionCard() {
               </div>
             )}
 
-            <div className="flex justify-end pt-1">
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncing || syncingListings || disconnecting}
+                onClick={handleSync}
+              >
+                {syncing
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <RefreshCw className="w-3.5 h-3.5" />}
+                {syncing ? 'Syncing…' : 'Sync Now'}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={syncing || syncingListings || disconnecting}
+                onClick={handleSyncListings}
+              >
+                {syncingListings
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  : <Package className="w-3.5 h-3.5" />}
+                {syncingListings ? 'Starting…' : 'Sync Listings'}
+              </Button>
               <Button
                 variant="destructive"
                 size="sm"
-                disabled={disconnecting}
+                disabled={disconnecting || syncing}
                 onClick={handleDisconnect}
               >
                 {disconnecting

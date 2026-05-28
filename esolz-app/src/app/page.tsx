@@ -105,9 +105,9 @@ export default function LandingPage() {
           Built for Amazon India Sellers
         </Badge>
         <h1 className="text-4xl sm:text-5xl lg:text-6xl font-black tracking-tight mb-6 leading-tight">
-          Sociomonkey Amazon Intelligence
+          Amazon Intelligence
           <br />
-          <span className="text-primary">Platform for Indian Sellers</span>
+          <span className="text-primary">for Indian Sellers</span>
         </h1>
         <p className="text-lg sm:text-xl text-muted-foreground max-w-3xl mx-auto mb-10">
           Track BSR in real-time, monitor competitors, check delivery pincodes &amp; optimise your
@@ -177,7 +177,7 @@ export default function LandingPage() {
               key={p.name}
               className={`relative bg-card border rounded-xl p-6 flex flex-col ${
                 p.highlight
-                  ? 'border-primary shadow-[0_0_40px_rgba(255,153,0,0.12)]'
+                  ? 'border-primary shadow-[0_0_40px_rgba(222,46,46,0.12)]'
                   : 'border-border'
               }`}
             >
@@ -213,7 +213,7 @@ export default function LandingPage() {
 
       {/* CTA */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 py-20">
-        <div className="bg-card border border-primary/20 rounded-2xl p-10 sm:p-14 text-center shadow-[0_0_80px_rgba(255,153,0,0.06)]">
+          <div className="bg-card border border-primary/20 rounded-2xl p-10 sm:p-14 text-center shadow-[0_0_80px_rgba(222,46,46,0.06)]">
           <Shield className="w-12 h-12 text-primary mx-auto mb-4" />
           <h2 className="text-3xl sm:text-4xl font-black mb-3">
             Ready to grow your <span className="text-primary">Amazon business?</span>

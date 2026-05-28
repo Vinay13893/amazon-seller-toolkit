@@ -1,0 +1,560 @@
+SOCIOMONKEY — AMAZON SP-API INTEGRATION PLAN
+============================================================
+Date: 27 May 2026
+Purpose: Design doc for Amazon Seller Partner API connection
+Status: PLANNING ONLY — no files built yet
+
+
+============================================================
+PRODUCT CONTEXT
+============================================================
+
+Sociomonkey is a multi-tenant SaaS (Next.js 15, Supabase, TypeScript).
+Each user belongs to a workspace. Multiple workspaces exist.
+We want each workspace to connect its OWN Amazon seller account via OAuth.
+
+Current DB tables already exist:
+  workspaces, workspace_members, profiles, subscription_plans,
+  workspace_subscriptions, tracked_asins, asin_snapshots,
+  pincode_snapshots, buybox_snapshots, tracked_keywords,
+  keyword_rank_snapshots, usage_counters, alerts, reports
+
+Supabase RLS is enabled on all tables.
+Service-role client is used for all server-side writes.
+createClient() = SSR cookies client (auth checks)
+createAdminClient() = service-role (bypasses RLS)
+
+Auth: Supabase email/password
+Framework: Next.js 15 App Router, src/ directory, @/* alias
+Deployment: Render
+
+
+============================================================
+SECTION 1: SP-API OAUTH FLOW
+============================================================
+
+Amazon SP-API uses Login with Amazon (LWA) OAuth 2.0.
+No AWS IAM required (deprecated by Amazon in 2023).
+
+STEP-BY-STEP FLOW:
+
+1. User clicks "Connect Amazon Account" in /dashboard/settings
+2. Server generates random state token (CSRF), stores in httpOnly cookie (10min TTL)
+3. Server redirects user to Amazon auth URL:
+   https://sellercentral.amazon.in/apps/authorize/consent
+     ?application_id=amzn1.sp.solution.xxx
+     &state=<csrf_token>
+     &version=beta       <-- remove this when public app is approved
+
+4. Amazon shows seller consent screen
+5. Seller clicks "Authorize"
+6. Amazon redirects to our callback:
+   GET /api/amazon/connect/callback
+     ?spapi_oauth_code=ANxxxxx
+     &selling_partner_id=A3xxxxx
+     &state=<same_csrf_token>
+
+7. Server validates state matches cookie (CSRF protection)
+8. Server exchanges code for tokens:
+   POST https://api.amazon.com/auth/o2/token
+     grant_type=authorization_code
+     code=<spapi_oauth_code>
+     redirect_uri=<our_callback_url>
+     client_id=<LWA_APP_ID>
+     client_secret=<LWA_CLIENT_SECRET>
+
+   Returns: { access_token, refresh_token, token_type, expires_in: 3600 }
+
+9. Server encrypts refresh_token with AES-256-GCM
+10. Server upserts into amazon_connections table
+11. Server calls sellers/v1/marketplaceParticipations to get seller info
+12. Redirects user to /dashboard/settings with success toast
+
+TOKEN FACTS:
+- refresh_token: permanent until seller revokes. STORE ENCRYPTED, NEVER EXPOSE.
+- access_token: 1 hour TTL. Re-generate from refresh_token on each API call. Can cache.
+- selling_partner_id: safe to display in UI (it's public).
+
+INDIA-SPECIFIC:
+- Marketplace ID: A21TJRUUN4KGV
+- SP-API endpoint: https://sellingpartnerapi-eu.amazon.com  (India uses EU endpoint!)
+- LWA endpoint: https://api.amazon.com/auth/o2/token
+- Auth URL: https://sellercentral.amazon.in/apps/authorize/consent
+
+
+============================================================
+SECTION 2: PRIVATE APP vs PUBLIC APP
+============================================================
+
+PRIVATE APP:
+- For your own seller account only
+- No Amazon review needed
+- Get refresh token manually from Developer Central
+- Cannot be used for customer accounts
+- Perfect for development and testing all API calls
+
+PUBLIC APP:
+- For multiple customer seller accounts
+- Requires full Amazon review + approval (2-4 weeks)
+- Full LWA OAuth redirect flow
+- Up to 25 test accounts in draft/beta mode
+- Required for production launch
+
+RECOMMENDED APPROACH:
+Build and test everything with private app first.
+Submit public app for review once flows are proven.
+Both use identical API calls — only auth method differs.
+
+
+============================================================
+SECTION 3: DATABASE SCHEMA PROPOSAL
+============================================================
+
+NOTE: Do NOT apply migration yet. This is a proposal only.
+
+-- ── Table 1: amazon_connections ──────────────────────────────
+
+One row per workspace. Stores OAuth tokens and connection state.
+
+CREATE TABLE amazon_connections (
+  id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id             uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  selling_partner_id       text NOT NULL,          -- safe to display
+  marketplace_id           text NOT NULL,          -- 'A21TJRUUN4KGV'
+  marketplace_name         text,                   -- 'Amazon India'
+  refresh_token_encrypted  text NOT NULL,          -- AES-256-GCM, NEVER expose
+  access_token_encrypted   text,                   -- short-lived, encrypted, nullable
+  access_token_expires_at  timestamptz,
+  status                   text NOT NULL DEFAULT 'active',
+                           -- 'active' | 'expired' | 'revoked' | 'error'
+  brand_analytics_eligible boolean DEFAULT false,
+  brand_registry_enrolled  boolean DEFAULT false,
+  connected_by_user_id     uuid REFERENCES auth.users(id),
+  last_sync_at             timestamptz,
+  error_message            text,                   -- last error, safe for UI
+  connected_at             timestamptz DEFAULT now(),
+  updated_at               timestamptz DEFAULT now()
+);
+
+CREATE UNIQUE INDEX ON amazon_connections(workspace_id);
+
+ALTER TABLE amazon_connections ENABLE ROW LEVEL SECURITY;
+
+-- Read: workspace members can see their own connection (no tokens exposed via RLS)
+CREATE POLICY "workspace members read own connection"
+  ON amazon_connections FOR SELECT
+  USING (workspace_id IN (SELECT public.user_workspace_ids()));
+
+-- No REST INSERT/UPDATE/DELETE — all writes via service-role in API routes
+
+SAFE TO SHOW IN UI: selling_partner_id, marketplace_name, status,
+                    brand_analytics_eligible, last_sync_at, error_message
+NEVER EXPOSE:       refresh_token_encrypted, access_token_encrypted
+
+
+-- ── Table 2: amazon_marketplaces (static lookup, seeded once) ──
+
+CREATE TABLE amazon_marketplaces (
+  id           text PRIMARY KEY,   -- 'A21TJRUUN4KGV'
+  country_code text NOT NULL,      -- 'IN'
+  name         text NOT NULL,      -- 'Amazon India'
+  api_endpoint text NOT NULL,      -- 'https://sellingpartnerapi-eu.amazon.com'
+  lwa_region   text NOT NULL,      -- 'eu-west-1'
+  currency     text NOT NULL       -- 'INR'
+);
+
+-- No RLS needed — public read-only lookup table
+
+-- Seed data:
+INSERT INTO amazon_marketplaces VALUES
+  ('A21TJRUUN4KGV', 'IN', 'Amazon India',    'https://sellingpartnerapi-eu.amazon.com', 'eu-west-1', 'INR'),
+  ('A1F83G8C2ARO7P', 'GB', 'Amazon UK',       'https://sellingpartnerapi-eu.amazon.com', 'eu-west-1', 'GBP'),
+  ('ATVPDKIKX0DER',  'US', 'Amazon US',       'https://sellingpartnerapi-na.amazon.com', 'us-east-1', 'USD'),
+  ('A1PA6795UKMFR9', 'DE', 'Amazon Germany',  'https://sellingpartnerapi-eu.amazon.com', 'eu-west-1', 'EUR');
+
+
+-- ── Table 3: amazon_report_jobs ─────────────────────────────
+
+CREATE TABLE amazon_report_jobs (
+  id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id     uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  connection_id    uuid NOT NULL REFERENCES amazon_connections(id) ON DELETE CASCADE,
+  report_type      text NOT NULL,
+  amazon_report_id text,            -- ID returned by SP-API Reports API
+  status           text NOT NULL DEFAULT 'PENDING',
+                   -- 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'FATAL' | 'CANCELLED'
+  data_start_time  timestamptz,
+  data_end_time    timestamptz,
+  report_period    text,            -- 'WEEK' | 'MONTH' | 'QUARTER'
+  document_id      text,            -- reportDocumentId when status=DONE
+  requested_at     timestamptz DEFAULT now(),
+  completed_at     timestamptz,
+  error_message    text,
+  created_at       timestamptz DEFAULT now()
+);
+
+ALTER TABLE amazon_report_jobs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "workspace members read own report jobs"
+  ON amazon_report_jobs FOR SELECT
+  USING (workspace_id IN (SELECT public.user_workspace_ids()));
+
+
+-- ── Table 4: amazon_report_documents ────────────────────────
+
+CREATE TABLE amazon_report_documents (
+  id                       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id             uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  report_job_id            uuid NOT NULL REFERENCES amazon_report_jobs(id) ON DELETE CASCADE,
+  document_url             text,        -- pre-signed S3 URL, expires ~5 min
+  document_url_expires_at  timestamptz,
+  compression_algorithm    text,        -- 'GZIP' or null
+  synced_at                timestamptz,
+  row_count                int,
+  created_at               timestamptz DEFAULT now()
+);
+
+ALTER TABLE amazon_report_documents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "workspace members read own report docs"
+  ON amazon_report_documents FOR SELECT
+  USING (workspace_id IN (SELECT public.user_workspace_ids()));
+
+
+-- ── Table 5: brand_analytics_reports ────────────────────────
+
+CREATE TABLE brand_analytics_reports (
+  id                        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id              uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  report_job_id             uuid REFERENCES amazon_report_jobs(id),
+  marketplace_id            text NOT NULL,
+  report_period             text NOT NULL,   -- 'WEEK' | 'MONTH' | 'QUARTER'
+  period_start              date NOT NULL,
+  period_end                date NOT NULL,
+  search_term               text NOT NULL,
+  department                text,
+  search_frequency_rank     int,
+  asin_1                    text,
+  asin_1_click_share        numeric(5,4),
+  asin_1_conversion_share   numeric(5,4),
+  asin_2                    text,
+  asin_2_click_share        numeric(5,4),
+  asin_2_conversion_share   numeric(5,4),
+  asin_3                    text,
+  asin_3_click_share        numeric(5,4),
+  asin_3_conversion_share   numeric(5,4),
+  created_at                timestamptz DEFAULT now(),
+  UNIQUE (workspace_id, marketplace_id, report_period, period_start, search_term)
+);
+
+ALTER TABLE brand_analytics_reports ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "workspace members read own brand analytics"
+  ON brand_analytics_reports FOR SELECT
+  USING (workspace_id IN (SELECT public.user_workspace_ids()));
+
+
+-- ── Table 6: amazon_audit_logs ──────────────────────────────
+
+CREATE TABLE amazon_audit_logs (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  user_id      uuid REFERENCES auth.users(id),
+  event_type   text NOT NULL,
+               -- 'connected' | 'disconnected' | 'token_refreshed'
+               -- | 'sync_started' | 'sync_completed' | 'error'
+  details      jsonb,
+  created_at   timestamptz DEFAULT now()
+);
+
+ALTER TABLE amazon_audit_logs ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "workspace members read own audit logs"
+  ON amazon_audit_logs FOR SELECT
+  USING (workspace_id IN (SELECT public.user_workspace_ids()));
+-- INSERT only via service-role in API routes
+
+
+============================================================
+SECTION 4: SETTINGS UI CHANGES  (/dashboard/settings)
+============================================================
+
+Add new section "Amazon Account" below the Workspace section.
+
+IF NOT CONNECTED:
+┌─ Amazon Seller Account ─────────────────────────────────────────┐
+│  Connect your Amazon seller account to unlock SP-API features.  │
+│  Your credentials are never stored — only a secure OAuth token. │
+│                                                                 │
+│  [ Connect Amazon Account → ]                                   │
+└─────────────────────────────────────────────────────────────────┘
+
+IF CONNECTED:
+┌─ Amazon Seller Account ───────────────────────── ● Connected ───┐
+│  Seller ID:        A3XXXXXXXXX                                  │
+│  Marketplace:      Amazon India (IN)                            │
+│  Last Sync:        2 hours ago                                  │
+│  Brand Analytics:  ✅ Eligible  /  ❌ Not eligible              │
+│                                                                 │
+│  [ Sync Now ]   [ Disconnect ]                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+IF ERROR / EXPIRED:
+┌─ Amazon Seller Account ─────────────────── ⚠️ Token Expired ───┐
+│  Token expired or revoked. Please reconnect.                    │
+│  [ Reconnect ]                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+New component file: src/app/(dashboard)/dashboard/settings/AmazonConnectionCard.tsx
+
+
+============================================================
+SECTION 5: API ROUTES TO BUILD
+============================================================
+
+All routes follow existing patterns:
+- export const runtime = 'nodejs'
+- Auth check via supabase.auth.getUser()
+- Workspace check
+- Admin client for DB writes
+- Never return token fields
+
+Route                              Method  Purpose
+─────────────────────────────────────────────────────────────
+/api/amazon/connect/start          GET     Generate CSRF state, store in httpOnly cookie,
+                                           return { authUrl } to redirect to Amazon
+/api/amazon/connect/callback       GET     Validate state, exchange code → tokens,
+                                           encrypt, upsert amazon_connections,
+                                           redirect to /dashboard/settings
+/api/amazon/connect/disconnect     POST    Delete connection, revoke LWA token (best-effort),
+                                           log to amazon_audit_logs
+/api/amazon/connect/status         GET     Return safe fields only (no tokens):
+                                           { connected, selling_partner_id, marketplace_name,
+                                             status, brand_analytics_eligible, last_sync_at }
+/api/amazon/reports/request        POST    Body: { report_type, period }
+                                           Calls SP-API to create report async,
+                                           inserts amazon_report_jobs row
+/api/amazon/reports/status         GET     Query: { job_id }
+                                           Polls SP-API for report status,
+                                           updates amazon_report_jobs.status
+/api/amazon/reports/sync           POST    Body: { job_id }
+                                           Downloads report document (gzip CSV),
+                                           parses, upserts brand_analytics_reports
+
+
+============================================================
+SECTION 6: FIRST SYNC MODULE — ACCOUNT INFO ONLY
+============================================================
+
+Triggered immediately after successful OAuth callback.
+
+1. Use new access_token to call:
+   GET https://sellingpartnerapi-eu.amazon.com/sellers/v1/marketplaceParticipations
+
+2. Response contains:
+   - seller.sellerId  → selling_partner_id
+   - marketplaceParticipations[].marketplace.id  → marketplace_id
+   - marketplaceParticipations[].marketplace.name → marketplace_name
+   - marketplaceParticipations[].participation.hasSuspendedListings
+
+3. Update amazon_connections:
+   - selling_partner_id
+   - marketplace_id
+   - marketplace_name
+   - last_sync_at = now()
+   - status = 'active'
+
+4. Check Brand Analytics eligibility (can be checked later via Catalog API)
+
+5. Log event_type='sync_completed' to amazon_audit_logs
+
+No orders. No inventory. No reports. Just account + marketplace info.
+
+
+============================================================
+SECTION 7: SECOND SYNC MODULE — BRAND ANALYTICS
+============================================================
+
+ELIGIBILITY REQUIREMENTS:
+- Seller must have Brand Registry on amazon.in
+- SP-API app must have 'Brand Analytics' role granted
+- Check amazon_connections.brand_analytics_eligible = true before showing UI
+
+REPORT TYPES (implement in order):
+
+1. Search Query Performance
+   report_type: GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT
+   Contains: search terms, click share, conversion share per ASIN
+   Periods: WEEK, MONTH, QUARTER
+
+2. Market Basket Analysis
+   report_type: GET_BRAND_ANALYTICS_MARKET_BASKET_REPORT
+   Contains: products frequently bought together
+
+ASYNC FLOW:
+POST /api/amazon/reports/request  →  Amazon creates report (async, not instant)
+GET  /api/amazon/reports/status   →  poll until status=DONE (5-30 min)
+POST /api/amazon/reports/sync     →  download gzip CSV, parse, upsert brand_analytics_reports
+
+RATE LIMITS:
+Reports API: 0.0167 req/sec (= 1 request per minute)
+Must implement exponential backoff retry.
+
+
+============================================================
+SECTION 8: SECURITY REQUIREMENTS
+============================================================
+
+Requirement                    Implementation
+─────────────────────────────────────────────────────────────────────
+No seller passwords            OAuth only — never ask for email/password
+Tokens server-side only        Never returned in any API response
+Encrypt refresh token          AES-256-GCM with SPAPI_ENCRYPTION_KEY (32-byte env var)
+                               Store: IV (hex) + ':' + ciphertext (hex) + ':' + authTag (hex)
+CSRF protection                Random state param stored in httpOnly cookie
+                               Validated in callback before token exchange
+Workspace isolation            RLS on all amazon_* tables via user_workspace_ids()
+Disconnect/revoke              POST /api/amazon/connect/disconnect
+                               → DELETE from amazon_connections
+                               → POST https://api.amazon.com/auth/o2/revoke (best-effort)
+Audit trail                    amazon_audit_logs records all events
+No tokens in frontend          connect/status returns only safe fields
+Key version tracking           Store encryption key version alongside ciphertext
+                               (in case SPAPI_ENCRYPTION_KEY needs rotation)
+
+NEW ENV VARS NEEDED:
+  SPAPI_CLIENT_ID=amzn1.sp.solution.xxx
+  SPAPI_CLIENT_SECRET=xxx
+  SPAPI_REDIRECT_URI=https://yourdomain.com/api/amazon/connect/callback
+  SPAPI_ENCRYPTION_KEY=<64-char hex, 32 bytes>   # for AES-256-GCM token encryption
+
+
+============================================================
+SECTION 9: FILES TO CREATE (when confirmed)
+============================================================
+
+src/lib/amazon/
+  crypto.ts            — encrypt / decrypt refresh token (AES-256-GCM)
+  lwa.ts               — getAccessToken(workspaceId) with in-memory 55min cache
+  spapi-client.ts      — authenticated fetch wrapper for SP-API calls
+
+src/app/api/amazon/
+  connect/start/route.ts
+  connect/callback/route.ts
+  connect/disconnect/route.ts
+  connect/status/route.ts
+  reports/request/route.ts
+  reports/status/route.ts
+  reports/sync/route.ts
+
+src/app/(dashboard)/dashboard/settings/
+  AmazonConnectionCard.tsx     — new component inserted into existing settings page
+
+supabase/migrations/
+  006_amazon_spapi.sql         — creates all 6 tables + seed data
+
+
+============================================================
+SECTION 10: WHAT MUST BE DONE IN AMAZON DEVELOPER CENTRAL
+============================================================
+
+(These are manual steps — no code involved)
+
+1. Go to: https://developer.amazon.com
+2. Sign in with Amazon developer account
+   (separate from seller account, but can be linked)
+
+3. Go to: Seller Partner App Console
+
+4. Click "Add new app client"
+
+5. Fill in for PRIVATE APP (for testing):
+   - App name: Sociomonkey Dev
+   - OAuth redirect URIs: http://localhost:3000/api/amazon/connect/callback
+   - App type: Private (your seller account only)
+
+6. Select ROLES:
+   - Selling Partner Insights (required for marketplace participations)
+   - Reports (required for downloading reports)
+   - Brand Analytics (required for search term reports — only if seller has Brand Registry)
+   Note: Not all roles are available to all apps. Brand Analytics requires justification.
+
+7. Note down:
+   - LWA App ID (= client_id, starts with amzn1.sp.solution...)
+   - LWA Client Secret
+
+8. For private app: get your own refresh token manually from Developer Console
+   (no OAuth redirect needed for testing your own account)
+
+9. Later, when ready for customers: create PUBLIC app
+   - Add production redirect URI
+   - Write app description and privacy policy URL
+   - Submit for Amazon review (2-4 weeks)
+
+
+============================================================
+SECTION 11: RECOMMENDED IMPLEMENTATION ORDER
+============================================================
+
+Step  Task                                        Estimated Time
+────────────────────────────────────────────────────────────────
+1     Amazon Developer Central setup (manual)     1-2 hours
+2     DB migration 006 (all 6 tables)             30 min
+3     Token encryption utility (crypto.ts)        1 hour
+4     LWA token refresh utility (lwa.ts)          1 hour
+5     OAuth start + callback routes               3 hours
+6     Settings UI: AmazonConnectionCard           2 hours
+7     First sync: marketplaceParticipations       2 hours
+8     Report request / status / sync routes       4 hours
+9     Brand Analytics table + UI                  4 hours
+10    Public app submission to Amazon             ongoing
+
+
+============================================================
+SECTION 12: RISKS AND BLOCKERS
+============================================================
+
+Risk                          Notes
+──────────────────────────────────────────────────────────────────────
+Public app review delay       Amazon takes 2-4 weeks. Build with private app first.
+Brand Analytics eligibility   Only for Brand Registry sellers. Not universal.
+                              Always check eligibility before showing UI.
+Report async delay            Reports take 5-30 min to generate.
+                              Need polling or SQS notifications (advanced).
+India uses EU endpoint        amazon.in SP-API goes to sellingpartnerapi-eu.amazon.com
+                              NOT a separate India endpoint. Common mistake.
+Token encryption key rotation If SPAPI_ENCRYPTION_KEY changes, all stored tokens break.
+                              Store key version with ciphertext to support rotation.
+Rate limits                   Reports API: 1 req/min. Must implement retry with backoff.
+Disconnect ≠ full revoke      Sellers can revoke from Seller Central independently.
+                              Always handle 401 from SP-API as "needs reconnect".
+Supabase RLS for amazon_*     Service-role must be used for all INSERT/UPDATE/DELETE.
+                              RLS policies only allow SELECT for workspace members.
+Localhost OAuth redirect      Amazon requires HTTPS for OAuth redirect URIs in production.
+                              For dev: register http://localhost:3000/... separately.
+
+
+============================================================
+SECTION 13: WHAT CAN BE TESTED WITH PRIVATE APP
+============================================================
+
+- Full OAuth start → callback flow (your own seller account)
+- Token encryption / decryption (crypto.ts)
+- sellers/v1/marketplaceParticipations
+- Report request → status poll → document download
+- Settings UI connect / disconnect
+- amazon_audit_logs writes
+- AES-256-GCM encryption of refresh_token
+- All API route auth + workspace checks
+
+
+============================================================
+SECTION 14: WHAT REQUIRES PUBLIC APP APPROVAL
+============================================================
+
+- Any customer seller account connecting (not just yours)
+- Remove ?version=beta from auth URL
+- Amazon App Store listing (optional for B2B SaaS)
+- Brand Analytics role may require additional justification in review
+- Privacy Policy URL must be live and accessible
+
+
+============================================================
+END OF PLAN
+============================================================

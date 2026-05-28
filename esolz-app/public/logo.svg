@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none">
+  <!-- Rounded square background -->
+  <rect width="40" height="40" rx="9" fill="#de2e2e"/>
+  <!-- Monkey ears -->
+  <circle cx="7" cy="18" r="6" fill="#c22828"/>
+  <circle cx="33" cy="18" r="6" fill="#c22828"/>
+  <circle cx="7" cy="18" r="3.5" fill="#de2e2e"/>
+  <circle cx="33" cy="18" r="3.5" fill="#de2e2e"/>
+  <!-- Face -->
+  <circle cx="20" cy="21" r="13" fill="white" fill-opacity="0.18"/>
+  <!-- Eyes -->
+  <circle cx="15.5" cy="17" r="2.8" fill="white"/>
+  <circle cx="24.5" cy="17" r="2.8" fill="white"/>
+  <circle cx="16.2" cy="17.5" r="1.6" fill="#c22828"/>
+  <circle cx="25.2" cy="17.5" r="1.6" fill="#c22828"/>
+  <!-- Muzzle -->
+  <ellipse cx="20" cy="25.5" rx="6" ry="4.2" fill="white" fill-opacity="0.22"/>
+  <!-- Nostrils -->
+  <circle cx="18.2" cy="25.2" r="1" fill="#c22828" fill-opacity="0.7"/>
+  <circle cx="21.8" cy="25.2" r="1" fill="#c22828" fill-opacity="0.7"/>
+  <!-- Smile -->
+  <path d="M 16 27.5 Q 20 31 24 27.5" stroke="white" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</svg>

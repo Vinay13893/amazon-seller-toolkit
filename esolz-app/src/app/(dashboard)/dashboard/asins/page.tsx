@@ -18,6 +18,7 @@ import {
   incrementAsinUsage,
   type AddAsinInput,
 } from '@/lib/supabase/asins'
+import { createClient } from '@/lib/supabase/client'
 import {
   Package,
   LayoutGrid,
@@ -28,9 +29,24 @@ import {
   PackageOpen,
   Activity,
   Loader2,
+  ShoppingBag,
+  RefreshCw,
 } from 'lucide-react'
 
 type ViewMode = 'table' | 'cards'
+
+interface AmazonListingItem {
+  id:             string
+  sku:            string
+  asin:           string | null
+  item_name:      string | null
+  brand:          string | null
+  product_type:   string | null
+  status:         string | null
+  marketplace_id: string
+  image_url:      string | null
+  last_synced_at: string | null
+}
 
 export default function AsinsPage() {
   const [products, setProducts]       = useState<ProductSnapshot[]>([])
@@ -38,6 +54,40 @@ export default function AsinsPage() {
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [maxAsins, setMaxAsins]       = useState(5)
   const [loading, setLoading]         = useState(true)
+
+  // Amazon account listings
+  const [amazonListings, setAmazonListings]         = useState<AmazonListingItem[]>([])
+  const [amazonConnected, setAmazonConnected]       = useState<boolean | null>(null)
+  const [listingsLoading, setListingsLoading]       = useState(true)
+
+  const loadAmazonListings = useCallback(async (wsId: string) => {
+    setListingsLoading(true)
+    try {
+      // Check if connected
+      const statusRes = await fetch('/api/amazon/connect/status')
+      if (!statusRes.ok) { setAmazonConnected(false); return }
+      const statusData = await statusRes.json()
+      setAmazonConnected(!!statusData.connected)
+      if (!statusData.connected) return
+
+      // Fetch listing items via Supabase (RLS allows select for workspace members)
+      const supabase = createClient()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data, error } = await (supabase as any)
+        .from('amazon_listing_items')
+        .select('id, sku, asin, item_name, brand, product_type, status, marketplace_id, image_url, last_synced_at')
+        .eq('workspace_id', wsId)
+        .order('item_name', { ascending: true })
+        .limit(200)
+      if (!error && Array.isArray(data)) {
+        setAmazonListings(data as AmazonListingItem[])
+      }
+    } catch {
+      // non-fatal
+    } finally {
+      setListingsLoading(false)
+    }
+  }, [])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -51,9 +101,19 @@ export default function AsinsPage() {
     setMaxAsins(limit)
     setProducts(asins)
     setLoading(false)
-  }, [])
+    void loadAmazonListings(wsId)
+  }, [loadAmazonListings])
 
   useEffect(() => { void loadData() }, [loadData])
+
+  // Refresh Amazon listings when the background watcher finishes a sync
+  useEffect(() => {
+    function onSyncDone() {
+      if (workspaceId) void loadAmazonListings(workspaceId)
+    }
+    window.addEventListener('amazon:listings-synced', onSyncDone)
+    return () => window.removeEventListener('amazon:listings-synced', onSyncDone)
+  }, [workspaceId, loadAmazonListings])
 
   async function handleAddAsin(data: AddAsinInput): Promise<{ error?: string }> {
     if (!workspaceId) return { error: 'Not signed in' }
@@ -244,6 +304,150 @@ export default function AsinsPage() {
               ))}
             </div>
           )
+        )}
+      </div>
+
+      {/* ── Amazon Account Listings ── */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10 text-orange-500">
+            <ShoppingBag className="size-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">Amazon Account Listings</h2>
+            <p className="text-sm text-muted-foreground">
+              Products synced from your Seller Central account via SP-API
+            </p>
+          </div>
+        </div>
+
+        {listingsLoading ? (
+          <div className="flex items-center gap-2 text-muted-foreground text-sm py-4">
+            <Loader2 className="size-4 animate-spin" /> Loading Amazon listings…
+          </div>
+
+        ) : amazonConnected === false ? (
+          <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 flex flex-col items-center text-center gap-3">
+            <ShoppingBag className="size-10 text-muted-foreground/40" />
+            <p className="text-sm font-medium text-foreground">Amazon account not connected</p>
+            <p className="text-xs text-muted-foreground max-w-xs">
+              Connect your Amazon Seller Central account to sync your product catalogue here.
+            </p>
+            <Link
+              href="/dashboard/settings"
+              className="inline-flex items-center justify-center rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors"
+            >
+              Connect Amazon
+            </Link>
+          </div>
+
+        ) : amazonListings.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 flex flex-col items-center text-center gap-3">
+            <RefreshCw className="size-10 text-muted-foreground/40" />
+            <p className="text-sm font-medium text-foreground">No listings synced yet</p>
+            <p className="text-xs text-muted-foreground max-w-xs">
+              Use the <strong>Sync Listings</strong> button in Settings → Amazon to import your
+              products from Seller Central.
+            </p>
+            <Link
+              href="/dashboard/settings"
+              className="inline-flex items-center justify-center rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors"
+            >
+              Go to Settings
+            </Link>
+          </div>
+
+        ) : (
+          <div className="rounded-lg border border-border overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/40 border-b border-border">
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Product</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">SKU</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">ASIN</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Status</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Last synced</th>
+                    <th className="px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {amazonListings.map(item => (
+                    <tr key={item.id} className="hover:bg-muted/20 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          {item.image_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={item.image_url}
+                              alt={item.item_name ?? item.sku}
+                              className="size-8 rounded object-contain bg-muted flex-shrink-0"
+                            />
+                          ) : (
+                            <div className="size-8 rounded bg-muted flex items-center justify-center flex-shrink-0">
+                              <Package className="size-4 text-muted-foreground" />
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <p className="font-medium text-foreground truncate max-w-[280px]">
+                              {item.item_name ?? '—'}
+                            </p>
+                            {item.brand && (
+                              <p className="text-xs text-muted-foreground">{item.brand}</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                        {item.sku}
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
+                        {item.asin ?? '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        {item.status ? (
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                            item.status.toLowerCase() === 'buyable'
+                              ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400'
+                              : 'bg-muted text-muted-foreground'
+                          }`}>
+                            {item.status}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {item.last_synced_at
+                          ? new Date(item.last_synced_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                          : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {item.asin && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 text-xs"
+                            onClick={() => {
+                              if (!workspaceId || !item.asin) return
+                              toast.info(`Use the "Add ASIN" button above to track ${item.asin}.`)
+                            }}
+                          >
+                            Track ASIN
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-4 py-2.5 bg-muted/20 border-t border-border">
+              <p className="text-xs text-muted-foreground">
+                {amazonListings.length} listing{amazonListings.length !== 1 ? 's' : ''} synced from Seller Central
+              </p>
+            </div>
+          </div>
         )}
       </div>
     </div>

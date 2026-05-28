@@ -7,9 +7,16 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-plus-jakarta-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-plus-jakarta-sans);
+  /* Sociomonkey brand tokens */
+  --color-brand:      var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-ink:        var(--ink);
+  --color-body:       var(--body);
+  --color-surface:    var(--surface);
+  --color-divider:    var(--divider);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -58,9 +65,17 @@
   --popover:             oklch(1.000 0.000 0);
   --popover-foreground:  oklch(0.171 0.032 265);
 
-  /* Brand accent — same orange in both modes */
-  --primary:             oklch(0.741 0.174 66.5);  /* amber-500 #F59E0B        */
-  --primary-foreground:  oklch(1.000 0.000 0);     /* white text on orange     */
+  /* Sociomonkey brand tokens */
+  --brand:               #de2e2e;
+  --brand-dark:          #c22828;
+  --ink:                 #111111;
+  --body:                #444444;
+  --surface:             #f8f8f6;
+  --divider:             #e4e4e4;
+
+  /* Brand accent — Sociomonkey red */
+  --primary:             oklch(0.530 0.220 27.5);  /* #de2e2e brand red        */
+  --primary-foreground:  oklch(1.000 0.000 0);     /* white text on red        */
 
   /* Neutrals */
   --secondary:           oklch(0.960 0.008 265);   /* #F1F5F9 slate-100        */
@@ -77,10 +92,10 @@
   /* Border: slate-300 gives visible lines + workable bg-border/10 hovers    */
   --border:              oklch(0.856 0.020 265);   /* #CBD5E1 slate-300        */
   --input:               oklch(0.856 0.020 265);
-  --ring:                oklch(0.741 0.174 66.5);
+  --ring:                oklch(0.530 0.220 27.5);
 
   /* Charts */
-  --chart-1:             oklch(0.741 0.174 66.5);
+  --chart-1:             oklch(0.530 0.220 27.5);
   --chart-2:             oklch(0.520 0.150 168);
   --chart-3:             oklch(0.480 0.200 264);
   --chart-4:             oklch(0.600 0.180 300);
@@ -92,12 +107,12 @@
   /* Sidebar — white with a subtle border */
   --sidebar:                    oklch(1.000 0.000 0);     /* #FFFFFF                  */
   --sidebar-foreground:         oklch(0.171 0.032 265);
-  --sidebar-primary:            oklch(0.741 0.174 66.5);
+  --sidebar-primary:            oklch(0.530 0.220 27.5);
   --sidebar-primary-foreground: oklch(1.000 0.000 0);
   --sidebar-accent:             oklch(0.960 0.008 265);   /* slate-100 hover bg       */
   --sidebar-accent-foreground:  oklch(0.171 0.032 265);
   --sidebar-border:             oklch(0.900 0.012 265);   /* #E2E8F0 slate-200        */
-  --sidebar-ring:               oklch(0.741 0.174 66.5);
+  --sidebar-ring:               oklch(0.530 0.220 27.5);
 }
 
 .dark {
@@ -113,8 +128,8 @@
   --popover-foreground:  oklch(0.975 0.005 265);
 
   /* ── Brand accent ──────────────────────────────────────────────────────── */
-  --primary:             oklch(0.741 0.174 66.5);  /* amber-500 — unchanged   */
-  --primary-foreground:  oklch(0.10 0 0);
+  --primary:             oklch(0.620 0.210 27.5);  /* brand red — lighter for dark bg */
+  --primary-foreground:  oklch(1.000 0.000 0);
 
   /* ── Neutrals ──────────────────────────────────────────────────────────── */
   --secondary:           oklch(0.240 0.042 265);
@@ -124,18 +139,18 @@
   --muted-foreground:    oklch(0.600 0.028 265);
 
   /* ── Accent (matches brand) ────────────────────────────────────────────── */
-  --accent:              oklch(0.741 0.174 66.5);
-  --accent-foreground:   oklch(0.10 0 0);
+  --accent:              oklch(0.620 0.210 27.5);
+  --accent-foreground:   oklch(1.000 0.000 0);
 
   /* ── System ────────────────────────────────────────────────────────────── */
   --destructive:         oklch(0.628 0.221 29.2);  /* red-500 tone            */
   /* Border: solid slate value (lighter than bg) so bg-border/10 hover works */
   --border:              oklch(0.285 0.045 265);   /* #263244 — visible border */
   --input:               oklch(0.285 0.045 265);
-  --ring:                oklch(0.741 0.174 66.5);
+  --ring:                oklch(0.620 0.210 27.5);
 
   /* ── Charts ────────────────────────────────────────────────────────────── */
-  --chart-1:             oklch(0.741 0.174 66.5);  /* amber   */
+  --chart-1:             oklch(0.620 0.210 27.5);  /* brand red */
   --chart-2:             oklch(0.600 0.150 168);   /* green   */
   --chart-3:             oklch(0.550 0.200 264);   /* blue    */
   --chart-4:             oklch(0.700 0.180 300);   /* purple  */
@@ -145,12 +160,12 @@
   /* Sidebar slightly darker than background — creates depth                 */
   --sidebar:                    oklch(0.148 0.035 265);  /* #0B1120             */
   --sidebar-foreground:         oklch(0.975 0.005 265);
-  --sidebar-primary:            oklch(0.741 0.174 66.5);
-  --sidebar-primary-foreground: oklch(0.10 0 0);
+  --sidebar-primary:            oklch(0.620 0.210 27.5);
+  --sidebar-primary-foreground: oklch(1.000 0.000 0);
   --sidebar-accent:             oklch(0.235 0.042 265);  /* hover bg            */
   --sidebar-accent-foreground:  oklch(0.975 0.005 265);
   --sidebar-border:             oklch(0.235 0.042 265);  /* subtle divider      */
-  --sidebar-ring:               oklch(0.741 0.174 66.5);
+  --sidebar-ring:               oklch(0.620 0.210 27.5);
 }
 
 @layer base {

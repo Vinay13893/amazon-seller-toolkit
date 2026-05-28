@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import {
@@ -56,10 +57,15 @@ export function Sidebar({ className }: SidebarProps) {
     <div className={cn('flex flex-col h-full bg-sidebar border-r border-sidebar-border', className)}>
       {/* Logo */}
       <div className="p-5 border-b border-sidebar-border flex-shrink-0">
-        <Link href="/dashboard" className="text-xl font-black block">
-          Socio<span className="text-primary">monkey</span>
+        <Link href="/dashboard" className="flex items-center gap-2.5">
+          <Image src="/logo.svg" alt="Sociomonkey" width={30} height={30} className="flex-shrink-0" />
+          <div>
+            <span className="text-xl font-black block leading-none">
+              Socio<span className="text-primary">monkey</span>
+            </span>
+            <p className="text-[11px] text-muted-foreground mt-0.5 leading-none">Amazon Intelligence</p>
+          </div>
         </Link>
-        <p className="text-xs text-muted-foreground mt-0.5">Amazon Intelligence</p>
       </div>
 
       {/* Navigation */}

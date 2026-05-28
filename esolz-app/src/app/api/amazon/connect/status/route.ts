@@ -97,6 +97,7 @@ export async function GET() {
   console.log(`[amazon-status][4] OK   status: ${conn.status}`)
 
   return NextResponse.json({
+    configured:               !!process.env.SPAPI_APPLICATION_ID,
     connected:                conn.status === 'active',
     status:                   conn.status,
     selling_partner_id:       conn.selling_partner_id,
@@ -105,8 +106,7 @@ export async function GET() {
     brand_analytics_eligible: conn.brand_analytics_eligible,
     brand_registry_enrolled:  conn.brand_registry_enrolled,
     last_sync_at:             conn.last_sync_at,
-    // Only surface error_message when in error state to avoid leaking internal detail
-    error_message:            conn.status === 'error' ? conn.error_message : null,
+    error_message:            conn.error_message,
   })
 }
 

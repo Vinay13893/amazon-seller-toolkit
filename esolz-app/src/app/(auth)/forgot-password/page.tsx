@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { CheckCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -58,9 +59,12 @@ export default function ForgotPasswordPage() {
   return (
     <div className="bg-card border border-border rounded-2xl p-8 shadow-xl">
       <div className="text-center mb-8">
-        <Link href="/" className="text-2xl font-black">
-          Socio<span className="text-primary">monkey</span>
-        </Link>
+        <div className="flex items-center justify-center gap-2.5 mb-1">
+          <Image src="/logo.svg" alt="Sociomonkey" width={32} height={32} className="flex-shrink-0" />
+          <Link href="/" className="text-2xl font-black">
+            Socio<span className="text-primary">monkey</span>
+          </Link>
+        </div>
         <p className="text-muted-foreground text-sm mt-1">Amazon Intelligence</p>
       </div>
 

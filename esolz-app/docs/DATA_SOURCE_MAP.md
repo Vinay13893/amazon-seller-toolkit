@@ -163,13 +163,24 @@ the state after the Mock Data Removal audit completed 28 May 2026.
 
 ## SP-API Tables (amazon_*)
 
+### Migration 006 — Connection Foundation
 | Table | Purpose | Written by |
 |---|---|---|
-| `amazon_connections` | One row per workspace. Encrypted tokens. | OAuth callback route (admin client) |
-| `amazon_audit_logs` | Append-only event log (connect, disconnect, errors) | OAuth routes (admin client) |
-| `amazon_marketplaces` | Static lookup (IN, US, GB) | Migration 006 seed |
+| `amazon_connections` | One row per workspace. Encrypted tokens + connection state. | OAuth callback route (admin client) |
+| `amazon_audit_logs` | Append-only event log (connect, disconnect, sync events) | OAuth + sync routes (admin client) |
+| `amazon_marketplaces` | Static reference lookup (IN, US, GB endpoints) | Migration 006 seed |
 
 Token columns `refresh_token_encrypted` and `access_token_encrypted` are **never** returned in any API response.
+
+### Migration 007 — Account Data Foundation (Phase 2A)
+| Table | Purpose | Future route / page |
+|---|---|---|
+| `amazon_sync_jobs` | Audit trail for every SP-API sync run — job_type, status (pending/running/completed/failed/cancelled), started_at, finished_at, error_message, metadata | `/api/amazon/sync/*` write, `/dashboard/settings` read |
+| `amazon_listing_items` | Catalog metadata per SKU/ASIN (name, brand, product_type, status, image_url). Unique on `(workspace_id, sku, marketplace_id)`; partial unique index on `(workspace_id, asin, marketplace_id) WHERE asin IS NOT NULL`. Upserted on sync. | Future listing sync → `/dashboard/asins` enrichment |
+| `amazon_inventory_summaries` | FBA inventory per SKU (available, inbound, reserved, fulfillable). Unique on `(workspace_id, sku, marketplace_id)`. Replaced on sync. | Future inventory sync → `/dashboard` KPI cards |
+| `amazon_pricing_snapshots` | Append-only price time-series per ASIN (landed, listing, buy_box, currency). New row per sync — no unique constraint. | Future pricing sync → `/dashboard/buybox` price history |
+
+**RLS on all migration 007 tables:** SELECT open to workspace members via `user_workspace_ids()`. No authenticated INSERT/UPDATE/DELETE — all writes use service-role admin client.
 
 ---
 

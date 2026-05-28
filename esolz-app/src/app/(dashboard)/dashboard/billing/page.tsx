@@ -6,7 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
 import { getOrCreateCurrentUsageCounter, type UsageCounter } from '@/lib/supabase/usage'
 import { Button } from '@/components/ui/button'
-import { Loader2, CheckCircle2, Lock, Zap, Crown, Building2, Star } from 'lucide-react'
+import { Loader2, CheckCircle2, Lock, Zap, Crown, Building2, Star, FlaskConical } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
@@ -109,6 +109,7 @@ function UsageBar({
 
 const PLAN_ICONS: Record<string, React.ElementType> = {
   Free: Lock, Starter: Zap, Growth: Star, Pro: Crown, Agency: Building2,
+  'Internal Tester': FlaskConical,
 }
 
 // ─── Feature row ─────────────────────────────────────────────────────────────
@@ -434,10 +435,12 @@ export default function BillingPage() {
                 </span>
               </p>
               <p className="text-sm text-muted-foreground mt-0.5">
-                {sub.plan.price_monthly === 0
-                  ? '₹0 / month — free tier'
-                  : `₹${sub.plan.price_monthly.toLocaleString('en-IN')} / month`}
-                {periodEnd && ` · renews ${periodEnd}`}
+                {sub.plan.name === 'Internal Tester'
+                  ? 'Internal testing access enabled'
+                  : sub.plan.price_monthly === 0
+                    ? '₹0 / month — free tier'
+                    : `₹${sub.plan.price_monthly.toLocaleString('en-IN')} / month`}
+                {sub.plan.name !== 'Internal Tester' && periodEnd && ` · renews ${periodEnd}`}
               </p>
             </div>
           </div>
@@ -501,7 +504,7 @@ export default function BillingPage() {
           </div>
         ) : allPlans.length > 0 ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-            {allPlans.map(plan => (
+            {allPlans.filter(p => p.name !== 'Internal Tester').map(plan => (
               <PlanCard
                 key={plan.id}
                 plan={plan}
