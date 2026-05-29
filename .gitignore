@@ -1,1 +1,66 @@
 .vercel
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+
+# ── Environment / secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env
+
+# ── Chrome / Playwright browser profiles (binary, large) ─────────────────────
+amazon-pincode-checker/amazon_profile/Default/
+amazon-pincode-checker/amazon_search_profile/Default/
+amazon-pincode-checker/pincode_checker/amazon_profile/
+amazon_profile/
+amazon_search_profile/
+
+# ── Generated outputs (Excel, CSV, reports) ───────────────────────────────────
+amazon-pincode-checker/output/
+output/
+*.xlsx
+*.xls
+
+# ── Debug / temp data ─────────────────────────────────────────────────────────
+amazon-pincode-checker/debug/
+debug/
+
+# ── Large media / binary files ────────────────────────────────────────────────
+amazon-pincode-checker/youtube/shorts_videos/
+*.mp4
+*.mp3
+*.pdf
+"amazon-pincode-checker/Daily Herbs Previous Output File/"
+chromedriver*
+chromedriver-win64/
+
+# ── Windows executables and debug symbols ────────────────────────────────────
+*.exe
+*.pdb
+*.dll
+saas-backend/redis/
+
+# ── macOS / IDE ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/settings.json
+
