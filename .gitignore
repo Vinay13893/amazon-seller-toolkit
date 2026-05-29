@@ -26,6 +26,8 @@ out/
 .env.local
 .env.*.local
 *.env
+amazon-pincode-checker/**/sp_api_config.json
+amazon-pincode-checker/**/secret/*.json
 
 # ── Chrome / Playwright browser profiles (binary, large) ─────────────────────
 amazon-pincode-checker/amazon_profile/Default/
