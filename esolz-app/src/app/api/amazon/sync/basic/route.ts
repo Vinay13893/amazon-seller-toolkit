@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { logInfo, logError } from '@/lib/observability/logger'
 import { encryptToken, decryptToken } from '@/lib/amazon/crypto'
 import { refreshAccessToken } from '@/lib/amazon/lwa'
 import { getMarketplaceParticipations } from '@/lib/amazon/spapi-client'
@@ -34,15 +35,13 @@ export async function POST() {
     // Catch-all: ensure we always return JSON, never an HTML 500 page.
     // This reveals the real error in the toast instead of "Network error".
     const msg = err instanceof Error ? err.message : String(err)
-    console.error('[amazon-sync-basic] UNHANDLED ERROR:', msg)
+    logError('amazon-sync-basic', 'UNHANDLED ERROR', new Error(msg))
     return NextResponse.json({ error: `Unexpected server error: ${msg}` }, { status: 500 })
   }
 }
 
 async function handlePost() {
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('[amazon-sync-basic][1] POST /api/amazon/sync/basic started')
-  }
+  logInfo('amazon-sync-basic', 'POST /api/amazon/sync/basic started')
 
   const supabase = await createClient()
 
@@ -82,7 +81,7 @@ async function handlePost() {
     .maybeSingle()
 
   if (connErr) {
-    console.error('[amazon-sync-basic] DB fetch error:', connErr.message)
+    logError('amazon-sync-basic', 'DB fetch error', connErr)
     return NextResponse.json({ error: 'Database error' }, { status: 500 })
   }
 
@@ -99,7 +98,7 @@ async function handlePost() {
   try {
     refreshToken = decryptToken(conn.refresh_token_encrypted)
   } catch {
-    console.error('[amazon-sync-basic] Failed to decrypt refresh token')
+    logError('amazon-sync-basic', 'Failed to decrypt refresh token')
     return NextResponse.json({ error: 'Failed to decrypt stored token — check SPAPI_ENCRYPTION_KEY' }, { status: 500 })
   }
 
@@ -109,12 +108,10 @@ async function handlePost() {
     const result   = await refreshAccessToken(refreshToken)
     newAccessToken = result.access_token
     expiresIn      = result.expires_in
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[amazon-sync-basic][3] Token refresh success')
-    }
+    logInfo('amazon-sync-basic', 'Token refresh success')
   } catch (err) {
     const reason = err instanceof Error ? err.message : 'token_refresh_failed'
-    console.error('[amazon-sync-basic] Token refresh failed:', reason)
+    logError('amazon-sync-basic', 'Token refresh failed', new Error(reason))
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     try { await (admin as any).from('amazon_audit_logs').insert({
@@ -142,7 +139,7 @@ async function handlePost() {
       .eq('workspace_id', member.workspace_id)
   } catch {
     // Non-fatal: we still have a valid in-memory token. Log and continue.
-    console.error('[amazon-sync-basic] Failed to persist refreshed access token')
+    logError('amazon-sync-basic', 'Failed to persist refreshed access token')
   }
 
   // ── 6. Call SP-API: getMarketplaceParticipations ───────────────────────────

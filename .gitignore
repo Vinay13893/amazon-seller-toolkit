@@ -23,9 +23,16 @@ out/
 
 # ── Environment / secrets ─────────────────────────────────────────────────────
 .env
+.env.*
 .env.local
 .env.*.local
 *.env
+secret/
+secrets/
+gsheets-key.json
+service-account*.json
+*-credentials.json
+*-service-account.json
 amazon-pincode-checker/**/sp_api_config.json
 amazon-pincode-checker/**/secret/*.json
 

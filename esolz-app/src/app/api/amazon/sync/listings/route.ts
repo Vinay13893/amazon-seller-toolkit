@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { logError } from '@/lib/observability/logger'
 
 export const runtime     = 'nodejs'
 export const maxDuration = 10
@@ -18,6 +19,7 @@ export async function POST() {
     const data = await res.json() as Record<string, unknown>
     return NextResponse.json(data, { status: res.status })
   } catch (err) {
+    logError('amazon-sync-listings', 'Proxy to /start failed', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
 }

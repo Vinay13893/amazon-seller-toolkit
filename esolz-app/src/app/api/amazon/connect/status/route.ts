@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { logInfo, logError } from '@/lib/observability/logger'
 
 export const runtime     = 'nodejs'
 export const maxDuration = 10
@@ -30,17 +31,17 @@ interface AmazonConnectionRow {
  *   brand_analytics_eligible, brand_registry_enrolled, last_sync_at, error_message
  */
 export async function GET() {
-  console.log('[amazon-status][1] GET /api/amazon/connect/status')
+  logInfo('amazon-status', 'GET /api/amazon/connect/status')
 
   const supabase = await createClient()
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   if (authErr || !user) {
-    console.error('[amazon-status][2] FAIL auth')
+    logError('amazon-status', 'FAIL auth')
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  console.log(`[amazon-status][2] OK   user: ${user.id}`)
+  logInfo('amazon-status', `OK user`, { userId: user.id })
 
   // ── Workspace ─────────────────────────────────────────────────────────────
   const { data: member, error: memberErr } = await supabase
@@ -51,10 +52,10 @@ export async function GET() {
     .maybeSingle()
 
   if (memberErr || !member?.workspace_id) {
-    console.error('[amazon-status][3] FAIL workspace:', memberErr?.message ?? 'no row')
+    logError('amazon-status', 'FAIL workspace', memberErr ?? new Error('no row'))
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
-  console.log(`[amazon-status][3] OK   workspace: ${member.workspace_id}`)
+  logInfo('amazon-status', `OK workspace`, { workspaceId: member.workspace_id })
 
   // ── Connection row ────────────────────────────────────────────────────────
   // Explicitly select only safe fields — token columns are intentionally omitted.
@@ -73,13 +74,13 @@ export async function GET() {
   const conn = connRaw as AmazonConnectionRow | null
 
   if (connErr) {
-    console.error('[amazon-status][4] FAIL fetch connection:', connErr.message)
+    logError('amazon-status', 'FAIL fetch connection', connErr)
     return NextResponse.json({ error: 'Failed to fetch connection status' }, { status: 500 })
   }
 
   // No row yet — workspace has never started the OAuth flow
   if (!conn) {
-    console.log('[amazon-status][4] OK   no connection row found → not_connected')
+    logInfo('amazon-status', 'no connection row found → not_connected')
     return NextResponse.json({
       configured:               !!process.env.SPAPI_APPLICATION_ID,
       connected:                false,
@@ -94,7 +95,7 @@ export async function GET() {
     })
   }
 
-  console.log(`[amazon-status][4] OK   status: ${conn.status}`)
+  logInfo('amazon-status', `OK status`, { status: conn.status })
 
   return NextResponse.json({
     configured:               !!process.env.SPAPI_APPLICATION_ID,
