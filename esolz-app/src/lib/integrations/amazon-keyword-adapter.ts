@@ -151,6 +151,11 @@ export function checkKeywordRank(
   marketplace: string,
   pages = 7,
 ): Promise<KeywordRankResult> {
+  if (process.env.NODE_ENV === 'production') {
+    return Promise.reject(
+      new KeywordRuntimeUnavailableError([]),
+    )
+  }
   return new Promise((resolve, reject) => {
     const initialAttempt = resolveInitialPythonAttempt()
     const attempts: BinaryAttempt[] = [initialAttempt]

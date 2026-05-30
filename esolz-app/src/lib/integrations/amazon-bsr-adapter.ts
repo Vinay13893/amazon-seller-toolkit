@@ -50,6 +50,11 @@ export function scrapeAsinBsr(
   asin:        string,
   marketplace: string,
 ): Promise<BsrScrapeResult> {
+  if (process.env.NODE_ENV === 'production') {
+    return Promise.reject(
+      new Error('Python BSR checker is not available in production. Configure CHECKER_WORKER_URL to use the external checker worker.'),
+    )
+  }
   return new Promise((resolve, reject) => {
     const python     = getPythonBin()
     const scriptExists = fs.existsSync(SCRIPT_PATH)

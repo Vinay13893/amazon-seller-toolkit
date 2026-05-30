@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { checkPincode } from '@/lib/integrations/amazon-pincode-adapter'
+import {
+  isWorkerConfigured,
+  runPincodeCheck,
+  CheckerWorkerUnavailableError,
+} from '@/lib/checkers/checker-worker-client'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120 // 2 minutes for Playwright checks
@@ -118,8 +123,8 @@ export async function POST(
         tracked_asin_id: trackedAsinId,
         pincode: normalizedPincode,
         city: null,
-        available: false,
-        delivery_promise: `Check failed: ${(failureReason ?? 'runtime unavailable').slice(0, 180)}`,
+        available: null,
+        delivery_promise: `Check failed: ${(failureReason ?? 'checker unavailable').slice(0, 180)}`,
         price: null,
         buy_box_seller: null,
         fulfillment_type: null,
@@ -131,16 +136,38 @@ export async function POST(
     return { data, error }
   }
 
-  // ── CHECK 6: Run pincode checker ───────────────────────────────────────
-  console.log(`[pincode-check][6] spawning checker for ${asin} / ${pincode} / ${tracked.marketplace}`)
+  // ── Run pincode check: try worker first, then local Python (dev only) ───
+  console.log(`[pincode-check][6] running checker for ${asin} / ${pincode} / ${tracked.marketplace}`)
   let result
   try {
-    result = await checkPincode(asin.toUpperCase(), pincode, tracked.marketplace)
+    if (isWorkerConfigured()) {
+      console.log(`[pincode-check][6] calling checker worker`)
+      const workerRes = await runPincodeCheck({
+        workspace_id:    workspaceId,
+        tracked_asin_id: trackedAsinId,
+        asin:            asin.toUpperCase(),
+        marketplace:     tracked.marketplace,
+        pincode:         normalizedPincode,
+      })
+      result = {
+        is_buyable:      workerRes.available ?? false,
+        delivery_type:   workerRes.delivery_promise ?? null,
+        delivery_text:   workerRes.delivery_promise ?? null,
+        merchant_text:   workerRes.seller ?? null,
+        amazon_fulfilled: false,
+        checked_at:      new Date().toISOString(),
+        pincode:         normalizedPincode,
+      }
+    } else {
+      result = await checkPincode(asin.toUpperCase(), pincode, tracked.marketplace)
+    }
   } catch (err) {
     console.error('[pincode-check][6] FAIL checker:', String(err))
 
     const { data: failedCheck, error: failedInsertErr } = await insertFailedCheck(
-      err instanceof Error ? err.message : String(err)
+      err instanceof CheckerWorkerUnavailableError
+        ? 'checker unavailable'
+        : (err instanceof Error ? err.message : String(err))
     )
     if (failedInsertErr) {
       console.error('[pincode-check][6] FAIL insert failed check:', failedInsertErr.message)

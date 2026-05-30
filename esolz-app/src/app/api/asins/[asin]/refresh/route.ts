@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { scrapeAsinBsr } from '@/lib/integrations/amazon-bsr-adapter'
+import {
+  isWorkerConfigured,
+  runBsrFallbackCheck,
+  CheckerWorkerUnavailableError,
+} from '@/lib/checkers/checker-worker-client'
 
 // Ensure Node.js runtime — child_process is not available in Edge
 export const runtime    = 'nodejs'
@@ -119,13 +124,39 @@ export async function POST(
     return fallback
   }
 
+  // ── Run BSR check: try worker first, then local Python (dev only) ────────
   let result
   try {
-    result = await scrapeAsinBsr(asin.toUpperCase(), tracked.marketplace)
-    console.log(`[bsr-refresh][6] OK   scraper: bsr=${result.bsr} price=${result.price} status=${result.scrape_status}`)
+    if (isWorkerConfigured()) {
+      console.log(`[bsr-refresh][5] calling checker worker for ${asin}`)
+      const workerRes = await runBsrFallbackCheck({
+        workspace_id:    workspaceId,
+        tracked_asin_id: trackedAsinId,
+        asin:            asin.toUpperCase(),
+        marketplace:     tracked.marketplace,
+      })
+      // Map worker response shape to local BsrScrapeResult shape
+      result = {
+        bsr:               workerRes.bsr,
+        price:             workerRes.price,
+        rating:            workerRes.rating,
+        review_count:      workerRes.review_count,
+        buy_box_owner:     null,
+        buy_box_status:    (workerRes.status === 'success' ? 'won' : 'unknown') as string,
+        availability_score: null,
+        scrape_status:     workerRes.status,
+        checked_at:        new Date().toISOString(),
+      }
+      console.log(`[bsr-refresh][5] OK   worker: bsr=${result.bsr} price=${result.price}`)
+    } else {
+      // Local dev: use Python adapter
+      result = await scrapeAsinBsr(asin.toUpperCase(), tracked.marketplace)
+      console.log(`[bsr-refresh][6] OK   scraper: bsr=${result.bsr} price=${result.price} status=${result.scrape_status}`)
+    }
     console.log(`[bsr-refresh][6] full result: ${JSON.stringify(result, null, 2)}`)
   } catch (err) {
     const checkedAt = new Date().toISOString()
+    const isInfraError = err instanceof CheckerWorkerUnavailableError
     console.error('[bsr-refresh][6] FAIL scraper:', String(err))
 
     const { data: failedSnap, error: failedInsertErr } = await insertSnapshotWithStatus({
@@ -134,7 +165,7 @@ export async function POST(
       rating: null,
       reviewCount: null,
       buyBoxOwner: null,
-      buyBoxStatus: 'failed',
+      buyBoxStatus: 'checker_unavailable',
       availabilityScore: null,
       checkedAt,
     })
@@ -150,8 +181,8 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        scrape_status: 'failed',
-        error: BSR_RUNTIME_FAILURE_MESSAGE,
+        scrape_status: 'checker_unavailable',
+        error: isInfraError ? BSR_RUNTIME_FAILURE_MESSAGE : String(err),
         snapshot: failedSnap,
       },
       { status: 502 },

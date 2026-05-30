@@ -336,15 +336,18 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
 
       const { data: kwRows } = await admin
         .from('keyword_rank_snapshots')
-        .select('tracked_keyword_id, page_status, checked_at')
+        .select('tracked_keyword_id, page_status, scrape_status, checked_at')
         .eq('workspace_id', workspaceId)
         .in('tracked_keyword_id', kwIds)
         .order('checked_at', { ascending: false })
 
       // Latest 2 snapshots per keyword
+      // Latest 2 *successful* snapshots per keyword (skip checker failures)
       type KwRow = { page_status: string | null }
       const byKw = new Map<string, KwRow[]>()
       for (const r of (kwRows ?? [])) {
+        // Skip rows where the checker itself failed — not a product-level signal
+        if (r.scrape_status === 'checker_unavailable' || r.scrape_status === 'failed') continue
         const list = byKw.get(r.tracked_keyword_id) ?? []
         if (list.length < 2) {
           list.push({ page_status: r.page_status })

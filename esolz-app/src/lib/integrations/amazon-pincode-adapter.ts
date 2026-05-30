@@ -52,6 +52,11 @@ export function checkPincode(
   pincode:     string,
   marketplace: string,
 ): Promise<PincodeCheckResult> {
+  if (process.env.NODE_ENV === 'production') {
+    return Promise.reject(
+      new Error('Python Pincode checker is not available in production. Configure CHECKER_WORKER_URL to use the external checker worker.'),
+    )
+  }
   return new Promise((resolve, reject) => {
     const python       = getPythonBin()
     const scriptExists = fs.existsSync(SCRIPT_PATH)

@@ -32,7 +32,7 @@ interface KeywordRank {
   page_status?: string | null
   checked_at?: string | null
   found: boolean
-  scrape_status: 'never_checked' | 'success' | 'failed'
+  scrape_status: 'never_checked' | 'success' | 'failed' | 'checker_unavailable'
   error_message: string | null
 }
 interface AsinAlert {
@@ -255,9 +255,9 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
                 {kw.search_volume ? kw.search_volume.toLocaleString('en-IN') : '—'}
               </td>
               <td className="py-3 text-center">
-                {kw.scrape_status === 'failed' ? (
-                  <span className="text-xs text-red-400" title={sanitizeCheckerError(kw.error_message) ?? 'Last check failed'}>
-                    Last check failed
+                {kw.scrape_status === 'checker_unavailable' || kw.scrape_status === 'failed' ? (
+                  <span className="text-xs text-amber-400" title={sanitizeCheckerError(kw.error_message) ?? 'Checker not connected'}>
+                    Checker not connected
                   </span>
                 ) : kw.trend === 'up' ? (
                   <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">

@@ -111,7 +111,7 @@ function healthBg(hs: HealthStatus) {
 function normalizeStatus(raw: string | null): BBStatus {
   if (raw === 'won') return 'won'
   if (raw === 'suppressed') return 'suppressed'
-  if (raw === 'failed') return 'failed'
+  if (raw === 'failed' || raw === 'checker_unavailable') return 'failed'
   return 'lost'
 }
 
@@ -121,7 +121,7 @@ function StatusBadge({ status }: { status: BBStatus }) {
   if (status === 'won')
     return <Badge className="bg-green-500/15 text-green-400 border-green-500/20 text-xs">Won</Badge>
   if (status === 'failed')
-    return <Badge className="bg-red-500/15 text-red-400 border-red-500/20 text-xs">Failed</Badge>
+    return <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/20 text-xs">Checker not connected</Badge>
   if (status === 'lost')
     return <Badge className="bg-red-500/15 text-red-400 border-red-500/20 text-xs">Lost</Badge>
   return <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/20 text-xs">Suppressed</Badge>
@@ -657,10 +657,11 @@ export default function BuyboxPage() {
                         {entry.status === 'won'
                           ? <ShieldCheck className="size-3 text-green-400 flex-shrink-0" />
                           : entry.status === 'failed'
-                            ? <AlertTriangle className="size-3 text-red-400 flex-shrink-0" />
+                            ? <AlertTriangle className="size-3 text-amber-400 flex-shrink-0" />
                           : <Store className="size-3 text-muted-foreground flex-shrink-0" />}
                         <span className="text-xs text-foreground truncate max-w-[120px]">
                           {entry.status === 'failed' ? 'Check failed' : (entry.current_owner ?? '—')}
+                                                  {entry.status === 'failed' ? 'Checker not connected' : (entry.current_owner ?? '—')}
                         </span>
                       </div>
                     </td>

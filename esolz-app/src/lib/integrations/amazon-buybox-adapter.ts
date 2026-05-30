@@ -58,6 +58,11 @@ export function checkBuyBox(
   asin:        string,
   marketplace: string,
 ): Promise<BuyBoxCheckResult> {
+  if (process.env.NODE_ENV === 'production') {
+    return Promise.reject(
+      new Error('Python Buy Box checker is not available in production. Configure CHECKER_WORKER_URL to use the external checker worker.'),
+    )
+  }
   return new Promise((resolve, reject) => {
     const python = getPythonBin()
 

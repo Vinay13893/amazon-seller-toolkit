@@ -6,6 +6,11 @@ import {
   isKeywordRuntimeUnavailableError,
   KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
 } from '@/lib/integrations/amazon-keyword-adapter'
+import {
+  isWorkerConfigured,
+  runKeywordRankCheck,
+  CheckerWorkerUnavailableError,
+} from '@/lib/checkers/checker-worker-client'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120
@@ -86,7 +91,7 @@ export async function POST(
     keyword:       string
     organic_rank:  number | null
     sponsored_rank: number | null
-    page_status:   string
+    page_status:   string | null
     scan_status:   string
     checked_at:    string
     error?:        string
@@ -110,9 +115,9 @@ export async function POST(
         page:               null,
         position_on_page:   null,
         found:              false,
-        scrape_status:      'failed',
+        scrape_status:      'checker_unavailable',
         error_message:      params.errorMessage,
-        page_status:        'not_ranking',
+        page_status:        null,
         checked_at:         params.checkedAt,
       })
   }
@@ -131,8 +136,8 @@ export async function POST(
         keyword: kw.keyword,
         organic_rank: null,
         sponsored_rank: null,
-        page_status: 'not_ranking',
-        scan_status: 'failed',
+        page_status: null,
+        scan_status: 'checker_unavailable',
         checked_at: checkedAt,
         error: KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
       })
@@ -141,11 +146,33 @@ export async function POST(
 
     try {
       console.log(`[asins/${asin}/keywords/refresh] checking rank for: "${kw.keyword}"`)
-      const res = await checkKeywordRank(
-        kw.keyword,
-        asin.toUpperCase(),
-        kw.marketplace ?? trackedMarketplace ?? 'IN',
-      )
+
+      let res
+      if (isWorkerConfigured()) {
+        const workerRes = await runKeywordRankCheck({
+          workspace_id:       workspaceId,
+          tracked_keyword_id: kw.id,
+          asin:               asin.toUpperCase(),
+          keyword:            kw.keyword,
+          marketplace:        kw.marketplace ?? trackedMarketplace ?? 'IN',
+        })
+        res = {
+          organic_rank:   workerRes.organic_rank,
+          sponsored_rank: workerRes.sponsored_rank,
+          page_number:    workerRes.page,
+          pos_on_page:    workerRes.position_on_page,
+          page_status:    workerRes.found ? (workerRes.page === 1 ? 'page_1' : workerRes.page === 2 ? 'page_2' : 'page_3') : 'not_ranking' as string,
+          scan_status:    workerRes.status,
+          checked_at:     new Date().toISOString(),
+        }
+      } else {
+        res = await checkKeywordRank(
+          kw.keyword,
+          asin.toUpperCase(),
+          kw.marketplace ?? trackedMarketplace ?? 'IN',
+        )
+      }
+
       console.log(`[asins/${asin}/keywords/refresh] rank result:`, { keyword: kw.keyword, organic_rank: res.organic_rank, page_status: res.page_status, scan_status: res.scan_status })
 
       // Insert snapshot (admin client so INSERT isn't blocked by RLS edge-cases)
@@ -179,7 +206,7 @@ export async function POST(
       })
     } catch (err) {
       const checkedAt = new Date().toISOString()
-      const runtimeUnavailable = isKeywordRuntimeUnavailableError(err)
+      const runtimeUnavailable = isKeywordRuntimeUnavailableError(err) || err instanceof CheckerWorkerUnavailableError
       const safeError = runtimeUnavailable
         ? KEYWORD_RUNTIME_UNAVAILABLE_ERROR
         : (err instanceof Error ? err.message : 'Keyword rank check failed')
@@ -188,7 +215,6 @@ export async function POST(
         runtimeUnavailableDetected = true
         console.warn(`[asins/${asin}/keywords/refresh] runtime unavailable`, {
           keyword: kw.keyword,
-          attempted_binaries: err.attemptedBinaries,
         })
       }
 
@@ -204,8 +230,8 @@ export async function POST(
         keyword:       kw.keyword,
         organic_rank:  null,
         sponsored_rank: null,
-        page_status:   'not_ranking',
-        scan_status:   'failed',
+        page_status:   null,
+        scan_status:   'checker_unavailable',
         checked_at:    checkedAt,
         error:         safeError,
       })
@@ -215,7 +241,7 @@ export async function POST(
   if (runtimeUnavailableDetected) {
     return NextResponse.json({
       ok: false,
-      status: 'failed',
+      status: 'checker_unavailable',
       message: RUNTIME_UNAVAILABLE_RESPONSE_MESSAGE,
       asin,
       checked: results.length,

@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { checkBuyBox } from '@/lib/integrations/amazon-buybox-adapter'
+import {
+  isWorkerConfigured,
+  runBuyBoxFallbackCheck,
+  CheckerWorkerUnavailableError,
+} from '@/lib/checkers/checker-worker-client'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120 // 2 minutes for Playwright
@@ -84,7 +89,7 @@ export async function POST(
       workspace_id:     workspaceId,
       tracked_asin_id:  trackedAsinId,
       buy_box_owner:    null,
-      buy_box_status:   'failed',
+      buy_box_status:   'checker_unavailable',
       buy_box_price:    null,
       your_price:       null,
       price_gap:        null,
@@ -127,7 +132,31 @@ export async function POST(
     console.log('[buybox-check][5] MOCK  using fake result')
   } else {
     try {
-      result = await checkBuyBox(tracked.asin, tracked.marketplace)
+      if (isWorkerConfigured()) {
+        console.log(`[buybox-check][5] calling checker worker for ${tracked.asin}`)
+        const workerRes = await runBuyBoxFallbackCheck({
+          workspace_id:    workspaceId,
+          tracked_asin_id: trackedAsinId,
+          asin:            tracked.asin,
+          marketplace:     tracked.marketplace,
+        })
+        result = {
+          asin:             tracked.asin,
+          marketplace:      tracked.marketplace,
+          buy_box_owner:    workerRes.buybox_owner,
+          buy_box_seller_id: null,
+          buy_box_price:    workerRes.price,
+          buy_box_status:   workerRes.status === 'success' ? (workerRes.buybox_won ? 'active' : 'lost') : workerRes.status,
+          fulfillment_type: null,
+          all_offers:       [],
+          total_sellers:    0,
+          captcha_seen:     false,
+          error:            workerRes.error_message ?? '',
+          checked_at:       new Date().toISOString(),
+        }
+      } else {
+        result = await checkBuyBox(tracked.asin, tracked.marketplace)
+      }
     } catch (err: unknown) {
       console.error('[buybox-check][5] FAIL:', err instanceof Error ? err.message : String(err))
 

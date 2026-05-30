@@ -64,7 +64,7 @@ interface TrackedKeywordRow {
   search_volume: number
   last_checked: string | null
   found: boolean
-  scrape_status: 'never_checked' | 'success' | 'failed'
+  scrape_status: 'never_checked' | 'success' | 'failed' | 'checker_unavailable'
   error_message: string | null
   page: number | null
 }
@@ -212,8 +212,11 @@ function FoundStatusBadge({ kw }: { kw: TrackedKeywordRow }) {
   if (kw.scrape_status === 'never_checked') {
     return <Badge className="text-xs bg-muted text-muted-foreground border-border">Never checked</Badge>
   }
+  if (kw.scrape_status === 'checker_unavailable') {
+    return <Badge className="text-xs bg-amber-500/15 text-amber-400 border-amber-500/20">Checker not connected</Badge>
+  }
   if (kw.scrape_status === 'failed') {
-    return <Badge className="text-xs bg-red-500/15 text-red-400 border-red-500/20">Last check failed</Badge>
+    return <Badge className="text-xs bg-amber-500/15 text-amber-400 border-amber-500/20">Checker not connected</Badge>
   }
   return kw.found
     ? <Badge className="text-xs bg-green-500/15 text-green-400 border-green-500/20">Found</Badge>
