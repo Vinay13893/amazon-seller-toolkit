@@ -34,12 +34,48 @@ import {
   ArrowUpRight,
   ArrowDownRight,
 } from 'lucide-react'
-import {
-  type TrackedKeyword,
-} from '@/lib/mock-keywords'
 import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
 import { toast } from 'sonner'
+
+interface KeywordSnapshotRow {
+  tracked_keyword_id: string
+  organic_rank: number | null
+  sponsored_rank: number | null
+  page_status: string | null
+  checked_at: string
+  page: number | null
+  found: boolean | null
+  scrape_status: string | null
+  error_message: string | null
+}
+
+interface TrackedKeywordRow {
+  id: string
+  keyword: string
+  asin: string
+  product_name: string
+  organic_rank: number | null
+  prev_organic_rank: number | null
+  sponsored_rank: number | null
+  page_status: 'page_1' | 'page_2' | 'page_3' | 'not_ranking'
+  search_volume: number
+  last_checked: string | null
+  found: boolean
+  scrape_status: 'never_checked' | 'success' | 'failed'
+  error_message: string | null
+  page: number | null
+}
+
+interface KeywordHistoryPoint {
+  date: string
+  rank: number | null
+  checked_at: string
+  page: number | null
+  found: boolean
+  scrape_status: string
+  error_message: string | null
+}
 
 // ─── API research result type ─────────────────────────────────────────────────
 // Metrics are null — no existing keyword-research tool provides volume/CPC data.
@@ -85,22 +121,16 @@ function CompetitionBadge({ level }: { level: 'low' | 'medium' | 'high' }) {
   )
 }
 
-function PageStatusBadge({ status }: { status: TrackedKeyword['page_status'] }) {
-  const map: Record<string, string> = {
-    page_1: 'bg-green-500/15 text-green-400 border-green-500/20',
-    page_2: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/20',
-    page_3: 'bg-orange-500/15 text-orange-400 border-orange-500/20',
-    not_ranking: 'bg-red-500/15 text-red-400 border-red-500/20',
+function FoundStatusBadge({ kw }: { kw: TrackedKeywordRow }) {
+  if (kw.scrape_status === 'never_checked') {
+    return <Badge className="text-xs bg-muted text-muted-foreground border-border">Never checked</Badge>
   }
-  const labels: Record<string, string> = {
-    page_1: 'Page 1',
-    page_2: 'Page 2',
-    page_3: 'Page 3',
-    not_ranking: 'Not Ranking',
+  if (kw.scrape_status === 'failed') {
+    return <Badge className="text-xs bg-red-500/15 text-red-400 border-red-500/20">Last check failed</Badge>
   }
-  return (
-    <Badge className={cn('text-xs', map[status])}>{labels[status]}</Badge>
-  )
+  return kw.found
+    ? <Badge className="text-xs bg-green-500/15 text-green-400 border-green-500/20">Found</Badge>
+    : <Badge className="text-xs bg-yellow-500/15 text-yellow-400 border-yellow-500/20">Not found</Badge>
 }
 
 function MovementChip({ current, prev }: { current: number | null; prev: number | null }) {
@@ -207,12 +237,12 @@ export default function KeywordsPage() {
   const [isResearching, setIsResearching] = useState(false)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [researchResults, setResearchResults] = useState<ApiResearchResult[] | null>(null)
-  const [trackedData, setTrackedData] = useState<TrackedKeyword[]>([])
+  const [trackedData, setTrackedData] = useState<TrackedKeywordRow[]>([])
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [tracked, setTracked] = useState<Set<string>>(new Set())
   const [trackingKw, setTrackingKw] = useState<string | null>(null)
   const [selectedKeywordId, setSelectedKeywordId] = useState<string>('')
-  const [historyMap, setHistoryMap] = useState<Record<string, { date: string; rank: number | null }[]>>({})
+  const [historyMap, setHistoryMap] = useState<Record<string, KeywordHistoryPoint[]>>({})
   const [chartRange, setChartRange] = useState<7 | 14 | 30>(7)
   const [isMounted, setIsMounted] = useState(false)
   const researchRef = useRef<HTMLDivElement>(null)
@@ -237,20 +267,26 @@ export default function KeywordsPage() {
 
     const { data: snaps } = await supabase
       .from('keyword_rank_snapshots')
-      .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at')
+      .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at, page, found, scrape_status, error_message')
       .in('tracked_keyword_id', kws.map(k => k.id))
       .order('checked_at', { ascending: false })
 
-    const snapsByKw: Record<string, { organic_rank: number | null; sponsored_rank: number | null; page_status: string | null; checked_at: string }[]> = {}
+    const snapsByKw: Record<string, KeywordSnapshotRow[]> = {}
     for (const s of snaps ?? []) {
       if (!snapsByKw[s.tracked_keyword_id]) snapsByKw[s.tracked_keyword_id] = []
-      snapsByKw[s.tracked_keyword_id].push(s)
+      snapsByKw[s.tracked_keyword_id].push(s as KeywordSnapshotRow)
     }
 
-    const mapped: TrackedKeyword[] = kws.map(kw => {
+    const mapped: TrackedKeywordRow[] = kws.map(kw => {
       const kwSnaps = snapsByKw[kw.id] ?? []
       const latest  = kwSnaps[0]
       const prev    = kwSnaps[1]
+      const latestFound = latest
+        ? (latest.found ?? latest.organic_rank !== null)
+        : false
+      const scrapeStatus = latest
+        ? ((latest.scrape_status as 'success' | 'failed' | null) ?? 'success')
+        : 'never_checked'
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const asinRow = normalizeEmbed<{ asin: string; product_title: string | null }>((kw as any).tracked_asins)
       return {
@@ -261,9 +297,13 @@ export default function KeywordsPage() {
         organic_rank:      latest?.organic_rank    ?? null,
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
-        page_status:       (latest?.page_status    ?? 'not_ranking') as TrackedKeyword['page_status'],
+        page_status:       (latest?.page_status    ?? 'not_ranking') as TrackedKeywordRow['page_status'],
         search_volume:     kw.search_volume        ?? 0,
         last_checked:      latest?.checked_at      ?? null,
+        found:             latestFound,
+        scrape_status:     scrapeStatus,
+        error_message:     latest?.error_message ?? null,
+        page:              latest?.page ?? null,
       }
     })
 
@@ -276,14 +316,19 @@ export default function KeywordsPage() {
     const supabase = createClient()
     const { data } = await supabase
       .from('keyword_rank_snapshots')
-      .select('organic_rank, checked_at')
+      .select('organic_rank, checked_at, page, found, scrape_status, error_message')
       .eq('tracked_keyword_id', kwId)
       .order('checked_at', { ascending: true })
       .limit(90)
     if (data && data.length > 0) {
-      const history = data.map(s => ({
+      const history: KeywordHistoryPoint[] = data.map(s => ({
         date: new Date(s.checked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
         rank: s.organic_rank,
+        checked_at: s.checked_at,
+        page: s.page ?? null,
+        found: s.found ?? s.organic_rank !== null,
+        scrape_status: s.scrape_status ?? 'success',
+        error_message: s.error_message ?? null,
       }))
       setHistoryMap(prev => ({ ...prev, [kwId]: history }))
     }
@@ -666,9 +711,7 @@ export default function KeywordsPage() {
                 <th className="text-right px-4 py-3">Organic</th>
                 <th className="text-right px-4 py-3">Previous</th>
                 <th className="text-center px-4 py-3">Move</th>
-                <th className="text-right px-4 py-3">Sponsored</th>
-                <th className="text-center px-4 py-3">Page</th>
-                <th className="text-right px-4 py-3">Volume</th>
+                <th className="text-center px-4 py-3">Found</th>
                 <th className="text-left px-4 py-3">Checked</th>
                 <th className="text-left px-4 py-3">Freshness</th>
                 <th className="text-center px-4 py-3">Detail</th>
@@ -719,22 +762,19 @@ export default function KeywordsPage() {
                   <td className="px-4 py-3 text-center">
                     <MovementChip current={kw.organic_rank} prev={kw.prev_organic_rank} />
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {kw.sponsored_rank != null ? `#${kw.sponsored_rank}` : '—'}
-                    </span>
-                  </td>
                   <td className="px-4 py-3 text-center">
-                    <PageStatusBadge status={kw.page_status} />
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {kw.search_volume.toLocaleString('en-IN')}
-                    </span>
+                    <div className="inline-flex flex-col items-center gap-1">
+                      <FoundStatusBadge kw={kw} />
+                      {kw.scrape_status === 'failed' && kw.error_message && (
+                        <span className="text-[10px] text-red-400 max-w-[180px] truncate" title={kw.error_message}>
+                          {kw.error_message}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <span className="text-xs text-muted-foreground">
-                      {timeAgo(kw.last_checked)}
+                      {kw.last_checked ? timeAgo(kw.last_checked) : 'Never'}
                     </span>
                   </td>
                   <td className="px-4 py-3">
@@ -854,6 +894,49 @@ export default function KeywordsPage() {
           )
         ) : (
           <div className="h-[240px] bg-border/20 rounded-lg animate-pulse" />
+        )}
+
+        {selectedKeywordId && chartHistory.length > 0 && (
+          <div className="mt-6 border-t border-border pt-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-3">
+              Check History
+            </h3>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-[11px] text-muted-foreground font-semibold uppercase tracking-wider">
+                    <th className="text-left px-3 py-2">Checked At</th>
+                    <th className="text-right px-3 py-2">Organic Rank</th>
+                    <th className="text-center px-3 py-2">Page</th>
+                    <th className="text-center px-3 py-2">Found</th>
+                    <th className="text-left px-3 py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {[...chartHistory].reverse().slice(0, 15).map((row, idx) => (
+                    <tr key={`${row.checked_at}-${idx}`}>
+                      <td className="px-3 py-2 text-xs text-foreground">
+                        {new Date(row.checked_at).toLocaleString('en-IN')}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-right font-mono text-foreground">
+                        {row.rank != null ? `#${row.rank}` : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-center text-muted-foreground">
+                        {row.page ?? '—'}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-center text-muted-foreground">
+                        {row.found ? 'Found' : 'Not found'}
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        {row.scrape_status === 'failed' ? 'Failed' : 'Success'}
+                        {row.scrape_status === 'failed' && row.error_message ? `: ${row.error_message}` : ''}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         )}
         </>
         )}

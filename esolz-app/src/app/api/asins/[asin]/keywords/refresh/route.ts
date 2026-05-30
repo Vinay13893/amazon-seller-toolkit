@@ -93,13 +93,21 @@ export async function POST(
       console.log(`[asins/${asin}/keywords/refresh] rank result:`, { keyword: kw.keyword, organic_rank: res.organic_rank, page_status: res.page_status, scan_status: res.scan_status })
 
       // Insert snapshot (admin client so INSERT isn't blocked by RLS edge-cases)
+      const found = res.organic_rank !== null
       await admin
         .from('keyword_rank_snapshots')
         .insert({
           workspace_id:       member.workspace_id,
           tracked_keyword_id: kw.id,
+          tracked_asin_id:    tracked.id,
+          keyword:            kw.keyword,
           organic_rank:       res.organic_rank,
           sponsored_rank:     res.sponsored_rank,
+          page:               res.page_number,
+          position_on_page:   res.pos_on_page,
+          found,
+          scrape_status:      res.scan_status || 'success',
+          error_message:      null,
           page_status:        res.page_status,
           checked_at:         res.checked_at,
         })
@@ -114,6 +122,25 @@ export async function POST(
         checked_at:    res.checked_at,
       })
     } catch (err) {
+      const checkedAt = new Date().toISOString()
+      await admin
+        .from('keyword_rank_snapshots')
+        .insert({
+          workspace_id:       member.workspace_id,
+          tracked_keyword_id: kw.id,
+          tracked_asin_id:    tracked.id,
+          keyword:            kw.keyword,
+          organic_rank:       null,
+          sponsored_rank:     null,
+          page:               null,
+          position_on_page:   null,
+          found:              false,
+          scrape_status:      'failed',
+          error_message:      String(err),
+          page_status:        'not_ranking',
+          checked_at:         checkedAt,
+        })
+
       results.push({
         keyword_id:    kw.id,
         keyword:       kw.keyword,
@@ -121,7 +148,7 @@ export async function POST(
         sponsored_rank: null,
         page_status:   'not_ranking',
         scan_status:   'error',
-        checked_at:    new Date().toISOString(),
+        checked_at:    checkedAt,
         error:         String(err),
       })
     }

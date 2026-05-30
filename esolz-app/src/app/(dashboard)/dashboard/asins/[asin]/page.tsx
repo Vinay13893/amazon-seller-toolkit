@@ -26,10 +26,14 @@ interface KeywordRank {
   keyword: string
   rank: number | null
   prev_rank: number | null
+  movement: number | null
   search_volume: number
   trend: 'up' | 'down' | 'flat'
   page_status?: string | null
   checked_at?: string | null
+  found: boolean
+  scrape_status: 'never_checked' | 'success' | 'failed'
+  error_message: string | null
 }
 interface AsinAlert {
   id: string
@@ -202,10 +206,12 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
         <thead>
           <tr className="border-b border-border">
             <th className="pb-3 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">Keyword</th>
-            <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Rank</th>
+            <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground">Latest</th>
             <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground hidden sm:table-cell">Previous</th>
+            <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Movement</th>
+            <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Found</th>
             <th className="pb-3 text-right text-xs font-medium uppercase tracking-wide text-muted-foreground hidden md:table-cell">Search Vol.</th>
-            <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Trend</th>
+            <th className="pb-3 text-center text-xs font-medium uppercase tracking-wide text-muted-foreground">Status</th>
           </tr>
         </thead>
         <tbody>
@@ -230,21 +236,37 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
               <td className="py-3 text-right text-muted-foreground font-mono text-xs hidden sm:table-cell">
                 {kw.prev_rank !== null ? `#${kw.prev_rank}` : '—'}
               </td>
+              <td className="py-3 text-center text-xs text-muted-foreground font-mono">
+                {kw.movement !== null ? `${kw.movement > 0 ? '+' : ''}${kw.movement}` : '—'}
+              </td>
+              <td className="py-3 text-center">
+                {kw.scrape_status === 'never_checked' ? (
+                  <span className="text-xs text-muted-foreground">Never checked</span>
+                ) : kw.scrape_status === 'failed' ? (
+                  <span className="text-xs text-red-400">Failed</span>
+                ) : kw.found ? (
+                  <span className="text-xs text-green-400">Found</span>
+                ) : (
+                  <span className="text-xs text-yellow-400">Not found</span>
+                )}
+              </td>
               <td className="py-3 text-right text-muted-foreground text-xs hidden md:table-cell">
                 {kw.search_volume ? kw.search_volume.toLocaleString('en-IN') : '—'}
               </td>
               <td className="py-3 text-center">
-                {kw.trend === 'up' && (
+                {kw.scrape_status === 'failed' ? (
+                  <span className="text-xs text-red-400" title={kw.error_message ?? 'Last check failed'}>
+                    Last check failed
+                  </span>
+                ) : kw.trend === 'up' ? (
                   <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
                     <TrendingUp className="size-3" />↑
                   </span>
-                )}
-                {kw.trend === 'down' && (
+                ) : kw.trend === 'down' ? (
                   <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
                     <TrendingDown className="size-3" />↓
                   </span>
-                )}
-                {kw.trend === 'flat' && (
+                ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                     <Minus className="size-3" />—
                   </span>
@@ -372,11 +394,18 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
 
     const { data: snaps } = await supabase
       .from('keyword_rank_snapshots')
-      .select('tracked_keyword_id, organic_rank, page_status, checked_at')
+      .select('tracked_keyword_id, organic_rank, page_status, checked_at, found, scrape_status, error_message')
       .in('tracked_keyword_id', kws.map(k => k.id))
       .order('checked_at', { ascending: false })
 
-    const byKw: Record<string, { organic_rank: number | null; page_status: string | null; checked_at: string | null }[]> = {}
+    const byKw: Record<string, {
+      organic_rank: number | null
+      page_status: string | null
+      checked_at: string | null
+      found: boolean | null
+      scrape_status: string | null
+      error_message: string | null
+    }[]> = {}
     for (const s of snaps ?? []) {
       if (!byKw[s.tracked_keyword_id]) byKw[s.tracked_keyword_id] = []
       byKw[s.tracked_keyword_id].push(s)
@@ -386,6 +415,13 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
       const kwSnaps   = byKw[kw.id] ?? []
       const cur       = kwSnaps[0]?.organic_rank ?? null
       const prev      = kwSnaps[1]?.organic_rank ?? null
+      const movement  = cur !== null && prev !== null ? prev - cur : null
+      const scrapeStatus = kwSnaps[0]
+        ? ((kwSnaps[0].scrape_status as 'success' | 'failed' | null) ?? 'success')
+        : 'never_checked'
+      const found = kwSnaps[0]
+        ? (kwSnaps[0].found ?? cur !== null)
+        : false
       const trend: 'up' | 'down' | 'flat' =
         cur !== null && prev !== null
           ? cur < prev ? 'up' : cur > prev ? 'down' : 'flat'
@@ -394,10 +430,14 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         keyword:      kw.keyword,
         rank:         cur,
         prev_rank:    prev,
+        movement,
         search_volume: kw.search_volume ?? 0,
         trend,
         page_status:  kwSnaps[0]?.page_status ?? null,
         checked_at:   kwSnaps[0]?.checked_at  ?? null,
+        found,
+        scrape_status: scrapeStatus,
+        error_message: kwSnaps[0]?.error_message ?? null,
       }
     })
 
