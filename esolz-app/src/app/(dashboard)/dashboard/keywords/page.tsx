@@ -36,6 +36,8 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
+import { addTrackedAsin, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
+import { Marketplace } from '@/types'
 import { toast } from 'sonner'
 
 interface KeywordSnapshotRow {
@@ -77,6 +79,17 @@ interface KeywordHistoryPoint {
   error_message: string | null
 }
 
+interface ProductOption {
+  key: string
+  asin: string
+  marketplace: Marketplace
+  title: string
+  brand: string | null
+  productType: string | null
+  source: 'tracked' | 'listing'
+  trackedAsinId: string | null
+}
+
 // ─── API research result type ─────────────────────────────────────────────────
 // Metrics are null — no existing keyword-research tool provides volume/CPC data.
 interface ApiResearchResult {
@@ -88,6 +101,57 @@ interface ApiResearchResult {
   difficulty: number | null
   intent: string | null
   top_ranking_asin: string | null
+}
+
+function marketplaceFromMarketplaceId(marketplaceId: string): Marketplace {
+  const map: Record<string, Marketplace> = {
+    A21TJRUUN4KGV: 'IN',
+    ATVPDKIKX0DER: 'US',
+    A1F83G8C2ARO7P: 'UK',
+    A1PA6795UKMFR9: 'DE',
+  }
+  return map[marketplaceId] ?? 'IN'
+}
+
+function buildProductKey(asin: string, marketplace: Marketplace): string {
+  return `${asin.toUpperCase()}|${marketplace}`
+}
+
+function toMarketplace(marketplace: string): Marketplace {
+  if (marketplace === 'US' || marketplace === 'UK' || marketplace === 'DE') return marketplace
+  return 'IN'
+}
+
+function getKeywordSeedSuggestions(product: ProductOption | null): string[] {
+  if (!product) return []
+
+  const stopWords = new Set([
+    'the', 'and', 'for', 'with', 'from', 'your', 'this', 'that', 'pack', 'set', 'of', 'in', 'to', 'on', 'by',
+  ])
+  const titleWords = product.title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !stopWords.has(w))
+
+  const productTypeWords = (product.productType ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(w => w.length >= 3 && !stopWords.has(w))
+
+  const brandWord = (product.brand ?? '').toLowerCase().trim()
+
+  const seeds = new Set<string>()
+  for (let i = 0; i < Math.min(titleWords.length - 1, 4); i += 1) {
+    seeds.add(`${titleWords[i]} ${titleWords[i + 1]}`)
+  }
+  if (titleWords[0] && productTypeWords[0]) seeds.add(`${titleWords[0]} ${productTypeWords[0]}`)
+  if (titleWords[1] && productTypeWords[0]) seeds.add(`${titleWords[1]} ${productTypeWords[0]}`)
+  if (brandWord && titleWords[0]) seeds.add(`${brandWord} ${titleWords[0]}`)
+  if (brandWord && productTypeWords[0]) seeds.add(`${brandWord} ${productTypeWords[0]}`)
+
+  return [...seeds].slice(0, 8)
 }
 
 // ─── Sub-components ────────────────────────────────────────────────────────────
@@ -236,6 +300,14 @@ export default function KeywordsPage() {
   const [category, setCategory] = useState('all')
   const [isResearching, setIsResearching] = useState(false)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [productsLoading, setProductsLoading] = useState(false)
+  const [productOptions, setProductOptions] = useState<ProductOption[]>([])
+  const [productSearch, setProductSearch] = useState('')
+  const [selectedProductKey, setSelectedProductKey] = useState('')
+  const [trackingSelectedAsin, setTrackingSelectedAsin] = useState(false)
+  const [keywordInput, setKeywordInput] = useState('')
+  const [bulkKeywordInput, setBulkKeywordInput] = useState('')
+  const [addingKeyword, setAddingKeyword] = useState(false)
   const [researchResults, setResearchResults] = useState<ApiResearchResult[] | null>(null)
   const [trackedData, setTrackedData] = useState<TrackedKeywordRow[]>([])
   const [isRefreshing, setIsRefreshing] = useState(false)
@@ -247,11 +319,87 @@ export default function KeywordsPage() {
   const [isMounted, setIsMounted] = useState(false)
   const researchRef = useRef<HTMLDivElement>(null)
 
+  const selectedProduct = productOptions.find(p => p.key === selectedProductKey) ?? null
+  const suggestedSeeds = getKeywordSeedSuggestions(selectedProduct)
+
+  const filteredProducts = productOptions.filter(p => {
+    const q = productSearch.trim().toLowerCase()
+    if (!q) return true
+    return (
+      p.asin.toLowerCase().includes(q) ||
+      p.title.toLowerCase().includes(q) ||
+      (p.brand ?? '').toLowerCase().includes(q)
+    )
+  })
+
   useEffect(() => {
     setIsMounted(true)
   }, [])
 
   // ── Load workspace + tracked keywords ─────────────────────────────────────────────
+  const loadProductOptions = useCallback(async (wsId: string) => {
+    setProductsLoading(true)
+    const supabase = createClient()
+    try {
+      const [trackedAsinsRes, listingItemsRes] = await Promise.all([
+        supabase
+          .from('tracked_asins')
+          .select('id, asin, marketplace, product_title, brand, category, status')
+          .eq('workspace_id', wsId)
+          .neq('status', 'archived')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('amazon_listing_items')
+          .select('id, asin, marketplace_id, item_name, brand, product_type, status')
+          .eq('workspace_id', wsId)
+          .not('asin', 'is', null)
+          .order('item_name', { ascending: true })
+          .limit(300),
+      ])
+
+      const map = new Map<string, ProductOption>()
+
+      for (const row of trackedAsinsRes.data ?? []) {
+        const mp = toMarketplace(row.marketplace as string)
+        const key = buildProductKey(row.asin as string, mp)
+        map.set(key, {
+          key,
+          asin: (row.asin as string).toUpperCase(),
+          marketplace: mp,
+          title: (row.product_title as string | null) ?? (row.asin as string),
+          brand: (row.brand as string | null) ?? null,
+          productType: (row.category as string | null) ?? null,
+          source: 'tracked',
+          trackedAsinId: row.id as string,
+        })
+      }
+
+      for (const row of listingItemsRes.data ?? []) {
+        const asin = (row.asin as string | null)?.toUpperCase()
+        if (!asin) continue
+        const mp = marketplaceFromMarketplaceId(row.marketplace_id as string)
+        const key = buildProductKey(asin, mp)
+        if (map.has(key)) continue
+        map.set(key, {
+          key,
+          asin,
+          marketplace: mp,
+          title: (row.item_name as string | null) ?? asin,
+          brand: (row.brand as string | null) ?? null,
+          productType: (row.product_type as string | null) ?? null,
+          source: 'listing',
+          trackedAsinId: null,
+        })
+      }
+
+      const merged = [...map.values()].sort((a, b) => a.title.localeCompare(b.title))
+      setProductOptions(merged)
+      setSelectedProductKey(prev => (merged.find(p => p.key === prev) ? prev : merged[0]?.key ?? ''))
+    } finally {
+      setProductsLoading(false)
+    }
+  }, [])
+
   const loadTrackedKeywords = useCallback(async (wsId: string) => {
     const supabase = createClient()
     const { data: kws } = await supabase
@@ -347,11 +495,12 @@ export default function KeywordsPage() {
         .then(({ data: member }) => {
           if (member?.workspace_id) {
             setWorkspaceId(member.workspace_id)
+            loadProductOptions(member.workspace_id)
             loadTrackedKeywords(member.workspace_id)
           }
         })
     })
-  }, [loadTrackedKeywords])
+  }, [loadProductOptions, loadTrackedKeywords])
 
   useEffect(() => {
     if (selectedKeywordId && !historyMap[selectedKeywordId]) {
@@ -388,6 +537,10 @@ export default function KeywordsPage() {
   }
 
   async function handleRefresh() {
+    if (trackedData.length === 0) {
+      toast.warning('Add at least one keyword first.')
+      return
+    }
     setIsRefreshing(true)
     try {
       const res = await fetch('/api/keywords/refresh', { method: 'POST' })
@@ -404,6 +557,91 @@ export default function KeywordsPage() {
       toast.error('Failed to refresh keyword ranks')
     } finally {
       setIsRefreshing(false)
+    }
+  }
+
+  async function handleTrackSelectedAsin() {
+    if (!workspaceId || !selectedProduct || selectedProduct.trackedAsinId) return
+    setTrackingSelectedAsin(true)
+    try {
+      const payload: AddAsinInput = {
+        asin: selectedProduct.asin,
+        productTitle: selectedProduct.title,
+        marketplace: selectedProduct.marketplace,
+        brand: selectedProduct.brand ?? '',
+        category: selectedProduct.productType ?? '',
+        imageUrl: '',
+      }
+      const created = await addTrackedAsin(workspaceId, payload)
+      if (!created) {
+        toast.error('Unable to track this ASIN. It may already be tracked.')
+        await loadProductOptions(workspaceId)
+        return
+      }
+
+      await incrementAsinUsage(workspaceId)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('asin:usage-changed'))
+      }
+      toast.success('ASIN tracked. You can add keywords now.')
+      await loadProductOptions(workspaceId)
+    } finally {
+      setTrackingSelectedAsin(false)
+    }
+  }
+
+  async function handleTrackKeywords(mode: 'single' | 'bulk') {
+    if (!selectedProduct) {
+      toast.warning('Select a product first.')
+      return
+    }
+    if (!selectedProduct.trackedAsinId) {
+      toast.warning('Track ASIN first to enable keyword tracking.')
+      return
+    }
+
+    const rawKeywords = mode === 'single'
+      ? [keywordInput]
+      : bulkKeywordInput.split(/\r?\n/g)
+
+    const uniqueKeywords = [...new Set(rawKeywords.map(k => k.trim()).filter(Boolean))]
+    if (uniqueKeywords.length === 0) {
+      toast.warning('Enter at least one keyword.')
+      return
+    }
+
+    setAddingKeyword(true)
+    try {
+      let added = 0
+      for (const keyword of uniqueKeywords) {
+        const res = await fetch(`/api/asins/${selectedProduct.asin}/keywords/track`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            keyword,
+            marketplace: selectedProduct.marketplace,
+          }),
+        })
+        const data = await res.json() as { error?: string }
+        if (res.ok) {
+          added += 1
+          continue
+        }
+        if (res.status !== 409) {
+          toast.error(data.error ?? `Failed to track keyword: ${keyword}`)
+        }
+      }
+
+      if (added > 0) {
+        toast.success('Keyword added. Run refresh to check rank.')
+      } else {
+        toast.info('No new keywords added (duplicates may already exist).')
+      }
+      setKeywordInput('')
+      if (mode === 'bulk') setBulkKeywordInput('')
+      if (workspaceId) await loadTrackedKeywords(workspaceId)
+    } finally {
+      setAddingKeyword(false)
     }
   }
 
@@ -689,17 +927,141 @@ export default function KeywordsPage() {
             )}
           </Button>
         </div>
+
+        <div className="px-6 py-4 border-b border-border space-y-4">
+          {productsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading products…</p>
+          ) : productOptions.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border p-4 text-center space-y-3">
+              <p className="text-sm text-foreground">No products found. Add an ASIN or sync Amazon listings first.</p>
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                <Button type="button" variant="outline" render={<Link href="/dashboard/asins" />}>
+                  Go to ASINs
+                </Button>
+                <Button type="button" variant="outline" render={<Link href="/dashboard/settings" />}>
+                  Sync Amazon Listings
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-1">
+                  <Label htmlFor="product-search">Search product</Label>
+                  <Input
+                    id="product-search"
+                    placeholder="Search by title, ASIN, brand"
+                    value={productSearch}
+                    onChange={e => setProductSearch(e.target.value)}
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <Label htmlFor="product-select">Select product / ASIN</Label>
+                  <select
+                    id="product-select"
+                    value={selectedProductKey}
+                    onChange={e => setSelectedProductKey(e.target.value)}
+                    className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    {filteredProducts.map(p => (
+                      <option key={p.key} value={p.key}>
+                        {p.title} | {p.asin} | {p.marketplace} | {p.source === 'tracked' ? 'Tracked ASIN' : 'Amazon listing'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {selectedProduct && !selectedProduct.trackedAsinId ? (
+                <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 flex items-center justify-between gap-3 flex-wrap">
+                  <p className="text-xs text-yellow-300">
+                    Track ASIN first to enable keyword tracking.
+                  </p>
+                  <Button type="button" variant="outline" onClick={handleTrackSelectedAsin} disabled={trackingSelectedAsin}>
+                    {trackingSelectedAsin ? 'Tracking…' : 'Track ASIN First'}
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <Label htmlFor="keyword-single">Add keyword</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="keyword-single"
+                          placeholder="e.g. anti slip kitchen mat"
+                          value={keywordInput}
+                          onChange={e => setKeywordInput(e.target.value)}
+                        />
+                        <Button type="button" onClick={() => handleTrackKeywords('single')} disabled={addingKeyword}>
+                          Track Keyword
+                        </Button>
+                      </div>
+                    </div>
+                    <div>
+                      <Label htmlFor="keyword-bulk">Bulk keywords (one per line)</Label>
+                      <textarea
+                        id="keyword-bulk"
+                        rows={3}
+                        className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                        placeholder={'anti slip mat\nkitchen mat\neasy home mat'}
+                        value={bulkKeywordInput}
+                        onChange={e => setBulkKeywordInput(e.target.value)}
+                      />
+                      <div className="mt-2">
+                        <Button type="button" variant="outline" onClick={() => handleTrackKeywords('bulk')} disabled={addingKeyword || !bulkKeywordInput.trim()}>
+                          Track Multiple Keywords
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {suggestedSeeds.length > 0 && (
+                    <div>
+                      <p className="text-xs text-muted-foreground mb-2">Suggested keyword seeds</p>
+                      <div className="flex flex-wrap gap-2">
+                        {suggestedSeeds.map(seed => (
+                          <button
+                            key={seed}
+                            type="button"
+                            onClick={() => setKeywordInput(seed)}
+                            className="text-xs rounded-full border border-border bg-muted/30 px-2.5 py-1 hover:bg-muted/50"
+                          >
+                            {seed}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         {trackedData.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
             <Tag className="size-8 text-muted-foreground/30" />
-            <p className="text-sm font-medium text-foreground">No tracked keywords yet</p>
-            <p className="text-xs text-muted-foreground max-w-xs">
-              No ranking data appears until you track at least one keyword for an ASIN.
-            </p>
-            <Button type="button" variant="outline" onClick={() => researchRef.current?.scrollIntoView({ behavior: 'smooth' })}>
-              <Plus className="size-4" />
-              Add Your First Keyword
-            </Button>
+            {productOptions.length === 0 ? (
+              <>
+                <p className="text-sm font-medium text-foreground">Add an ASIN or sync Amazon listings to start keyword tracking.</p>
+                <div className="flex items-center gap-2 flex-wrap justify-center">
+                  <Button type="button" variant="outline" render={<Link href="/dashboard/asins" />}>
+                    Go to ASINs
+                  </Button>
+                  <Button type="button" variant="outline" render={<Link href="/dashboard/settings" />}>
+                    Sync Amazon Listings
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm font-medium text-foreground">Select a product above and add your first keyword to start tracking Amazon search rank.</p>
+                <p className="text-xs text-muted-foreground max-w-xs">
+                  Tracked keywords will appear here even before the first rank check.
+                </p>
+              </>
+            )}
           </div>
         ) : (
         <div className="overflow-x-auto">
@@ -711,7 +1073,9 @@ export default function KeywordsPage() {
                 <th className="text-right px-4 py-3">Organic</th>
                 <th className="text-right px-4 py-3">Previous</th>
                 <th className="text-center px-4 py-3">Move</th>
-                <th className="text-center px-4 py-3">Found</th>
+                <th className="text-right px-4 py-3">Sponsored</th>
+                <th className="text-center px-4 py-3">Page</th>
+                <th className="text-center px-4 py-3">Status</th>
                 <th className="text-left px-4 py-3">Checked</th>
                 <th className="text-left px-4 py-3">Freshness</th>
                 <th className="text-center px-4 py-3">Detail</th>
@@ -761,6 +1125,14 @@ export default function KeywordsPage() {
                   </td>
                   <td className="px-4 py-3 text-center">
                     <MovementChip current={kw.organic_rank} prev={kw.prev_organic_rank} />
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {kw.sponsored_rank != null ? `#${kw.sponsored_rank}` : '—'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <span className="text-xs text-muted-foreground">{kw.page ?? '—'}</span>
                   </td>
                   <td className="px-4 py-3 text-center">
                     <div className="inline-flex flex-col items-center gap-1">

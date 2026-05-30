@@ -8,8 +8,9 @@ export const runtime = 'nodejs'
  * POST /api/asins/[asin]/keywords/track
  *
  * Saves a keyword to tracked_keywords linked to the specified tracked ASIN.
- * On conflict (same workspace+keyword+marketplace) it UPDATE-merges so the
- * tracked_asin_id is set/updated rather than left null.
+ * Duplicate prevention is scoped to workspace + tracked_asin_id + keyword + marketplace.
+ * If a matching workspace+keyword+marketplace exists for a different ASIN,
+ * this endpoint returns a conflict instead of silently re-linking it.
  *
  * Body: { keyword, marketplace?, search_volume?, cpc_estimate?, difficulty? }
  */
@@ -75,21 +76,53 @@ export async function POST(
     )
   }
 
-  // ── 4. Upsert — update tracked_asin_id on conflict ────────────────────────
+  const normalizedKeyword = body.keyword.trim()
+
+  // ── 4. Duplicate checks ───────────────────────────────────────────────────
+  const { data: existingSameAsin } = await supabase
+    .from('tracked_keywords')
+    .select('id')
+    .eq('workspace_id', member.workspace_id)
+    .eq('tracked_asin_id', tracked.id)
+    .eq('keyword', normalizedKeyword)
+    .eq('marketplace', marketplace)
+    .maybeSingle()
+
+  if (existingSameAsin?.id) {
+    return NextResponse.json({
+      keyword: { id: existingSameAsin.id },
+      isNew: false,
+      message: 'Keyword already tracked for this ASIN.',
+    })
+  }
+
+  const { data: existingOtherAsin } = await supabase
+    .from('tracked_keywords')
+    .select('id, tracked_asin_id')
+    .eq('workspace_id', member.workspace_id)
+    .eq('keyword', normalizedKeyword)
+    .eq('marketplace', marketplace)
+    .maybeSingle()
+
+  if (existingOtherAsin?.id && existingOtherAsin.tracked_asin_id !== tracked.id) {
+    return NextResponse.json(
+      { error: 'This keyword is already tracked in your workspace for another ASIN.' },
+      { status: 409 },
+    )
+  }
+
+  // ── 5. Insert ─────────────────────────────────────────────────────────────
   const { data, error } = await supabase
     .from('tracked_keywords')
-    .upsert(
-      {
-        workspace_id:    member.workspace_id,
-        tracked_asin_id: tracked.id,
-        keyword:         body.keyword.trim(),
-        marketplace,
-        search_volume:   body.search_volume ?? null,
-        cpc_estimate:    body.cpc_estimate  ?? null,
-        difficulty:      body.difficulty    ?? null,
-      },
-      { onConflict: 'workspace_id,keyword,marketplace', ignoreDuplicates: false },
-    )
+    .insert({
+      workspace_id:    member.workspace_id,
+      tracked_asin_id: tracked.id,
+      keyword:         normalizedKeyword,
+      marketplace,
+      search_volume:   body.search_volume ?? null,
+      cpc_estimate:    body.cpc_estimate  ?? null,
+      difficulty:      body.difficulty    ?? null,
+    })
     .select()
     .single()
 
@@ -108,7 +141,7 @@ export async function POST(
     )
   }
 
-  // ── 5. Increment keyword_count ─────────────────────────────────────────────
+  // ── 6. Increment keyword_count ─────────────────────────────────────────────
   try {
     const admin = createAdminClient()
     const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
