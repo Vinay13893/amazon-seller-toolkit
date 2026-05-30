@@ -231,30 +231,56 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
   // ── C. Pincode alerts ──────────────────────────────────────────────────────
   // Rule: >30% of pincodes unavailable → critical / warning
   //       any pincode unavailable → warning (if ≤30%)
+  //       checker/runtime failures are excluded from availability ratio
   {
     const { data: rows } = await admin
       .from('pincode_checks')
-      .select('tracked_asin_id, pincode, available, checked_at')
+      .select('tracked_asin_id, pincode, available, checked_at, delivery_promise')
       .eq('workspace_id', workspaceId)
       .in('tracked_asin_id', asinIds)
       .order('checked_at', { ascending: false })
 
     // Latest state per (asin, pincode)
     const seenKey  = new Set<string>()
-    const pinStats = new Map<string, { total: number; unavailable: number }>()
+    const pinStats = new Map<string, { total: number; unavailable: number; failed: number }>()
 
     for (const r of (rows ?? [])) {
       if (!r.tracked_asin_id) continue
       const k = `${r.tracked_asin_id}|${r.pincode}`
       if (seenKey.has(k)) continue
       seenKey.add(k)
-      const entry = pinStats.get(r.tracked_asin_id) ?? { total: 0, unavailable: 0 }
-      entry.total++
-      if (r.available === false) entry.unavailable++
+
+      const entry = pinStats.get(r.tracked_asin_id) ?? { total: 0, unavailable: 0, failed: 0 }
+      const isFailed = (r.delivery_promise ?? '').toLowerCase().startsWith('check failed:')
+      if (isFailed) {
+        entry.failed++
+      } else {
+        entry.total++
+        if (r.available === false) entry.unavailable++
+      }
       pinStats.set(r.tracked_asin_id, entry)
     }
 
     for (const [asinId, stats] of pinStats.entries()) {
+      if (stats.total === 0 && stats.failed > 0) {
+        const title = 'Pincode Checker Unavailable'
+        if (!isDupe(asinId, 'pincode', title)) {
+          markSeen(asinId, 'pincode', title)
+          toInsert.push({
+            workspace_id: workspaceId,
+            tracked_asin_id: asinId,
+            title,
+            description: `${label(asinId)}: latest pincode checks failed (${stats.failed} failed checks). Availability not calculated.`,
+            severity: 'warning',
+            module: 'pincode',
+            status: 'new',
+            recommended_action:
+              'Retry pincode checks and verify checker stability before acting on pincode availability.',
+          })
+        }
+        continue
+      }
+
       if (stats.total === 0 || stats.unavailable === 0) continue
       const pct = stats.unavailable / stats.total
 

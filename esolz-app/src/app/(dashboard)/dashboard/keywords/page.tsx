@@ -36,7 +36,7 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
-import { addTrackedAsin, getAsinLimit, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
+import { addTrackedAsin, getAsinLimit, getWorkspaceId, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
 import { sanitizeCheckerError } from '@/lib/checker-errors'
 import { Marketplace } from '@/types'
 import { toast } from 'sonner'
@@ -520,22 +520,11 @@ export default function KeywordsPage() {
   }, [])
 
   useEffect(() => {
-    const supabase = createClient()
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) return
-      supabase
-        .from('workspace_members')
-        .select('workspace_id')
-        .eq('user_id', user.id)
-        .limit(1)
-        .maybeSingle()
-        .then(({ data: member }) => {
-          if (member?.workspace_id) {
-            setWorkspaceId(member.workspace_id)
-            loadProductOptions(member.workspace_id)
-            loadTrackedKeywords(member.workspace_id)
-          }
-        })
+    getWorkspaceId().then(wid => {
+      if (!wid) return
+      setWorkspaceId(wid)
+      loadProductOptions(wid)
+      loadTrackedKeywords(wid)
     })
   }, [loadProductOptions, loadTrackedKeywords])
 

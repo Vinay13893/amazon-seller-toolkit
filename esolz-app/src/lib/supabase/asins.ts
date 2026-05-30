@@ -27,19 +27,62 @@ function availabilityFromScore(score: number | null) {
   return 'out_of_stock' as const
 }
 
+type WorkspaceMemberRow = {
+  workspace_id: string
+  created_at: string | null
+}
+
+type WorkspaceSubscriptionRow = {
+  workspace_id: string
+  status: string | null
+}
+
+async function resolveWorkspaceIdForUser(userId: string): Promise<string | null> {
+  const supabase = createClient()
+  const { data: members } = await supabase
+    .from('workspace_members')
+    .select('workspace_id, created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+
+  const memberRows = (members ?? []) as WorkspaceMemberRow[]
+  if (memberRows.length === 0) return null
+
+  const orderedWorkspaceIds = Array.from(new Set(memberRows.map(m => m.workspace_id).filter(Boolean)))
+  if (orderedWorkspaceIds.length === 1) return orderedWorkspaceIds[0]
+
+  const { data: subscriptions } = await supabase
+    .from('workspace_subscriptions')
+    .select('workspace_id, status')
+    .in('workspace_id', orderedWorkspaceIds)
+
+  const subByWorkspace = new Map<string, WorkspaceSubscriptionRow>()
+  ;((subscriptions ?? []) as WorkspaceSubscriptionRow[]).forEach(sub => {
+    if (sub.workspace_id) subByWorkspace.set(sub.workspace_id, sub)
+  })
+
+  const statusRank = (status: string | null): number => {
+    if (status === 'active' || status === 'trialing') return 3
+    if (status === 'past_due') return 2
+    if (status === 'canceled' || status === 'inactive') return 1
+    return 0
+  }
+
+  const sorted = [...orderedWorkspaceIds].sort((a, b) => {
+    const rankDiff = statusRank(subByWorkspace.get(b)?.status ?? null) - statusRank(subByWorkspace.get(a)?.status ?? null)
+    if (rankDiff !== 0) return rankDiff
+    return orderedWorkspaceIds.indexOf(a) - orderedWorkspaceIds.indexOf(b)
+  })
+
+  return sorted[0] ?? null
+}
+
 export async function getWorkspaceId(): Promise<string | null> {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
 
-  const { data } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .single()
-
-  return data?.workspace_id ?? null
+  return resolveWorkspaceIdForUser(user.id)
 }
 
 export async function getAsinLimit(workspaceId: string): Promise<number> {
@@ -246,15 +289,8 @@ export async function getPlanUsage(): Promise<PlanUsage | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
 
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .maybeSingle()
-
-  if (!member?.workspace_id) return null
-  const workspaceId = member.workspace_id
+  const workspaceId = await resolveWorkspaceIdForUser(user.id)
+  if (!workspaceId) return null
 
   const [subResult, countResult] = await Promise.all([
     supabase

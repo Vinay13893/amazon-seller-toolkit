@@ -59,7 +59,15 @@ function deriveCity(row: DbPincodeCheck): string {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: AvailabilityStatus }) {
+function StatusBadge({ status }: { status: AvailabilityStatus | null }) {
+  if (status === null) {
+    return (
+      <span className="inline-flex items-center text-[10px] font-semibold rounded-full px-2 py-0.5 border bg-muted text-muted-foreground border-border">
+        Checker unavailable
+      </span>
+    )
+  }
+
   const map = {
     healthy:  { label: 'Healthy',  cls: 'bg-green-500/10 text-green-400 border-green-500/20' },
     warning:  { label: 'Warning',  cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' },
@@ -115,9 +123,10 @@ export default function PincodePage() {
   const failedChecks  = useMemo(() => results.filter(isFailedCheck), [results])
   const available     = useMemo(() => results.filter(r => r.available && !isFailedCheck(r)),  [results])
   const unavailable   = useMemo(() => results.filter(r => !r.available && !isFailedCheck(r)), [results])
+  const successfulChecks = useMemo(() => results.filter(r => !isFailedCheck(r)), [results])
   const score         = useMemo(
-    () => results.length ? Math.round((available.length / results.length) * 100) : 0,
-    [results, available],
+    () => successfulChecks.length ? Math.round((available.length / successfulChecks.length) * 100) : null,
+    [successfulChecks, available],
   )
   const latestChecked = useMemo(
     () => results.length ? results[0].checked_at : null,
@@ -131,15 +140,17 @@ export default function PincodePage() {
       map.get(city)!.push(r)
     })
     return Array.from(map.entries()).map(([city, rows]) => {
-      const avail      = rows.filter(r => r.available)
-      const pct        = Math.round((avail.length / rows.length) * 100)
-      const status: AvailabilityStatus = pct >= 80 ? 'healthy' : pct >= 50 ? 'warning' : 'critical'
-      const sellers    = rows.map(r => r.buy_box_seller).filter(Boolean) as string[]
+      const successful = rows.filter(r => !isFailedCheck(r))
+      const failed     = rows.filter(isFailedCheck)
+      const avail      = successful.filter(r => r.available)
+      const pct        = successful.length ? Math.round((avail.length / successful.length) * 100) : null
+      const status: AvailabilityStatus | null = pct === null ? null : (pct >= 80 ? 'healthy' : pct >= 50 ? 'warning' : 'critical')
+      const sellers    = successful.map(r => r.buy_box_seller).filter(Boolean) as string[]
       const freq       = sellers.reduce<Record<string, number>>((acc, s) => { acc[s] = (acc[s] ?? 0) + 1; return acc }, {})
       const primarySeller = sellers.length
         ? Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0]
         : null
-      return { city, rows, avail, pct, status, primarySeller }
+      return { city, rows, successful, failed, avail, pct, status, primarySeller }
     })
   }, [results])
 
@@ -415,12 +426,12 @@ export default function PincodePage() {
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         <KpiCard label="Total Checked"      value={String(results.length)}    sub="pincode checks"                                                                icon={MapPin} />
-        <KpiCard label="Available"          value={String(available.length)}  sub={results.length ? `of ${results.length} pincodes` : 'no data yet'}             icon={CheckCircle2} />
+        <KpiCard label="Available"          value={String(available.length)}  sub={successfulChecks.length ? `of ${successfulChecks.length} successful checks` : 'checker unavailable'}             icon={CheckCircle2} />
         <KpiCard label="Unavailable"        value={String(unavailable.length)} sub="pincodes unavailable"
           trend={unavailable.length > 0 ? { value: unavailable.length, label: 'need attention' } : undefined} icon={XCircle} />
         <KpiCard label="Failed"             value={String(failedChecks.length)} sub="checks failed" icon={ShieldAlert} />
-        <KpiCard label="Avg Availability"   value={results.length ? `${score}%` : '—'}
-          sub={results.length ? scoreToStatus(score) : 'no checks yet'}                                                                                          icon={BarChart2} />
+        <KpiCard label="Avg Availability"   value={results.length ? (score === null ? 'Not calculated' : `${score}%`) : '—'}
+          sub={results.length ? (score === null ? 'checker unavailable' : scoreToStatus(score)) : 'no checks yet'}                                               icon={BarChart2} />
         <KpiCard label="Last Checked"       value={latestChecked ? timeAgo(latestChecked) : '—'}
           sub={latestChecked ? 'latest check' : 'no checks yet'}                                                                                                 icon={Clock} />
         <KpiCard label="Checks This Month"  value={String(pincodeChecksUsed)} sub="used this month"                                                              icon={Truck} />
@@ -443,6 +454,7 @@ export default function PincodePage() {
                 {cityBreakdown.map(c => (
                   <div key={c.city} className={cn(
                     'rounded-xl border bg-card p-4 flex flex-col gap-3',
+                    c.status === null       && 'border-border',
                     c.status === 'healthy'  && 'border-border',
                     c.status === 'warning'  && 'border-yellow-500/30',
                     c.status === 'critical' && 'border-red-500/30',
@@ -459,18 +471,18 @@ export default function PincodePage() {
                         <span className="text-[10px] text-muted-foreground">Availability</span>
                         <span className={cn(
                           'text-xs font-bold',
-                          c.pct >= 80 ? 'text-green-400' : c.pct >= 50 ? 'text-yellow-400' : 'text-red-400',
+                          c.pct === null ? 'text-muted-foreground' : (c.pct >= 80 ? 'text-green-400' : c.pct >= 50 ? 'text-yellow-400' : 'text-red-400'),
                         )}>
-                          {c.pct}%
+                          {c.pct === null ? 'Not calculated' : `${c.pct}%`}
                         </span>
                       </div>
                       <div className="h-1.5 rounded-full bg-muted overflow-hidden">
                         <div
                           className={cn(
                             'h-full rounded-full transition-all',
-                            c.pct >= 80 ? 'bg-green-500' : c.pct >= 50 ? 'bg-yellow-500' : 'bg-red-500',
+                            c.pct === null ? 'bg-muted-foreground/30' : (c.pct >= 80 ? 'bg-green-500' : c.pct >= 50 ? 'bg-yellow-500' : 'bg-red-500'),
                           )}
-                          style={{ width: `${c.pct}%` }}
+                          style={{ width: `${c.pct ?? 0}%` }}
                         />
                       </div>
                     </div>
@@ -487,7 +499,9 @@ export default function PincodePage() {
                     </div>
                     <div className="flex items-center gap-2 pt-1 border-t border-border/50">
                       <span className="text-[10px] text-muted-foreground">
-                        {c.avail.length}/{c.rows.length} pincodes available
+                        {c.successful.length === 0
+                          ? `${c.failed.length} checker failures`
+                          : `${c.avail.length}/${c.successful.length} pincodes available`}
                       </span>
                     </div>
                   </div>
