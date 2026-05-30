@@ -49,6 +49,9 @@ function LoginForm() {
       </div>
 
       <h1 className="text-xl font-bold mb-6">Sign in to your account</h1>
+      <p className="text-xs text-muted-foreground -mt-4 mb-5">
+        Continue to your dashboard to add your first ASIN and run your first checks.
+      </p>
 
       <form onSubmit={handleLogin} className="space-y-4">
         <div className="space-y-2">

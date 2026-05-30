@@ -389,7 +389,7 @@ export default function ReportsPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Reports Center</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Generate client-ready reports for Amazon performance, rankings, availability and Buy Box health.
+            Generate exportable reports for Amazon performance, rankings, availability and Buy Box health. Next: pick a template and click Generate. Data source: tracked ASIN snapshots and checks.
           </p>
         </div>
       </div>

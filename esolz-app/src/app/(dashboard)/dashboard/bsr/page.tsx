@@ -14,6 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 import { createClient } from '@/lib/supabase/client'
 import { getWorkspaceId, getTrackedAsins } from '@/lib/supabase/asins'
 import { timeAgo } from '@/lib/format'
@@ -304,7 +305,7 @@ export default function BsrTrackerPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">BSR Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Monitor Best Seller Rank movement, category rank changes and product momentum.
+            Monitor Best Seller Rank movement and category performance for your tracked ASINs. Next: refresh ASIN data to keep ranks current. Data source: tracked_asins and asin_snapshots.
           </p>
         </div>
         <Button render={<Link href="/dashboard/asins" />} className="gap-2 shrink-0">
@@ -621,6 +622,9 @@ export default function BsrTrackerPage() {
                 <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">
                   Last Checked
                 </th>
+                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">
+                  Freshness
+                </th>
                 <th className="text-right text-xs text-muted-foreground font-medium px-5 py-3">
                   Action
                 </th>
@@ -699,6 +703,9 @@ export default function BsrTrackerPage() {
                         <Clock className="size-3" />
                         {timeAgo(p.captured_at)}
                       </span>
+                    </td>
+                    <td className="px-4 py-3.5 hidden xl:table-cell">
+                      <DataFreshnessBadge checkedAt={p.captured_at} />
                     </td>
                     <td className="px-5 py-3.5 text-right">
                       <Link

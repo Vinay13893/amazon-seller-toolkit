@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import {
@@ -429,7 +430,7 @@ export default function KeywordsPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Keyword Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Research Amazon keywords, monitor ranking movement and track page-one visibility.
+            Research keywords and monitor ranking movement for tracked ASINs. Next: add a seed keyword and track it, then refresh ranks. Data source: tracked_keywords and keyword_rank_snapshots.
           </p>
         </div>
         <Button
@@ -643,6 +644,19 @@ export default function KeywordsPage() {
             )}
           </Button>
         </div>
+        {trackedData.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
+            <Tag className="size-8 text-muted-foreground/30" />
+            <p className="text-sm font-medium text-foreground">No tracked keywords yet</p>
+            <p className="text-xs text-muted-foreground max-w-xs">
+              No ranking data appears until you track at least one keyword for an ASIN.
+            </p>
+            <Button type="button" variant="outline" onClick={() => researchRef.current?.scrollIntoView({ behavior: 'smooth' })}>
+              <Plus className="size-4" />
+              Add Your First Keyword
+            </Button>
+          </div>
+        ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -656,6 +670,7 @@ export default function KeywordsPage() {
                 <th className="text-center px-4 py-3">Page</th>
                 <th className="text-right px-4 py-3">Volume</th>
                 <th className="text-left px-4 py-3">Checked</th>
+                <th className="text-left px-4 py-3">Freshness</th>
                 <th className="text-center px-4 py-3">Detail</th>
               </tr>
             </thead>
@@ -722,6 +737,9 @@ export default function KeywordsPage() {
                       {timeAgo(kw.last_checked)}
                     </span>
                   </td>
+                  <td className="px-4 py-3">
+                    <DataFreshnessBadge checkedAt={kw.last_checked} />
+                  </td>
                   <td className="px-4 py-3 text-center">
                     <Link
                       href={`/dashboard/asins/${kw.asin}`}
@@ -736,6 +754,7 @@ export default function KeywordsPage() {
             </tbody>
           </table>
         </div>
+        )}
         <p className="px-6 py-3 text-[10px] text-muted-foreground border-t border-border">
           Click a row to view its rank trend chart below
         </p>
@@ -743,6 +762,16 @@ export default function KeywordsPage() {
 
       {/* ── 5. Rank trend chart ───────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-6">
+        {trackedData.length === 0 ? (
+          <div className="h-[240px] flex flex-col items-center justify-center gap-2 text-center">
+            <BarChart2 className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No rank trend yet</p>
+            <p className="text-xs text-muted-foreground/60 max-w-xs">
+              Track at least one keyword and run Refresh Ranks to generate this chart.
+            </p>
+          </div>
+        ) : (
+        <>
         <div className="flex items-start justify-between gap-4 mb-5 flex-wrap">
           <div>
             <h2 className="text-sm font-semibold text-foreground">Rank Trend</h2>
@@ -825,6 +854,8 @@ export default function KeywordsPage() {
           )
         ) : (
           <div className="h-[240px] bg-border/20 rounded-lg animate-pulse" />
+        )}
+        </>
         )}
       </div>
 

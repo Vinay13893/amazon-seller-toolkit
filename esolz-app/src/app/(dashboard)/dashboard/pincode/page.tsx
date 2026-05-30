@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 import {
   CITY_PRESETS,
   parsePincodes,
@@ -290,7 +291,7 @@ export default function PincodePage() {
         <div>
           <h1 className="text-xl font-bold text-foreground">Pincode Availability</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Check product availability across Indian pincodes
+            Check whether your products are deliverable across important Indian pincodes. Next: select city presets and run Check Availability. Data source: pincode_checks and live checker runs.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={handleRunNew} className="gap-2">
@@ -509,6 +510,7 @@ export default function PincodePage() {
                     <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden lg:table-cell">Buy Box Seller</th>
                     <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3 hidden md:table-cell">FBA/FBM</th>
                     <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">Checked</th>
+                    <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">Freshness</th>
                     <th className="text-right text-xs text-muted-foreground font-medium px-5 py-3">Action</th>
                   </tr>
                 </thead>
@@ -548,6 +550,9 @@ export default function PincodePage() {
                           <Clock className="size-3" />
                           {timeAgo(r.checked_at)}
                         </span>
+                      </td>
+                      <td className="px-4 py-3 hidden xl:table-cell">
+                        <DataFreshnessBadge checkedAt={r.checked_at} />
                       </td>
                       <td className="px-5 py-3 text-right">
                         <Link

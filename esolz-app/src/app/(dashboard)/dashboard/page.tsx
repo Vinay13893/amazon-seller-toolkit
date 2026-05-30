@@ -12,7 +12,7 @@ import { ProductSnapshot, Insight } from '@/types'
 import {
   Package, TrendingUp, Star, Hash, Target,
   ShieldCheck, Activity, MapPin, RefreshCw, Plus, Loader2,
-  CheckCircle2, Circle,
+  CheckCircle2, Circle, ClipboardList,
 } from 'lucide-react'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -39,10 +39,20 @@ interface DashboardStats {
   productRefreshRuns: number
   buyboxChecks:      number
   pincodeChecks:     number
+  keywordRefreshRuns: number
   amazonConnected:   boolean
   amazonListingsCount: number | null
+  actionPlan:        ActionPlanItem[]
   recentActivity:    Insight[]
   lastChecked:       string | null
+}
+
+interface ActionPlanItem {
+  id: string
+  title: string
+  description: string
+  href: string
+  ctaLabel: string
 }
 
 // ─── Data loader ─────────────────────────────────────────────────────────────
@@ -80,7 +90,14 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
   // MVP onboarding progress stats
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const anySupabase = supabase as any
-  const [asinRefreshCountRes, buyboxCountRes, pincodeCountRes, connectionRes, listingCountRes] = await Promise.all([
+  const [
+    asinRefreshCountRes,
+    buyboxCountRes,
+    pincodeCountRes,
+    connectionRes,
+    listingCountRes,
+    keywordSnapCountRes,
+  ] = await Promise.all([
     anySupabase
       .from('asin_snapshots')
       .select('id', { count: 'exact', head: true })
@@ -102,11 +119,16 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
       .from('amazon_listing_items')
       .select('id', { count: 'exact', head: true })
       .eq('workspace_id', workspaceId),
+    anySupabase
+      .from('keyword_rank_snapshots')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId),
   ])
 
   const connectionStatus = connectionRes?.data?.status as string | undefined
   const amazonConnected = connectionStatus === 'active' || connectionStatus === 'expired'
   const amazonListingsCount = listingCountRes?.error ? null : ((listingCountRes?.count as number | null) ?? 0)
+  const keywordRefreshRuns = keywordSnapCountRes?.count ?? 0
 
   const empty: DashboardStats = {
     asins: [], asinLimit, planName,
@@ -114,8 +136,10 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     productRefreshRuns: asinRefreshCountRes.count ?? 0,
     buyboxChecks: buyboxCountRes.count ?? 0,
     pincodeChecks: pincodeCountRes.count ?? 0,
+    keywordRefreshRuns,
     amazonConnected,
     amazonListingsCount,
+    actionPlan: [],
     pincodeChecksUsed,
     recentActivity: [], lastChecked: null,
   }
@@ -159,6 +183,132 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     }
   }
   const buyBoxWon = [...latestBbStatus.values()].filter(s => s === 'won').length
+
+  // 6. Today action plan signals
+  const actionPlan: ActionPlanItem[] = []
+  const now = Date.now()
+  const oneDayMs = 24 * 60 * 60 * 1000
+
+  const neverRefreshedAsins = asins.filter(a => !a.captured_at)
+  if (neverRefreshedAsins.length > 0) {
+    actionPlan.push({
+      id: 'never-refreshed',
+      title: `${neverRefreshedAsins.length} ASIN${neverRefreshedAsins.length === 1 ? '' : 's'} never refreshed`,
+      description: 'Run your first product refresh to populate BSR and pricing data.',
+      href: '/dashboard/asins',
+      ctaLabel: 'Refresh ASINs',
+    })
+  }
+
+  const staleAsins = asins.filter(a => a.captured_at && (now - new Date(a.captured_at).getTime()) > oneDayMs)
+  if (staleAsins.length > 0) {
+    actionPlan.push({
+      id: 'stale-asins',
+      title: `${staleAsins.length} ASIN${staleAsins.length === 1 ? '' : 's'} stale (>24h)`,
+      description: 'Update stale ASINs so decisions are based on current marketplace data.',
+      href: '/dashboard/asins',
+      ctaLabel: 'Update Stale Data',
+    })
+  }
+
+  const { data: buyboxRows } = await supabase
+    .from('buybox_snapshots')
+    .select('tracked_asin_id, buy_box_status, checked_at')
+    .in('tracked_asin_id', asinIds)
+    .order('checked_at', { ascending: false })
+    .limit(500)
+
+  const latestBuyboxStatusByAsin = new Map<string, string>()
+  for (const row of buyboxRows ?? []) {
+    const asinId = row.tracked_asin_id as string
+    if (!latestBuyboxStatusByAsin.has(asinId)) {
+      latestBuyboxStatusByAsin.set(asinId, (row.buy_box_status as string) ?? '')
+    }
+  }
+  const buyboxLostCount = [...latestBuyboxStatusByAsin.values()].filter(v => v === 'lost').length
+  if (buyboxLostCount > 0) {
+    actionPlan.push({
+      id: 'buybox-lost',
+      title: `${buyboxLostCount} ASIN${buyboxLostCount === 1 ? '' : 's'} lost Buy Box`,
+      description: 'Review pricing and fulfillment to recover Buy Box ownership.',
+      href: '/dashboard/buybox',
+      ctaLabel: 'Review Buy Box',
+    })
+  }
+
+  const { data: pincodeRows } = await supabase
+    .from('pincode_checks')
+    .select('tracked_asin_id, available, checked_at')
+    .in('tracked_asin_id', asinIds)
+    .order('checked_at', { ascending: false })
+    .limit(800)
+
+  const pincodeByAsin = new Map<string, { available: boolean }[]>()
+  for (const row of pincodeRows ?? []) {
+    const asinId = row.tracked_asin_id as string
+    const list = pincodeByAsin.get(asinId) ?? []
+    if (list.length < 10) {
+      list.push({ available: !!row.available })
+      pincodeByAsin.set(asinId, list)
+    }
+  }
+  const lowAvailabilityCount = [...pincodeByAsin.values()].filter(rows => {
+    if (rows.length < 3) return false
+    const pct = Math.round((rows.filter(r => r.available).length / rows.length) * 100)
+    return pct < 50
+  }).length
+  if (lowAvailabilityCount > 0) {
+    actionPlan.push({
+      id: 'low-pincode',
+      title: `${lowAvailabilityCount} ASIN${lowAvailabilityCount === 1 ? '' : 's'} low pincode availability`,
+      description: 'These products are unavailable in many checked pincodes.',
+      href: '/dashboard/pincode',
+      ctaLabel: 'Check Pincodes',
+    })
+  }
+
+  const { data: trackedKeywords } = await supabase
+    .from('tracked_keywords')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+
+  const trackedKeywordIds = (trackedKeywords ?? []).map(k => k.id as string)
+  let keywordIssueCount = 0
+  if (trackedKeywordIds.length > 0) {
+    const { data: keywordSnaps } = await supabase
+      .from('keyword_rank_snapshots')
+      .select('tracked_keyword_id, organic_rank, page_status, checked_at')
+      .in('tracked_keyword_id', trackedKeywordIds)
+      .order('checked_at', { ascending: false })
+      .limit(1200)
+
+    const latestByKeyword = new Map<string, { organic_rank: number | null; page_status: string | null }>()
+    for (const row of keywordSnaps ?? []) {
+      const kwId = row.tracked_keyword_id as string
+      if (!latestByKeyword.has(kwId)) {
+        latestByKeyword.set(kwId, {
+          organic_rank: (row.organic_rank as number | null) ?? null,
+          page_status: (row.page_status as string | null) ?? null,
+        })
+      }
+    }
+
+    keywordIssueCount = trackedKeywordIds.filter(kwId => {
+      const latest = latestByKeyword.get(kwId)
+      if (!latest) return true
+      return latest.page_status === 'not_ranking' || latest.organic_rank === null
+    }).length
+  }
+
+  if (keywordIssueCount > 0) {
+    actionPlan.push({
+      id: 'keyword-issues',
+      title: `${keywordIssueCount} keyword${keywordIssueCount === 1 ? '' : 's'} not ranking or never checked`,
+      description: 'Refresh keyword ranks and optimize low-visibility terms.',
+      href: '/dashboard/keywords',
+      ctaLabel: 'Fix Keywords',
+    })
+  }
 
   // 7. Recent activity — latest events across all snapshot tables (run in parallel)
   const [bsrEvts, bbEvts, pinEvts, kwRankEvts, addedEvts] = await Promise.all([
@@ -262,8 +412,10 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     productRefreshRuns: asinRefreshCountRes.count ?? 0,
     buyboxChecks: buyboxCountRes.count ?? 0,
     pincodeChecks: pincodeCountRes.count ?? 0,
+    keywordRefreshRuns,
     amazonConnected,
     amazonListingsCount,
+    actionPlan: actionPlan.slice(0, 5),
     recentActivity, lastChecked,
   }
 }
@@ -342,6 +494,12 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6 max-w-7xl">
 
+      <div className="rounded-xl border border-border bg-card px-5 py-4">
+        <p className="text-sm text-muted-foreground">
+          See your Amazon performance at a glance, then follow the checklist and action plan to get your first wins fast. Data source: tracked_asins, snapshots, alerts and Amazon connection tables.
+        </p>
+      </div>
+
       {/* KPI Row 1 — ASIN & performance */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
@@ -399,6 +557,8 @@ export default function DashboardPage() {
       </div>
 
       <OnboardingChecklist stats={stats} asinsCount={asins.length} />
+
+      <TodayActionPlan items={stats?.actionPlan ?? []} />
 
       {/* ASIN Performance table + Recent Activity feed */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -507,6 +667,43 @@ export default function DashboardPage() {
   )
 }
 
+function TodayActionPlan({ items }: { items: ActionPlanItem[] }) {
+  return (
+    <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="px-5 py-4 border-b border-border flex items-center gap-2">
+        <ClipboardList className="w-4 h-4 text-primary" />
+        <div>
+          <h2 className="font-bold">Today&apos;s Action Plan</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Top actions from current data signals (max 5).</p>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="px-5 py-8 text-center">
+          <p className="text-sm font-medium text-foreground">No urgent actions right now</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Great start. Keep refreshing ASIN, Buy Box, pincode, and keyword data to maintain visibility.
+          </p>
+        </div>
+      ) : (
+        <div className="px-5 py-4 flex flex-col gap-2.5">
+          {items.map(item => (
+            <div key={item.id} className="rounded-lg border border-border px-3 py-2.5 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-foreground">{item.title}</p>
+                <p className="text-xs text-muted-foreground mt-0.5">{item.description}</p>
+              </div>
+              <Button size="sm" variant="outline" render={<Link href={item.href} />}>
+                {item.ctaLabel}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function OnboardingChecklist({ stats, asinsCount }: { stats: DashboardStats | null; asinsCount: number }) {
   const listingsCount = stats?.amazonListingsCount
 
@@ -521,27 +718,38 @@ function OnboardingChecklist({ stats, asinsCount }: { stats: DashboardStats | nu
       <div className="px-5 py-4 grid grid-cols-1 md:grid-cols-2 gap-2.5">
         <ChecklistItem
           done={asinsCount > 0}
-          label="Add your first ASIN"
-          hint={`${asinsCount} tracked`}
+          label="Add or import your first ASIN"
+          hint={`${asinsCount} tracked${(listingsCount ?? 0) > 0 ? ` · ${listingsCount} listing import available` : ''}`}
           href="/dashboard/asins"
+          ctaLabel="Go to ASINs"
         />
         <ChecklistItem
           done={(stats?.productRefreshRuns ?? 0) > 0}
           label="Run product refresh"
           hint={`${stats?.productRefreshRuns ?? 0} refresh snapshot${(stats?.productRefreshRuns ?? 0) === 1 ? '' : 's'}`}
           href="/dashboard/asins"
+          ctaLabel="Refresh Products"
         />
         <ChecklistItem
           done={(stats?.buyboxChecks ?? 0) > 0}
-          label="Check Buy Box"
+          label="Run Buy Box check"
           hint={`${stats?.buyboxChecks ?? 0} Buy Box check${(stats?.buyboxChecks ?? 0) === 1 ? '' : 's'}`}
           href="/dashboard/buybox"
+          ctaLabel="Check Buy Box"
         />
         <ChecklistItem
           done={(stats?.pincodeChecks ?? 0) > 0}
-          label="Check pincode availability"
+          label="Run Pincode check"
           hint={`${stats?.pincodeChecks ?? 0} pincode check${(stats?.pincodeChecks ?? 0) === 1 ? '' : 's'}`}
           href="/dashboard/pincode"
+          ctaLabel="Check Pincodes"
+        />
+        <ChecklistItem
+          done={(stats?.keywordCount ?? 0) > 0 && (stats?.keywordRefreshRuns ?? 0) > 0}
+          label="Add/refresh keyword"
+          hint={`${stats?.keywordCount ?? 0} tracked · ${stats?.keywordRefreshRuns ?? 0} rank snapshot${(stats?.keywordRefreshRuns ?? 0) === 1 ? '' : 's'}`}
+          href="/dashboard/keywords"
+          ctaLabel="Track Keywords"
         />
         <ChecklistItem
           done={!!stats?.amazonConnected}
@@ -549,6 +757,7 @@ function OnboardingChecklist({ stats, asinsCount }: { stats: DashboardStats | nu
           label="Connect Amazon account"
           hint={stats?.amazonConnected ? 'Connected' : 'Not connected'}
           href="/dashboard/settings"
+          ctaLabel="Connect Amazon"
         />
         <ChecklistItem
           done={(listingsCount ?? 0) > 0}
@@ -560,6 +769,7 @@ function OnboardingChecklist({ stats, asinsCount }: { stats: DashboardStats | nu
               : `${listingsCount} listing${listingsCount === 1 ? '' : 's'} synced`
           }
           href="/dashboard/settings"
+          ctaLabel="Sync Listings"
         />
       </div>
     </div>
@@ -571,32 +781,40 @@ function ChecklistItem({
   label,
   hint,
   href,
+  ctaLabel,
   optional = false,
 }: {
   done: boolean
   label: string
   hint: string
   href: string
+  ctaLabel: string
   optional?: boolean
 }) {
   return (
-    <Link
-      href={href}
-      className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 hover:bg-muted/20 transition-colors"
-    >
-      {done ? (
-        <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
-      ) : (
-        <Circle className="w-4 h-4 text-muted-foreground mt-0.5" />
-      )}
-      <div>
-        <p className="text-sm font-medium text-foreground">
-          {label}
-          {optional && <span className="ml-1 text-xs text-muted-foreground font-normal">(Optional)</span>}
-        </p>
-        <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>
+    <div className="flex items-start justify-between gap-3 rounded-lg border border-border px-3 py-2.5">
+      <div className="flex items-start gap-2.5">
+        {done ? (
+          <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+        ) : (
+          <Circle className="w-4 h-4 text-muted-foreground mt-0.5" />
+        )}
+        <div>
+          <p className="text-sm font-medium text-foreground">
+            {label}
+            {optional && <span className="ml-1 text-xs text-muted-foreground font-normal">(Optional)</span>}
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>
+        </div>
       </div>
-    </Link>
+      {done ? (
+        <span className="text-[11px] text-green-600 font-medium mt-0.5">Done</span>
+      ) : (
+        <Button size="sm" variant="outline" render={<Link href={href} />}>
+          {ctaLabel}
+        </Button>
+      )}
+    </div>
   )
 }
 

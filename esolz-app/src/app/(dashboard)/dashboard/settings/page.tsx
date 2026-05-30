@@ -300,7 +300,7 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-lg font-semibold text-foreground">Settings</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Manage your profile, workspace, and app preferences.
+          Manage your profile, workspace, Amazon connection and alert preferences. Next: connect Amazon and run a listings sync if not connected yet. Data source: profile/workspace tables and Amazon connection status.
         </p>
       </div>
 

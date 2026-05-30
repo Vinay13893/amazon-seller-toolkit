@@ -536,7 +536,7 @@ export default function AlertsPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Alerts Center</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Monitor critical changes across your Amazon products, rankings, Buy Box, availability and keywords.
+            Review critical changes across products, rankings, Buy Box and availability. Next: resolve highest-severity unresolved alerts first. Data source: workspace alerts generated from snapshot checks.
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">

@@ -15,6 +15,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 // ─── Local types (no longer from mock-asin-detail) ──────────────────────────
 interface BuyBoxPoint {
   date: string
@@ -730,6 +731,9 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <h1 className="text-xl font-bold text-foreground leading-snug mb-1">
                 {product.label}
               </h1>
+              <p className="text-xs text-muted-foreground mb-1.5">
+                Review this ASIN's latest BSR, Buy Box, pincode and keyword performance. Next: run Refresh Data if this is your first check. Data source: tracked_asins, snapshot tables and checker APIs.
+              </p>
               {/* Category */}
               {product.category && (
                 <p className="text-sm text-muted-foreground">{product.category}</p>
@@ -741,6 +745,9 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <div>
               <p className="text-[10px] uppercase tracking-widest text-muted-foreground font-semibold mb-0.5">Last checked</p>
               <p className="text-sm font-medium text-foreground">{timeAgo(product.captured_at)}</p>
+              <div className="mt-1">
+                <DataFreshnessBadge checkedAt={product.captured_at} />
+              </div>
               {snapshots.length === 0 && (
                 <p className="text-[10px] text-muted-foreground mt-1">No snapshots yet</p>
               )}
@@ -964,9 +971,10 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <TrendingUp className="size-4 text-primary shrink-0" />
             <div>
               <h2 className="font-semibold text-foreground">Keyword Rank Snapshot</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Organic search position on Amazon India</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Organic search position on Amazon India. Next: add a keyword and click Refresh Ranks. Data source: tracked_keywords + keyword_rank_snapshots.</p>
             </div>
           </div>
+          <DataFreshnessBadge checkedAt={keywords[0]?.checked_at ?? null} />
           <Button
             variant="outline"
             size="sm"
@@ -1012,9 +1020,10 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
           <MapPin className="size-4 text-primary shrink-0" />
           <div>
             <h2 className="font-semibold text-foreground">Pincode Availability</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Check product availability and delivery options</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Check delivery availability for important pincodes. Next: run a pincode check above. Data source: pincode_checks and live checker response.</p>
           </div>
         </div>
+          <DataFreshnessBadge checkedAt={latestCheck?.checked_at ?? null} />
 
         {/* Input + Check button */}
         <div className="flex gap-2 mb-6">
@@ -1152,9 +1161,10 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <ShieldCheck className="size-4 text-primary shrink-0" />
             <div>
               <h2 className="font-semibold text-foreground">Buy Box Checker</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">Live offer listing — who currently owns the Buy Box</p>
+              <p className="text-xs text-muted-foreground mt-0.5">See who owns the Buy Box right now. Next: click Run Check and review recent ownership. Data source: buybox_snapshots and live checker response.</p>
             </div>
           </div>
+          <DataFreshnessBadge checkedAt={latestBuyBox?.checked_at ?? null} />
           <Button
             onClick={handleCheckBuyBox}
             disabled={buyboxChecking}

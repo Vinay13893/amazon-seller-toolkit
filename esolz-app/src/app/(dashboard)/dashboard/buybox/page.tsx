@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -444,7 +445,7 @@ export default function BuyboxPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Buy Box Monitor</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Track Buy Box ownership, seller changes, price differences and competition across your tracked ASINs.
+            Track Buy Box ownership, pricing gaps and competing sellers across tracked ASINs. Next: run Buy Box Check and review lost listings. Data source: buybox_snapshots and checker runs.
           </p>
         </div>
         <Button
@@ -626,6 +627,7 @@ export default function BuyboxPage() {
                   <th className="text-right px-4 py-3">Gap</th>
                   <th className="text-left px-4 py-3">Fulfillment</th>
                   <th className="text-left px-4 py-3">Checked</th>
+                  <th className="text-left px-4 py-3">Freshness</th>
                   <th className="text-center px-4 py-3">Action</th>
                 </tr>
               </thead>
@@ -684,6 +686,9 @@ export default function BuyboxPage() {
                       <span className="text-xs text-muted-foreground">
                         {entry.checked_at ? timeAgo(entry.checked_at) : 'Never'}
                       </span>
+                    </td>
+                    <td className="px-4 py-4">
+                      <DataFreshnessBadge checkedAt={entry.checked_at} />
                     </td>
                     <td className="px-4 py-4 text-center">
                       <Link

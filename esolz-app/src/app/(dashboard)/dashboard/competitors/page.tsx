@@ -1,26 +1,21 @@
 'use client'
 
-import { useState } from 'react'
+import Link from 'next/link'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import {
   Users,
-  Plus,
   TrendingUp,
   Star,
   ShoppingCart,
   Tag,
   Key,
-  RefreshCw,
   Search,
 } from 'lucide-react'
 
 // ─── Page ──────────────────────────────────────────────────────────────────────────────
 
 export default function CompetitorsPage() {
-  const [showAddForm, setShowAddForm] = useState(false)
-
   return (
     <div className="space-y-6">
 
@@ -29,47 +24,13 @@ export default function CompetitorsPage() {
         <div>
           <h1 className="text-2xl font-black text-foreground">Competitor Tracker</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Monitor competing ASINs — price, BSR, reviews, Buy Box &amp; risk signals.
+            Competitor Intelligence is coming soon. Start by tracking your own ASINs first.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button type="button" variant="outline" size="sm" disabled>
-            <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-            Refresh Data
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            onClick={() => setShowAddForm(v => !v)}
-          >
-            <Plus className="w-3.5 h-3.5 mr-1.5" />
-            Add Competitor ASIN
-          </Button>
-        </div>
+        <Button type="button" size="sm" render={<Link href="/dashboard/asins" />}>
+          Track My ASINs
+        </Button>
       </div>
-
-      {/* Add Competitor form (collapsible) */}
-      {showAddForm && (
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="text-sm font-semibold text-foreground mb-3">Add Competitor ASIN</h3>
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Input
-              placeholder="Enter ASIN — e.g. B07XK3PJMZ"
-              className="flex-1 font-mono text-sm"
-            />
-            <Button type="button" size="sm" disabled>
-              <Plus className="w-3.5 h-3.5 mr-1.5" />
-              Track ASIN
-            </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={() => setShowAddForm(false)}>
-              Cancel
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground mt-2">
-            Real ASIN tracking requires backend integration — coming soon.
-          </p>
-        </div>
-      )}
 
       {/* KPI Summary Cards — all zero until data is connected */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
@@ -88,19 +49,14 @@ export default function CompetitorsPage() {
         </div>
         <div className="space-y-1.5 max-w-sm">
           <h2 className="text-sm font-semibold text-foreground">
-            Competitor Intelligence is not connected yet.
+            Competitor Intelligence is coming soon.
           </h2>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            Add competitor ASINs and connect Amazon / SP-API data to begin monitoring.
+            Start by tracking your own ASINs first.
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => setShowAddForm(true)}
-        >
-          <Plus className="w-3.5 h-3.5 mr-1.5" />
-          Add Competitor ASIN
+        <Button type="button" size="sm" render={<Link href="/dashboard/asins" />}>
+          Track My ASINs
         </Button>
       </div>
 
