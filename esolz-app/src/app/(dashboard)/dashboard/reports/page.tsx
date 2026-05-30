@@ -285,6 +285,7 @@ function RecentReportRow({
 export default function ReportsPage() {
   const [recentReports, setRecentReports] = useState<DbReport[]>([])
   const [loadingReports, setLoadingReports] = useState(true)
+  const [reportsError, setReportsError] = useState<string | null>(null)
   const [workspaceId, setWorkspaceId]       = useState<string | null>(null)
   /** Template ID currently being generated */
   const [generatingId, setGeneratingId] = useState<string | null>(null)
@@ -295,14 +296,24 @@ export default function ReportsPage() {
 
   const loadReports = useCallback(async (wid?: string) => {
     const id = wid ?? workspaceId
-    if (!id) return
+    if (!id) {
+      setRecentReports([])
+      return
+    }
+
+    setReportsError(null)
     const supabase = createClient()
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('reports')
       .select('id, report_name, report_type, status, file_type, created_at')
       .eq('workspace_id', id)
       .order('created_at', { ascending: false })
       .limit(50)
+    if (error) {
+      setRecentReports([])
+      setReportsError('Unable to load recent reports right now.')
+      return
+    }
     setRecentReports((data ?? []) as DbReport[])
   }, [workspaceId])
 
@@ -310,11 +321,20 @@ export default function ReportsPage() {
     let cancelled = false
     async function init() {
       setLoadingReports(true)
-      const wid = await getWorkspaceId()
-      if (cancelled) return
-      setWorkspaceId(wid)
-      if (wid) await loadReports(wid)
-      setLoadingReports(false)
+      setReportsError(null)
+      try {
+        const wid = await getWorkspaceId()
+        if (cancelled) return
+        setWorkspaceId(wid)
+        if (wid) await loadReports(wid)
+      } catch {
+        if (!cancelled) {
+          setRecentReports([])
+          setReportsError('Unable to load reports right now. Please retry.')
+        }
+      } finally {
+        if (!cancelled) setLoadingReports(false)
+      }
     }
     init()
     return () => { cancelled = true }
@@ -445,6 +465,11 @@ export default function ReportsPage() {
               {loadingReports ? 'Loading…' : `${recentReports.length} report${recentReports.length !== 1 ? 's' : ''}`}
             </p>
           </div>
+          {!loadingReports && reportsError && (
+            <Button type="button" size="sm" variant="outline" onClick={() => void loadReports()}>
+              Retry
+            </Button>
+          )}
         </div>
 
         {/* Loading state */}
@@ -455,8 +480,15 @@ export default function ReportsPage() {
           </div>
         )}
 
+        {!loadingReports && reportsError && (
+          <div className="flex flex-col items-center justify-center py-12 gap-2 text-center px-6">
+            <p className="text-sm font-medium text-foreground">Could not load recent reports</p>
+            <p className="text-xs text-muted-foreground max-w-xs">{reportsError}</p>
+          </div>
+        )}
+
         {/* Empty state */}
-        {!loadingReports && recentReports.length === 0 && (
+        {!loadingReports && !reportsError && recentReports.length === 0 && (
           <div className="flex flex-col items-center justify-center py-14 gap-3 text-center px-6">
             <FileText className="size-8 text-muted-foreground/30" />
             <p className="text-sm font-medium text-foreground">No reports generated yet</p>
@@ -467,7 +499,7 @@ export default function ReportsPage() {
         )}
 
         {/* Table */}
-        {!loadingReports && recentReports.length > 0 && (
+        {!loadingReports && !reportsError && recentReports.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
