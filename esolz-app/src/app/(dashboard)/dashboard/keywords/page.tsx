@@ -36,7 +36,7 @@ import {
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
-import { addTrackedAsin, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
+import { addTrackedAsin, getAsinLimit, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
 import { Marketplace } from '@/types'
 import { toast } from 'sonner'
 
@@ -88,7 +88,7 @@ interface ProductOption {
   brand: string | null
   productType: string | null
   imageUrl: string | null
-  source: 'tracked' | 'listing'
+  source: 'tracked' | 'listing' | 'external'
   trackedAsinId: string | null
 }
 
@@ -122,6 +122,18 @@ function buildProductKey(asin: string, marketplace: Marketplace): string {
 function toMarketplace(marketplace: string): Marketplace {
   if (marketplace === 'US' || marketplace === 'UK' || marketplace === 'DE') return marketplace
   return 'IN'
+}
+
+function sourceLabel(product: ProductOption): string {
+  const category = (product.productType ?? '').toLowerCase()
+  const title = product.title.toLowerCase()
+  if (product.source === 'external') {
+    if (category.includes('competitor') || category.includes('external') || title.includes('competitor')) {
+      return 'Competitor / External'
+    }
+    return 'External ASIN'
+  }
+  return product.source === 'tracked' ? 'Tracked ASIN' : 'Amazon Listing'
 }
 
 function getKeywordSeedSuggestions(product: ProductOption | null): string[] {
@@ -307,6 +319,10 @@ export default function KeywordsPage() {
   const [productSearch, setProductSearch] = useState('')
   const [selectedProductKey, setSelectedProductKey] = useState('')
   const [trackingAsinKey, setTrackingAsinKey] = useState<string | null>(null)
+  const [trackingExternalAsin, setTrackingExternalAsin] = useState(false)
+  const [externalMarketplace, setExternalMarketplace] = useState<Marketplace>('IN')
+  const [externalTitle, setExternalTitle] = useState('')
+  const [externalBrand, setExternalBrand] = useState('')
   const [keywordInput, setKeywordInput] = useState('')
   const [bulkKeywordInput, setBulkKeywordInput] = useState('')
   const [addingKeyword, setAddingKeyword] = useState(false)
@@ -323,6 +339,12 @@ export default function KeywordsPage() {
 
   const selectedProduct = productOptions.find(p => p.key === selectedProductKey) ?? null
   const suggestedSeeds = getKeywordSeedSuggestions(selectedProduct)
+  const normalizedSearch = productSearch.trim().toUpperCase().replace(/\s+/g, '')
+  const isValidAsinInput = /^[A-Z0-9]{10}$/.test(normalizedSearch)
+  const isAsinLikeInput = normalizedSearch.length > 0 && /^[A-Z0-9]+$/.test(normalizedSearch)
+  const hasMatchingAsin = isValidAsinInput && productOptions.some(p => p.asin === normalizedSearch)
+  const showExternalAsinCard = isValidAsinInput && !hasMatchingAsin
+  const showInvalidAsinHint = productSearch.trim().length > 0 && isAsinLikeInput && !isValidAsinInput
 
   const filteredProducts = productOptions.filter(p => {
     const q = productSearch.trim().toLowerCase()
@@ -366,16 +388,22 @@ export default function KeywordsPage() {
       for (const row of trackedAsinsRes.data ?? []) {
         const mp = toMarketplace(row.marketplace as string)
         const key = buildProductKey(row.asin as string, mp)
+        const category = (row.category as string | null) ?? null
+        const title = (row.product_title as string | null) ?? (row.asin as string)
+        const externalByContent =
+          (category ?? '').toLowerCase().includes('external') ||
+          (category ?? '').toLowerCase().includes('competitor') ||
+          title.toLowerCase().startsWith('external asin ')
         map.set(key, {
           key,
           asin: (row.asin as string).toUpperCase(),
           marketplace: mp,
-          title: (row.product_title as string | null) ?? (row.asin as string),
+          title,
           sku: null,
           brand: (row.brand as string | null) ?? null,
-          productType: (row.category as string | null) ?? null,
+          productType: category,
           imageUrl: (row.image_url as string | null) ?? null,
-          source: 'tracked',
+          source: externalByContent ? 'external' : 'tracked',
           trackedAsinId: row.id as string,
         })
       }
@@ -572,9 +600,30 @@ export default function KeywordsPage() {
   }
 
   async function handleTrackSelectedAsin(product: ProductOption) {
-    if (!workspaceId || product.trackedAsinId) return
+    if (!workspaceId) return
+
+    if (product.trackedAsinId) {
+      setSelectedProductKey(product.key)
+      return
+    }
+
     setTrackingAsinKey(product.key)
     try {
+      const supabase = createClient()
+      const [asinLimit, trackedCountRes] = await Promise.all([
+        getAsinLimit(workspaceId),
+        supabase
+          .from('tracked_asins')
+          .select('id', { count: 'exact', head: true })
+          .eq('workspace_id', workspaceId)
+          .neq('status', 'archived'),
+      ])
+      const trackedCount = trackedCountRes.count ?? 0
+      if (trackedCount >= asinLimit) {
+        toast.error('You have reached your ASIN limit for this plan.')
+        return
+      }
+
       const payload: AddAsinInput = {
         asin: product.asin,
         productTitle: product.title,
@@ -585,8 +634,9 @@ export default function KeywordsPage() {
       }
       const created = await addTrackedAsin(workspaceId, payload)
       if (!created) {
-        toast.error('Unable to track this ASIN. It may already be tracked.')
         await loadProductOptions(workspaceId)
+        setSelectedProductKey(product.key)
+        toast.info('ASIN already tracked. Selected existing product.')
         return
       }
 
@@ -594,11 +644,85 @@ export default function KeywordsPage() {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('asin:usage-changed'))
       }
-      toast.success('ASIN tracked. You can add keywords now.')
+      toast.success('ASIN tracked. Add your first keyword now.')
       await loadProductOptions(workspaceId)
       setSelectedProductKey(buildProductKey(product.asin, product.marketplace))
     } finally {
       setTrackingAsinKey(null)
+    }
+  }
+
+  async function handleTrackExternalAsin() {
+    if (!workspaceId || !showExternalAsinCard) return
+
+    const asin = normalizedSearch
+    const targetKey = buildProductKey(asin, externalMarketplace)
+    const existingTracked = productOptions.find(p => p.key === targetKey && p.trackedAsinId)
+    if (existingTracked) {
+      setSelectedProductKey(existingTracked.key)
+      toast.info('ASIN already tracked. Selected existing product.')
+      return
+    }
+
+    setTrackingExternalAsin(true)
+    try {
+      const supabase = createClient()
+      const [asinLimit, trackedCountRes] = await Promise.all([
+        getAsinLimit(workspaceId),
+        supabase
+          .from('tracked_asins')
+          .select('id', { count: 'exact', head: true })
+          .eq('workspace_id', workspaceId)
+          .neq('status', 'archived'),
+      ])
+      const trackedCount = trackedCountRes.count ?? 0
+      if (trackedCount >= asinLimit) {
+        toast.error('You have reached your ASIN limit for this plan.')
+        return
+      }
+
+      const created = await addTrackedAsin(workspaceId, {
+        asin,
+        marketplace: externalMarketplace,
+        productTitle: externalTitle.trim() || `External ASIN ${asin}`,
+        brand: externalBrand.trim(),
+        category: 'External / Competitor',
+        imageUrl: '',
+      })
+
+      if (!created) {
+        const { data: existing } = await supabase
+          .from('tracked_asins')
+          .select('id')
+          .eq('workspace_id', workspaceId)
+          .eq('asin', asin)
+          .eq('marketplace', externalMarketplace)
+          .neq('status', 'archived')
+          .maybeSingle()
+
+        await loadProductOptions(workspaceId)
+        const trackedNow = Boolean(existing?.id)
+        if (trackedNow) {
+          setSelectedProductKey(targetKey)
+          toast.info('ASIN already tracked. Selected existing product.')
+          return
+        }
+        toast.error('Unable to track this ASIN right now. Please try again.')
+        return
+      }
+
+      await incrementAsinUsage(workspaceId)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('asin:usage-changed'))
+      }
+
+      await loadProductOptions(workspaceId)
+      setSelectedProductKey(targetKey)
+      setExternalTitle('')
+      setExternalBrand('')
+      toast.success('ASIN tracked. Add your first keyword now.')
+    } finally {
+      setTrackingExternalAsin(false)
     }
   }
 
@@ -776,33 +900,103 @@ export default function KeywordsPage() {
 
         {productsLoading ? (
           <p className="text-xs text-muted-foreground">Loading products…</p>
-        ) : productOptions.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border p-4 text-center space-y-3">
-            <p className="text-sm text-foreground">No products found yet. Add an ASIN or sync Amazon listings first.</p>
-            <div className="flex items-center justify-center gap-2 flex-wrap">
-              <Button type="button" variant="outline" render={<Link href="/dashboard/asins" />}>
-                Go to ASINs
-              </Button>
-              <Button type="button" variant="outline" render={<Link href="/dashboard/settings" />}>
-                Sync Amazon Listings
-              </Button>
-            </div>
-          </div>
         ) : (
           <>
             <div>
-              <Label htmlFor="product-search">Search products</Label>
+              <Label htmlFor="product-search">Search or paste ASIN</Label>
               <Input
                 id="product-search"
-                placeholder="Search by title, ASIN, SKU, or brand"
+                placeholder="Search by product title, ASIN, SKU, brand — or paste any Amazon ASIN"
                 value={productSearch}
                 onChange={e => setProductSearch(e.target.value)}
               />
             </div>
 
+            {showExternalAsinCard && (
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-4 space-y-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">ASIN not found in your products</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Track {normalizedSearch} to start monitoring keyword rank for this product.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="external-marketplace">Marketplace</Label>
+                    <select
+                      id="external-marketplace"
+                      value={externalMarketplace}
+                      onChange={e => setExternalMarketplace(e.target.value as Marketplace)}
+                      className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="IN">Amazon India</option>
+                      <option value="US">Amazon US</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="external-title">Product title (optional)</Label>
+                    <Input
+                      id="external-title"
+                      value={externalTitle}
+                      onChange={e => setExternalTitle(e.target.value)}
+                      placeholder="Optional title"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="external-brand">Brand (optional)</Label>
+                    <Input
+                      id="external-brand"
+                      value={externalBrand}
+                      onChange={e => setExternalBrand(e.target.value)}
+                      placeholder="Optional brand"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button type="button" onClick={handleTrackExternalAsin} disabled={trackingExternalAsin}>
+                    {trackingExternalAsin ? 'Tracking…' : 'Track this ASIN'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setProductSearch('')
+                      setExternalTitle('')
+                      setExternalBrand('')
+                    }}
+                    disabled={trackingExternalAsin}
+                  >
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {showInvalidAsinHint && (
+              <div className="rounded-lg border border-dashed border-border p-3">
+                <p className="text-xs text-muted-foreground">Enter a valid 10-character Amazon ASIN.</p>
+              </div>
+            )}
+
             {filteredProducts.length === 0 ? (
               <div className="rounded-lg border border-dashed border-border p-4 text-center">
-                <p className="text-sm text-muted-foreground">No products match your search.</p>
+                {productSearch.trim().length === 0 ? (
+                  <>
+                    <p className="text-sm text-foreground">Search or paste an ASIN to start keyword tracking.</p>
+                    <div className="mt-3 flex items-center justify-center gap-2 flex-wrap">
+                      <Button type="button" variant="outline" render={<Link href="/dashboard/asins" />}>
+                        Go to ASINs
+                      </Button>
+                      <Button type="button" variant="outline" render={<Link href="/dashboard/settings" />}>
+                        Sync Amazon Listings
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No products match your search.</p>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -840,7 +1034,7 @@ export default function KeywordsPage() {
                         <div className="flex items-center gap-2 flex-wrap">
                           <Badge variant="outline" className="text-[10px]">{product.marketplace}</Badge>
                           <Badge variant="outline" className="text-[10px]">
-                            {isTracked ? 'Tracked ASIN' : 'Amazon Listing'}
+                            {sourceLabel(product)}
                           </Badge>
                           <Badge className={cn('text-[10px]', isTracked
                             ? 'bg-green-500/15 text-green-400 border-green-500/20'
@@ -916,7 +1110,7 @@ export default function KeywordsPage() {
               <div className="flex items-center gap-2 flex-wrap">
                 <Badge variant="outline" className="text-[10px]">{selectedProduct.marketplace}</Badge>
                 <Badge variant="outline" className="text-[10px]">
-                  {selectedProduct.trackedAsinId ? 'Tracked ASIN' : 'Amazon Listing'}
+                  {sourceLabel(selectedProduct)}
                 </Badge>
               </div>
             </div>
