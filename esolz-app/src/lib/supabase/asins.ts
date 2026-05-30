@@ -273,9 +273,12 @@ export async function getPlanUsage(): Promise<PlanUsage | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (subResult.data as any)?.subscription_plans
   )
+  const asinLimit = plan?.name === 'Internal Tester'
+    ? Math.max(plan?.asin_limit ?? 0, 1000)
+    : (plan?.asin_limit ?? 5)
   return {
     planName:  plan?.name       ?? 'Free',
-    asinLimit: plan?.asin_limit ?? 5,
+    asinLimit,
     asinCount: countResult.count ?? 0,
   }
 }

@@ -482,17 +482,18 @@ export default function AlertsPage() {
       const res = await fetch('/api/alerts/generate', { method: 'POST' })
       const body = await res.json()
       if (!res.ok) {
-        toast.error(body.error ?? 'Failed to generate alerts')
-      } else if (body.created === 0) {
-        toast.success('No new alerts detected — all rules passed or data is unchanged.')
+        toast.error(body.message ?? body.error ?? 'Failed to generate alerts')
+      } else if ((body.alerts_created ?? 0) === 0) {
+        toast.info(body.message ?? 'No new alerts found. Your tracked ASINs look clear for now.')
       } else {
-        toast.success(`${body.created} new alert${body.created !== 1 ? 's' : ''} generated.`)
+        toast.success(body.message ?? `Generated ${body.alerts_created} alerts.`)
         await loadAlerts()
       }
     } catch {
       toast.error('Network error while generating alerts')
+    } finally {
+      setIsGenerating(false)
     }
-    setIsGenerating(false)
   }
 
   function toggleExpand(id: string) {

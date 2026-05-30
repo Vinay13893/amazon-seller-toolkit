@@ -241,6 +241,7 @@ export default function BillingPage() {
   const [sub, setSub] = useState<Subscription | null>(null)
   const [allPlans, setAllPlans] = useState<Plan[]>([])
   const [usage, setUsage] = useState<UsageCounter | null>(null)
+  const [asinUsage, setAsinUsage] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [upgradingPlanId, setUpgradingPlanId] = useState<string | null>(null)
 
@@ -269,7 +270,7 @@ export default function BillingPage() {
       const workspaceId = mem.workspace_id
 
       // ── Run queries in parallel; usage handled separately ────────────
-      const [subRes, plansRes] = await Promise.all([
+      const [subRes, plansRes, trackedAsinCountRes] = await Promise.all([
         supabase
           .from('workspace_subscriptions')
           .select(`
@@ -283,11 +284,40 @@ export default function BillingPage() {
           .from('subscription_plans')
           .select('id, name, price_monthly, asin_limit, keyword_limit, pincode_check_limit, competitor_limit, report_limit, features')
           .order('price_monthly', { ascending: true }),
+
+        supabase
+          .from('tracked_asins')
+          .select('id', { count: 'exact', head: true })
+          .eq('workspace_id', workspaceId)
+          .neq('status', 'archived'),
       ])
+
+      const liveAsinCount = trackedAsinCountRes.count ?? 0
+      setAsinUsage(liveAsinCount)
 
       // ── Usage: creates row if missing for older accounts ─────────────
       const usageData = await getOrCreateCurrentUsageCounter(workspaceId)
-      if (usageData) setUsage(usageData)
+      if (usageData) {
+        setUsage({
+          ...usageData,
+          // Use tracked_asins as source of truth for ASIN usage to avoid stale counter values.
+          asin_count: liveAsinCount,
+        })
+
+        if (usageData.asin_count !== liveAsinCount) {
+          fetch('/api/usage/init', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...usageData,
+              workspace_id: workspaceId,
+              asin_count: liveAsinCount,
+            }),
+          }).catch(() => {
+            // Non-blocking reconciliation.
+          })
+        }
+      }
 
       // ── Subscription ──────────────────────────────────────────────────
       if (subRes.data) {
@@ -395,6 +425,10 @@ export default function BillingPage() {
     ? new Date(usage.period_end).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
     : null
 
+  const asinLimit = sub?.plan.name === 'Internal Tester'
+    ? Math.max(sub?.plan.asin_limit ?? 0, 1000)
+    : (sub?.plan.asin_limit ?? 5)
+
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-6 max-w-7xl">
@@ -467,8 +501,8 @@ export default function BillingPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-4">
               <UsageBar
                 label="ASINs tracked"
-                used={usage?.asin_count ?? 0}
-                limit={sub?.plan.asin_limit ?? 5}
+                used={asinUsage}
+                limit={asinLimit}
               />
               <UsageBar
                 label="Keywords tracked"

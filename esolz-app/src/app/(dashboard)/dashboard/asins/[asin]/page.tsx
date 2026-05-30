@@ -43,6 +43,7 @@ interface AsinAlert {
   timestamp: string
 }
 import { formatPrice, timeAgo } from '@/lib/format'
+import { sanitizeCheckerError } from '@/lib/checker-errors'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { getWorkspaceId, getAsinDetail, type AsinDetailRow } from '@/lib/supabase/asins'
@@ -255,7 +256,7 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
               </td>
               <td className="py-3 text-center">
                 {kw.scrape_status === 'failed' ? (
-                  <span className="text-xs text-red-400" title={kw.error_message ?? 'Last check failed'}>
+                  <span className="text-xs text-red-400" title={sanitizeCheckerError(kw.error_message) ?? 'Last check failed'}>
                     Last check failed
                   </span>
                 ) : kw.trend === 'up' ? (

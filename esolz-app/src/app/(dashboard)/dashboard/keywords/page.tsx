@@ -37,6 +37,7 @@ import {
 import { createClient } from '@/lib/supabase/client'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
 import { addTrackedAsin, getAsinLimit, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
+import { sanitizeCheckerError } from '@/lib/checker-errors'
 import { Marketplace } from '@/types'
 import { toast } from 'sonner'
 
@@ -1309,9 +1310,9 @@ export default function KeywordsPage() {
                   <td className="px-4 py-3 text-center">
                     <div className="inline-flex flex-col items-center gap-1">
                       <FoundStatusBadge kw={kw} />
-                      {kw.scrape_status === 'failed' && kw.error_message && (
-                        <span className="text-[10px] text-red-400 max-w-[180px] truncate" title={kw.error_message}>
-                          {kw.error_message}
+                      {kw.scrape_status === 'failed' && sanitizeCheckerError(kw.error_message) && (
+                        <span className="text-[10px] text-red-400 max-w-[180px] truncate" title={sanitizeCheckerError(kw.error_message) ?? undefined}>
+                          {sanitizeCheckerError(kw.error_message)}
                         </span>
                       )}
                     </div>
@@ -1473,7 +1474,9 @@ export default function KeywordsPage() {
                       </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">
                         {row.scrape_status === 'failed' ? 'Failed' : 'Success'}
-                        {row.scrape_status === 'failed' && row.error_message ? `: ${row.error_message}` : ''}
+                        {row.scrape_status === 'failed' && sanitizeCheckerError(row.error_message)
+                          ? `: ${sanitizeCheckerError(row.error_message)}`
+                          : ''}
                       </td>
                     </tr>
                   ))}

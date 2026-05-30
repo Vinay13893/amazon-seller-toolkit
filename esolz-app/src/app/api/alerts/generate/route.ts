@@ -17,7 +17,7 @@ export const maxDuration = 30
  * Deduplication: skips alerts already open (status='new')
  * with the same (workspace_id, tracked_asin_id, module, title).
  *
- * Response: { created: number }
+ * Response: { ok: boolean, alerts_created: number, message: string }
  */
 export async function POST(_req: NextRequest) {
   console.log('[alerts-generate][1] POST /api/alerts/generate called')
@@ -28,7 +28,7 @@ export async function POST(_req: NextRequest) {
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
   if (authErr || !user) {
     console.error('[alerts-generate][2] FAIL auth:', authErr?.message ?? 'no user')
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    return NextResponse.json({ ok: false, alerts_created: 0, message: 'Unauthorized', error: 'Unauthorized' }, { status: 401 })
   }
   console.log(`[alerts-generate][2] OK   user: ${user.id}`)
 
@@ -42,7 +42,7 @@ export async function POST(_req: NextRequest) {
 
   if (memberErr || !member?.workspace_id) {
     console.error('[alerts-generate][3] FAIL workspace:', memberErr?.message ?? 'no row')
-    return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
+    return NextResponse.json({ ok: false, alerts_created: 0, message: 'No workspace found', error: 'No workspace found' }, { status: 404 })
   }
   console.log(`[alerts-generate][3] OK   workspace: ${member.workspace_id}`)
 
@@ -54,8 +54,20 @@ export async function POST(_req: NextRequest) {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('[alerts-generate][4] FAIL generate:', msg)
-    return NextResponse.json({ error: 'Alert generation failed' }, { status: 500 })
+    return NextResponse.json(
+      {
+        ok: false,
+        alerts_created: 0,
+        message: 'Alert generation failed. Please try again shortly.',
+        error: 'Alert generation failed',
+      },
+      { status: 500 }
+    )
   }
 
-  return NextResponse.json({ created })
+  const message = created > 0
+    ? `Generated ${created} alert${created !== 1 ? 's' : ''}.`
+    : 'No new alerts found. Your tracked ASINs look clear for now.'
+
+  return NextResponse.json({ ok: true, alerts_created: created, message })
 }
