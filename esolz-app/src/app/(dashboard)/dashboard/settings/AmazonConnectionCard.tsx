@@ -24,6 +24,13 @@ interface AmazonStatus {
   configured?:              boolean   // false when SPAPI_APPLICATION_ID not set
 }
 
+interface ListingsSyncStatus {
+  status:         string
+  pages:          number
+  items_upserted: number
+  error_message?: string | null
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function timeAgo(iso: string | null): string {
@@ -82,6 +89,8 @@ export default function AmazonConnectionCard() {
   const [syncing, setSyncing]             = useState(false)
   const [syncingListings, setSyncingListings] = useState(false)
   const [localhostBlock, setLocalhostBlock] = useState(false)
+  const [listingsJobId, setListingsJobId] = useState<string | null>(null)
+  const [listingsSyncStatus, setListingsSyncStatus] = useState<ListingsSyncStatus | null>(null)
 
   function fetchStatus() {
     setLoading(true)
@@ -95,6 +104,19 @@ export default function AmazonConnectionCard() {
   // ── On mount: load status + handle ?amazon= redirect result ───────────────
   useEffect(() => {
     fetchStatus()
+
+    try {
+      const existingJobId = localStorage.getItem('amazon_listings_sync_job_id')
+      if (existingJobId) setListingsJobId(existingJobId)
+    } catch { /* SSR guard */ }
+
+    function onJobStarted(e: Event) {
+      const detail = (e as CustomEvent<{ job_id: string }>).detail
+      if (!detail?.job_id) return
+      setListingsJobId(detail.job_id)
+      setListingsSyncStatus({ status: 'running', pages: 0, items_upserted: 0, error_message: null })
+    }
+    window.addEventListener('amazon:listings-sync-started', onJobStarted)
 
     // Block OAuth when on localhost and SPAPI_REDIRECT_URI points to production
     // Amazon requires HTTPS and a registered domain — use the Vercel URL to connect
@@ -117,8 +139,52 @@ export default function AmazonConnectionCard() {
       toast.error(`Failed to connect Amazon account: ${msg}`)
       window.history.replaceState({}, '', window.location.pathname)
     }
+
+    return () => {
+      window.removeEventListener('amazon:listings-sync-started', onJobStarted)
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!listingsJobId) return
+    const jobId = listingsJobId
+
+    let cancelled = false
+    async function pullStatus() {
+      try {
+        const res = await fetch(`/api/amazon/sync/listings/status?job_id=${encodeURIComponent(jobId)}`)
+        if (!res.ok) return
+        const data = await res.json() as ListingsSyncStatus
+        if (cancelled) return
+
+        setListingsSyncStatus({
+          status: data.status,
+          pages: data.pages ?? 0,
+          items_upserted: data.items_upserted ?? 0,
+          error_message: data.error_message ?? null,
+        })
+
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+          try { localStorage.removeItem('amazon_listings_sync_job_id') } catch { /* SSR guard */ }
+          setListingsJobId(null)
+          fetchStatus()
+        }
+      } catch {
+        // non-fatal: watcher toast is the primary feedback channel
+      }
+    }
+
+    void pullStatus()
+    const timer = setInterval(() => {
+      void pullStatus()
+    }, 5000)
+
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [listingsJobId])
 
   async function handleSync() {
     setSyncing(true)
@@ -151,6 +217,8 @@ export default function AmazonConnectionCard() {
       if (res.ok && data.ok && data.job_id) {
         // Save job_id so AmazonSyncWatcher can resume if user navigates away
         try { localStorage.setItem('amazon_listings_sync_job_id', data.job_id) } catch { /* SSR guard */ }
+        setListingsJobId(data.job_id)
+        setListingsSyncStatus({ status: 'running', pages: 0, items_upserted: 0, error_message: null })
         // Tell the watcher to start processing immediately
         window.dispatchEvent(new CustomEvent('amazon:listings-sync-started', {
           detail: { job_id: data.job_id }
@@ -252,6 +320,12 @@ export default function AmazonConnectionCard() {
             {status.error_message && (
               <div className="rounded-lg border border-red-200 bg-red-50 dark:bg-red-950/30 dark:border-red-800 px-3 py-2 text-xs text-red-700 dark:text-red-400">
                 {status.error_message}
+              </div>
+            )}
+
+            {listingsSyncStatus?.status === 'running' && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900 px-3 py-2 text-xs text-blue-700 dark:text-blue-300">
+                Listings sync in progress: {listingsSyncStatus.items_upserted} imported across {listingsSyncStatus.pages} page{listingsSyncStatus.pages === 1 ? '' : 's'}.
               </div>
             )}
 

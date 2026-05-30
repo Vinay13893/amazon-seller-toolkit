@@ -12,6 +12,7 @@ import { ProductSnapshot, Insight } from '@/types'
 import {
   Package, TrendingUp, Star, Hash, Target,
   ShieldCheck, Activity, MapPin, RefreshCw, Plus, Loader2,
+  CheckCircle2, Circle,
 } from 'lucide-react'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -35,6 +36,11 @@ interface DashboardStats {
   page1Keywords:     number
   buyBoxWon:         number
   pincodeChecksUsed: number
+  productRefreshRuns: number
+  buyboxChecks:      number
+  pincodeChecks:     number
+  amazonConnected:   boolean
+  amazonListingsCount: number | null
   recentActivity:    Insight[]
   lastChecked:       string | null
 }
@@ -59,10 +65,59 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const planName = normalizeEmbed<{ name: string }>((subRaw as any)?.subscription_plans)?.name ?? 'Free'
 
+  // Pincode usage this month
+  const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
+  const { data: usageRow } = await supabase
+    .from('usage_counters')
+    .select('pincode_checks_used')
+    .eq('workspace_id', workspaceId)
+    .gte('period_start', periodStart)
+    .order('period_start', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const pincodeChecksUsed = (usageRow?.pincode_checks_used as number) ?? 0
+
+  // MVP onboarding progress stats
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const anySupabase = supabase as any
+  const [asinRefreshCountRes, buyboxCountRes, pincodeCountRes, connectionRes, listingCountRes] = await Promise.all([
+    anySupabase
+      .from('asin_snapshots')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId),
+    anySupabase
+      .from('buybox_snapshots')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId),
+    anySupabase
+      .from('pincode_checks')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId),
+    anySupabase
+      .from('amazon_connections')
+      .select('status')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle(),
+    anySupabase
+      .from('amazon_listing_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId),
+  ])
+
+  const connectionStatus = connectionRes?.data?.status as string | undefined
+  const amazonConnected = connectionStatus === 'active' || connectionStatus === 'expired'
+  const amazonListingsCount = listingCountRes?.error ? null : ((listingCountRes?.count as number | null) ?? 0)
+
   const empty: DashboardStats = {
     asins: [], asinLimit, planName,
     keywordCount: 0, page1Keywords: 0, buyBoxWon: 0,
-    pincodeChecksUsed: 0, recentActivity: [], lastChecked: null,
+    productRefreshRuns: asinRefreshCountRes.count ?? 0,
+    buyboxChecks: buyboxCountRes.count ?? 0,
+    pincodeChecks: pincodeCountRes.count ?? 0,
+    amazonConnected,
+    amazonListingsCount,
+    pincodeChecksUsed,
+    recentActivity: [], lastChecked: null,
   }
   if (asins.length === 0) return empty
 
@@ -104,18 +159,6 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     }
   }
   const buyBoxWon = [...latestBbStatus.values()].filter(s => s === 'won').length
-
-  // 6. Pincode checks used this month
-  const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
-  const { data: usageRow } = await supabase
-    .from('usage_counters')
-    .select('pincode_checks_used')
-    .eq('workspace_id', workspaceId)
-    .gte('period_start', periodStart)
-    .order('period_start', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  const pincodeChecksUsed = (usageRow?.pincode_checks_used as number) ?? 0
 
   // 7. Recent activity — latest events across all snapshot tables (run in parallel)
   const [bsrEvts, bbEvts, pinEvts, kwRankEvts, addedEvts] = await Promise.all([
@@ -216,6 +259,11 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     asins, asinLimit, planName,
     keywordCount: keywordCount ?? 0,
     page1Keywords, buyBoxWon, pincodeChecksUsed,
+    productRefreshRuns: asinRefreshCountRes.count ?? 0,
+    buyboxChecks: buyboxCountRes.count ?? 0,
+    pincodeChecks: pincodeCountRes.count ?? 0,
+    amazonConnected,
+    amazonListingsCount,
     recentActivity, lastChecked,
   }
 }
@@ -284,6 +332,7 @@ export default function DashboardPage() {
             <Plus className="w-4 h-4 mr-1.5" /> Add your first ASIN
           </Button>
         </div>
+        <OnboardingChecklist stats={stats} asinsCount={asins.length} />
         <UpgradeBanner planName={stats?.planName ?? 'Free'} />
       </div>
     )
@@ -348,6 +397,8 @@ export default function DashboardPage() {
           icon={MapPin}
         />
       </div>
+
+      <OnboardingChecklist stats={stats} asinsCount={asins.length} />
 
       {/* ASIN Performance table + Recent Activity feed */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -453,6 +504,99 @@ export default function DashboardPage() {
       {isFreePlan && <UpgradeBanner planName={stats?.planName ?? 'Free'} />}
 
     </div>
+  )
+}
+
+function OnboardingChecklist({ stats, asinsCount }: { stats: DashboardStats | null; asinsCount: number }) {
+  const listingsCount = stats?.amazonListingsCount
+
+  return (
+    <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="px-5 py-4 border-b border-border">
+        <h2 className="font-bold">Onboarding Checklist</h2>
+        <p className="text-xs text-muted-foreground mt-1">
+          Complete these steps to get your first insights running.
+        </p>
+      </div>
+      <div className="px-5 py-4 grid grid-cols-1 md:grid-cols-2 gap-2.5">
+        <ChecklistItem
+          done={asinsCount > 0}
+          label="Add your first ASIN"
+          hint={`${asinsCount} tracked`}
+          href="/dashboard/asins"
+        />
+        <ChecklistItem
+          done={(stats?.productRefreshRuns ?? 0) > 0}
+          label="Run product refresh"
+          hint={`${stats?.productRefreshRuns ?? 0} refresh snapshot${(stats?.productRefreshRuns ?? 0) === 1 ? '' : 's'}`}
+          href="/dashboard/asins"
+        />
+        <ChecklistItem
+          done={(stats?.buyboxChecks ?? 0) > 0}
+          label="Check Buy Box"
+          hint={`${stats?.buyboxChecks ?? 0} Buy Box check${(stats?.buyboxChecks ?? 0) === 1 ? '' : 's'}`}
+          href="/dashboard/buybox"
+        />
+        <ChecklistItem
+          done={(stats?.pincodeChecks ?? 0) > 0}
+          label="Check pincode availability"
+          hint={`${stats?.pincodeChecks ?? 0} pincode check${(stats?.pincodeChecks ?? 0) === 1 ? '' : 's'}`}
+          href="/dashboard/pincode"
+        />
+        <ChecklistItem
+          done={!!stats?.amazonConnected}
+          optional
+          label="Connect Amazon account"
+          hint={stats?.amazonConnected ? 'Connected' : 'Not connected'}
+          href="/dashboard/settings"
+        />
+        <ChecklistItem
+          done={(listingsCount ?? 0) > 0}
+          optional
+          label="Sync Amazon listings"
+          hint={
+            listingsCount === null || listingsCount === undefined
+              ? 'Listing table not available yet'
+              : `${listingsCount} listing${listingsCount === 1 ? '' : 's'} synced`
+          }
+          href="/dashboard/settings"
+        />
+      </div>
+    </div>
+  )
+}
+
+function ChecklistItem({
+  done,
+  label,
+  hint,
+  href,
+  optional = false,
+}: {
+  done: boolean
+  label: string
+  hint: string
+  href: string
+  optional?: boolean
+}) {
+  return (
+    <Link
+      href={href}
+      className="flex items-start gap-2.5 rounded-lg border border-border px-3 py-2.5 hover:bg-muted/20 transition-colors"
+    >
+      {done ? (
+        <CheckCircle2 className="w-4 h-4 text-green-600 mt-0.5" />
+      ) : (
+        <Circle className="w-4 h-4 text-muted-foreground mt-0.5" />
+      )}
+      <div>
+        <p className="text-sm font-medium text-foreground">
+          {label}
+          {optional && <span className="ml-1 text-xs text-muted-foreground font-normal">(Optional)</span>}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">{hint}</p>
+      </div>
+    </Link>
   )
 }
 

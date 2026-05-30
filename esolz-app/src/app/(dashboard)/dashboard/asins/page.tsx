@@ -6,7 +6,7 @@ import { AddAsinDialog } from '@/components/asins/AddAsinDialog'
 import { AsinDashboardTable } from '@/components/asins/AsinDashboardTable'
 import { ProductCard } from '@/components/asins/ProductCard'
 import { Button } from '@/components/ui/button'
-import { ProductSnapshot } from '@/types'
+import { Marketplace, ProductSnapshot } from '@/types'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { toast } from 'sonner'
 import {
@@ -59,6 +59,17 @@ export default function AsinsPage() {
   const [amazonListings, setAmazonListings]         = useState<AmazonListingItem[]>([])
   const [amazonConnected, setAmazonConnected]       = useState<boolean | null>(null)
   const [listingsLoading, setListingsLoading]       = useState(true)
+  const [trackingFromListingAsin, setTrackingFromListingAsin] = useState<string | null>(null)
+
+  function marketplaceFromMarketplaceId(marketplaceId: string): Marketplace {
+    const map: Record<string, Marketplace> = {
+      A21TJRUUN4KGV: 'IN',
+      ATVPDKIKX0DER: 'US',
+      A1F83G8C2ARO7P: 'UK',
+      A1PA6795UKMFR9: 'DE',
+    }
+    return map[marketplaceId] ?? 'IN'
+  }
 
   const loadAmazonListings = useCallback(async (wsId: string) => {
     setListingsLoading(true)
@@ -121,8 +132,70 @@ export default function AsinsPage() {
     if (!newProduct) return { error: 'Failed to save ASIN. It may already be tracked, or a database error occurred.' }
     setProducts(prev => [newProduct, ...prev])
     void incrementAsinUsage(workspaceId)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('asin:usage-changed'))
+    }
     toast.success(`"${data.productTitle}" is now being tracked.`)
     return {}
+  }
+
+  async function handleTrackFromListing(item: AmazonListingItem) {
+    if (!workspaceId || !item.asin) return
+
+    const normalizedAsin = item.asin.toUpperCase()
+    const alreadyTracked = products.some(
+      (product) => product.asin.toUpperCase() === normalizedAsin
+    )
+    if (alreadyTracked) {
+      toast.info('Already tracked.')
+      return
+    }
+
+    if (products.length >= maxAsins) {
+      toast.error('You have reached your ASIN limit for this plan.')
+      return
+    }
+
+    setTrackingFromListingAsin(normalizedAsin)
+    try {
+      const created = await addTrackedAsin(workspaceId, {
+        asin: normalizedAsin,
+        marketplace: marketplaceFromMarketplaceId(item.marketplace_id),
+        productTitle: item.item_name?.trim() || normalizedAsin,
+        brand: item.brand?.trim() || '',
+        category: item.product_type?.trim() || '',
+        imageUrl: item.image_url?.trim() || '',
+      })
+
+      if (!created) {
+        const refreshed = await getTrackedAsins(workspaceId)
+        setProducts(refreshed)
+        const nowTracked = refreshed.some(
+          (product) => product.asin.toUpperCase() === normalizedAsin
+        )
+        if (nowTracked) {
+          toast.info('Already tracked.')
+          return
+        }
+        toast.error('Failed to track ASIN from listing. Please try again.')
+        return
+      }
+
+      await incrementAsinUsage(workspaceId)
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('asin:usage-changed'))
+      }
+
+      const [asins, limit] = await Promise.all([
+        getTrackedAsins(workspaceId),
+        getAsinLimit(workspaceId),
+      ])
+      setProducts(asins)
+      setMaxAsins(limit)
+      toast.success('ASIN added to tracking from Amazon listings.')
+    } finally {
+      setTrackingFromListingAsin(null)
+    }
   }
 
   async function handleDeleteAsin(id: string) {
@@ -428,12 +501,10 @@ export default function AsinsPage() {
                             variant="outline"
                             size="sm"
                             className="h-7 text-xs"
-                            onClick={() => {
-                              if (!workspaceId || !item.asin) return
-                              toast.info(`Use the "Add ASIN" button above to track ${item.asin}.`)
-                            }}
+                            disabled={trackingFromListingAsin === item.asin.toUpperCase() || atLimit}
+                            onClick={() => void handleTrackFromListing(item)}
                           >
-                            Track ASIN
+                            {trackingFromListingAsin === item.asin.toUpperCase() ? 'Tracking…' : 'Track ASIN'}
                           </Button>
                         )}
                       </td>

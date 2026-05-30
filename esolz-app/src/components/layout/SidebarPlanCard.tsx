@@ -9,11 +9,23 @@ export function SidebarPlanCard() {
   const [usage, setUsage]   = useState<PlanUsage | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
+  function refreshUsage() {
+    setLoading(true)
     getPlanUsage()
       .then(setUsage)
       .catch(() => setUsage(null))
       .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    refreshUsage()
+
+    function onUsageChanged() {
+      refreshUsage()
+    }
+
+    window.addEventListener('asin:usage-changed', onUsageChanged)
+    return () => window.removeEventListener('asin:usage-changed', onUsageChanged)
   }, [])
 
   const planName  = usage?.planName  ?? 'Free'

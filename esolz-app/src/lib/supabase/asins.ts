@@ -46,14 +46,17 @@ export async function getAsinLimit(workspaceId: string): Promise<number> {
   const supabase = createClient()
   const { data } = await supabase
     .from('workspace_subscriptions')
-    .select('subscription_plans(asin_limit)')
+    .select('subscription_plans(name, asin_limit)')
     .eq('workspace_id', workspaceId)
     .single()
 
-  const plan = normalizeEmbed<{ asin_limit: number }>(
+  const plan = normalizeEmbed<{ name: string; asin_limit: number }>(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (data as any)?.subscription_plans
   )
+  if (plan?.name === 'Internal Tester') {
+    return Math.max(plan.asin_limit ?? 0, 1000)
+  }
   return plan?.asin_limit ?? 5
 }
 
