@@ -30,46 +30,66 @@ export interface KeywordRankResult {
 
 const TIMEOUT_MS  = 90_000   // 90 s — Playwright + network latency
 const SCRIPT_PATH = path.resolve(process.cwd(), 'scripts', 'rank_check_adapter.py')
+export const KEYWORD_RUNTIME_UNAVAILABLE_ERROR = 'Keyword rank checker runtime is not available in this deployment.'
+
+type AttemptSource = 'env' | 'default' | 'fallback'
+
+interface BinaryAttempt {
+  binary: string
+  source: AttemptSource
+}
+
+class KeywordRuntimeUnavailableError extends Error {
+  attemptedBinaries: BinaryAttempt[]
+
+  constructor(attemptedBinaries: BinaryAttempt[]) {
+    super(KEYWORD_RUNTIME_UNAVAILABLE_ERROR)
+    this.name = 'KeywordRuntimeUnavailableError'
+    this.attemptedBinaries = attemptedBinaries
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function getPythonBin(): string {
-  if (process.env.BSR_PYTHON_BIN) return process.env.BSR_PYTHON_BIN
-
-  const candidates = [
-    path.resolve(process.cwd(), '..', 'saas-backend', '.venv', 'Scripts', 'python.exe'),
-    path.resolve(process.cwd(), '..', 'saas-backend', '.venv', 'bin', 'python'),
-    path.resolve(process.cwd(), '..', '.venv', 'Scripts', 'python.exe'),
-    path.resolve(process.cwd(), '..', '.venv', 'bin', 'python'),
-  ]
-  for (const p of candidates) {
-    if (fs.existsSync(p)) return p
+function resolveInitialPythonAttempt(): BinaryAttempt {
+  if (process.env.KEYWORD_PYTHON_BIN?.trim()) {
+    return { binary: process.env.KEYWORD_PYTHON_BIN.trim(), source: 'env' }
   }
-  return 'python3'
+  // Keep a consistent default probe order across environments:
+  // try python3 first, then fallback to python if unavailable.
+  return { binary: 'python3', source: 'default' }
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+function isEnoent(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const maybeErr = err as NodeJS.ErrnoException
+  return maybeErr.code === 'ENOENT'
+}
 
-/**
- * Runs rank_check_adapter.py for a single keyword+ASIN pair.
- * Returns the parsed JSON result from stdout.
- */
-export function checkKeywordRank(
-  keyword:     string,
-  asin:        string,
+function shouldRetryWithPython(attempt: BinaryAttempt, err: unknown): boolean {
+  return attempt.binary === 'python3' && isEnoent(err)
+}
+
+function toMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message
+  return 'Unknown checker failure'
+}
+
+function runCheckerWithBinary(
+  keyword: string,
+  asin: string,
   marketplace: string,
-  pages = 7,
+  pages: number,
+  attempt: BinaryAttempt,
 ): Promise<KeywordRankResult> {
   return new Promise((resolve, reject) => {
-    const python = getPythonBin()
-
-    if (!fs.existsSync(SCRIPT_PATH)) {
-      reject(new Error(`rank_check_adapter.py not found at: ${SCRIPT_PATH}`))
-      return
-    }
+    console.info('[keyword-adapter] python attempt', {
+      binary: attempt.binary,
+      source: attempt.source,
+    })
 
     const proc = spawn(
-      python,
+      attempt.binary,
       [
         SCRIPT_PATH,
         '--keyword',     keyword,
@@ -110,7 +130,59 @@ export function checkKeywordRank(
 
     proc.on('error', (err) => {
       clearTimeout(timer)
-      reject(new Error(`Failed to spawn Python: ${err.message}`))
+      reject(err)
     })
+  })
+}
+
+export function isKeywordRuntimeUnavailableError(err: unknown): err is KeywordRuntimeUnavailableError {
+  return err instanceof KeywordRuntimeUnavailableError
+}
+
+// ─── Main export ──────────────────────────────────────────────────────────────
+
+/**
+ * Runs rank_check_adapter.py for a single keyword+ASIN pair.
+ * Returns the parsed JSON result from stdout.
+ */
+export function checkKeywordRank(
+  keyword:     string,
+  asin:        string,
+  marketplace: string,
+  pages = 7,
+): Promise<KeywordRankResult> {
+  return new Promise((resolve, reject) => {
+    const initialAttempt = resolveInitialPythonAttempt()
+    const attempts: BinaryAttempt[] = [initialAttempt]
+
+    if (!fs.existsSync(SCRIPT_PATH)) {
+      reject(new Error(`rank_check_adapter.py not found at: ${SCRIPT_PATH}`))
+      return
+    }
+
+    runCheckerWithBinary(keyword, asin, marketplace, pages, initialAttempt)
+      .then(resolve)
+      .catch((firstErr: unknown) => {
+        if (shouldRetryWithPython(initialAttempt, firstErr)) {
+          const fallbackAttempt: BinaryAttempt = { binary: 'python', source: 'fallback' }
+          attempts.push(fallbackAttempt)
+          runCheckerWithBinary(keyword, asin, marketplace, pages, fallbackAttempt)
+            .then(resolve)
+            .catch((fallbackErr: unknown) => {
+              if (isEnoent(fallbackErr)) {
+                reject(new KeywordRuntimeUnavailableError(attempts))
+                return
+              }
+              reject(new Error(`Keyword rank checker failed (${fallbackAttempt.binary}): ${toMessage(fallbackErr)}`))
+            })
+          return
+        }
+
+        if (isEnoent(firstErr)) {
+          reject(new KeywordRuntimeUnavailableError(attempts))
+          return
+        }
+        reject(new Error(`Keyword rank checker failed (${initialAttempt.binary}): ${toMessage(firstErr)}`))
+      })
   })
 }

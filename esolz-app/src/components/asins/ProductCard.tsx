@@ -163,7 +163,18 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             BSR Rank
           </span>
-          <BsrBadge rank={product.bsr_rank} prevRank={product.bsr_rank_prev} />
+          <BsrBadge
+            rank={product.bsr_rank}
+            prevRank={product.bsr_rank_prev}
+            checkedAt={product.captured_at}
+            hasOtherSignals={
+              product.price !== null ||
+              product.rating !== null ||
+              product.review_count !== null ||
+              product.buybox_winner !== null ||
+              product.availability_score !== null
+            }
+          />
         </div>
 
         {/* Price */}
@@ -219,11 +230,15 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
           </div>
         )}
 
-        {/* Pending state — full width */}
-        {product.availability_score === null && product.bsr_rank === null && (
+        {/* BSR status hint — full width */}
+        {product.bsr_rank === null && (
           <div className="col-span-2 bg-muted/30 px-3 py-3 flex items-center justify-center">
-            <span className="text-xs text-muted-foreground italic">
-              Awaiting first scrape…
+            <span className="text-xs text-muted-foreground">
+              {!product.captured_at
+                ? 'Never checked'
+                : (product.price !== null || product.rating !== null || product.review_count !== null || product.buybox_winner !== null || product.availability_score !== null)
+                  ? 'BSR not found'
+                  : 'Failed'}
             </span>
           </div>
         )}

@@ -41,7 +41,7 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type BBStatus = 'won' | 'lost' | 'suppressed'
+type BBStatus = 'won' | 'lost' | 'suppressed' | 'failed'
 
 interface LiveEntry {
   asin:             string
@@ -92,7 +92,7 @@ interface CheckResult {
 type HealthStatus = 'Healthy' | 'Warning' | 'Critical'
 
 function calcHealth(entries: { status: BBStatus }[]): number {
-  const active = entries.filter(e => e.status !== 'suppressed')
+  const active = entries.filter(e => e.status !== 'suppressed' && e.status !== 'failed')
   if (!active.length) return 0
   return Math.round(active.filter(e => e.status === 'won').length / active.length * 100)
 }
@@ -111,6 +111,7 @@ function healthBg(hs: HealthStatus) {
 function normalizeStatus(raw: string | null): BBStatus {
   if (raw === 'won') return 'won'
   if (raw === 'suppressed') return 'suppressed'
+  if (raw === 'failed') return 'failed'
   return 'lost'
 }
 
@@ -119,6 +120,8 @@ function normalizeStatus(raw: string | null): BBStatus {
 function StatusBadge({ status }: { status: BBStatus }) {
   if (status === 'won')
     return <Badge className="bg-green-500/15 text-green-400 border-green-500/20 text-xs">Won</Badge>
+  if (status === 'failed')
+    return <Badge className="bg-red-500/15 text-red-400 border-red-500/20 text-xs">Failed</Badge>
   if (status === 'lost')
     return <Badge className="bg-red-500/15 text-red-400 border-red-500/20 text-xs">Lost</Badge>
   return <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/20 text-xs">Suppressed</Badge>
@@ -391,6 +394,7 @@ export default function BuyboxPage() {
       const body = await res.json()
       if (!res.ok) {
         setCheckError(body.error ?? 'Check failed')
+        await loadAll()
       } else {
         const r = body.snap ?? body.result
         setCheckResult({
@@ -418,12 +422,13 @@ export default function BuyboxPage() {
     const won = entries.filter(e => e.status === 'won').length
     const lost = entries.filter(e => e.status === 'lost').length
     const suppressed = entries.filter(e => e.status === 'suppressed').length
-    const active = entries.filter(e => e.status !== 'suppressed').length
+    const failed = entries.filter(e => e.status === 'failed').length
+    const active = entries.filter(e => e.status !== 'suppressed' && e.status !== 'failed').length
     const winRate = active > 0 ? Math.round((won / active) * 100) : 0
     const highRisk = competitors.filter(c => c.risk === 'high').length
     const score = calcHealth(entries)
     const hs = healthLabel(score)
-    return { won, lost, suppressed, active, winRate, highRisk, score, hs }
+    return { won, lost, suppressed, failed, active, winRate, highRisk, score, hs }
   }, [entries, competitors])
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -575,7 +580,7 @@ export default function BuyboxPage() {
           <p className="text-[11px] text-muted-foreground leading-relaxed mt-1">
             {stats.hs === 'Healthy' && 'You own the Buy Box on most tracked ASINs.'}
             {stats.hs === 'Warning' && 'Some Buy Boxes are at risk. Review lost listings.'}
-            {stats.hs === 'Critical' && 'Critical: Most Buy Boxes lost. Immediate action needed.'}
+            {stats.hs === 'Critical' && 'Critical: Most Buy Boxes lost or checks are failing. Immediate action needed.'}
           </p>
           <div className="grid grid-cols-3 gap-2 w-full mt-2 text-center">
             <div className="bg-green-500/10 rounded-lg p-2">
@@ -599,7 +604,7 @@ export default function BuyboxPage() {
         <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
           <h2 className="text-sm font-semibold text-foreground">Buy Box Status</h2>
           <span className="text-xs text-muted-foreground">
-            {stats.won} won · {stats.lost} lost · {stats.suppressed} suppressed
+            {stats.won} won · {stats.lost} lost · {stats.suppressed} suppressed · {stats.failed} failed
           </span>
         </div>
 
@@ -651,9 +656,11 @@ export default function BuyboxPage() {
                       <div className="flex items-center gap-1.5">
                         {entry.status === 'won'
                           ? <ShieldCheck className="size-3 text-green-400 flex-shrink-0" />
+                          : entry.status === 'failed'
+                            ? <AlertTriangle className="size-3 text-red-400 flex-shrink-0" />
                           : <Store className="size-3 text-muted-foreground flex-shrink-0" />}
                         <span className="text-xs text-foreground truncate max-w-[120px]">
-                          {entry.current_owner ?? '—'}
+                          {entry.status === 'failed' ? 'Check failed' : (entry.current_owner ?? '—')}
                         </span>
                       </div>
                     </td>

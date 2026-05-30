@@ -7,6 +7,8 @@ import { scrapeAsinBsr } from '@/lib/integrations/amazon-bsr-adapter'
 export const runtime    = 'nodejs'
 export const maxDuration = 120   // 2 min (respected on Vercel Pro+)
 
+const BSR_RUNTIME_FAILURE_MESSAGE = 'BSR checker failed in this deployment. Please try again later.'
+
 export async function POST(
   _req: NextRequest,
   { params }: { params: Promise<{ asin: string }> },
@@ -36,72 +38,36 @@ export async function POST(
     console.error('[bsr-refresh][3] FAIL workspace:', memberErr?.message ?? 'no row')
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
+  const workspaceId = member.workspace_id
   console.log(`[bsr-refresh][3] OK   workspace: ${member.workspace_id}`)
 
   // ── CHECK 4: tracked_asins row ──────────────────────────────────────────
   const { data: tracked, error: trackErr } = await supabase
     .from('tracked_asins')
     .select('id, marketplace')
-    .eq('workspace_id', member.workspace_id)
+    .eq('workspace_id', workspaceId)
     .eq('asin', asin.toUpperCase())
     .neq('status', 'archived')
     .maybeSingle()
 
   if (trackErr || !tracked) {
     console.error('[bsr-refresh][4] FAIL tracked_asins:', trackErr?.message ?? 'no row',
-      '| workspace:', member.workspace_id, '| asin:', asin.toUpperCase())
+      '| workspace:', workspaceId, '| asin:', asin.toUpperCase())
     return NextResponse.json(
       { error: 'ASIN not tracked in this workspace' },
       { status: 404 },
     )
   }
+  const trackedAsinId = tracked.id
   console.log(`[bsr-refresh][4] OK   tracked_asin: id=${tracked.id} marketplace=${tracked.marketplace}`)
 
   // ── CHECK 5–6: Run scraper ──────────────────────────────────────────────
   console.log(`[bsr-refresh][5] spawning scraper for ${asin} / ${tracked.marketplace}`)
-  let result
-  try {
-    result = await scrapeAsinBsr(asin.toUpperCase(), tracked.marketplace)
-  } catch (err) {
-    console.error('[bsr-refresh][5] FAIL scraper:', String(err))
-    return NextResponse.json(
-      { error: 'Scrape failed' },
-      { status: 502 },
-    )
-  }
-  console.log(`[bsr-refresh][6] OK   scraper: bsr=${result.bsr} price=${result.price} status=${result.scrape_status}`)
-  console.log(`[bsr-refresh][6] full result: ${JSON.stringify(result, null, 2)}`)
-
-  // Fail fast if scraper returned nothing useful
-  if (result.bsr === null && result.price === null) {
-    console.error('[bsr-refresh][6] FAIL no data: scrape_status=', result.scrape_status)
-    return NextResponse.json(
-      { error: 'No data scraped', scrape_status: result.scrape_status },
-      { status: 422 },
-    )
-  }
-
   // ── CHECK 7: Insert asin_snapshots ──────────────────────────────────────
   // Use the service-role (admin) client so the INSERT is not subject to RLS.
   // We already verified above that the user owns this workspace + ASIN, so
   // bypassing RLS here is intentional and safe.
-  console.log(`[bsr-refresh][7] inserting snapshot: workspace=${member.workspace_id} tracked_asin=${tracked.id}`)
-  const insertPayload = {
-    workspace_id:       member.workspace_id,
-    tracked_asin_id:    tracked.id,
-    bsr:                result.bsr,
-    price:              result.price,
-    rating:             result.rating,
-    review_count:       result.review_count,
-    buy_box_owner:      result.buy_box_owner,
-    buy_box_status:     result.buy_box_status,
-    availability_score: result.availability_score,
-    checked_at:         result.checked_at,
-  }
-
-  console.log(`[bsr-refresh][7] insert payload:`, JSON.stringify(insertPayload, null, 2))
-
-  let adminClient
+  let adminClient: ReturnType<typeof createAdminClient>
   try {
     adminClient = createAdminClient()
   } catch (adminErr) {
@@ -112,21 +78,111 @@ export async function POST(
     )
   }
 
-  const { data: snapshot, error: insertErr } = await adminClient
-    .from('asin_snapshots')
-    .insert(insertPayload)
-    .select()
-    .single()
+  async function insertSnapshotWithStatus(params: {
+    bsr: number | null
+    price: number | null
+    rating: number | null
+    reviewCount: number | null
+    buyBoxOwner: string | null
+    buyBoxStatus: string
+    availabilityScore: number | null
+    checkedAt: string
+  }) {
+    const basePayload = {
+      workspace_id:       workspaceId,
+      tracked_asin_id:    trackedAsinId,
+      bsr:                params.bsr,
+      price:              params.price,
+      rating:             params.rating,
+      review_count:       params.reviewCount,
+      buy_box_owner:      params.buyBoxOwner,
+      buy_box_status:     params.buyBoxStatus,
+      availability_score: params.availabilityScore,
+      checked_at:         params.checkedAt,
+    }
+
+    const firstAttempt = await adminClient
+      .from('asin_snapshots')
+      .insert(basePayload)
+      .select()
+      .single()
+
+    if (!firstAttempt.error) return firstAttempt
+
+    // Fallback for stricter DB constraints on buy_box_status values.
+    const fallback = await adminClient
+      .from('asin_snapshots')
+      .insert({ ...basePayload, buy_box_status: 'unknown' })
+      .select()
+      .single()
+
+    return fallback
+  }
+
+  let result
+  try {
+    result = await scrapeAsinBsr(asin.toUpperCase(), tracked.marketplace)
+    console.log(`[bsr-refresh][6] OK   scraper: bsr=${result.bsr} price=${result.price} status=${result.scrape_status}`)
+    console.log(`[bsr-refresh][6] full result: ${JSON.stringify(result, null, 2)}`)
+  } catch (err) {
+    const checkedAt = new Date().toISOString()
+    console.error('[bsr-refresh][6] FAIL scraper:', String(err))
+
+    const { data: failedSnap, error: failedInsertErr } = await insertSnapshotWithStatus({
+      bsr: null,
+      price: null,
+      rating: null,
+      reviewCount: null,
+      buyBoxOwner: null,
+      buyBoxStatus: 'failed',
+      availabilityScore: null,
+      checkedAt,
+    })
+
+    if (failedInsertErr) {
+      console.error('[bsr-refresh][7] FAIL insert failed snapshot:', failedInsertErr.code, failedInsertErr.message)
+      return NextResponse.json(
+        { error: BSR_RUNTIME_FAILURE_MESSAGE },
+        { status: 502 },
+      )
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        scrape_status: 'failed',
+        error: BSR_RUNTIME_FAILURE_MESSAGE,
+        snapshot: failedSnap,
+      },
+      { status: 502 },
+    )
+  }
+
+  const partialSuccess = result.bsr === null
+  const buyBoxStatusForInsert = partialSuccess ? 'partial_success' : result.buy_box_status
+
+  console.log(`[bsr-refresh][7] inserting snapshot: workspace=${workspaceId} tracked_asin=${trackedAsinId}`)
+  const { data: snapshot, error: insertErr } = await insertSnapshotWithStatus({
+    bsr: result.bsr,
+    price: result.price,
+    rating: result.rating,
+    reviewCount: result.review_count,
+    buyBoxOwner: result.buy_box_owner,
+    buyBoxStatus: buyBoxStatusForInsert,
+    availabilityScore: result.availability_score,
+    checkedAt: result.checked_at,
+  })
 
   if (insertErr) {
-    console.error('[bsr-refresh][7] FAIL insert:', insertErr.code, insertErr.message, '| payload:', JSON.stringify(insertPayload))
+    console.error('[bsr-refresh][7] FAIL insert:', insertErr.code, insertErr.message)
     return NextResponse.json({ error: insertErr.message, detail: insertErr.code }, { status: 500 })
   }
   console.log(`[bsr-refresh][7] OK   snapshot inserted: id=${snapshot?.id} bsr=${snapshot?.bsr}`)
 
   return NextResponse.json({
-    success:       true,
-    scrape_status: result.scrape_status,
+    success:       !partialSuccess,
+    scrape_status: partialSuccess ? 'partial_success' : result.scrape_status,
+    message:       partialSuccess ? 'BSR not found in this check. Snapshot saved.' : undefined,
     bsr:           snapshot?.bsr,
     price:         snapshot?.price,
     rating:        snapshot?.rating,

@@ -6,6 +6,8 @@ import { checkPincode } from '@/lib/integrations/amazon-pincode-adapter'
 export const runtime = 'nodejs'
 export const maxDuration = 120 // 2 minutes for Playwright checks
 
+const PINCODE_FAILURE_MESSAGE = 'Pincode checker is temporarily unavailable. The failed check was saved and can be retried later.'
+
 /**
  * POST /api/asins/{asin}/pincode
  * 
@@ -57,13 +59,25 @@ export async function POST(
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
   const member = members[0]
+  const workspaceId = member.workspace_id
   console.log(`[pincode-check][3] OK   workspace found: ${member.workspace_id}`)
+
+  let adminClient: ReturnType<typeof createAdminClient>
+  try {
+    adminClient = createAdminClient()
+  } catch (adminErr) {
+    console.error('[pincode-check][3] FAIL admin client:', String(adminErr))
+    return NextResponse.json(
+      { error: 'Server misconfiguration' },
+      { status: 500 },
+    )
+  }
 
   // ── CHECK 4: Verify ASIN is tracked ─────────────────────────────────────
   const { data: tracked, error: asinErr } = await supabase
     .from('tracked_asins')
     .select('id, asin, marketplace')
-    .eq('workspace_id', member.workspace_id)
+    .eq('workspace_id', workspaceId)
     .eq('asin', asin.toUpperCase())
     .neq('status', 'archived')
     .single()
@@ -72,6 +86,7 @@ export async function POST(
     console.error('[pincode-check][4] FAIL tracked ASIN lookup:', asinErr?.message)
     return NextResponse.json({ error: 'ASIN not tracked or archived' }, { status: 404 })
   }
+  const trackedAsinId = tracked.id
   console.log(`[pincode-check][4] OK   ASIN tracked: id=${tracked.id} marketplace=${tracked.marketplace}`)
 
   // ── CHECK 5: Parse request body ─────────────────────────────────────────
@@ -91,8 +106,30 @@ export async function POST(
   if (tracked.marketplace === 'IN' && !/^\d{6}$/.test(pincode)) {
     return NextResponse.json({ error: 'Invalid pincode format (expected 6 digits)' }, { status: 400 })
   }
+  const normalizedPincode = pincode.trim()
 
   console.log(`[pincode-check][5] OK   pincode: ${pincode}`)
+
+  async function insertFailedCheck(failureReason?: string) {
+    const { data, error } = await adminClient
+      .from('pincode_checks')
+      .insert({
+        workspace_id: workspaceId,
+        tracked_asin_id: trackedAsinId,
+        pincode: normalizedPincode,
+        city: null,
+        available: false,
+        delivery_promise: `Check failed: ${(failureReason ?? 'runtime unavailable').slice(0, 180)}`,
+        price: null,
+        buy_box_seller: null,
+        fulfillment_type: null,
+        checked_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    return { data, error }
+  }
 
   // ── CHECK 6: Run pincode checker ───────────────────────────────────────
   console.log(`[pincode-check][6] spawning checker for ${asin} / ${pincode} / ${tracked.marketplace}`)
@@ -101,8 +138,19 @@ export async function POST(
     result = await checkPincode(asin.toUpperCase(), pincode, tracked.marketplace)
   } catch (err) {
     console.error('[pincode-check][6] FAIL checker:', String(err))
+
+    const { data: failedCheck, error: failedInsertErr } = await insertFailedCheck(
+      err instanceof Error ? err.message : String(err)
+    )
+    if (failedInsertErr) {
+      console.error('[pincode-check][6] FAIL insert failed check:', failedInsertErr.message)
+    }
+
     return NextResponse.json(
-      { error: 'Pincode check failed' },
+      {
+        error: PINCODE_FAILURE_MESSAGE,
+        check: failedCheck ?? null,
+      },
       { status: 502 },
     )
   }
@@ -158,8 +206,8 @@ export async function POST(
   const fulfillmentType = result.amazon_fulfilled ? 'FBA' : 'FBM'
 
   const insertPayload = {
-    workspace_id:     member.workspace_id,
-    tracked_asin_id:  tracked.id,
+    workspace_id:     workspaceId,
+    tracked_asin_id:  trackedAsinId,
     pincode:          result.pincode,
     city:             null, // Not extracted by tool
     available:        result.is_buyable,
@@ -171,17 +219,6 @@ export async function POST(
   }
 
   console.log(`[pincode-check][7] insert payload:`, JSON.stringify(insertPayload, null, 2))
-
-  let adminClient
-  try {
-    adminClient = createAdminClient()
-  } catch (adminErr) {
-    console.error('[pincode-check][7] FAIL admin client:', String(adminErr))
-    return NextResponse.json(
-      { error: 'Server misconfiguration' },
-      { status: 500 },
-    )
-  }
 
   const { data: check, error: insertErr } = await adminClient
     .from('pincode_checks')

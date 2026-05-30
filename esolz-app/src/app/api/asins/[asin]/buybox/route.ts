@@ -6,6 +6,8 @@ import { checkBuyBox } from '@/lib/integrations/amazon-buybox-adapter'
 export const runtime    = 'nodejs'
 export const maxDuration = 120 // 2 minutes for Playwright
 
+const BUYBOX_FAILURE_MESSAGE = 'Buy Box checker is temporarily unavailable. The failed check was saved and can be retried later.'
+
 /**
  * POST /api/asins/{asin}/buybox
  *
@@ -59,6 +61,8 @@ export async function POST(
   const workspaceId = members[0].workspace_id
   console.log(`[buybox-check][3] OK   workspace: ${workspaceId}`)
 
+  const adminClient = createAdminClient()
+
   // ── Verify tracked ASIN ─────────────────────────────────────────────────
   const { data: tracked, error: asinErr } = await supabase
     .from('tracked_asins')
@@ -72,7 +76,39 @@ export async function POST(
     console.error('[buybox-check][4] FAIL tracked ASIN:', asinErr?.message)
     return NextResponse.json({ error: 'ASIN not tracked or archived' }, { status: 404 })
   }
+  const trackedAsinId = tracked.id
   console.log(`[buybox-check][4] OK   tracked id=${tracked.id} mp=${tracked.marketplace}`)
+
+  async function insertFailedSnapshot(message?: string) {
+    const payload = {
+      workspace_id:     workspaceId,
+      tracked_asin_id:  trackedAsinId,
+      buy_box_owner:    null,
+      buy_box_status:   'failed',
+      buy_box_price:    null,
+      your_price:       null,
+      price_gap:        null,
+      fulfillment_type: null,
+      checked_at:       new Date().toISOString(),
+    }
+
+    const attempt = await adminClient
+      .from('buybox_snapshots')
+      .insert(payload)
+      .select()
+      .single()
+
+    if (!attempt.error) return attempt
+
+    // Fallback for stricter status constraints.
+    const fallback = await adminClient
+      .from('buybox_snapshots')
+      .insert({ ...payload, buy_box_status: 'suppressed', buy_box_owner: message ? `failed: ${message.slice(0, 120)}` : null })
+      .select()
+      .single()
+
+    return fallback
+  }
 
   // ── Run Buy Box check ───────────────────────────────────────────────────
   const isMock = process.env.NODE_ENV !== 'production' && req.nextUrl.searchParams.get('mock') === '1'
@@ -93,32 +129,44 @@ export async function POST(
     try {
       result = await checkBuyBox(tracked.asin, tracked.marketplace)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error('[buybox-check][5] FAIL:', msg)
-      return NextResponse.json({ error: `Buy Box check failed: ${msg}` }, { status: 500 })
+      console.error('[buybox-check][5] FAIL:', err instanceof Error ? err.message : String(err))
+
+      const { error: snapErr } = await insertFailedSnapshot()
+      if (snapErr) {
+        console.error('[buybox-check][5] failed snapshot insert error:', snapErr.message)
+      }
+
+      return NextResponse.json({ error: BUYBOX_FAILURE_MESSAGE }, { status: 500 })
     }
   }
   console.log(`[buybox-check][5] OK   owner=${result.buy_box_owner} price=${result.buy_box_price} sellers=${result.total_sellers}`)
 
   if (result.captcha_seen || result.buy_box_status === 'captcha') {
+    const { error: snapErr } = await insertFailedSnapshot('captcha')
+    if (snapErr) {
+      console.error('[buybox-check][5] failed snapshot insert error:', snapErr.message)
+    }
     return NextResponse.json(
-      { error: 'Amazon showed a CAPTCHA — blocked by anti-bot. Try again in a few minutes.' },
+      { error: BUYBOX_FAILURE_MESSAGE },
       { status: 503 }
     )
   }
 
   if (result.error && !result.buy_box_owner) {
+    const { error: snapErr } = await insertFailedSnapshot(result.error)
+    if (snapErr) {
+      console.error('[buybox-check][5] failed snapshot insert error:', snapErr.message)
+    }
     return NextResponse.json(
-      { error: result.error },
+      { error: BUYBOX_FAILURE_MESSAGE },
       { status: 502 }
     )
   }
 
   // ── Insert into buybox_snapshots ────────────────────────────────────────
-  const adminClient = createAdminClient()
   const insertPayload = {
     workspace_id:    workspaceId,
-    tracked_asin_id: tracked.id,
+    tracked_asin_id: trackedAsinId,
     buy_box_owner:   result.buy_box_owner,
     buy_box_status:  result.buy_box_status,
     buy_box_price:   result.buy_box_price,

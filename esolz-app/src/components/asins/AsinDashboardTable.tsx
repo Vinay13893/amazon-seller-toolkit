@@ -103,7 +103,19 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
 
               {/* ── BSR + movement ── */}
               <td className="px-4 py-3">
-                <BsrBadge rank={p.bsr_rank} prevRank={p.bsr_rank_prev} size="sm" />
+                <BsrBadge
+                  rank={p.bsr_rank}
+                  prevRank={p.bsr_rank_prev}
+                  checkedAt={p.captured_at}
+                  hasOtherSignals={
+                    p.price !== null ||
+                    p.rating !== null ||
+                    p.review_count !== null ||
+                    p.buybox_winner !== null ||
+                    p.availability_score !== null
+                  }
+                  size="sm"
+                />
               </td>
 
               {/* ── Price ── */}

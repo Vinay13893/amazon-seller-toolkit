@@ -243,6 +243,23 @@ export default function BsrTrackerPage() {
     [products, selectedAsinCode],
   )
 
+  function deriveBsrState(p: ProductSnapshot): 'never_checked' | 'bsr_not_found' | 'failed' | 'stale' | 'ok' {
+    if (!p.captured_at) return 'never_checked'
+
+    const hasOtherSignals =
+      p.price !== null ||
+      p.rating !== null ||
+      p.review_count !== null ||
+      p.buybox_winner !== null ||
+      p.availability_score !== null
+
+    if (p.bsr_rank === null) return hasOtherSignals ? 'bsr_not_found' : 'failed'
+
+    const ageMs = Date.now() - new Date(p.captured_at).getTime()
+    if (ageMs > 24 * 60 * 60 * 1000) return 'stale'
+    return 'ok'
+  }
+
   const categoryBreakdown = useMemo(() => {
     const map = new Map<string, { products: ProductSnapshot[]; count: number }>()
     for (const p of products) {
@@ -672,9 +689,16 @@ export default function BsrTrackerPage() {
                           #{p.bsr_rank.toLocaleString('en-IN')}
                         </span>
                       ) : (
-                        <Badge variant="secondary" className="text-[10px]">
-                          No Data
-                        </Badge>
+                        (() => {
+                          const state = deriveBsrState(p)
+                          if (state === 'never_checked') {
+                            return <Badge variant="secondary" className="text-[10px]">Never checked</Badge>
+                          }
+                          if (state === 'bsr_not_found') {
+                            return <Badge className="text-[10px] bg-yellow-500/15 text-yellow-400 border-yellow-500/20">BSR not found</Badge>
+                          }
+                          return <Badge className="text-[10px] bg-red-500/15 text-red-400 border-red-500/20">Failed</Badge>
+                        })()
                       )}
                     </td>
                     <td className="px-4 py-3.5 text-right hidden sm:table-cell">

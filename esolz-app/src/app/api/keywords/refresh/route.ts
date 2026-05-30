@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { checkKeywordRank } from '@/lib/integrations/amazon-keyword-adapter'
+import {
+  checkKeywordRank,
+  isKeywordRuntimeUnavailableError,
+  KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
+} from '@/lib/integrations/amazon-keyword-adapter'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120
+
+const RUNTIME_UNAVAILABLE_RESPONSE_MESSAGE = 'Keyword rank checker runtime is not available. Please try again later.'
 
 /**
  * POST /api/keywords/refresh
@@ -34,12 +40,13 @@ export async function POST(_req: NextRequest) {
   if (!member?.workspace_id) {
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
+  const workspaceId = member.workspace_id
 
   // ── Keywords with ASIN association ────────────────────────────────────────
   const { data: keywords, error: kwErr } = await supabase
     .from('tracked_keywords')
     .select('id, keyword, marketplace, tracked_asin_id, tracked_asins(asin, marketplace)')
-    .eq('workspace_id', member.workspace_id)
+    .eq('workspace_id', workspaceId)
     .not('tracked_asin_id', 'is', null)
 
   console.log('[keywords/refresh] keywords with ASINs:', keywords?.length ?? 0, kwErr?.message ?? null)
@@ -54,6 +61,7 @@ export async function POST(_req: NextRequest) {
   }
 
   const admin = createAdminClient()
+  let runtimeUnavailableDetected = false
   const results: {
     keyword_id:    string
     keyword:       string
@@ -66,6 +74,32 @@ export async function POST(_req: NextRequest) {
     error?:        string
   }[] = []
 
+  async function insertFailedSnapshot(params: {
+    trackedKeywordId: string
+    trackedAsinId: string
+    keyword: string
+    checkedAt: string
+    errorMessage: string
+  }) {
+    await admin
+      .from('keyword_rank_snapshots')
+      .insert({
+        workspace_id:       workspaceId,
+        tracked_keyword_id: params.trackedKeywordId,
+        tracked_asin_id:    params.trackedAsinId,
+        keyword:            params.keyword,
+        organic_rank:       null,
+        sponsored_rank:     null,
+        page:               null,
+        position_on_page:   null,
+        found:              false,
+        scrape_status:      'failed',
+        error_message:      params.errorMessage,
+        page_status:        'not_ranking',
+        checked_at:         params.checkedAt,
+      })
+  }
+
   for (const kw of keywords) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const asinRow = Array.isArray(kw.tracked_asins)
@@ -74,8 +108,32 @@ export async function POST(_req: NextRequest) {
 
     const asin       = asinRow?.asin
     const market     = kw.marketplace ?? asinRow?.marketplace ?? 'IN'
+    const trackedAsinId = kw.tracked_asin_id as string
 
     if (!asin) continue
+
+    if (runtimeUnavailableDetected) {
+      const checkedAt = new Date().toISOString()
+      await insertFailedSnapshot({
+        trackedKeywordId: kw.id,
+        trackedAsinId,
+        keyword: kw.keyword,
+        checkedAt,
+        errorMessage: KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
+      })
+      results.push({
+        keyword_id: kw.id,
+        keyword: kw.keyword,
+        asin,
+        organic_rank: null,
+        sponsored_rank: null,
+        page_status: 'not_ranking',
+        scan_status: 'failed',
+        checked_at: checkedAt,
+        error: KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
+      })
+      continue
+    }
 
     try {
       console.log(`[keywords/refresh] checking rank for: "${kw.keyword}" / ${asin}`)
@@ -86,9 +144,9 @@ export async function POST(_req: NextRequest) {
       await admin
         .from('keyword_rank_snapshots')
         .insert({
-          workspace_id:       member.workspace_id,
+          workspace_id:       workspaceId,
           tracked_keyword_id: kw.id,
-          tracked_asin_id:    kw.tracked_asin_id,
+          tracked_asin_id:    trackedAsinId,
           keyword:            kw.keyword,
           organic_rank:       res.organic_rank,
           sponsored_rank:     res.sponsored_rank,
@@ -113,23 +171,27 @@ export async function POST(_req: NextRequest) {
       })
     } catch (err) {
       const checkedAt = new Date().toISOString()
-      await admin
-        .from('keyword_rank_snapshots')
-        .insert({
-          workspace_id:       member.workspace_id,
-          tracked_keyword_id: kw.id,
-          tracked_asin_id:    kw.tracked_asin_id,
-          keyword:            kw.keyword,
-          organic_rank:       null,
-          sponsored_rank:     null,
-          page:               null,
-          position_on_page:   null,
-          found:              false,
-          scrape_status:      'failed',
-          error_message:      String(err),
-          page_status:        'not_ranking',
-          checked_at:         checkedAt,
+      const runtimeUnavailable = isKeywordRuntimeUnavailableError(err)
+      const safeError = runtimeUnavailable
+        ? KEYWORD_RUNTIME_UNAVAILABLE_ERROR
+        : (err instanceof Error ? err.message : 'Keyword rank check failed')
+
+      if (runtimeUnavailable) {
+        runtimeUnavailableDetected = true
+        console.warn('[keywords/refresh] runtime unavailable while refreshing', {
+          keyword: kw.keyword,
+          asin,
+          attempted_binaries: err.attemptedBinaries,
         })
+      }
+
+      await insertFailedSnapshot({
+        trackedKeywordId: kw.id,
+        trackedAsinId,
+        keyword: kw.keyword,
+        checkedAt,
+        errorMessage: safeError,
+      })
 
       results.push({
         keyword_id:    kw.id,
@@ -138,11 +200,21 @@ export async function POST(_req: NextRequest) {
         organic_rank:  null,
         sponsored_rank: null,
         page_status:   'not_ranking',
-        scan_status:   'error',
+        scan_status:   'failed',
         checked_at:    checkedAt,
-        error:         String(err),
+        error:         safeError,
       })
     }
+  }
+
+  if (runtimeUnavailableDetected) {
+    return NextResponse.json({
+      ok: false,
+      status: 'failed',
+      message: RUNTIME_UNAVAILABLE_RESPONSE_MESSAGE,
+      checked: results.length,
+      results,
+    })
   }
 
   return NextResponse.json({ checked: results.length, results })

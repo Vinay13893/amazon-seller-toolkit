@@ -5,6 +5,9 @@ import { ArrowUp, ArrowDown, Minus } from 'lucide-react'
 interface BsrBadgeProps {
   rank: number | null
   prevRank?: number | null
+  checkedAt?: string | null
+  hasOtherSignals?: boolean
+  staleAfterHours?: number
   size?: 'sm' | 'md'
 }
 
@@ -13,14 +16,29 @@ interface BsrBadgeProps {
  * Green ↑ = rank improved (number went down).
  * Red ↓ = rank worsened (number went up).
  */
-export function BsrBadge({ rank, prevRank, size = 'md' }: BsrBadgeProps) {
+export function BsrBadge({
+  rank,
+  prevRank,
+  checkedAt = null,
+  hasOtherSignals = false,
+  staleAfterHours = 24,
+  size = 'md',
+}: BsrBadgeProps) {
   if (rank === null) {
-    return <span className="text-muted-foreground/60 text-xs italic">Pending</span>
+    if (!checkedAt) {
+      return <span className="text-muted-foreground/70 text-xs">Never checked</span>
+    }
+    if (hasOtherSignals) {
+      return <span className="text-yellow-400 text-xs">BSR not found</span>
+    }
+    return <span className="text-red-400 text-xs">Failed</span>
   }
 
   // Positive delta → improved (lower rank number = better)
   const delta = prevRank != null ? prevRank - rank : null
   const rankStr = `#${rank.toLocaleString('en-IN')}`
+  const ageMs = checkedAt ? Date.now() - new Date(checkedAt).getTime() : null
+  const isStale = ageMs !== null && ageMs > staleAfterHours * 60 * 60 * 1000
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -31,6 +49,10 @@ export function BsrBadge({ rank, prevRank, size = 'md' }: BsrBadgeProps) {
       >
         {rankStr}
       </span>
+
+      {isStale && (
+        <span className="text-[10px] leading-none text-yellow-400">Stale</span>
+      )}
 
       {delta !== null && delta !== 0 && (
         <span

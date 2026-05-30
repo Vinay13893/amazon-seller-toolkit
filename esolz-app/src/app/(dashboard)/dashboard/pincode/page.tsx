@@ -44,6 +44,10 @@ interface DbPincodeCheck {
   checked_at:       string
 }
 
+function isFailedCheck(row: DbPincodeCheck): boolean {
+  return (row.delivery_promise ?? '').toLowerCase().startsWith('check failed:')
+}
+
 // ─── Pincode → city lookup ────────────────────────────────────────────────────
 
 const PINCODE_TO_CITY: Record<string, string> = {}
@@ -108,8 +112,9 @@ export default function PincodePage() {
     () => trackedAsins.find(a => a.id === selectedAsinId)?.product_title ?? selectedAsin,
     [trackedAsins, selectedAsinId, selectedAsin],
   )
-  const available     = useMemo(() => results.filter(r => r.available),  [results])
-  const unavailable   = useMemo(() => results.filter(r => !r.available), [results])
+  const failedChecks  = useMemo(() => results.filter(isFailedCheck), [results])
+  const available     = useMemo(() => results.filter(r => r.available && !isFailedCheck(r)),  [results])
+  const unavailable   = useMemo(() => results.filter(r => !r.available && !isFailedCheck(r)), [results])
   const score         = useMemo(
     () => results.length ? Math.round((available.length / results.length) * 100) : 0,
     [results, available],
@@ -413,6 +418,7 @@ export default function PincodePage() {
         <KpiCard label="Available"          value={String(available.length)}  sub={results.length ? `of ${results.length} pincodes` : 'no data yet'}             icon={CheckCircle2} />
         <KpiCard label="Unavailable"        value={String(unavailable.length)} sub="pincodes unavailable"
           trend={unavailable.length > 0 ? { value: unavailable.length, label: 'need attention' } : undefined} icon={XCircle} />
+        <KpiCard label="Failed"             value={String(failedChecks.length)} sub="checks failed" icon={ShieldAlert} />
         <KpiCard label="Avg Availability"   value={results.length ? `${score}%` : '—'}
           sub={results.length ? scoreToStatus(score) : 'no checks yet'}                                                                                          icon={BarChart2} />
         <KpiCard label="Last Checked"       value={latestChecked ? timeAgo(latestChecked) : '—'}
@@ -524,7 +530,11 @@ export default function PincodePage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center">
-                        {r.available ? (
+                        {isFailedCheck(r) ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
+                            <ShieldAlert className="size-3.5" /> Failed
+                          </span>
+                        ) : r.available ? (
                           <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
                             <CheckCircle2 className="size-3.5" /> Available
                           </span>

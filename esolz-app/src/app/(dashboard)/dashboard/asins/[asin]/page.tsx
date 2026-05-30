@@ -478,10 +478,13 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     setKwRefreshing(true)
     try {
       const res = await fetch(`/api/asins/${asin}/keywords/refresh`, { method: 'POST' })
-      const data = await res.json() as { checked?: number; results?: unknown[]; error?: string }
+      const data = await res.json() as { checked?: number; results?: unknown[]; error?: string; status?: string; message?: string }
       console.log('[asin/keywords/refresh] response:', { status: res.status, data })
       if (!res.ok) {
         toast.error(data.error ?? 'Rank refresh failed')
+      } else if (data.status === 'failed') {
+        toast.info('Keyword checker is temporarily unavailable. Your keyword was saved and will be checked later.')
+        await loadAsinKeywords()
       } else {
         toast.success(`Refreshed ${data.checked ?? 0} keyword ranks`)
         await loadAsinKeywords()
@@ -534,13 +537,18 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     setRefreshing(true)
     try {
       const res  = await fetch(`/api/asins/${asin}/refresh`, { method: 'POST' })
-      const data = await res.json() as { error?: string; detail?: string; scrape_status?: string }
+      const data = await res.json() as { error?: string; detail?: string; scrape_status?: string; success?: boolean; message?: string }
       if (!res.ok) {
         const msg = [data.error, data.detail, data.scrape_status].filter(Boolean).join(' — ')
         console.error('[bsr-refresh] API error:', data)
         toast.error(msg || 'Refresh failed')
+        await load()
       } else {
-        toast.success('Snapshot updated successfully')
+        if (data.scrape_status === 'partial_success') {
+          toast.warning('BSR not found in this check. Snapshot was saved.')
+        } else {
+          toast.success('Snapshot updated successfully')
+        }
         await load()
       }
     } catch (err) {
@@ -570,6 +578,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
       const data = await res.json()
       if (!res.ok) {
         toast.error(data.error || 'Pincode check failed')
+        await loadPincodeHistory()
       } else {
         toast.success('Pincode check completed')
         setLatestCheck(data.check)
@@ -591,6 +600,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
       const data = await res.json()
       if (!res.ok) {
         toast.error(data.error || 'Buy Box check failed')
+        await loadBuyBoxHistory()
       } else {
         toast.success(`Buy Box owner: ${data.result.buy_box_owner || 'Unknown'}`)
         await loadBuyBoxHistory()
