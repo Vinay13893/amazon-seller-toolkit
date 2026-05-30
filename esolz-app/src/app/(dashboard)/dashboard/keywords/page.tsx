@@ -84,8 +84,10 @@ interface ProductOption {
   asin: string
   marketplace: Marketplace
   title: string
+  sku: string | null
   brand: string | null
   productType: string | null
+  imageUrl: string | null
   source: 'tracked' | 'listing'
   trackedAsinId: string | null
 }
@@ -304,7 +306,7 @@ export default function KeywordsPage() {
   const [productOptions, setProductOptions] = useState<ProductOption[]>([])
   const [productSearch, setProductSearch] = useState('')
   const [selectedProductKey, setSelectedProductKey] = useState('')
-  const [trackingSelectedAsin, setTrackingSelectedAsin] = useState(false)
+  const [trackingAsinKey, setTrackingAsinKey] = useState<string | null>(null)
   const [keywordInput, setKeywordInput] = useState('')
   const [bulkKeywordInput, setBulkKeywordInput] = useState('')
   const [addingKeyword, setAddingKeyword] = useState(false)
@@ -328,9 +330,11 @@ export default function KeywordsPage() {
     return (
       p.asin.toLowerCase().includes(q) ||
       p.title.toLowerCase().includes(q) ||
+      (p.sku ?? '').toLowerCase().includes(q) ||
       (p.brand ?? '').toLowerCase().includes(q)
     )
   })
+  const visibleProducts = filteredProducts.slice(0, 8)
 
   useEffect(() => {
     setIsMounted(true)
@@ -344,13 +348,13 @@ export default function KeywordsPage() {
       const [trackedAsinsRes, listingItemsRes] = await Promise.all([
         supabase
           .from('tracked_asins')
-          .select('id, asin, marketplace, product_title, brand, category, status')
+          .select('id, asin, marketplace, product_title, brand, category, image_url, status')
           .eq('workspace_id', wsId)
           .neq('status', 'archived')
           .order('created_at', { ascending: false }),
         supabase
           .from('amazon_listing_items')
-          .select('id, asin, marketplace_id, item_name, brand, product_type, status')
+          .select('id, sku, asin, marketplace_id, item_name, brand, product_type, image_url, status')
           .eq('workspace_id', wsId)
           .not('asin', 'is', null)
           .order('item_name', { ascending: true })
@@ -367,8 +371,10 @@ export default function KeywordsPage() {
           asin: (row.asin as string).toUpperCase(),
           marketplace: mp,
           title: (row.product_title as string | null) ?? (row.asin as string),
+          sku: null,
           brand: (row.brand as string | null) ?? null,
           productType: (row.category as string | null) ?? null,
+          imageUrl: (row.image_url as string | null) ?? null,
           source: 'tracked',
           trackedAsinId: row.id as string,
         })
@@ -385,8 +391,10 @@ export default function KeywordsPage() {
           asin,
           marketplace: mp,
           title: (row.item_name as string | null) ?? asin,
+          sku: (row.sku as string | null) ?? null,
           brand: (row.brand as string | null) ?? null,
           productType: (row.product_type as string | null) ?? null,
+          imageUrl: (row.image_url as string | null) ?? null,
           source: 'listing',
           trackedAsinId: null,
         })
@@ -394,7 +402,7 @@ export default function KeywordsPage() {
 
       const merged = [...map.values()].sort((a, b) => a.title.localeCompare(b.title))
       setProductOptions(merged)
-      setSelectedProductKey(prev => (merged.find(p => p.key === prev) ? prev : merged[0]?.key ?? ''))
+      setSelectedProductKey(prev => (merged.find(p => p.key === prev) ? prev : ''))
     } finally {
       setProductsLoading(false)
     }
@@ -544,9 +552,12 @@ export default function KeywordsPage() {
     setIsRefreshing(true)
     try {
       const res = await fetch('/api/keywords/refresh', { method: 'POST' })
-      const data = await res.json() as { checked?: number; message?: string; error?: string }
+      const data = await res.json() as { checked?: number; message?: string; error?: string; ok?: boolean; status?: string }
       if (!res.ok) {
         toast.error(data.error ?? 'Refresh failed')
+      } else if (data.status === 'failed') {
+        toast.info('Keyword checker is temporarily unavailable. Your keyword was saved and will be checked later.')
+        if (workspaceId) await loadTrackedKeywords(workspaceId)
       } else if (data.message) {
         toast.info(data.message)
       } else {
@@ -560,17 +571,17 @@ export default function KeywordsPage() {
     }
   }
 
-  async function handleTrackSelectedAsin() {
-    if (!workspaceId || !selectedProduct || selectedProduct.trackedAsinId) return
-    setTrackingSelectedAsin(true)
+  async function handleTrackSelectedAsin(product: ProductOption) {
+    if (!workspaceId || product.trackedAsinId) return
+    setTrackingAsinKey(product.key)
     try {
       const payload: AddAsinInput = {
-        asin: selectedProduct.asin,
-        productTitle: selectedProduct.title,
-        marketplace: selectedProduct.marketplace,
-        brand: selectedProduct.brand ?? '',
-        category: selectedProduct.productType ?? '',
-        imageUrl: '',
+        asin: product.asin,
+        productTitle: product.title,
+        marketplace: product.marketplace,
+        brand: product.brand ?? '',
+        category: product.productType ?? '',
+        imageUrl: product.imageUrl ?? '',
       }
       const created = await addTrackedAsin(workspaceId, payload)
       if (!created) {
@@ -585,8 +596,9 @@ export default function KeywordsPage() {
       }
       toast.success('ASIN tracked. You can add keywords now.')
       await loadProductOptions(workspaceId)
+      setSelectedProductKey(buildProductKey(product.asin, product.marketplace))
     } finally {
-      setTrackingSelectedAsin(false)
+      setTrackingAsinKey(null)
     }
   }
 
@@ -705,6 +717,9 @@ export default function KeywordsPage() {
   const chartData = chartHistory.slice(-chartRange)
   const hasChartData = chartData.some(d => d.rank !== null)
   const selectedKw = trackedData.find(k => k.id === selectedKeywordId)
+  const selectedProductKeywordCount = selectedProduct
+    ? trackedData.filter(k => k.asin === selectedProduct.asin).length
+    : 0
 
   return (
     <div className="flex flex-col gap-8">
@@ -750,167 +765,241 @@ export default function KeywordsPage() {
         />
       </div>
 
-      {/* ── 3. Keyword research section ───────────────────────────────────── */}
-      <div ref={researchRef} className="bg-card border border-border rounded-xl p-6">
-        <h2 className="text-sm font-semibold text-foreground mb-4">Keyword Research</h2>
-        <form onSubmit={handleResearch} className="flex flex-col gap-4">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="flex flex-col gap-1.5 sm:col-span-1">
-              <Label htmlFor="seed-kw">Seed keyword</Label>
+      {/* ── 4. Choose product ─────────────────────────────────────────────── */}
+      <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">Choose a product to track keywords</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Select one of your tracked ASINs or synced Amazon listings.
+          </p>
+        </div>
+
+        {productsLoading ? (
+          <p className="text-xs text-muted-foreground">Loading products…</p>
+        ) : productOptions.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-4 text-center space-y-3">
+            <p className="text-sm text-foreground">No products found yet. Add an ASIN or sync Amazon listings first.</p>
+            <div className="flex items-center justify-center gap-2 flex-wrap">
+              <Button type="button" variant="outline" render={<Link href="/dashboard/asins" />}>
+                Go to ASINs
+              </Button>
+              <Button type="button" variant="outline" render={<Link href="/dashboard/settings" />}>
+                Sync Amazon Listings
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div>
+              <Label htmlFor="product-search">Search products</Label>
               <Input
-                id="seed-kw"
-                placeholder="e.g. desi ghee"
-                value={seedKeyword}
-                onChange={e => setSeedKeyword(e.target.value)}
+                id="product-search"
+                placeholder="Search by title, ASIN, SKU, or brand"
+                value={productSearch}
+                onChange={e => setProductSearch(e.target.value)}
               />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="kw-marketplace">Marketplace</Label>
-              <select
-                id="kw-marketplace"
-                value={marketplace}
-                onChange={e => setMarketplace(e.target.value as 'amazon.in' | 'amazon.com')}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="amazon.in">Amazon India</option>
-                <option value="amazon.com">Amazon US</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="kw-category">Category</Label>
-              <select
-                id="kw-category"
-                value={category}
-                onChange={e => setCategory(e.target.value)}
-                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-              >
-                <option value="all">All Categories</option>
-                <option value="grocery">Grocery & Gourmet</option>
-                <option value="health">Health & Personal Care</option>
-                <option value="kitchen">Kitchen & Dining</option>
-                <option value="sports">Sports & Fitness</option>
-              </select>
-            </div>
-          </div>
-          <div>
-            <Button type="submit" disabled={isResearching || !seedKeyword.trim()}>
-              {isResearching ? (
-                <>
-                  <RefreshCw className="size-4 animate-spin" />
-                  Researching…
-                </>
-              ) : (
-                <>
-                  <Search className="size-4" />
-                  Research Keywords
-                </>
-              )}
-            </Button>
-          </div>
-        </form>
 
-        {/* Research results table */}
-        {researchResults && (
-          <div className="mt-6">
-            <div className="flex items-center justify-between mb-3">
+            {filteredProducts.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border p-4 text-center">
+                <p className="text-sm text-muted-foreground">No products match your search.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {visibleProducts.map(product => {
+                  const isSelected = selectedProductKey === product.key
+                  const isTracked = Boolean(product.trackedAsinId)
+                  const isTracking = trackingAsinKey === product.key
+                  return (
+                    <div
+                      key={product.key}
+                      className={cn(
+                        'rounded-lg border p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-3',
+                        isSelected ? 'border-primary/40 bg-primary/5' : 'border-border',
+                      )}
+                    >
+                      {product.imageUrl ? (
+                        <img
+                          src={product.imageUrl}
+                          alt={product.title}
+                          className="h-14 w-14 rounded-md object-cover border border-border"
+                        />
+                      ) : (
+                        <div className="h-14 w-14 rounded-md border border-border bg-muted/30 flex items-center justify-center text-[10px] text-muted-foreground">
+                          No image
+                        </div>
+                      )}
+
+                      <div className="flex-1 min-w-0 space-y-1.5">
+                        <p className="text-sm font-medium text-foreground line-clamp-2">{product.title}</p>
+                        <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                          <span className="font-mono">{product.asin}</span>
+                          {product.sku && <span>SKU: {product.sku}</span>}
+                          {product.brand && <span>Brand: {product.brand}</span>}
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant="outline" className="text-[10px]">{product.marketplace}</Badge>
+                          <Badge variant="outline" className="text-[10px]">
+                            {isTracked ? 'Tracked ASIN' : 'Amazon Listing'}
+                          </Badge>
+                          <Badge className={cn('text-[10px]', isTracked
+                            ? 'bg-green-500/15 text-green-400 border-green-500/20'
+                            : 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20')}>
+                            {isTracked ? 'Ready for keywords' : 'Track ASIN first'}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0">
+                        {isTracked ? (
+                          <Button
+                            type="button"
+                            variant={isSelected ? 'default' : 'outline'}
+                            onClick={() => setSelectedProductKey(product.key)}
+                          >
+                            {isSelected ? 'Selected' : 'Select Product'}
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => handleTrackSelectedAsin(product)}
+                            disabled={isTracking}
+                          >
+                            {isTracking ? 'Tracking…' : 'Track ASIN First'}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {filteredProducts.length > 8 && (
               <p className="text-xs text-muted-foreground">
-                {researchResults.length} keywords found for &ldquo;{seedKeyword}&rdquo;
+                Showing 8 of {filteredProducts.length} products. Use search to narrow results.
               </p>
-            </div>
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-muted/30 text-[11px] text-muted-foreground font-semibold uppercase tracking-wider">
-                    <th className="text-left px-4 py-3">Keyword</th>
-                    <th className="text-right px-4 py-3">Volume</th>
-                    <th className="text-right px-4 py-3">CPC (₹)</th>
-                    <th className="text-center px-4 py-3">Competition</th>
-                    <th className="text-left px-4 py-3">Difficulty</th>
-                    <th className="text-center px-4 py-3">Intent</th>
-                    <th className="text-left px-4 py-3">Top ASIN</th>
-                    <th className="text-center px-4 py-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {researchResults.map(kw => (
-                    <tr key={kw.id} className="hover:bg-border/20 transition-colors">
-                      <td className="px-4 py-3">
-                        <span className="text-xs font-medium text-foreground">{kw.keyword}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-xs text-foreground font-semibold tabular-nums">
-                          {kw.search_volume != null ? kw.search_volume.toLocaleString('en-IN') : '—'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-xs text-muted-foreground tabular-nums">
-                          {kw.cpc_estimate != null ? `₹${kw.cpc_estimate.toFixed(1)}` : '—'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className="text-xs text-muted-foreground">—</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {kw.difficulty != null
-                          ? <DifficultyBar score={kw.difficulty} />
-                          : <span className="text-xs text-muted-foreground">—</span>}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className="text-xs text-muted-foreground">{kw.intent ?? '—'}</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        {kw.top_ranking_asin
-                          ? (
-                            <Link
-                              href={`/dashboard/asins/${kw.top_ranking_asin}`}
-                              className="font-mono text-[11px] text-primary/70 hover:text-primary hover:underline"
-                            >
-                              {kw.top_ranking_asin}
-                            </Link>
-                          )
-                          : <span className="text-xs text-muted-foreground font-mono">—</span>
-                        }
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <button
-                          type="button"
-                          onClick={() => toggleTrack(kw)}
-                          disabled={trackingKw === kw.id}
-                          className={cn(
-                            'inline-flex items-center gap-1 text-xs rounded-md px-2 py-1 font-medium transition-colors border disabled:opacity-50',
-                            tracked.has(kw.id)
-                              ? 'bg-green-500/10 text-green-400 border-green-500/20'
-                              : 'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20',
-                          )}
-                        >
-                          {trackingKw === kw.id ? (
-                            <><RefreshCw className="size-3 animate-spin" /> Saving…</>
-                          ) : tracked.has(kw.id) ? (
-                            <><CheckCircle2 className="size-3" /> Tracking</>
-                          ) : (
-                            <><Plus className="size-3" /> Track</>
-                          )}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
+            )}
 
-        {!researchResults && (
-          <div className="mt-6 flex flex-col items-center justify-center h-24 rounded-lg border border-dashed border-border gap-2">
-            <Search className="size-5 text-muted-foreground/40" />
-            <p className="text-xs text-muted-foreground">
-              Enter a seed keyword and click Research to discover keywords
-            </p>
-          </div>
+            {!selectedProduct && filteredProducts.length > 0 && (
+              <div className="rounded-lg border border-dashed border-border p-4 text-center">
+                <p className="text-sm text-muted-foreground">Select a product above to start tracking keywords.</p>
+              </div>
+            )}
+          </>
         )}
       </div>
 
-      {/* ── 4. Rank tracking table ────────────────────────────────────────── */}
+      {/* ── 5. Selected product + add keywords ───────────────────────────── */}
+      {selectedProduct && (
+        <div className="bg-card border border-border rounded-xl p-6 space-y-4">
+          <div className="rounded-lg border border-border p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            {selectedProduct.imageUrl ? (
+              <img
+                src={selectedProduct.imageUrl}
+                alt={selectedProduct.title}
+                className="h-14 w-14 rounded-md object-cover border border-border"
+              />
+            ) : (
+              <div className="h-14 w-14 rounded-md border border-border bg-muted/30 flex items-center justify-center text-[10px] text-muted-foreground">
+                No image
+              </div>
+            )}
+
+            <div className="flex-1 min-w-0 space-y-1.5">
+              <p className="text-sm font-medium text-foreground line-clamp-2">{selectedProduct.title}</p>
+              <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
+                <span className="font-mono">{selectedProduct.asin}</span>
+                {selectedProduct.sku && <span>SKU: {selectedProduct.sku}</span>}
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant="outline" className="text-[10px]">{selectedProduct.marketplace}</Badge>
+                <Badge variant="outline" className="text-[10px]">
+                  {selectedProduct.trackedAsinId ? 'Tracked ASIN' : 'Amazon Listing'}
+                </Badge>
+              </div>
+            </div>
+
+            <Button type="button" variant="outline" onClick={() => setSelectedProductKey('')}>
+              Change product
+            </Button>
+          </div>
+
+          {!selectedProduct.trackedAsinId ? (
+            <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-xs text-yellow-300">Track ASIN first to enable keyword tracking.</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => handleTrackSelectedAsin(selectedProduct)}
+                disabled={trackingAsinKey === selectedProduct.key}
+              >
+                {trackingAsinKey === selectedProduct.key ? 'Tracking…' : 'Track ASIN First'}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {selectedProductKeywordCount === 0 && (
+                <p className="text-sm text-muted-foreground">Add your first keyword for this ASIN.</p>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <Label htmlFor="keyword-single">Add keyword</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="keyword-single"
+                      placeholder="e.g. anti slip kitchen mat"
+                      value={keywordInput}
+                      onChange={e => setKeywordInput(e.target.value)}
+                    />
+                    <Button type="button" onClick={() => handleTrackKeywords('single')} disabled={addingKeyword}>
+                      Track Keyword
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <Label htmlFor="keyword-bulk">Bulk keywords (one per line)</Label>
+                  <textarea
+                    id="keyword-bulk"
+                    rows={3}
+                    className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                    placeholder={'anti slip mat\nkitchen mat\neasy home mat'}
+                    value={bulkKeywordInput}
+                    onChange={e => setBulkKeywordInput(e.target.value)}
+                  />
+                  <div className="mt-2">
+                    <Button type="button" variant="outline" onClick={() => handleTrackKeywords('bulk')} disabled={addingKeyword || !bulkKeywordInput.trim()}>
+                      Track Multiple Keywords
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {suggestedSeeds.length > 0 && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">Suggested keyword seeds</p>
+                  <div className="flex flex-wrap gap-2">
+                    {suggestedSeeds.map(seed => (
+                      <button
+                        key={seed}
+                        type="button"
+                        onClick={() => setKeywordInput(seed)}
+                        className="text-xs rounded-full border border-border bg-muted/30 px-2.5 py-1 hover:bg-muted/50"
+                      >
+                        {seed}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── 6. Rank tracking table ────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl">
         <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
           <h2 className="text-sm font-semibold text-foreground">Keyword Rank Tracking</h2>
@@ -926,117 +1015,6 @@ export default function KeywordsPage() {
               <><RefreshCw className="size-4" /> Refresh Ranks</>
             )}
           </Button>
-        </div>
-
-        <div className="px-6 py-4 border-b border-border space-y-4">
-          {productsLoading ? (
-            <p className="text-xs text-muted-foreground">Loading products…</p>
-          ) : productOptions.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border p-4 text-center space-y-3">
-              <p className="text-sm text-foreground">No products found. Add an ASIN or sync Amazon listings first.</p>
-              <div className="flex items-center justify-center gap-2 flex-wrap">
-                <Button type="button" variant="outline" render={<Link href="/dashboard/asins" />}>
-                  Go to ASINs
-                </Button>
-                <Button type="button" variant="outline" render={<Link href="/dashboard/settings" />}>
-                  Sync Amazon Listings
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div className="md:col-span-1">
-                  <Label htmlFor="product-search">Search product</Label>
-                  <Input
-                    id="product-search"
-                    placeholder="Search by title, ASIN, brand"
-                    value={productSearch}
-                    onChange={e => setProductSearch(e.target.value)}
-                  />
-                </div>
-                <div className="md:col-span-2">
-                  <Label htmlFor="product-select">Select product / ASIN</Label>
-                  <select
-                    id="product-select"
-                    value={selectedProductKey}
-                    onChange={e => setSelectedProductKey(e.target.value)}
-                    className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                  >
-                    {filteredProducts.map(p => (
-                      <option key={p.key} value={p.key}>
-                        {p.title} | {p.asin} | {p.marketplace} | {p.source === 'tracked' ? 'Tracked ASIN' : 'Amazon listing'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {selectedProduct && !selectedProduct.trackedAsinId ? (
-                <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 flex items-center justify-between gap-3 flex-wrap">
-                  <p className="text-xs text-yellow-300">
-                    Track ASIN first to enable keyword tracking.
-                  </p>
-                  <Button type="button" variant="outline" onClick={handleTrackSelectedAsin} disabled={trackingSelectedAsin}>
-                    {trackingSelectedAsin ? 'Tracking…' : 'Track ASIN First'}
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div>
-                      <Label htmlFor="keyword-single">Add keyword</Label>
-                      <div className="flex gap-2">
-                        <Input
-                          id="keyword-single"
-                          placeholder="e.g. anti slip kitchen mat"
-                          value={keywordInput}
-                          onChange={e => setKeywordInput(e.target.value)}
-                        />
-                        <Button type="button" onClick={() => handleTrackKeywords('single')} disabled={addingKeyword}>
-                          Track Keyword
-                        </Button>
-                      </div>
-                    </div>
-                    <div>
-                      <Label htmlFor="keyword-bulk">Bulk keywords (one per line)</Label>
-                      <textarea
-                        id="keyword-bulk"
-                        rows={3}
-                        className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
-                        placeholder={'anti slip mat\nkitchen mat\neasy home mat'}
-                        value={bulkKeywordInput}
-                        onChange={e => setBulkKeywordInput(e.target.value)}
-                      />
-                      <div className="mt-2">
-                        <Button type="button" variant="outline" onClick={() => handleTrackKeywords('bulk')} disabled={addingKeyword || !bulkKeywordInput.trim()}>
-                          Track Multiple Keywords
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {suggestedSeeds.length > 0 && (
-                    <div>
-                      <p className="text-xs text-muted-foreground mb-2">Suggested keyword seeds</p>
-                      <div className="flex flex-wrap gap-2">
-                        {suggestedSeeds.map(seed => (
-                          <button
-                            key={seed}
-                            type="button"
-                            onClick={() => setKeywordInput(seed)}
-                            className="text-xs rounded-full border border-border bg-muted/30 px-2.5 py-1 hover:bg-muted/50"
-                          >
-                            {seed}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
         </div>
 
         {trackedData.length === 0 ? (
@@ -1172,7 +1150,7 @@ export default function KeywordsPage() {
         </p>
       </div>
 
-      {/* ── 5. Rank trend chart ───────────────────────────────────────────── */}
+      {/* ── 7. Rank trend chart ───────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-6">
         {trackedData.length === 0 ? (
           <div className="h-[240px] flex flex-col items-center justify-center gap-2 text-center">
@@ -1311,6 +1289,165 @@ export default function KeywordsPage() {
           </div>
         )}
         </>
+        )}
+      </div>
+
+      {/* ── 8. Keyword research section ───────────────────────────────────── */}
+      <div ref={researchRef} className="bg-card border border-border rounded-xl p-6">
+        <h2 className="text-sm font-semibold text-foreground mb-4">Keyword Research</h2>
+        <form onSubmit={handleResearch} className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="flex flex-col gap-1.5 sm:col-span-1">
+              <Label htmlFor="seed-kw">Seed keyword</Label>
+              <Input
+                id="seed-kw"
+                placeholder="e.g. desi ghee"
+                value={seedKeyword}
+                onChange={e => setSeedKeyword(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="kw-marketplace">Marketplace</Label>
+              <select
+                id="kw-marketplace"
+                value={marketplace}
+                onChange={e => setMarketplace(e.target.value as 'amazon.in' | 'amazon.com')}
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="amazon.in">Amazon India</option>
+                <option value="amazon.com">Amazon US</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="kw-category">Category</Label>
+              <select
+                id="kw-category"
+                value={category}
+                onChange={e => setCategory(e.target.value)}
+                className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="all">All Categories</option>
+                <option value="grocery">Grocery & Gourmet</option>
+                <option value="health">Health & Personal Care</option>
+                <option value="kitchen">Kitchen & Dining</option>
+                <option value="sports">Sports & Fitness</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <Button type="submit" disabled={isResearching || !seedKeyword.trim()}>
+              {isResearching ? (
+                <>
+                  <RefreshCw className="size-4 animate-spin" />
+                  Researching…
+                </>
+              ) : (
+                <>
+                  <Search className="size-4" />
+                  Research Keywords
+                </>
+              )}
+            </Button>
+          </div>
+        </form>
+
+        {researchResults && (
+          <div className="mt-6">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-muted-foreground">
+                {researchResults.length} keywords found for &ldquo;{seedKeyword}&rdquo;
+              </p>
+            </div>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-muted/30 text-[11px] text-muted-foreground font-semibold uppercase tracking-wider">
+                    <th className="text-left px-4 py-3">Keyword</th>
+                    <th className="text-right px-4 py-3">Volume</th>
+                    <th className="text-right px-4 py-3">CPC (₹)</th>
+                    <th className="text-center px-4 py-3">Competition</th>
+                    <th className="text-left px-4 py-3">Difficulty</th>
+                    <th className="text-center px-4 py-3">Intent</th>
+                    <th className="text-left px-4 py-3">Top ASIN</th>
+                    <th className="text-center px-4 py-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {researchResults.map(kw => (
+                    <tr key={kw.id} className="hover:bg-border/20 transition-colors">
+                      <td className="px-4 py-3">
+                        <span className="text-xs font-medium text-foreground">{kw.keyword}</span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="text-xs text-foreground font-semibold tabular-nums">
+                          {kw.search_volume != null ? kw.search_volume.toLocaleString('en-IN') : '—'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          {kw.cpc_estimate != null ? `₹${kw.cpc_estimate.toFixed(1)}` : '—'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="text-xs text-muted-foreground">—</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {kw.difficulty != null
+                          ? <DifficultyBar score={kw.difficulty} />
+                          : <span className="text-xs text-muted-foreground">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className="text-xs text-muted-foreground">{kw.intent ?? '—'}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {kw.top_ranking_asin
+                          ? (
+                            <Link
+                              href={`/dashboard/asins/${kw.top_ranking_asin}`}
+                              className="font-mono text-[11px] text-primary/70 hover:text-primary hover:underline"
+                            >
+                              {kw.top_ranking_asin}
+                            </Link>
+                          )
+                          : <span className="text-xs text-muted-foreground font-mono">—</span>
+                        }
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => toggleTrack(kw)}
+                          disabled={trackingKw === kw.id}
+                          className={cn(
+                            'inline-flex items-center gap-1 text-xs rounded-md px-2 py-1 font-medium transition-colors border disabled:opacity-50',
+                            tracked.has(kw.id)
+                              ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                              : 'bg-primary/10 text-primary border-primary/20 hover:bg-primary/20',
+                          )}
+                        >
+                          {trackingKw === kw.id ? (
+                            <><RefreshCw className="size-3 animate-spin" /> Saving…</>
+                          ) : tracked.has(kw.id) ? (
+                            <><CheckCircle2 className="size-3" /> Tracking</>
+                          ) : (
+                            <><Plus className="size-3" /> Track</>
+                          )}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {!researchResults && (
+          <div className="mt-6 flex flex-col items-center justify-center h-24 rounded-lg border border-dashed border-border gap-2">
+            <Search className="size-5 text-muted-foreground/40" />
+            <p className="text-xs text-muted-foreground">
+              Enter a seed keyword and click Research to discover keywords
+            </p>
+          </div>
         )}
       </div>
 
