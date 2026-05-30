@@ -841,6 +841,8 @@ export default function KeywordsPage() {
   const chartHistory = historyMap[selectedKeywordId] ?? []
   const chartData = chartHistory.slice(-chartRange)
   const hasChartData = chartData.some(d => d.rank !== null)
+  const latestHistoryRow = chartHistory.length > 0 ? chartHistory[chartHistory.length - 1] : null
+  const latestHistoryCheckFailed = latestHistoryRow?.scrape_status === 'failed'
   const selectedKw = trackedData.find(k => k.id === selectedKeywordId)
   const selectedProductKeywordCount = selectedProduct
     ? trackedData.filter(k => k.asin === selectedProduct.asin).length
@@ -1429,12 +1431,25 @@ export default function KeywordsPage() {
           ) : (
             <div className="h-[240px] flex flex-col items-center justify-center gap-2">
               <BarChart2 className="size-8 text-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">
-                No ranking data for this keyword yet
-              </p>
-              <p className="text-xs text-muted-foreground/60">
-                Ranking will appear once the ASIN starts indexing
-              </p>
+              {chartHistory.length > 0 && latestHistoryCheckFailed ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Rank could not be checked yet.
+                  </p>
+                  <p className="text-xs text-muted-foreground/60 text-center max-w-xs">
+                    The keyword was saved, but the rank checker was unavailable during the last check. Try refreshing again later.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    No ranking data for this keyword yet
+                  </p>
+                  <p className="text-xs text-muted-foreground/60">
+                    Ranking will appear once the ASIN starts indexing
+                  </p>
+                </>
+              )}
             </div>
           )
         ) : (
@@ -1458,28 +1473,29 @@ export default function KeywordsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {[...chartHistory].reverse().slice(0, 15).map((row, idx) => (
-                    <tr key={`${row.checked_at}-${idx}`}>
-                      <td className="px-3 py-2 text-xs text-foreground">
-                        {new Date(row.checked_at).toLocaleString('en-IN')}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-right font-mono text-foreground">
-                        {row.rank != null ? `#${row.rank}` : '—'}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-center text-muted-foreground">
-                        {row.page ?? '—'}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-center text-muted-foreground">
-                        {row.found ? 'Found' : 'Not found'}
-                      </td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">
-                        {row.scrape_status === 'failed' ? 'Failed' : 'Success'}
-                        {row.scrape_status === 'failed' && sanitizeCheckerError(row.error_message)
-                          ? `: ${sanitizeCheckerError(row.error_message)}`
-                          : ''}
-                      </td>
-                    </tr>
-                  ))}
+                  {[...chartHistory].reverse().slice(0, 15).map((row, idx) => {
+                    const safeError = sanitizeCheckerError(row.error_message)
+                    return (
+                      <tr key={`${row.checked_at}-${idx}`}>
+                        <td className="px-3 py-2 text-xs text-foreground">
+                          {new Date(row.checked_at).toLocaleString('en-IN')}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-right font-mono text-foreground">
+                          {row.rank != null ? `#${row.rank}` : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-center text-muted-foreground">
+                          {row.page ?? '—'}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-center text-muted-foreground">
+                          {row.found ? 'Found' : 'Not found'}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-muted-foreground">
+                          {row.scrape_status === 'failed' ? 'Failed' : 'Success'}
+                          {row.scrape_status === 'failed' && safeError ? `: ${safeError}` : ''}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
