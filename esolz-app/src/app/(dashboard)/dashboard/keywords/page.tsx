@@ -35,7 +35,6 @@ import {
   ArrowDownRight,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { normalizeEmbed } from '@/lib/supabase/normalize'
 import { addTrackedAsin, getAsinLimit, getWorkspaceId, incrementAsinUsage, type AddAsinInput } from '@/lib/supabase/asins'
 import { sanitizeCheckerError } from '@/lib/checker-errors'
 import { Marketplace } from '@/types'
@@ -68,6 +67,15 @@ interface TrackedKeywordRow {
   scrape_status: 'never_checked' | 'success' | 'failed'
   error_message: string | null
   page: number | null
+}
+
+type TrackedKeywordQueryRow = {
+  id: string
+  keyword: string
+  search_volume: number | null
+  marketplace: string | null
+  tracked_asin_id: string | null
+  asin?: string | null
 }
 
 interface KeywordHistoryPoint {
@@ -439,15 +447,41 @@ export default function KeywordsPage() {
 
   const loadTrackedKeywords = useCallback(async (wsId: string) => {
     const supabase = createClient()
-    const { data: kws } = await supabase
+    const queryWithAsin = await supabase
       .from('tracked_keywords')
-      .select('id, keyword, search_volume, marketplace, tracked_asins(asin, product_title)')
+      .select('id, keyword, search_volume, marketplace, tracked_asin_id, asin')
       .eq('workspace_id', wsId)
       .order('created_at', { ascending: false })
+
+    const queryWithoutAsin = queryWithAsin.error?.code === '42703'
+      ? await supabase
+          .from('tracked_keywords')
+          .select('id, keyword, search_volume, marketplace, tracked_asin_id')
+          .eq('workspace_id', wsId)
+          .order('created_at', { ascending: false })
+      : null
+
+    const kws = (queryWithoutAsin?.data ?? queryWithAsin.data ?? []) as TrackedKeywordQueryRow[]
 
     if (!kws || kws.length === 0) {
       setTrackedData([])
       return
+    }
+
+    const trackedAsinIds = [...new Set(kws.map(k => k.tracked_asin_id).filter(Boolean))] as string[]
+    const { data: asinRows } = trackedAsinIds.length
+      ? await supabase
+          .from('tracked_asins')
+          .select('id, asin, product_title')
+          .in('id', trackedAsinIds)
+      : { data: [] as Array<{ id: string; asin: string | null; product_title: string | null }> }
+
+    const asinById = new Map<string, { asin: string | null; product_title: string | null }>()
+    for (const row of asinRows ?? []) {
+      asinById.set(row.id as string, {
+        asin: (row.asin as string | null) ?? null,
+        product_title: (row.product_title as string | null) ?? null,
+      })
     }
 
     const { data: snaps } = await supabase
@@ -472,13 +506,15 @@ export default function KeywordsPage() {
       const scrapeStatus = latest
         ? ((latest.scrape_status as 'success' | 'failed' | null) ?? 'success')
         : 'never_checked'
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const asinRow = normalizeEmbed<{ asin: string; product_title: string | null }>((kw as any).tracked_asins)
+      const asinFromTracked = kw.tracked_asin_id ? asinById.get(kw.tracked_asin_id) : null
+      const asinValue = (asinFromTracked?.asin ?? kw.asin ?? '').toUpperCase() || '—'
+      const productTitle = asinFromTracked?.product_title ?? asinValue
+
       return {
         id:                kw.id,
         keyword:           kw.keyword,
-        asin:              asinRow?.asin ?? '—',
-        product_name:      asinRow?.product_title ?? '—',
+        asin:              asinValue,
+        product_name:      productTitle,
         organic_rank:      latest?.organic_rank    ?? null,
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
@@ -520,12 +556,39 @@ export default function KeywordsPage() {
   }, [])
 
   useEffect(() => {
-    getWorkspaceId().then(wid => {
-      if (!wid) return
+    const supabase = createClient()
+    let isActive = true
+
+    const loadForCurrentSession = async (retries = 0) => {
+      const wid = await getWorkspaceId()
+      if (!isActive) return
+
+      if (!wid) {
+        if (retries < 2) {
+          window.setTimeout(() => {
+            void loadForCurrentSession(retries + 1)
+          }, 600)
+        }
+        return
+      }
+
       setWorkspaceId(wid)
-      loadProductOptions(wid)
-      loadTrackedKeywords(wid)
+      await Promise.all([
+        loadProductOptions(wid),
+        loadTrackedKeywords(wid),
+      ])
+    }
+
+    void loadForCurrentSession()
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
+      void loadForCurrentSession()
     })
+
+    return () => {
+      isActive = false
+      subscription.unsubscribe()
+    }
   }, [loadProductOptions, loadTrackedKeywords])
 
   useEffect(() => {
