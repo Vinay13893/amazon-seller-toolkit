@@ -302,6 +302,15 @@ function formatDateShort(iso: string): string {
   return d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })
 }
 
+function buyBoxStatusLabel(status: string | null | undefined): string {
+  if (status === 'won') return 'Won'
+  if (status === 'lost') return 'Lost'
+  if (status === 'no_buybox' || status === 'suppressed') return 'No Buy Box'
+  if (status === 'partial_success') return 'Partial data'
+  if (status === 'failed' || status === 'checker_unavailable') return 'Failed safely'
+  return 'Unknown'
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AsinDetailPage({ params }: { params: Promise<{ asin: string }> }) {
@@ -600,12 +609,19 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     setBuyboxChecking(true)
     try {
       const res = await fetch(`/api/asins/${asin}/buybox`, { method: 'POST' })
-      const data = await res.json()
+      const data = await res.json() as { error?: string; message?: string; result?: { buy_box_status?: string | null } }
       if (!res.ok) {
         toast.error(data.error || 'Buy Box check failed')
         await loadBuyBoxHistory()
       } else {
-        toast.success(`Buy Box owner: ${data.result.buy_box_owner || 'Unknown'}`)
+        const status = data.result?.buy_box_status
+        if (status === 'failed') {
+          toast.info(data.message || 'Buy Box check saved as failed. Please retry later.')
+        } else if (status === 'partial_success' || status === 'unknown') {
+          toast.warning(data.message || 'Buy Box data was partial. Ownership was not confirmed.')
+        } else {
+          toast.success(data.message || 'Buy Box check completed')
+        }
         await loadBuyBoxHistory()
       }
     } catch (err) {
@@ -1221,7 +1237,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <ShieldCheck className="size-4 text-primary shrink-0" />
             <div>
               <h2 className="font-semibold text-foreground">Buy Box Checker</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">See who owns the Buy Box right now. Next: click Run Check and review recent ownership. Data source: buybox_snapshots and live checker response.</p>
+                <p className="text-xs text-muted-foreground mt-0.5">See current Buy Box ownership from Amazon offers data. Next: click Run Check and review recent ownership. Data source: Amazon Product Pricing API and buybox_snapshots.</p>
             </div>
           </div>
           <DataFreshnessBadge checkedAt={latestBuyBox?.checked_at ?? null} />
@@ -1246,7 +1262,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <p className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">Latest Result</p>
               <p className="text-[10px] text-muted-foreground">{timeAgo(latestBuyBox.checked_at)}</p>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Buy Box Owner</p>
                 <p className="text-sm font-medium text-foreground truncate" title={latestBuyBox.buy_box_owner || '—'}>
@@ -1267,7 +1283,15 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Status</p>
-                <p className="text-sm font-medium text-foreground capitalize">{latestBuyBox.buy_box_status || '—'}</p>
+                <p className="text-sm font-medium text-foreground">{buyBoxStatusLabel(latestBuyBox.buy_box_status)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Offers</p>
+                <p className="text-sm font-medium text-foreground">{latestBuyBox.number_of_offers ?? '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">BB Eligible</p>
+                <p className="text-sm font-medium text-foreground">{latestBuyBox.number_of_buybox_eligible_offers ?? '—'}</p>
               </div>
             </div>
           </div>
@@ -1299,8 +1323,8 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
                       <td className="py-3 text-center text-xs text-muted-foreground">
                         {snap.fulfillment_type || '—'}
                       </td>
-                      <td className="py-3 text-center text-xs text-muted-foreground hidden md:table-cell capitalize">
-                        {snap.buy_box_status || '—'}
+                      <td className="py-3 text-center text-xs text-muted-foreground hidden md:table-cell">
+                        {buyBoxStatusLabel(snap.buy_box_status)}
                       </td>
                       <td className="py-3 text-right text-xs text-muted-foreground">
                         {timeAgo(snap.checked_at)}

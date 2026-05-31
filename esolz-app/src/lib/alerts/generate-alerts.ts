@@ -77,20 +77,20 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
   {
     const { data: rows } = await admin
       .from('asin_snapshots')
-      .select('tracked_asin_id, bsr, buy_box_owner, buy_box_status, checked_at')
+      .select('tracked_asin_id, bsr, checked_at')
       .eq('workspace_id', workspaceId)
       .in('tracked_asin_id', asinIds)
       .not('bsr', 'is', null)
       .order('checked_at', { ascending: false })
 
     // Group by ASIN, keep latest 2 per ASIN
-    type BsrRow = { bsr: number; buy_box_owner: string | null; buy_box_status: string | null }
+    type BsrRow = { bsr: number }
     const byAsin = new Map<string, BsrRow[]>()
     for (const r of (rows ?? [])) {
       if (!r.tracked_asin_id) continue
       const list = byAsin.get(r.tracked_asin_id) ?? []
       if (list.length < 2) {
-        list.push({ bsr: r.bsr as number, buy_box_owner: r.buy_box_owner, buy_box_status: r.buy_box_status })
+        list.push({ bsr: r.bsr as number })
         byAsin.set(r.tracked_asin_id, list)
       }
     }
@@ -139,44 +139,6 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
         }
       }
 
-      // Buy Box status change derived from BSR snapshots (has won/lost/suppressed)
-      const prevStatus   = prev.buy_box_status
-      const latestStatus = latest.buy_box_status
-      if (prevStatus && latestStatus && prevStatus !== latestStatus) {
-        if (prevStatus === 'won' && latestStatus === 'lost') {
-          const title = 'Buy Box Lost'
-          if (!isDupe(asinId, 'buybox', title)) {
-            markSeen(asinId, 'buybox', title)
-            toInsert.push({
-              workspace_id: workspaceId,
-              tracked_asin_id: asinId,
-              title,
-              description: `${label(asinId)}: Buy Box status changed from "won" to "lost".`,
-              severity: 'critical',
-              module: 'buybox',
-              status: 'new',
-              recommended_action:
-                'Lower your price, check competitor offers, and ensure your FBA stock is not running out.',
-            })
-          }
-        } else if (prevStatus !== 'won' && latestStatus === 'won') {
-          const title = 'Buy Box Regained'
-          if (!isDupe(asinId, 'buybox', title)) {
-            markSeen(asinId, 'buybox', title)
-            toInsert.push({
-              workspace_id: workspaceId,
-              tracked_asin_id: asinId,
-              title,
-              description: `${label(asinId)}: You regained the Buy Box (was: ${prevStatus}).`,
-              severity: 'opportunity',
-              module: 'buybox',
-              status: 'new',
-              recommended_action:
-                'Maintain current pricing and stock levels to keep the Buy Box.',
-            })
-          }
-        }
-      }
     }
   }
 
@@ -185,18 +147,18 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
   {
     const { data: rows } = await admin
       .from('buybox_snapshots')
-      .select('tracked_asin_id, buy_box_owner, checked_at')
+      .select('tracked_asin_id, buy_box_owner, buy_box_status, checked_at')
       .eq('workspace_id', workspaceId)
       .in('tracked_asin_id', asinIds)
       .order('checked_at', { ascending: false })
 
-    type BbRow = { buy_box_owner: string | null }
+    type BbRow = { buy_box_owner: string | null; buy_box_status: string | null }
     const byAsin = new Map<string, BbRow[]>()
     for (const r of (rows ?? [])) {
       if (!r.tracked_asin_id) continue
       const list = byAsin.get(r.tracked_asin_id) ?? []
       if (list.length < 2) {
-        list.push({ buy_box_owner: r.buy_box_owner })
+        list.push({ buy_box_owner: r.buy_box_owner, buy_box_status: r.buy_box_status })
         byAsin.set(r.tracked_asin_id, list)
       }
     }
@@ -204,7 +166,53 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
     for (const [asinId, snaps] of byAsin.entries()) {
       if (snaps.length < 2) continue
       const [latest, prev] = snaps
+
+      const latestStatus = latest.buy_box_status
+      const prevStatus = prev.buy_box_status
+      const latestConfirmed = latestStatus === 'won' || latestStatus === 'lost'
+      const prevConfirmed = prevStatus === 'won' || prevStatus === 'lost'
+
+      if (prevConfirmed && latestConfirmed && prevStatus !== latestStatus) {
+        if (prevStatus === 'won' && latestStatus === 'lost') {
+          const title = 'Buy Box Lost'
+          if (!isDupe(asinId, 'buybox', title)) {
+            markSeen(asinId, 'buybox', title)
+            toInsert.push({
+              workspace_id: workspaceId,
+              tracked_asin_id: asinId,
+              title,
+              description: `${label(asinId)}: Buy Box changed from "won" to "lost" on confirmed offer data.`,
+              severity: 'critical',
+              module: 'buybox',
+              status: 'new',
+              recommended_action:
+                'Review your current landed price and fulfillment speed, then compare with the winning seller to recover Buy Box ownership.',
+            })
+          }
+        }
+
+        if (prevStatus === 'lost' && latestStatus === 'won') {
+          const title = 'Buy Box Regained'
+          if (!isDupe(asinId, 'buybox', title)) {
+            markSeen(asinId, 'buybox', title)
+            toInsert.push({
+              workspace_id: workspaceId,
+              tracked_asin_id: asinId,
+              title,
+              description: `${label(asinId)}: Buy Box changed from "lost" to "won" on confirmed offer data.`,
+              severity: 'opportunity',
+              module: 'buybox',
+              status: 'new',
+              recommended_action:
+                'Hold this pricing and fulfillment setup for the next few checks to maintain Buy Box ownership.',
+            })
+          }
+        }
+      }
+
       if (
+        prevConfirmed &&
+        latestConfirmed &&
         prev.buy_box_owner &&
         latest.buy_box_owner &&
         prev.buy_box_owner !== latest.buy_box_owner

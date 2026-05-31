@@ -1,17 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { checkBuyBox } from '@/lib/integrations/amazon-buybox-adapter'
-import {
-  isWorkerConfigured,
-  runBuyBoxFallbackCheck,
-  CheckerWorkerUnavailableError,
-} from '@/lib/checkers/checker-worker-client'
+import { refreshAccessToken } from '@/lib/amazon/lwa'
+import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
+import { getItemOffersForAsin, type BuyBoxOfferStatus } from '@/lib/amazon/pricing'
 
 export const runtime    = 'nodejs'
-export const maxDuration = 120 // 2 minutes for Playwright
+export const maxDuration = 120
 
-const BUYBOX_FAILURE_MESSAGE = 'Buy Box checker is temporarily unavailable. The failed check was saved and can be retried later.'
+const BUYBOX_FAILURE_MESSAGE = 'Buy Box data was not available from Amazon right now. The failed check was saved and can be retried later.'
+
+const MARKETPLACE_ID_BY_MARKETPLACE: Record<string, string> = {
+  IN: 'A21TJRUUN4KGV',
+  US: 'ATVPDKIKX0DER',
+  UK: 'A1F83G8C2ARO7P',
+  GB: 'A1F83G8C2ARO7P',
+  DE: 'A1PA6795UKMFR9',
+}
+
+function marketplaceIdFor(marketplace: string | null | undefined): string {
+  if (!marketplace) return 'A21TJRUUN4KGV'
+  return MARKETPLACE_ID_BY_MARKETPLACE[marketplace.toUpperCase()] ?? 'A21TJRUUN4KGV'
+}
+
+function resultMessageFor(status: BuyBoxOfferStatus): string {
+  if (status === 'won') return 'Buy Box ownership confirmed for your seller.'
+  if (status === 'lost') return 'Buy Box ownership is currently with another seller.'
+  if (status === 'no_buybox') return 'No active Buy Box is available for this ASIN right now.'
+  if (status === 'partial_success') return 'Amazon returned partial offer data; ownership could not be confirmed.'
+  if (status === 'unknown') return 'Offer data was fetched, but ownership could not be confirmed safely.'
+  return BUYBOX_FAILURE_MESSAGE
+}
 
 /**
  * POST /api/asins/{asin}/buybox
@@ -35,7 +54,7 @@ const BUYBOX_FAILURE_MESSAGE = 'Buy Box checker is temporarily unavailable. The 
  *   }
  */
 export async function POST(
-  req: NextRequest,
+  _req: NextRequest,
   { params }: { params: Promise<{ asin: string }> }
 ) {
   const { asin } = await params
@@ -84,17 +103,38 @@ export async function POST(
   const trackedAsinId = tracked.id
   console.log(`[buybox-check][4] OK   tracked id=${tracked.id} mp=${tracked.marketplace}`)
 
-  async function insertFailedSnapshot(message?: string) {
+  async function insertSnapshot(params: {
+    buyBoxOwner: string | null
+    buyBoxStatus: BuyBoxOfferStatus
+    buyBoxPrice: number | null
+    yourPrice: number | null
+    priceGap: number | null
+    fulfillmentType: string | null
+    checkedAt: string
+    numberOfOffers?: number | null
+    numberOfBuyBoxEligibleOffers?: number | null
+    buyBoxCurrency?: string | null
+    lowestPrice?: number | null
+    lowestPriceCurrency?: string | null
+  }) {
     const payload = {
       workspace_id:     workspaceId,
       tracked_asin_id:  trackedAsinId,
-      buy_box_owner:    null,
-      buy_box_status:   'checker_unavailable',
-      buy_box_price:    null,
-      your_price:       null,
-      price_gap:        null,
-      fulfillment_type: null,
-      checked_at:       new Date().toISOString(),
+      buy_box_owner:    params.buyBoxOwner,
+      buy_box_status:   params.buyBoxStatus,
+      buy_box_price:    params.buyBoxPrice,
+      your_price:       params.yourPrice,
+      price_gap:        params.priceGap,
+      fulfillment_type: params.fulfillmentType,
+      checked_at:       params.checkedAt,
+
+      // Optional columns for richer Product Pricing payloads.
+      number_of_offers: params.numberOfOffers ?? null,
+      number_of_buybox_eligible_offers: params.numberOfBuyBoxEligibleOffers ?? null,
+      buy_box_currency: params.buyBoxCurrency ?? null,
+      lowest_price: params.lowestPrice ?? null,
+      lowest_price_currency: params.lowestPriceCurrency ?? null,
+      source: 'Amazon Product Pricing API',
     }
 
     const attempt = await adminClient
@@ -105,133 +145,152 @@ export async function POST(
 
     if (!attempt.error) return attempt
 
-    // Fallback for stricter status constraints.
+    // Fallback for older schemas that do not yet have Product Pricing fields.
     const fallback = await adminClient
       .from('buybox_snapshots')
-      .insert({ ...payload, buy_box_status: 'suppressed', buy_box_owner: message ? `failed: ${message.slice(0, 120)}` : null })
+      .insert({
+        workspace_id:     workspaceId,
+        tracked_asin_id:  trackedAsinId,
+        buy_box_owner:    params.buyBoxOwner,
+        buy_box_status:   params.buyBoxStatus === 'failed' ? 'unknown' : params.buyBoxStatus,
+        buy_box_price:    params.buyBoxPrice,
+        your_price:       params.yourPrice,
+        price_gap:        params.priceGap,
+        fulfillment_type: params.fulfillmentType,
+        checked_at:       params.checkedAt,
+      })
       .select()
       .single()
 
     return fallback
   }
 
-  // ── Run Buy Box check ───────────────────────────────────────────────────
-  const isMock = process.env.NODE_ENV !== 'production' && req.nextUrl.searchParams.get('mock') === '1'
-  console.log(`[buybox-check][5] Running check for ${tracked.asin} / ${tracked.marketplace} mock=${isMock}`)
+  // ── Amazon Product Pricing (offers-first) ───────────────────────────────
+  const checkedAt = new Date().toISOString()
 
-  let result
-  if (isMock) {
-    // DEV-ONLY: skip Python scraper, return fake data to test auth+DB path
-    result = {
-      asin: tracked.asin, marketplace: tracked.marketplace,
-      buy_box_owner: 'Mock Seller (debug)', buy_box_seller_id: 'MOCK123',
-      buy_box_price: 1999.00, buy_box_status: 'active',
-      fulfillment_type: 'FBA', all_offers: [], total_sellers: 1,
-      captcha_seen: false, error: '', checked_at: new Date().toISOString(),
+  try {
+    const connection = await adminClient
+      .from('amazon_connections')
+      .select('id, status, marketplace_id, selling_partner_id, refresh_token_encrypted')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+
+    if (connection.error) {
+      throw new Error('Amazon connection lookup failed')
     }
-    console.log('[buybox-check][5] MOCK  using fake result')
-  } else {
+
+    if (!connection.data || connection.data.status !== 'active' || !connection.data.refresh_token_encrypted) {
+      throw new Error('Amazon connection is not active for this workspace')
+    }
+
+    const marketplaceId = connection.data.marketplace_id ?? marketplaceIdFor(tracked.marketplace)
+    const refreshToken = decryptToken(connection.data.refresh_token_encrypted)
+    const tokenResult = await refreshAccessToken(refreshToken)
+
     try {
-      if (isWorkerConfigured()) {
-        console.log(`[buybox-check][5] calling checker worker for ${tracked.asin}`)
-        const workerRes = await runBuyBoxFallbackCheck({
-          workspace_id:    workspaceId,
-          tracked_asin_id: trackedAsinId,
-          asin:            tracked.asin,
-          marketplace:     tracked.marketplace,
+      const encryptedToken = encryptToken(tokenResult.access_token)
+      await adminClient
+        .from('amazon_connections')
+        .update({
+          access_token_encrypted: encryptedToken,
+          access_token_expires_at: new Date(Date.now() + tokenResult.expires_in * 1000).toISOString(),
+          updated_at: checkedAt,
         })
-        result = {
-          asin:             tracked.asin,
-          marketplace:      tracked.marketplace,
-          buy_box_owner:    workerRes.buybox_owner,
-          buy_box_seller_id: null,
-          buy_box_price:    workerRes.price,
-          buy_box_status:   workerRes.status === 'success' ? (workerRes.buybox_won ? 'active' : 'lost') : workerRes.status,
-          fulfillment_type: null,
-          all_offers:       [],
-          total_sellers:    0,
-          captcha_seen:     false,
-          error:            workerRes.error_message ?? '',
-          checked_at:       new Date().toISOString(),
-        }
-      } else {
-        result = await checkBuyBox(tracked.asin, tracked.marketplace)
-      }
-    } catch (err: unknown) {
-      console.error('[buybox-check][5] FAIL:', err instanceof Error ? err.message : String(err))
-
-      const { error: snapErr } = await insertFailedSnapshot()
-      if (snapErr) {
-        console.error('[buybox-check][5] failed snapshot insert error:', snapErr.message)
-      }
-
-      return NextResponse.json({ error: BUYBOX_FAILURE_MESSAGE }, { status: 500 })
+        .eq('workspace_id', workspaceId)
+    } catch (persistErr) {
+      console.error('[buybox-check][5] WARN could not persist refreshed access token:', String(persistErr))
     }
-  }
-  console.log(`[buybox-check][5] OK   owner=${result.buy_box_owner} price=${result.buy_box_price} sellers=${result.total_sellers}`)
 
-  if (result.captcha_seen || result.buy_box_status === 'captcha') {
-    const { error: snapErr } = await insertFailedSnapshot('captcha')
-    if (snapErr) {
-      console.error('[buybox-check][5] failed snapshot insert error:', snapErr.message)
+    const offers = await getItemOffersForAsin({
+      accessToken: tokenResult.access_token,
+      marketplaceId,
+      asin: tracked.asin,
+      itemCondition: 'New',
+      sellingPartnerId: connection.data.selling_partner_id,
+    })
+
+    const yourPrice = offers.your_offer_price
+    const buyBoxPrice = offers.buy_box_price
+    const priceGap =
+      yourPrice !== null && buyBoxPrice !== null
+        ? Number((buyBoxPrice - yourPrice).toFixed(2))
+        : null
+
+    const { data: snap, error: insertErr } = await insertSnapshot({
+      buyBoxOwner: offers.buy_box_owner,
+      buyBoxStatus: offers.buy_box_status,
+      buyBoxPrice,
+      yourPrice,
+      priceGap,
+      fulfillmentType: offers.buy_box_fulfillment,
+      checkedAt,
+      numberOfOffers: offers.number_of_offers,
+      numberOfBuyBoxEligibleOffers: offers.number_of_buybox_eligible_offers,
+      buyBoxCurrency: offers.buy_box_currency,
+      lowestPrice: offers.lowest_price,
+      lowestPriceCurrency: offers.lowest_price_currency,
+    })
+
+    if (insertErr) {
+      console.error('[buybox-check][6] FAIL insert:', insertErr)
+      return NextResponse.json({ error: 'Failed to save result' }, { status: 500 })
     }
-    return NextResponse.json(
-      { error: BUYBOX_FAILURE_MESSAGE },
-      { status: 503 }
-    )
-  }
 
-  if (result.error && !result.buy_box_owner) {
-    const { error: snapErr } = await insertFailedSnapshot(result.error)
-    if (snapErr) {
-      console.error('[buybox-check][5] failed snapshot insert error:', snapErr.message)
+    return NextResponse.json({
+      success: offers.buy_box_status !== 'failed',
+      source: 'Amazon Product Pricing API',
+      message: resultMessageFor(offers.buy_box_status),
+      result: {
+        buy_box_owner: offers.buy_box_owner,
+        buy_box_price: offers.buy_box_price,
+        buy_box_currency: offers.buy_box_currency,
+        buy_box_status: offers.buy_box_status,
+        fulfillment_type: offers.buy_box_fulfillment,
+        your_price: offers.your_offer_price,
+        price_gap: priceGap,
+        number_of_offers: offers.number_of_offers,
+        number_of_buybox_eligible_offers: offers.number_of_buybox_eligible_offers,
+        lowest_price: offers.lowest_price,
+        lowest_price_currency: offers.lowest_price_currency,
+        checked_at: checkedAt,
+      },
+      snap,
+    })
+  } catch (err) {
+    const safeErrorMessage = err instanceof Error ? err.message : String(err)
+    console.error('[buybox-check][5] FAIL:', safeErrorMessage)
+
+    const { data: failedSnap, error: failedInsertErr } = await insertSnapshot({
+      buyBoxOwner: null,
+      buyBoxStatus: 'failed',
+      buyBoxPrice: null,
+      yourPrice: null,
+      priceGap: null,
+      fulfillmentType: null,
+      checkedAt,
+    })
+
+    if (failedInsertErr) {
+      console.error('[buybox-check][6] FAIL insert failed snapshot:', failedInsertErr.message)
+      return NextResponse.json({ error: BUYBOX_FAILURE_MESSAGE }, { status: 502 })
     }
-    return NextResponse.json(
-      { error: BUYBOX_FAILURE_MESSAGE },
-      { status: 502 }
-    )
+
+    return NextResponse.json({
+      success: false,
+      source: 'Amazon Product Pricing API',
+      message: BUYBOX_FAILURE_MESSAGE,
+      result: {
+        buy_box_owner: null,
+        buy_box_price: null,
+        buy_box_status: 'failed',
+        fulfillment_type: null,
+        your_price: null,
+        price_gap: null,
+        number_of_offers: null,
+        number_of_buybox_eligible_offers: null,
+        checked_at: checkedAt,
+      },
+      snap: failedSnap,
+    }, { status: 200 })
   }
-
-  // ── Insert into buybox_snapshots ────────────────────────────────────────
-  const insertPayload = {
-    workspace_id:    workspaceId,
-    tracked_asin_id: trackedAsinId,
-    buy_box_owner:   result.buy_box_owner,
-    buy_box_status:  result.buy_box_status,
-    buy_box_price:   result.buy_box_price,
-    your_price:      null,
-    price_gap:       null,
-    fulfillment_type: result.fulfillment_type,
-    checked_at:      result.checked_at,
-  }
-
-  console.log('[buybox-check][6] Inserting:', JSON.stringify(insertPayload))
-  const { data: snap, error: insertErr } = await adminClient
-    .from('buybox_snapshots')
-    .insert(insertPayload)
-    .select()
-    .single()
-
-  if (insertErr) {
-    console.error('[buybox-check][6] FAIL insert:', insertErr)
-    return NextResponse.json(
-      { error: 'Failed to save result', detail: insertErr.message },
-      { status: 500 }
-    )
-  }
-  console.log(`[buybox-check][6] OK   inserted id=${snap.id}`)
-
-  return NextResponse.json({
-    success: true,
-    result: {
-      buy_box_owner:    result.buy_box_owner,
-      buy_box_price:    result.buy_box_price,
-      buy_box_status:   result.buy_box_status,
-      fulfillment_type: result.fulfillment_type,
-      total_sellers:    result.total_sellers,
-      all_offers:       result.all_offers,
-      checked_at:       result.checked_at,
-    },
-    snap,
-  })
 }

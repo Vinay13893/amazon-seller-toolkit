@@ -41,7 +41,7 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type BBStatus = 'won' | 'lost' | 'suppressed' | 'failed'
+type BBStatus = 'won' | 'lost' | 'unknown' | 'no_buybox' | 'partial_success' | 'failed'
 
 interface LiveEntry {
   asin:             string
@@ -53,6 +53,9 @@ interface LiveEntry {
   your_price:       number | null
   price_gap:        number | null
   fulfillment_type: string | null
+  offers_count:      number | null
+  eligible_offers:   number | null
+  source:            string | null
   checked_at:       string | null
 }
 
@@ -84,6 +87,10 @@ interface CheckResult {
   your_price:       number | null
   price_gap:        number | null
   fulfillment_type: string | null
+  offers_count:      number | null
+  eligible_offers:   number | null
+  source:            string | null
+  message:           string | null
   checked_at:       string
 }
 
@@ -92,7 +99,7 @@ interface CheckResult {
 type HealthStatus = 'Healthy' | 'Warning' | 'Critical'
 
 function calcHealth(entries: { status: BBStatus }[]): number {
-  const active = entries.filter(e => e.status !== 'suppressed' && e.status !== 'failed')
+  const active = entries.filter(e => e.status === 'won' || e.status === 'lost')
   if (!active.length) return 0
   return Math.round(active.filter(e => e.status === 'won').length / active.length * 100)
 }
@@ -110,9 +117,20 @@ function healthBg(hs: HealthStatus) {
 
 function normalizeStatus(raw: string | null): BBStatus {
   if (raw === 'won') return 'won'
-  if (raw === 'suppressed') return 'suppressed'
+  if (raw === 'lost') return 'lost'
+  if (raw === 'no_buybox' || raw === 'suppressed') return 'no_buybox'
+  if (raw === 'partial_success') return 'partial_success'
   if (raw === 'failed' || raw === 'checker_unavailable') return 'failed'
-  return 'lost'
+  return 'unknown'
+}
+
+function statusLabel(status: BBStatus): string {
+  if (status === 'won') return 'Won'
+  if (status === 'lost') return 'Lost'
+  if (status === 'no_buybox') return 'No Buy Box'
+  if (status === 'partial_success') return 'Partial data'
+  if (status === 'failed') return 'Check failed'
+  return 'Unknown'
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -120,11 +138,15 @@ function normalizeStatus(raw: string | null): BBStatus {
 function StatusBadge({ status }: { status: BBStatus }) {
   if (status === 'won')
     return <Badge className="bg-green-500/15 text-green-400 border-green-500/20 text-xs">Won</Badge>
-  if (status === 'failed')
-    return <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/20 text-xs">Checker not connected</Badge>
   if (status === 'lost')
     return <Badge className="bg-red-500/15 text-red-400 border-red-500/20 text-xs">Lost</Badge>
-  return <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/20 text-xs">Suppressed</Badge>
+  if (status === 'no_buybox')
+    return <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/20 text-xs">No Buy Box</Badge>
+  if (status === 'partial_success')
+    return <Badge className="bg-blue-500/15 text-blue-400 border-blue-500/20 text-xs">Partial Data</Badge>
+  if (status === 'failed')
+    return <Badge className="bg-amber-500/15 text-amber-400 border-amber-500/20 text-xs">Failed safely</Badge>
+  return <Badge className="bg-zinc-500/20 text-zinc-300 border-zinc-500/30 text-xs">Unknown</Badge>
 }
 
 function FulfillmentBadge({ type }: { type: string | null | undefined }) {
@@ -177,7 +199,7 @@ function HistoryTooltip({
   if (!active || !payload?.length) return null
   const hit = payload.find(p => p.value > 0)
   const labels: Record<string, string> = {
-    you: 'You (Won)', competitor: 'Competitor', suppressed: 'Suppressed', unknown: 'Unknown',
+    you: 'You (Won)', competitor: 'Competitor', suppressed: 'No Buy Box', unknown: 'Unknown',
   }
   return (
     <div className="bg-card border border-border rounded-lg px-3 py-2 shadow-xl text-xs">
@@ -243,14 +265,15 @@ export default function BuyboxPage() {
     // 2. Latest buybox_snapshot per ASIN
     const { data: snaps } = await supabase
       .from('buybox_snapshots')
-      .select('tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, checked_at')
+      .select('tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, number_of_offers, number_of_buybox_eligible_offers, source, checked_at')
       .in('tracked_asin_id', asinIds)
       .order('checked_at', { ascending: false })
 
     type SnapRow = {
       tracked_asin_id: string; buy_box_owner: string | null; buy_box_status: string | null
       buy_box_price: number | null; your_price: number | null; price_gap: number | null
-      fulfillment_type: string | null; checked_at: string
+      fulfillment_type: string | null; number_of_offers: number | null
+      number_of_buybox_eligible_offers: number | null; source: string | null; checked_at: string
     }
     const latestSnap = new Map<string, SnapRow>()
     for (const s of ((snaps ?? []) as SnapRow[])) {
@@ -269,6 +292,9 @@ export default function BuyboxPage() {
         your_price:       s?.your_price ?? null,
         price_gap:        s?.price_gap ?? null,
         fulfillment_type: s?.fulfillment_type ?? null,
+        offers_count:     s?.number_of_offers ?? null,
+        eligible_offers:  s?.number_of_buybox_eligible_offers ?? null,
+        source:           s?.source ?? null,
         checked_at:       s?.checked_at ?? null,
       }
     })
@@ -370,8 +396,8 @@ export default function BuyboxPage() {
       date,
       you:        status === 'won' ? 1 : 0,
       competitor: status === 'lost' ? 1 : 0,
-      suppressed: status === 'suppressed' ? 1 : 0,
-      unknown:    !['won', 'lost', 'suppressed'].includes(status) ? 1 : 0,
+      suppressed: status === 'no_buybox' ? 1 : 0,
+      unknown:    !['won', 'lost', 'no_buybox'].includes(status) ? 1 : 0,
     }))
     setHistoryPoints(points)
     setHistoryLoading(false)
@@ -405,9 +431,13 @@ export default function BuyboxPage() {
           your_price:       r?.your_price ?? null,
           price_gap:        r?.price_gap ?? null,
           fulfillment_type: r?.fulfillment_type ?? null,
+          offers_count:     r?.number_of_offers ?? null,
+          eligible_offers:  r?.number_of_buybox_eligible_offers ?? null,
+          source:           body.source ?? r?.source ?? null,
+          message:          body.message ?? null,
           checked_at:       r?.checked_at ?? new Date().toISOString(),
         })
-        toast.success('Buy Box check complete')
+        toast.success(body.message ?? 'Buy Box check complete')
         await loadAll()
       }
     } catch {
@@ -421,14 +451,16 @@ export default function BuyboxPage() {
   const stats = useMemo(() => {
     const won = entries.filter(e => e.status === 'won').length
     const lost = entries.filter(e => e.status === 'lost').length
-    const suppressed = entries.filter(e => e.status === 'suppressed').length
+    const noBuyBox = entries.filter(e => e.status === 'no_buybox').length
+    const unknown = entries.filter(e => e.status === 'unknown').length
+    const partial = entries.filter(e => e.status === 'partial_success').length
     const failed = entries.filter(e => e.status === 'failed').length
-    const active = entries.filter(e => e.status !== 'suppressed' && e.status !== 'failed').length
+    const active = entries.filter(e => e.status === 'won' || e.status === 'lost').length
     const winRate = active > 0 ? Math.round((won / active) * 100) : 0
     const highRisk = competitors.filter(c => c.risk === 'high').length
     const score = calcHealth(entries)
     const hs = healthLabel(score)
-    return { won, lost, suppressed, failed, active, winRate, highRisk, score, hs }
+    return { won, lost, noBuyBox, unknown, partial, failed, active, winRate, highRisk, score, hs }
   }, [entries, competitors])
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -450,7 +482,7 @@ export default function BuyboxPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Buy Box Monitor</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Track Buy Box ownership, pricing gaps and competing sellers across tracked ASINs. Next: run Buy Box Check and review lost listings. Data source: buybox_snapshots and checker runs.
+            Track Buy Box ownership, pricing gaps and competing sellers across tracked ASINs. Next: run Buy Box Check and review confirmed lost listings. Data source: Amazon Product Pricing API and buybox_snapshots.
           </p>
         </div>
         <Button
@@ -467,7 +499,7 @@ export default function BuyboxPage() {
         <KpiCard label="Total Tracked"        value={entries.length} icon={Package} />
         <KpiCard label="Buy Box Won"           value={stats.won}      icon={ShieldCheck}  sub="Active listings" />
         <KpiCard label="Buy Box Lost"          value={stats.lost}     icon={ShieldAlert} />
-        <KpiCard label="Suppressed"            value={stats.suppressed} icon={ShieldOff} />
+        <KpiCard label="No Buy Box"            value={stats.noBuyBox} icon={ShieldOff} />
         <KpiCard label="Competitor Sellers"    value={competitors.length} icon={AlertCircle}  sub="Detected" />
         <KpiCard label="BB Win Rate"           value={`${stats.winRate}%`} icon={BarChart2}  sub="Active ASINs" />
       </div>
@@ -541,10 +573,27 @@ export default function BuyboxPage() {
                   </p>
                 </div>
               </div>
+              <div className="grid grid-cols-3 gap-4 mt-2">
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Offers</p>
+                  <p className="text-xs font-medium text-foreground mt-0.5">{checkResult.offers_count ?? '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">BB Eligible</p>
+                  <p className="text-xs font-medium text-foreground mt-0.5">{checkResult.eligible_offers ?? '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Source</p>
+                  <p className="text-xs font-medium text-foreground mt-0.5 truncate">{checkResult.source ?? 'Amazon Product Pricing API'}</p>
+                </div>
+              </div>
               {checkResult.price_gap != null && checkResult.price_gap > 0 && (
                 <p className="mt-2 text-xs text-red-400">
                   You are ₹{checkResult.price_gap} more expensive than the current Buy Box price.
                 </p>
+              )}
+              {checkResult.message && (
+                <p className="mt-2 text-xs text-muted-foreground">{checkResult.message}</p>
               )}
             </div>
           )}
@@ -604,7 +653,7 @@ export default function BuyboxPage() {
         <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
           <h2 className="text-sm font-semibold text-foreground">Buy Box Status</h2>
           <span className="text-xs text-muted-foreground">
-            {stats.won} won · {stats.lost} lost · {stats.suppressed} suppressed · {stats.failed} failed
+            {stats.won} won · {stats.lost} lost · {stats.noBuyBox} no buy box · {stats.unknown} unknown · {stats.partial} partial · {stats.failed} failed
           </span>
         </div>
 
@@ -660,8 +709,7 @@ export default function BuyboxPage() {
                             ? <AlertTriangle className="size-3 text-amber-400 flex-shrink-0" />
                           : <Store className="size-3 text-muted-foreground flex-shrink-0" />}
                         <span className="text-xs text-foreground truncate max-w-[120px]">
-                          {entry.status === 'failed' ? 'Check failed' : (entry.current_owner ?? '—')}
-                                                  {entry.status === 'failed' ? 'Checker not connected' : (entry.current_owner ?? '—')}
+                          {entry.status === 'failed' ? 'Check failed safely' : (entry.current_owner ?? '—')}
                         </span>
                       </div>
                     </td>
@@ -692,7 +740,7 @@ export default function BuyboxPage() {
                     </td>
                     <td className="px-4 py-4">
                       <span className="text-xs text-muted-foreground">
-                        {entry.checked_at ? timeAgo(entry.checked_at) : 'Never'}
+                        {entry.checked_at ? `${timeAgo(entry.checked_at)} · ${statusLabel(entry.status)}` : 'Never'}
                       </span>
                     </td>
                     <td className="px-4 py-4">
@@ -746,7 +794,7 @@ export default function BuyboxPage() {
           {[
             { key: 'you',        label: 'You',        color: 'bg-[oklch(0.741_0.174_66.5)]' },
             { key: 'competitor', label: 'Competitor',  color: 'bg-slate-500' },
-            { key: 'suppressed', label: 'Suppressed',  color: 'bg-red-500' },
+            { key: 'suppressed', label: 'No Buy Box',  color: 'bg-red-500' },
             { key: 'unknown',    label: 'Unknown',     color: 'bg-zinc-600' },
           ].map(item => (
             <div key={item.key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
