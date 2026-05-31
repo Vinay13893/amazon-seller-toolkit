@@ -111,12 +111,14 @@ Request JSON:
 
 Behavior:
 - Opens Amazon India product page.
-- Attempts to set pincode.
-- If pincode cannot be set reliably in v1, returns:
-  - `ok: false`
-  - `status: "failed"`
-  - `error_message: "Pincode-specific check is not fully available in worker v1."`
-- Never returns `available=false` unless unavailability is explicitly detected.
+- Detects robot/captcha blocks and returns `status: "blocked"` with `available: null`.
+- Attempts to set pincode from the location popover.
+- Extracts delivery promise, price, seller and fulfillment hints.
+- Classifies availability conservatively:
+  - `available: true` only when clear positive delivery/stock evidence is present.
+  - `available: false` only when clear unavailability evidence is present.
+  - `available: null` when blocked, unclear, or pincode cannot be set.
+- Never returns `status: "unavailable"` unless explicit unavailability evidence is detected.
 
 ## Curl Tests
 
@@ -146,7 +148,7 @@ curl -X POST http://localhost:3001/pincode-availability \
 
 ## Deploy Notes (Render / Railway)
 
-1. Create a new service from `checker-worker` root.
+1. Reuse the existing worker service (for this project: `sociomonkey-checker-worker`) from `checker-worker` root.
 2. Build command:
 
 ```bash

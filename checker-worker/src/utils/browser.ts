@@ -5,6 +5,7 @@ const DEFAULT_OPERATION_TIMEOUT_MS = 45_000
 export async function createBrowser(): Promise<Browser> {
   return chromium.launch({
     headless: true,
+    timeout: 30_000,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   })
 }
