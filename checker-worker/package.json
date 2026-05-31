@@ -1,0 +1,27 @@
+{
+  "name": "sociomonkey-checker-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "External checker worker for keyword rank and pincode availability",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "playwright": "^1.54.2",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.2"
+  }
+}
