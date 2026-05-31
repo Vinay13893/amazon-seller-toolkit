@@ -708,13 +708,17 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
   // Show "last seen X ago" when BSR is from an older snapshot (latest had null)
   const bsrIsStale = product.bsr_rank !== null && product.bsr_captured_at !== product.captured_at
   const hasCatalogDetails = Boolean(detail?.product_title || detail?.brand || detail?.category || detail?.image_url)
+  const bsrCategoryLabel = product.sub_category
+    ? `${product.category ?? 'Category'} · ${product.sub_category}`
+    : (product.category ?? null)
   const bsrSubLabel = bsrIsStale
     ? `Last seen ${timeAgo(product.bsr_captured_at!)}`
     : bsrChange !== null
       ? bsrChange < 0 ? `▲ ${Math.abs(bsrChange).toLocaleString('en-IN')} improved` : bsrChange > 0 ? `▼ ${bsrChange.toLocaleString('en-IN')} dropped` : 'No change'
       : hasCatalogDetails
-        ? 'Product details found, but BSR was not available from Amazon.'
+        ? 'BSR not available from Amazon.'
         : 'No data yet'
+  const bsrCardSubLabel = product.bsr_rank !== null ? (bsrCategoryLabel ?? bsrSubLabel) : bsrSubLabel
 
   const buyboxValue = product.buybox_is_self === true
     ? 'You ✓'
@@ -829,7 +833,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         <KpiCard
           label="Current BSR"
           value={bsrDisplay}
-          sub={bsrIsStale ? bsrSubLabel : (product.category ?? bsrSubLabel)}
+          sub={bsrCardSubLabel}
           icon={TrendingDown}
           trend={!bsrIsStale && bsrChange !== null ? { value: bsrChange, label: 'from yesterday' } : undefined}
         />

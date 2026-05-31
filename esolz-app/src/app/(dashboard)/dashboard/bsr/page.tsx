@@ -243,6 +243,12 @@ export default function BsrTrackerPage() {
     [products, selectedAsinCode],
   )
 
+  function bsrCategoryLabel(p: ProductSnapshot): string | null {
+    if (p.bsr_rank === null) return null
+    if (!p.category || p.category === 'BASE_PRODUCT') return null
+    return p.sub_category ? `${p.category} · ${p.sub_category}` : p.category
+  }
+
   function deriveBsrState(p: ProductSnapshot): 'never_checked' | 'bsr_not_found' | 'failed' | 'stale' | 'ok' {
     if (!p.captured_at) return 'never_checked'
 
@@ -258,7 +264,7 @@ export default function BsrTrackerPage() {
   const categoryBreakdown = useMemo(() => {
     const map = new Map<string, { products: ProductSnapshot[]; count: number }>()
     for (const p of products) {
-      if (!p.category) continue
+      if (!p.category || p.bsr_rank === null || p.category === 'BASE_PRODUCT') continue
       if (!map.has(p.category)) map.set(p.category, { products: [], count: 0 })
       const entry = map.get(p.category)!
       entry.products.push(p)
@@ -467,7 +473,7 @@ export default function BsrTrackerPage() {
         <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
           <span>
             Showing last {chartRange} days ·{' '}
-            {selectedProduct?.category ?? 'No category data'}
+            {selectedProduct ? (bsrCategoryLabel(selectedProduct) ?? 'No category data') : 'No category data'}
           </span>
           {selectedAsinCode && (
             <Link
@@ -667,12 +673,9 @@ export default function BsrTrackerPage() {
                       <span className="text-xs text-muted-foreground">🇮🇳 {p.marketplace}</span>
                     </td>
                     <td className="px-4 py-3.5 hidden lg:table-cell">
-                      {p.category ? (
+                      {bsrCategoryLabel(p) ? (
                         <span className="text-xs text-muted-foreground truncate max-w-[160px] block">
-                          {p.category}
-                          {p.sub_category && (
-                            <span className="text-muted-foreground/60"> · {p.sub_category}</span>
-                          )}
+                          {bsrCategoryLabel(p)}
                         </span>
                       ) : (
                         <span className="text-xs text-muted-foreground">—</span>
