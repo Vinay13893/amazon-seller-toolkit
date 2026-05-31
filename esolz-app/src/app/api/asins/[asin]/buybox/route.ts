@@ -116,6 +116,8 @@ export async function POST(
     buyBoxCurrency?: string | null
     lowestPrice?: number | null
     lowestPriceCurrency?: string | null
+    rawSummary?: Record<string, unknown> | null
+    rawOffers?: unknown[]
   }) {
     const payload = {
       workspace_id:     workspaceId,
@@ -135,6 +137,8 @@ export async function POST(
       lowest_price: params.lowestPrice ?? null,
       lowest_price_currency: params.lowestPriceCurrency ?? null,
       source: 'Amazon Product Pricing API',
+      raw_summary: params.rawSummary ?? null,
+      raw_offers: params.rawOffers ?? null,
     }
 
     const attempt = await adminClient
@@ -229,6 +233,8 @@ export async function POST(
       buyBoxCurrency: offers.buy_box_currency,
       lowestPrice: offers.lowest_price,
       lowestPriceCurrency: offers.lowest_price_currency,
+      rawSummary: offers.summary_raw,
+      rawOffers: offers.offers_raw,
     })
 
     if (insertErr) {

@@ -56,6 +56,8 @@ interface LiveEntry {
   fulfillment_type: string | null
   offers_count:      number | null
   eligible_offers:   number | null
+  lowest_price:      number | null
+  lowest_price_currency: string | null
   source:            string | null
   checked_at:       string | null
 }
@@ -90,6 +92,8 @@ interface CheckResult {
   fulfillment_type: string | null
   offers_count:      number | null
   eligible_offers:   number | null
+  lowest_price:      number | null
+  lowest_price_currency: string | null
   source:            string | null
   message:           string | null
   checked_at:       string
@@ -273,7 +277,7 @@ export default function BuyboxPage() {
     )
 
     // 2. Latest buybox_snapshot per ASIN
-    const detailedSelect = 'tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, number_of_offers, number_of_buybox_eligible_offers, source, checked_at'
+    const detailedSelect = 'tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, number_of_offers, number_of_buybox_eligible_offers, lowest_price, lowest_price_currency, source, checked_at'
     const baseSelect = 'tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, checked_at'
 
     const detailedResult = await supabase
@@ -298,7 +302,8 @@ export default function BuyboxPage() {
       tracked_asin_id: string; buy_box_owner: string | null; buy_box_status: string | null
       buy_box_price: number | null; your_price: number | null; price_gap: number | null
       fulfillment_type: string | null; number_of_offers: number | null
-      number_of_buybox_eligible_offers: number | null; source: string | null; checked_at: string
+      number_of_buybox_eligible_offers: number | null; lowest_price: number | null
+      lowest_price_currency: string | null; source: string | null; checked_at: string
     }
     const latestSnap = new Map<string, SnapRow>()
     for (const s of ((snaps ?? []) as SnapRow[])) {
@@ -320,6 +325,8 @@ export default function BuyboxPage() {
         fulfillment_type: s?.fulfillment_type ?? null,
         offers_count:     s?.number_of_offers ?? null,
         eligible_offers:  s?.number_of_buybox_eligible_offers ?? null,
+        lowest_price:     s?.lowest_price ?? null,
+        lowest_price_currency: s?.lowest_price_currency ?? null,
         source:           s?.source ?? null,
         checked_at:       s?.checked_at ?? null,
       }
@@ -459,6 +466,8 @@ export default function BuyboxPage() {
           fulfillment_type: r?.fulfillment_type ?? null,
           offers_count:     r?.number_of_offers ?? null,
           eligible_offers:  r?.number_of_buybox_eligible_offers ?? null,
+          lowest_price:     r?.lowest_price ?? null,
+          lowest_price_currency: r?.lowest_price_currency ?? null,
           source:           body.source ?? r?.source ?? null,
           message:          body.message ?? null,
           checked_at:       r?.checked_at ?? new Date().toISOString(),
@@ -614,6 +623,16 @@ export default function BuyboxPage() {
                   <p className="text-xs font-medium text-foreground mt-0.5 truncate">{checkResult.source ?? 'Amazon Product Pricing API'}</p>
                 </div>
               </div>
+              <div className="grid grid-cols-3 gap-4 mt-2">
+                <div>
+                  <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Lowest Price</p>
+                  <p className="text-xs font-medium text-foreground mt-0.5">
+                    {checkResult.lowest_price != null
+                      ? `${checkResult.lowest_price_currency ?? 'INR'} ${checkResult.lowest_price}`
+                      : '—'}
+                  </p>
+                </div>
+              </div>
               {checkResult.price_gap != null && checkResult.price_gap > 0 && (
                 <p className="mt-2 text-xs text-red-400">
                   You are ₹{checkResult.price_gap} more expensive than the current Buy Box price.
@@ -745,6 +764,11 @@ export default function BuyboxPage() {
                       <span className="text-xs text-foreground">
                         {entry.buy_box_price != null ? `₹${entry.buy_box_price}` : '—'}
                       </span>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">
+                        {entry.lowest_price != null
+                          ? `Lowest: ${entry.lowest_price_currency ?? 'INR'} ${entry.lowest_price}`
+                          : 'Lowest: —'}
+                      </div>
                     </td>
                     <td className="px-4 py-4 text-right">
                       <span className="text-xs text-foreground">
@@ -764,6 +788,9 @@ export default function BuyboxPage() {
                     </td>
                     <td className="px-4 py-4">
                       <FulfillmentBadge type={entry.fulfillment_type} />
+                      <div className="text-[10px] text-muted-foreground mt-0.5">
+                        Offers: {entry.offers_count ?? '—'} · Eligible: {entry.eligible_offers ?? '—'}
+                      </div>
                     </td>
                     <td className="px-4 py-4">
                       <span className="text-xs text-muted-foreground">

@@ -1262,7 +1262,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <p className="text-xs uppercase tracking-wide text-muted-foreground font-semibold">Latest Result</p>
               <p className="text-[10px] text-muted-foreground">{timeAgo(latestBuyBox.checked_at)}</p>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Buy Box Owner</p>
                 <p className="text-sm font-medium text-foreground truncate" title={latestBuyBox.buy_box_owner || '—'}>
@@ -1292,6 +1292,14 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               <div>
                 <p className="text-xs text-muted-foreground mb-1">BB Eligible</p>
                 <p className="text-sm font-medium text-foreground">{latestBuyBox.number_of_buybox_eligible_offers ?? '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground mb-1">Lowest Price</p>
+                <p className="text-sm font-medium text-foreground">
+                  {latestBuyBox.lowest_price != null
+                    ? `${latestBuyBox.lowest_price_currency ?? product.price_currency} ${latestBuyBox.lowest_price}`
+                    : '—'}
+                </p>
               </div>
             </div>
           </div>
