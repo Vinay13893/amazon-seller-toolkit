@@ -124,6 +124,16 @@ export async function POST(
   }
 
   for (const kw of keywords) {
+    const workerConfigured = isWorkerConfigured()
+    const workerHost = (() => {
+      try {
+        const rawUrl = process.env.CHECKER_WORKER_URL?.trim()
+        return rawUrl ? new URL(rawUrl).host : null
+      } catch {
+        return null
+      }
+    })()
+
     if (runtimeUnavailableDetected) {
       const checkedAt = new Date().toISOString()
       await insertFailedSnapshot({
@@ -147,16 +157,28 @@ export async function POST(
 
     try {
       console.log(`[asins/${asin}/keywords/refresh] checking rank for: "${kw.keyword}"`)
+      const workerMarket = toWorkerMarketplace(kw.marketplace ?? trackedMarketplace ?? 'IN')
+      console.log(`[asins/${asin}/keywords/refresh] worker trace`, {
+        worker_configured: workerConfigured,
+        worker_host: workerHost,
+        tracked_keyword_id: kw.id,
+        asin: asin.toUpperCase(),
+        marketplace_sent_to_worker: workerMarket,
+      })
 
       let res
-      if (isWorkerConfigured()) {
-        const workerMarket = toWorkerMarketplace(kw.marketplace ?? trackedMarketplace ?? 'IN')
+      if (workerConfigured) {
         const workerRes = await runKeywordRankCheck({
           workspace_id:       workspaceId,
           tracked_keyword_id: kw.id,
           asin:               asin.toUpperCase(),
           keyword:            kw.keyword,
           marketplace:        workerMarket,
+        })
+        console.log(`[asins/${asin}/keywords/refresh] worker result`, {
+          tracked_keyword_id: kw.id,
+          asin: asin.toUpperCase(),
+          worker_response_status: workerRes.status,
         })
         res = {
           organic_rank:   workerRes.organic_rank,
@@ -217,6 +239,8 @@ export async function POST(
         runtimeUnavailableDetected = true
         console.warn(`[asins/${asin}/keywords/refresh] runtime unavailable`, {
           keyword: kw.keyword,
+          error_name: err instanceof Error ? err.name : 'UnknownError',
+          error_message: err instanceof Error ? err.message : 'Keyword rank check failed',
         })
       }
 

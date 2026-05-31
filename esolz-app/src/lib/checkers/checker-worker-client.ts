@@ -72,11 +72,24 @@ async function workerPost<T>(path: string, payload: unknown): Promise<T> {
 
   const secret = process.env.CHECKER_WORKER_SECRET ?? ''
   const url    = `${baseUrl}${path}`
+  const workerHost = (() => {
+    try {
+      return new URL(baseUrl).host
+    } catch {
+      return null
+    }
+  })()
 
   const controller = new AbortController()
   const timer      = setTimeout(() => controller.abort(), WORKER_TIMEOUT_MS)
 
   try {
+    console.log('[checker-worker-client] request', {
+      path,
+      worker_configured: true,
+      worker_host: workerHost,
+    })
+
     const res = await fetch(url, {
       method:  'POST',
       headers: {
@@ -87,17 +100,39 @@ async function workerPost<T>(path: string, payload: unknown): Promise<T> {
       signal: controller.signal,
     })
 
+    const body = await res.text().catch(() => '')
+    const bodyStatus = (() => {
+      if (!body) return null
+      try {
+        const parsed = JSON.parse(body) as { status?: unknown }
+        return typeof parsed.status === 'string' ? parsed.status : null
+      } catch {
+        return null
+      }
+    })()
+
+    console.log('[checker-worker-client] response', {
+      path,
+      worker_host: workerHost,
+      worker_http_status: res.status,
+      worker_response_status: bodyStatus,
+    })
+
     if (!res.ok) {
-      const body = await res.text().catch(() => '')
       throw new CheckerWorkerUnavailableError(
         `Checker worker returned HTTP ${res.status}`,
       )
-      // body used only for debug logging below — never surfaced to the frontend
-      void body
     }
 
-    return res.json() as Promise<T>
+    return (body ? JSON.parse(body) : {}) as T
   } catch (err) {
+    console.warn('[checker-worker-client] error', {
+      path,
+      worker_host: workerHost,
+      error_name: err instanceof Error ? err.name : 'UnknownError',
+      error_message: err instanceof Error ? err.message : 'Checker worker request failed',
+    })
+
     if (err instanceof CheckerWorkerUnavailableError) throw err
     const msg = err instanceof Error ? err.message : 'Checker worker request failed'
     throw new CheckerWorkerUnavailableError(msg)

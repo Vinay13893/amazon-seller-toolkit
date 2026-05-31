@@ -116,6 +116,15 @@ export async function POST(_req: NextRequest) {
     const market     = kw.marketplace ?? asinRow?.marketplace ?? 'IN'
     const workerMarket = toWorkerMarketplace(market)
     const trackedAsinId = kw.tracked_asin_id as string
+    const workerConfigured = isWorkerConfigured()
+    const workerHost = (() => {
+      try {
+        const rawUrl = process.env.CHECKER_WORKER_URL?.trim()
+        return rawUrl ? new URL(rawUrl).host : null
+      } catch {
+        return null
+      }
+    })()
 
     if (!asin) continue
 
@@ -144,15 +153,27 @@ export async function POST(_req: NextRequest) {
 
     try {
       console.log(`[keywords/refresh] checking rank for: "${kw.keyword}" / ${asin}`)
+      console.log('[keywords/refresh] worker trace', {
+        worker_configured: workerConfigured,
+        worker_host: workerHost,
+        tracked_keyword_id: kw.id,
+        asin,
+        marketplace_sent_to_worker: workerMarket,
+      })
 
       let res
-      if (isWorkerConfigured()) {
+      if (workerConfigured) {
         const workerRes = await runKeywordRankCheck({
           workspace_id:       workspaceId,
           tracked_keyword_id: kw.id,
           asin,
           keyword:            kw.keyword,
           marketplace:        workerMarket,
+        })
+        console.log('[keywords/refresh] worker result', {
+          tracked_keyword_id: kw.id,
+          asin,
+          worker_response_status: workerRes.status,
         })
         res = {
           organic_rank:   workerRes.organic_rank,
@@ -210,6 +231,8 @@ export async function POST(_req: NextRequest) {
         console.warn('[keywords/refresh] runtime unavailable while refreshing', {
           keyword: kw.keyword,
           asin,
+          error_name: err instanceof Error ? err.name : 'UnknownError',
+          error_message: err instanceof Error ? err.message : 'Keyword rank check failed',
         })
       }
 
