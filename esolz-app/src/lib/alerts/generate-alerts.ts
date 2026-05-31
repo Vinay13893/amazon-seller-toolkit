@@ -250,7 +250,7 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
 
     // Latest state per (asin, pincode)
     const seenKey  = new Set<string>()
-    const pinStats = new Map<string, { total: number; unavailable: number; failed: number }>()
+    const pinStats = new Map<string, { total: number; unavailable: number; failed: number; unknown: number }>()
 
     for (const r of (rows ?? [])) {
       if (!r.tracked_asin_id) continue
@@ -258,13 +258,15 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
       if (seenKey.has(k)) continue
       seenKey.add(k)
 
-      const entry = pinStats.get(r.tracked_asin_id) ?? { total: 0, unavailable: 0, failed: 0 }
+      const entry = pinStats.get(r.tracked_asin_id) ?? { total: 0, unavailable: 0, failed: 0, unknown: 0 }
       const isFailed = (r.delivery_promise ?? '').toLowerCase().startsWith('check failed:')
       if (isFailed) {
         entry.failed++
-      } else {
+      } else if (r.available === true || r.available === false) {
         entry.total++
         if (r.available === false) entry.unavailable++
+      } else {
+        entry.unknown++
       }
       pinStats.set(r.tracked_asin_id, entry)
     }

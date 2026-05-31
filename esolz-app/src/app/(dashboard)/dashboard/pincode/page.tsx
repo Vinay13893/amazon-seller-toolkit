@@ -36,7 +36,7 @@ interface DbPincodeCheck {
   tracked_asin_id:  string
   pincode:          string
   city:             string | null
-  available:        boolean
+  available:        boolean | null
   delivery_promise: string | null
   price:            number | null
   buy_box_seller:   string | null
@@ -46,6 +46,10 @@ interface DbPincodeCheck {
 
 function isFailedCheck(row: DbPincodeCheck): boolean {
   return (row.delivery_promise ?? '').toLowerCase().startsWith('check failed:')
+}
+
+function isAvailabilityUnknown(row: DbPincodeCheck): boolean {
+  return row.available == null && !isFailedCheck(row)
 }
 
 // ─── Pincode → city lookup ────────────────────────────────────────────────────
@@ -120,39 +124,53 @@ export default function PincodePage() {
     () => trackedAsins.find(a => a.id === selectedAsinId)?.product_title ?? selectedAsin,
     [trackedAsins, selectedAsinId, selectedAsin],
   )
-  const failedChecks  = useMemo(() => results.filter(isFailedCheck), [results])
-  const available     = useMemo(() => results.filter(r => r.available && !isFailedCheck(r)),  [results])
-  const unavailable   = useMemo(() => results.filter(r => !r.available && !isFailedCheck(r)), [results])
-  const successfulChecks = useMemo(() => results.filter(r => !isFailedCheck(r)), [results])
+  const latestResults = useMemo(() => {
+    const latestByPincode = new Map<string, DbPincodeCheck>()
+    for (const row of results) {
+      if (!latestByPincode.has(row.pincode)) {
+        latestByPincode.set(row.pincode, row)
+      }
+    }
+    return Array.from(latestByPincode.values())
+  }, [results])
+  const failedChecks  = useMemo(() => latestResults.filter(isFailedCheck), [latestResults])
+  const unknownChecks = useMemo(() => latestResults.filter(isAvailabilityUnknown), [latestResults])
+  const available     = useMemo(() => latestResults.filter(r => r.available === true), [latestResults])
+  const unavailable   = useMemo(() => latestResults.filter(r => r.available === false), [latestResults])
+  const confirmedChecks = useMemo(
+    () => latestResults.filter(r => r.available === true || r.available === false),
+    [latestResults],
+  )
   const score         = useMemo(
-    () => successfulChecks.length ? Math.round((available.length / successfulChecks.length) * 100) : null,
-    [successfulChecks, available],
+    () => confirmedChecks.length ? Math.round((available.length / confirmedChecks.length) * 100) : null,
+    [confirmedChecks, available],
   )
   const latestChecked = useMemo(
-    () => results.length ? results[0].checked_at : null,
-    [results],
+    () => latestResults.length ? latestResults[0].checked_at : null,
+    [latestResults],
   )
   const cityBreakdown = useMemo(() => {
     const map = new Map<string, DbPincodeCheck[]>()
-    results.forEach(r => {
+    latestResults.forEach(r => {
       const city = deriveCity(r)
       if (!map.has(city)) map.set(city, [])
       map.get(city)!.push(r)
     })
     return Array.from(map.entries()).map(([city, rows]) => {
-      const successful = rows.filter(r => !isFailedCheck(r))
+      const confirmed  = rows.filter(r => r.available === true || r.available === false)
       const failed     = rows.filter(isFailedCheck)
-      const avail      = successful.filter(r => r.available)
-      const pct        = successful.length ? Math.round((avail.length / successful.length) * 100) : null
+      const unknown    = rows.filter(isAvailabilityUnknown)
+      const avail      = confirmed.filter(r => r.available === true)
+      const pct        = confirmed.length ? Math.round((avail.length / confirmed.length) * 100) : null
       const status: AvailabilityStatus | null = pct === null ? null : (pct >= 80 ? 'healthy' : pct >= 50 ? 'warning' : 'critical')
-      const sellers    = successful.map(r => r.buy_box_seller).filter(Boolean) as string[]
+      const sellers    = confirmed.map(r => r.buy_box_seller).filter(Boolean) as string[]
       const freq       = sellers.reduce<Record<string, number>>((acc, s) => { acc[s] = (acc[s] ?? 0) + 1; return acc }, {})
       const primarySeller = sellers.length
         ? Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0]
         : null
-      return { city, rows, successful, failed, avail, pct, status, primarySeller }
+      return { city, rows, confirmed, failed, unknown, avail, pct, status, primarySeller }
     })
-  }, [results])
+  }, [latestResults])
 
   // ── Data loaders ───────────────────────────────────────────────────────────
 
@@ -425,13 +443,13 @@ export default function PincodePage() {
 
       {/* KPI cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        <KpiCard label="Total Checked"      value={String(results.length)}    sub="pincode checks"                                                                icon={MapPin} />
-        <KpiCard label="Available"          value={String(available.length)}  sub={successfulChecks.length ? `of ${successfulChecks.length} successful checks` : 'checker unavailable'}             icon={CheckCircle2} />
+        <KpiCard label="Total Checked"      value={String(latestResults.length)} sub="latest pincode checks"                                                     icon={MapPin} />
+        <KpiCard label="Available"          value={String(available.length)}  sub={confirmedChecks.length ? `of ${confirmedChecks.length} confirmed checks` : 'not calculated yet'}                 icon={CheckCircle2} />
         <KpiCard label="Unavailable"        value={String(unavailable.length)} sub="pincodes unavailable"
           trend={unavailable.length > 0 ? { value: unavailable.length, label: 'need attention' } : undefined} icon={XCircle} />
-        <KpiCard label="Failed"             value={String(failedChecks.length)} sub="checks failed" icon={ShieldAlert} />
-        <KpiCard label="Avg Availability"   value={results.length ? (score === null ? 'Not calculated' : `${score}%`) : '—'}
-          sub={results.length ? (score === null ? 'checker unavailable' : scoreToStatus(score)) : 'no checks yet'}                                               icon={BarChart2} />
+        <KpiCard label="Not Calculated"     value={String(unknownChecks.length)} sub="availability unknown"                                                     icon={ShieldAlert} />
+        <KpiCard label="Avg Availability"   value={latestResults.length ? (score === null ? 'Not calculated' : `${score}%`) : '—'}
+          sub={latestResults.length ? (score === null ? 'waiting for confirmed checks' : scoreToStatus(score)) : 'no checks yet'}                                icon={BarChart2} />
         <KpiCard label="Last Checked"       value={latestChecked ? timeAgo(latestChecked) : '—'}
           sub={latestChecked ? 'latest check' : 'no checks yet'}                                                                                                 icon={Clock} />
         <KpiCard label="Checks This Month"  value={String(pincodeChecksUsed)} sub="used this month"                                                              icon={Truck} />
@@ -499,9 +517,11 @@ export default function PincodePage() {
                     </div>
                     <div className="flex items-center gap-2 pt-1 border-t border-border/50">
                       <span className="text-[10px] text-muted-foreground">
-                        {c.successful.length === 0
-                          ? `${c.failed.length} checker failures`
-                          : `${c.avail.length}/${c.successful.length} pincodes available`}
+                        {c.confirmed.length === 0
+                          ? (c.unknown.length > 0
+                            ? `${c.unknown.length} not calculated`
+                            : `${c.failed.length} checker failures`)
+                          : `${c.avail.length}/${c.confirmed.length} pincodes available`}
                       </span>
                     </div>
                   </div>
@@ -517,7 +537,7 @@ export default function PincodePage() {
                 <h2 className="font-semibold text-foreground">Pincode Results</h2>
                 <p className="text-xs text-muted-foreground mt-0.5">{selectedLabel || selectedAsin}</p>
               </div>
-              <Badge variant="secondary" className="text-xs">{results.length} checks</Badge>
+              <Badge variant="secondary" className="text-xs">{latestResults.length} latest checks</Badge>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -535,7 +555,7 @@ export default function PincodePage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50">
-                  {results.map(r => (
+                  {latestResults.map(r => (
                     <tr key={r.id} className="hover:bg-muted/20 transition-colors">
                       <td className="px-5 py-3 text-sm font-medium text-foreground">{deriveCity(r)}</td>
                       <td className="px-4 py-3">
@@ -548,13 +568,17 @@ export default function PincodePage() {
                           <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
                             <ShieldAlert className="size-3.5" /> Failed
                           </span>
-                        ) : r.available ? (
+                        ) : r.available === true ? (
                           <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
                             <CheckCircle2 className="size-3.5" /> Available
                           </span>
-                        ) : (
+                        ) : r.available === false ? (
                           <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
                             <XCircle className="size-3.5" /> Unavailable
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground font-medium">
+                            <Clock className="size-3.5" /> Not calculated
                           </span>
                         )}
                       </td>

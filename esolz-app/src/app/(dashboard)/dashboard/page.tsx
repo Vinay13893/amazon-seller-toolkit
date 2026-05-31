@@ -243,18 +243,19 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     .order('checked_at', { ascending: false })
     .limit(800)
 
-  const pincodeByAsin = new Map<string, { available: boolean }[]>()
+  const pincodeByAsin = new Map<string, { available: boolean | null }[]>()
   for (const row of pincodeRows ?? []) {
     const asinId = row.tracked_asin_id as string
     const list = pincodeByAsin.get(asinId) ?? []
     if (list.length < 10) {
-      list.push({ available: !!row.available })
+      list.push({ available: row.available === true ? true : (row.available === false ? false : null) })
       pincodeByAsin.set(asinId, list)
     }
   }
   const lowAvailabilityCount = [...pincodeByAsin.values()].filter(rows => {
-    if (rows.length < 3) return false
-    const pct = Math.round((rows.filter(r => r.available).length / rows.length) * 100)
+    const confirmed = rows.filter(r => r.available === true || r.available === false)
+    if (confirmed.length < 3) return false
+    const pct = Math.round((confirmed.filter(r => r.available === true).length / confirmed.length) * 100)
     return pct < 50
   }).length
   if (lowAvailabilityCount > 0) {
