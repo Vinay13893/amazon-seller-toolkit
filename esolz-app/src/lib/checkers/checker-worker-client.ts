@@ -25,6 +25,22 @@ export function isWorkerConfigured(): boolean {
   return !!(process.env.CHECKER_WORKER_URL?.trim())
 }
 
+/**
+ * Normalize marketplace values for checker-worker payloads.
+ * DB/API values are typically 'IN' | 'US', while worker endpoints use
+ * domain-style values (e.g. amazon.in, amazon.com).
+ */
+export function toWorkerMarketplace(marketplace: string): string {
+  const normalized = marketplace.trim().toLowerCase()
+
+  if (normalized === 'in' || normalized === 'amazon.in') return 'amazon.in'
+  if (normalized === 'us' || normalized === 'amazon.com') return 'amazon.com'
+  if (normalized === 'uk' || normalized === 'gb' || normalized === 'amazon.co.uk') return 'amazon.co.uk'
+  if (normalized === 'de' || normalized === 'amazon.de') return 'amazon.de'
+
+  return normalized
+}
+
 const WORKER_TIMEOUT_MS = 90_000  // 90 s
 
 // ─── Error type ──────────────────────────────────────────────────────────────

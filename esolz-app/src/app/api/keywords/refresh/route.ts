@@ -10,6 +10,7 @@ import {
   isWorkerConfigured,
   runKeywordRankCheck,
   CheckerWorkerUnavailableError,
+  toWorkerMarketplace,
 } from '@/lib/checkers/checker-worker-client'
 
 export const runtime    = 'nodejs'
@@ -113,6 +114,7 @@ export async function POST(_req: NextRequest) {
 
     const asin       = asinRow?.asin
     const market     = kw.marketplace ?? asinRow?.marketplace ?? 'IN'
+    const workerMarket = toWorkerMarketplace(market)
     const trackedAsinId = kw.tracked_asin_id as string
 
     if (!asin) continue
@@ -150,7 +152,7 @@ export async function POST(_req: NextRequest) {
           tracked_keyword_id: kw.id,
           asin,
           keyword:            kw.keyword,
-          marketplace:        market,
+          marketplace:        workerMarket,
         })
         res = {
           organic_rank:   workerRes.organic_rank,

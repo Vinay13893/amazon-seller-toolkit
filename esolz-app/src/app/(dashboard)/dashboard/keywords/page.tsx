@@ -639,11 +639,12 @@ export default function KeywordsPage() {
       const data = await res.json() as { checked?: number; message?: string; error?: string; ok?: boolean; status?: string }
       if (!res.ok) {
         toast.error(data.error ?? 'Refresh failed')
-      } else if (data.status === 'failed') {
+      } else if (data.status === 'failed' || data.status === 'checker_unavailable') {
         toast.info('Keyword checker is temporarily unavailable. Your keyword was saved and will be checked later.')
         if (workspaceId) await loadTrackedKeywords(workspaceId)
       } else if (data.message) {
         toast.info(data.message)
+        if (workspaceId) await loadTrackedKeywords(workspaceId)
       } else {
         toast.success(`Refreshed ${data.checked ?? 0} keywords`)
         if (workspaceId) await loadTrackedKeywords(workspaceId)

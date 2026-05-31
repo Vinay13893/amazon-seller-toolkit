@@ -483,7 +483,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
       console.log('[asin/keywords/refresh] response:', { status: res.status, data })
       if (!res.ok) {
         toast.error(data.error ?? 'Rank refresh failed')
-      } else if (data.status === 'failed') {
+      } else if (data.status === 'failed' || data.status === 'checker_unavailable') {
         toast.info('Keyword checker is temporarily unavailable. Your keyword was saved and will be checked later.')
         await loadAsinKeywords()
       } else {
