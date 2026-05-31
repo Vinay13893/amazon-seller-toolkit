@@ -150,7 +150,8 @@ export async function POST(
         pincode:         normalizedPincode,
       })
       result = {
-        is_buyable:      workerRes.available ?? false,
+        // Preserve null from worker so uncertain checks are stored as failed/unknown, not unavailable.
+        is_buyable:      workerRes.available,
         delivery_type:   workerRes.delivery_promise ?? null,
         delivery_text:   workerRes.delivery_promise ?? null,
         merchant_text:   workerRes.seller ?? null,
