@@ -340,6 +340,8 @@ export default function KeywordsPage() {
   const [addingKeyword, setAddingKeyword] = useState(false)
   const [researchResults, setResearchResults] = useState<ApiResearchResult[] | null>(null)
   const [trackedData, setTrackedData] = useState<TrackedKeywordRow[]>([])
+  const [trackedKeywordsLoading, setTrackedKeywordsLoading] = useState(true)
+  const [keywordAsinFilter, setKeywordAsinFilter] = useState('all')
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [tracked, setTracked] = useState<Set<string>>(new Set())
   const [trackingKw, setTrackingKw] = useState<string | null>(null)
@@ -351,6 +353,14 @@ export default function KeywordsPage() {
 
   const selectedProduct = productOptions.find(p => p.key === selectedProductKey) ?? null
   const suggestedSeeds = getKeywordSeedSuggestions(selectedProduct)
+  const visibleTrackedData = keywordAsinFilter === 'all'
+    ? trackedData
+    : trackedData.filter(k => k.asin === keywordAsinFilter)
+  const keywordAsinOptions = [...new Map(
+    trackedData
+      .filter(k => k.asin && k.asin !== '—')
+      .map(k => [k.asin, { asin: k.asin, label: k.product_name }]),
+  ).values()].sort((a, b) => a.asin.localeCompare(b.asin))
   const normalizedSearch = productSearch.trim().toUpperCase().replace(/\s+/g, '')
   const isValidAsinInput = /^[A-Z0-9]{10}$/.test(normalizedSearch)
   const isAsinLikeInput = normalizedSearch.length > 0 && /^[A-Z0-9]+$/.test(normalizedSearch)
@@ -373,6 +383,13 @@ export default function KeywordsPage() {
   useEffect(() => {
     setIsMounted(true)
   }, [])
+
+  useEffect(() => {
+    if (keywordAsinFilter === 'all') return
+    if (!trackedData.some(k => k.asin === keywordAsinFilter)) {
+      setKeywordAsinFilter('all')
+    }
+  }, [keywordAsinFilter, trackedData])
 
   // ── Load workspace + tracked keywords ─────────────────────────────────────────────
   const loadProductOptions = useCallback(async (wsId: string) => {
@@ -563,6 +580,7 @@ export default function KeywordsPage() {
     let isActive = true
 
     const loadForCurrentSession = async (retries = 0) => {
+      setTrackedKeywordsLoading(true)
       const wid = await getWorkspaceId()
       if (!isActive) return
 
@@ -571,15 +589,23 @@ export default function KeywordsPage() {
           window.setTimeout(() => {
             void loadForCurrentSession(retries + 1)
           }, 600)
+        } else {
+          setTrackedKeywordsLoading(false)
         }
         return
       }
 
       setWorkspaceId(wid)
-      await Promise.all([
-        loadProductOptions(wid),
-        loadTrackedKeywords(wid),
-      ])
+      try {
+        await Promise.all([
+          loadProductOptions(wid),
+          loadTrackedKeywords(wid),
+        ])
+      } finally {
+        if (isActive) {
+          setTrackedKeywordsLoading(false)
+        }
+      }
     }
 
     void loadForCurrentSession()
@@ -599,6 +625,17 @@ export default function KeywordsPage() {
       loadKeywordHistory(selectedKeywordId)
     }
   }, [selectedKeywordId, historyMap, loadKeywordHistory])
+
+  useEffect(() => {
+    if (visibleTrackedData.length === 0) {
+      if (selectedKeywordId) setSelectedKeywordId('')
+      return
+    }
+
+    if (!visibleTrackedData.some(k => k.id === selectedKeywordId)) {
+      setSelectedKeywordId(visibleTrackedData[0]?.id ?? '')
+    }
+  }, [selectedKeywordId, visibleTrackedData])
 
   async function handleResearch(e: React.FormEvent) {
     e.preventDefault()
@@ -869,23 +906,23 @@ export default function KeywordsPage() {
   }
 
   // KPI computations
-  const page1Count = trackedData.filter(k => k.page_status === 'page_1').length
-  const top10Count = trackedData.filter(
+  const page1Count = visibleTrackedData.filter(k => k.page_status === 'page_1').length
+  const top10Count = visibleTrackedData.filter(
     k => k.organic_rank !== null && k.organic_rank <= 10,
   ).length
-  const improvedCount = trackedData.filter(
+  const improvedCount = visibleTrackedData.filter(
     k =>
       k.organic_rank !== null &&
       k.prev_organic_rank !== null &&
       k.organic_rank < k.prev_organic_rank,
   ).length
-  const declinedCount = trackedData.filter(
+  const declinedCount = visibleTrackedData.filter(
     k =>
       k.organic_rank !== null &&
       k.prev_organic_rank !== null &&
       k.organic_rank > k.prev_organic_rank,
   ).length
-  const rankedItems = trackedData.filter(k => k.organic_rank !== null)
+  const rankedItems = visibleTrackedData.filter(k => k.organic_rank !== null)
   const avgRank =
     rankedItems.length > 0
       ? Math.round(
@@ -899,7 +936,7 @@ export default function KeywordsPage() {
   const hasChartData = chartData.some(d => d.rank !== null)
   const latestHistoryRow = chartHistory.length > 0 ? chartHistory[chartHistory.length - 1] : null
   const latestHistoryCheckFailed = latestHistoryRow?.scrape_status === 'failed'
-  const selectedKw = trackedData.find(k => k.id === selectedKeywordId)
+  const selectedKw = visibleTrackedData.find(k => k.id === selectedKeywordId)
   const selectedProductKeywordCount = selectedProduct
     ? trackedData.filter(k => k.asin === selectedProduct.asin).length
     : 0
@@ -925,24 +962,24 @@ export default function KeywordsPage() {
 
       {/* ── 2. KPI cards ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
-        <KpiCard label="Total Tracked" value={trackedData.length} icon={Tag} />
-        <KpiCard label="Page 1 Keywords" value={page1Count} icon={CheckCircle2} sub="rank ≤ 16" />
-        <KpiCard label="Top 10 Keywords" value={top10Count} icon={BarChart2} sub="rank ≤ 10" />
+        <KpiCard label="Total Tracked" value={trackedKeywordsLoading ? '—' : visibleTrackedData.length} icon={Tag} />
+        <KpiCard label="Page 1 Keywords" value={trackedKeywordsLoading ? '—' : page1Count} icon={CheckCircle2} sub="rank ≤ 16" />
+        <KpiCard label="Top 10 Keywords" value={trackedKeywordsLoading ? '—' : top10Count} icon={BarChart2} sub="rank ≤ 10" />
         <KpiCard
           label="Improved"
-          value={improvedCount}
+          value={trackedKeywordsLoading ? '—' : improvedCount}
           icon={TrendingUp}
           sub="vs previous check"
         />
         <KpiCard
           label="Declined"
-          value={declinedCount}
+          value={trackedKeywordsLoading ? '—' : declinedCount}
           icon={TrendingDown}
           sub="vs previous check"
         />
         <KpiCard
           label="Average Rank"
-          value={avgRank != null ? `#${avgRank}` : '—'}
+          value={trackedKeywordsLoading ? '—' : (avgRank != null ? `#${avgRank}` : '—')}
           icon={Hash}
           sub="ranked keywords"
         />
@@ -1256,21 +1293,43 @@ export default function KeywordsPage() {
       <div className="bg-card border border-border rounded-xl">
         <div className="px-6 py-4 border-b border-border flex items-center justify-between gap-2 flex-wrap">
           <h2 className="text-sm font-semibold text-foreground">Keyword Rank Tracking</h2>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-          >
-            {isRefreshing ? (
-              <><RefreshCw className="size-4 animate-spin" /> Refreshing…</>
-            ) : (
-              <><RefreshCw className="size-4" /> Refresh Ranks</>
-            )}
-          </Button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={keywordAsinFilter}
+              onChange={e => setKeywordAsinFilter(e.target.value)}
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="all">All ASINs</option>
+              {keywordAsinOptions.map(option => (
+                <option key={option.asin} value={option.asin}>
+                  {option.asin} · {option.label.length > 28 ? `${option.label.slice(0, 28)}…` : option.label}
+                </option>
+              ))}
+            </select>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+            >
+              {isRefreshing ? (
+                <><RefreshCw className="size-4 animate-spin" /> Refreshing…</>
+              ) : (
+                <><RefreshCw className="size-4" /> Refresh Ranks</>
+              )}
+            </Button>
+          </div>
         </div>
 
-        {trackedData.length === 0 ? (
+        {trackedKeywordsLoading ? (
+          <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
+            <Tag className="size-8 text-muted-foreground/30" />
+            <p className="text-sm font-medium text-foreground">Loading tracked keywords…</p>
+            <p className="text-xs text-muted-foreground max-w-xs">
+              Fetching tracked keywords and the latest rank snapshots for this workspace.
+            </p>
+          </div>
+        ) : visibleTrackedData.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
             <Tag className="size-8 text-muted-foreground/30" />
             {productOptions.length === 0 ? (
@@ -1287,9 +1346,9 @@ export default function KeywordsPage() {
               </>
             ) : (
               <>
-                <p className="text-sm font-medium text-foreground">Select a product above and add your first keyword to start tracking Amazon search rank.</p>
+                <p className="text-sm font-medium text-foreground">No tracked keywords match the current ASIN filter.</p>
                 <p className="text-xs text-muted-foreground max-w-xs">
-                  Tracked keywords will appear here even before the first rank check.
+                  Switch back to All ASINs or select a product above to add keywords and view rank snapshots.
                 </p>
               </>
             )}
@@ -1313,7 +1372,7 @@ export default function KeywordsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {trackedData.map(kw => (
+              {visibleTrackedData.map(kw => (
                 <tr
                   key={kw.id}
                   className={cn(
@@ -1405,7 +1464,15 @@ export default function KeywordsPage() {
 
       {/* ── 7. Rank trend chart ───────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl p-6">
-        {trackedData.length === 0 ? (
+        {trackedKeywordsLoading ? (
+          <div className="h-[240px] flex flex-col items-center justify-center gap-2 text-center">
+            <BarChart2 className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">Loading rank history…</p>
+            <p className="text-xs text-muted-foreground/60 max-w-xs">
+              Waiting for the current keyword set and latest snapshots to load.
+            </p>
+          </div>
+        ) : visibleTrackedData.length === 0 ? (
           <div className="h-[240px] flex flex-col items-center justify-center gap-2 text-center">
             <BarChart2 className="size-8 text-muted-foreground/30" />
             <p className="text-sm text-muted-foreground">No rank trend yet</p>
@@ -1438,7 +1505,7 @@ export default function KeywordsPage() {
               onChange={e => setSelectedKeywordId(e.target.value)}
               className="h-8 rounded-md border border-input bg-transparent px-3 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             >
-              {trackedData.map(k => (
+              {visibleTrackedData.map(k => (
                 <option key={k.id} value={k.id}>
                   {k.keyword.length > 28 ? k.keyword.slice(0, 28) + '…' : k.keyword}
                 </option>
