@@ -56,8 +56,24 @@ app.post('/keyword-rank', async (req: Request, res: Response) => {
 app.post('/pincode-availability', async (req: Request, res: Response) => {
   try {
     const payload = pincodeAvailabilityRequestSchema.parse(req.body)
-    const result = await runPincodeAvailabilityCheck(payload)
-    const statusCode = result.ok ? 200 : result.status === 'blocked' ? 429 : 502
+    const result = await Promise.race([
+      runPincodeAvailabilityCheck(payload),
+      new Promise<Awaited<ReturnType<typeof runPincodeAvailabilityCheck>>>(resolve => {
+        setTimeout(() => {
+          resolve({
+            ok: false,
+            available: null,
+            delivery_promise: null,
+            price: null,
+            seller: null,
+            status: 'failed',
+            error_message: 'Pincode check timed out before availability could be confirmed.',
+          })
+        }, 45_000)
+      }),
+    ])
+
+    const statusCode = result.status === 'blocked' ? 429 : 200
     res.status(statusCode).json(result)
   } catch (error) {
     if (error instanceof ZodError) {

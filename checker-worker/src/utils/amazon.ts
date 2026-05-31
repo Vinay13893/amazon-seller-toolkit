@@ -46,6 +46,14 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
 }
 
+function nowMs(): number {
+  return Date.now()
+}
+
+function hasBudget(startMs: number, budgetMs: number): boolean {
+  return nowMs() - startMs < budgetMs
+}
+
 async function readFirstVisibleText(page: Page, selectors: string[]): Promise<string | null> {
   for (const selector of selectors) {
     const locator = page.locator(selector).first()
@@ -174,19 +182,30 @@ export async function detectAvailability(page: Page): Promise<boolean | null> {
 }
 
 export async function trySetPincode(page: Page, pincode: string): Promise<boolean> {
+  const startMs = nowMs()
+  const budgetMs = 8_000
+
   for (const selector of PINCODE_TRIGGER_SELECTORS) {
+    if (!hasBudget(startMs, budgetMs)) {
+      return false
+    }
+
     const trigger = page.locator(selector).first()
     const visible = await trigger.isVisible().catch(() => false)
     if (!visible) {
       continue
     }
 
-    await trigger.click().catch(() => undefined)
+    await trigger.click({ timeout: 1_000 }).catch(() => undefined)
     break
   }
 
   let inputReady = false
   for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (!hasBudget(startMs, budgetMs)) {
+      return false
+    }
+
     for (const selector of PINCODE_INPUT_SELECTORS) {
       const input = page.locator(selector).first()
       const visible = await input.isVisible().catch(() => false)
@@ -209,15 +228,19 @@ export async function trySetPincode(page: Page, pincode: string): Promise<boolea
 
   let filled = false
   for (const selector of PINCODE_INPUT_SELECTORS) {
+    if (!hasBudget(startMs, budgetMs)) {
+      return false
+    }
+
     const input = page.locator(selector).first()
     const visible = await input.isVisible().catch(() => false)
     if (!visible) {
       continue
     }
 
-    await input.click().catch(() => undefined)
-    await input.fill('').catch(() => undefined)
-    await input.type(pincode, { delay: 25 }).catch(() => undefined)
+    await input.click({ timeout: 1_000 }).catch(() => undefined)
+    await input.fill('', { timeout: 1_000 }).catch(() => undefined)
+    await input.type(pincode, { delay: 25, timeout: 2_000 }).catch(() => undefined)
     filled = true
     break
   }
@@ -228,13 +251,17 @@ export async function trySetPincode(page: Page, pincode: string): Promise<boolea
 
   let submitted = false
   for (const selector of PINCODE_SUBMIT_SELECTORS) {
+    if (!hasBudget(startMs, budgetMs)) {
+      return false
+    }
+
     const button = page.locator(selector).first()
     const visible = await button.isVisible().catch(() => false)
     if (!visible) {
       continue
     }
 
-    await button.click().catch(() => undefined)
+    await button.click({ timeout: 1_000 }).catch(() => undefined)
     submitted = true
     break
   }
@@ -246,16 +273,24 @@ export async function trySetPincode(page: Page, pincode: string): Promise<boolea
   await page.waitForTimeout(1400)
 
   for (const selector of PINCODE_CLOSE_SELECTORS) {
+    if (!hasBudget(startMs, budgetMs)) {
+      return false
+    }
+
     const closeButton = page.locator(selector).first()
     const visible = await closeButton.isVisible().catch(() => false)
     if (visible) {
-      await closeButton.click().catch(() => undefined)
+      await closeButton.click({ timeout: 1_000 }).catch(() => undefined)
       break
     }
   }
 
   let labelText = ''
   for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!hasBudget(startMs, budgetMs)) {
+      return false
+    }
+
     const line2 = (await page.locator('#glow-ingress-line2').first().textContent().catch(() => '')) || ''
     const shortLine =
       (await page.locator('#contextualIngressPtLabel_deliveryShortLine').first().textContent().catch(() => '')) || ''
