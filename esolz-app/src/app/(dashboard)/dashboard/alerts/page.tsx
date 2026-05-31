@@ -36,7 +36,6 @@ import {
   Sparkles,
 } from 'lucide-react'
 import {
-  getAlertStats,
   type CenterAlert,
   type AlertSeverity,
   type AlertModule,
@@ -413,7 +412,27 @@ export default function AlertsPage() {
   const [statusFilter, setStatusFilter]     = useState<AlertStatus | 'all'>('all')
   const [search, setSearch] = useState('')
 
-  const stats = useMemo(() => getAlertStats(alerts), [alerts])
+  const kpiStats = useMemo(() => {
+    // Active KPIs exclude resolved/archived alerts to avoid counting historical issues.
+    const isInactive = (status?: string | null) =>
+      status === 'resolved' || status === 'archived'
+
+    const isActive = (status?: string | null) => {
+      if (!status) return true
+      return status === 'new' || status === 'open' || status === 'active'
+    }
+
+    const activeAlerts = alerts.filter(a => isActive(a.status))
+
+    return {
+      activeTotal: activeAlerts.length,
+      activeCritical: activeAlerts.filter(a => a.severity === 'critical').length,
+      activeWarning: activeAlerts.filter(a => a.severity === 'warning').length,
+      activeOpportunity: activeAlerts.filter(a => a.severity === 'opportunity').length,
+      resolvedTotal: alerts.filter(a => isInactive(a.status)).length,
+      unreadTotal: activeAlerts.filter(a => !a.status || a.status === 'new').length,
+    }
+  }, [alerts])
 
   // ── Load alerts ───────────────────────────────────────────────────────────
 
@@ -541,7 +560,7 @@ export default function AlertsPage() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          {stats.unread > 0 && (
+          {kpiStats.unreadTotal > 0 && (
             <Button type="button" variant="outline" onClick={handleMarkAllRead}>
               <CheckCheck className="size-4" />
               Mark All Read
@@ -563,12 +582,12 @@ export default function AlertsPage() {
 
       {/* ── 2. KPI cards ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
-        <KpiCard label="Total Alerts"  value={stats.total}       icon={Bell} />
-        <KpiCard label="Critical"      value={stats.critical}    icon={XCircle} />
-        <KpiCard label="Warnings"      value={stats.warning}     icon={AlertTriangle} />
-        <KpiCard label="Opportunities" value={stats.opportunity}  icon={CheckCircle2} />
-        <KpiCard label="Resolved"      value={stats.resolved}    icon={CheckCheck} />
-        <KpiCard label="Unread"        value={stats.unread}      icon={BellOff} />
+        <KpiCard label="Active Alerts" value={kpiStats.activeTotal}       icon={Bell} />
+        <KpiCard label="Critical"      value={kpiStats.activeCritical}    icon={XCircle} />
+        <KpiCard label="Warnings"      value={kpiStats.activeWarning}     icon={AlertTriangle} />
+        <KpiCard label="Opportunities" value={kpiStats.activeOpportunity} icon={CheckCircle2} />
+        <KpiCard label="Resolved"      value={kpiStats.resolvedTotal}     icon={CheckCheck} />
+        <KpiCard label="Unread"        value={kpiStats.unreadTotal}       icon={BellOff} />
       </div>
 
       {/* ── 3. Filters ────────────────────────────────────────────────────── */}
