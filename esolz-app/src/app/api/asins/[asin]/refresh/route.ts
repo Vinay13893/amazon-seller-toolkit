@@ -1,18 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { scrapeAsinBsr } from '@/lib/integrations/amazon-bsr-adapter'
-import {
-  isWorkerConfigured,
-  runBsrFallbackCheck,
-  CheckerWorkerUnavailableError,
-} from '@/lib/checkers/checker-worker-client'
+import { refreshAccessToken } from '@/lib/amazon/lwa'
+import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
+import { getCatalogItemForAsin } from '@/lib/amazon/catalog'
 
 // Ensure Node.js runtime — child_process is not available in Edge
 export const runtime    = 'nodejs'
 export const maxDuration = 120   // 2 min (respected on Vercel Pro+)
 
-const BSR_RUNTIME_FAILURE_MESSAGE = 'BSR checker failed in this deployment. Please try again later.'
+const BSR_RUNTIME_FAILURE_MESSAGE = 'Amazon Catalog data was not available for this ASIN yet.'
+
+const MARKETPLACE_ID_BY_MARKETPLACE: Record<string, string> = {
+  IN: 'A21TJRUUN4KGV',
+  US: 'ATVPDKIKX0DER',
+  UK: 'A1F83G8C2ARO7P',
+  GB: 'A1F83G8C2ARO7P',
+  DE: 'A1PA6795UKMFR9',
+}
+
+function marketplaceIdFor(marketplace: string | null | undefined): string {
+  if (!marketplace) return 'A21TJRUUN4KGV'
+  return MARKETPLACE_ID_BY_MARKETPLACE[marketplace.toUpperCase()] ?? 'A21TJRUUN4KGV'
+}
+
+function hasUsefulCatalogData(result: { title: string | null; brand: string | null; image_url: string | null; category: string | null; bsr: number | null }): boolean {
+  return Boolean(result.title || result.brand || result.image_url || result.category || result.bsr !== null)
+}
 
 export async function POST(
   _req: NextRequest,
@@ -49,7 +63,7 @@ export async function POST(
   // ── CHECK 4: tracked_asins row ──────────────────────────────────────────
   const { data: tracked, error: trackErr } = await supabase
     .from('tracked_asins')
-    .select('id, marketplace')
+    .select('id, marketplace, product_title, brand, category, image_url, status')
     .eq('workspace_id', workspaceId)
     .eq('asin', asin.toUpperCase())
     .neq('status', 'archived')
@@ -65,9 +79,6 @@ export async function POST(
   }
   const trackedAsinId = tracked.id
   console.log(`[bsr-refresh][4] OK   tracked_asin: id=${tracked.id} marketplace=${tracked.marketplace}`)
-
-  // ── CHECK 5–6: Run scraper ──────────────────────────────────────────────
-  console.log(`[bsr-refresh][5] spawning scraper for ${asin} / ${tracked.marketplace}`)
   // ── CHECK 7: Insert asin_snapshots ──────────────────────────────────────
   // Use the service-role (admin) client so the INSERT is not subject to RLS.
   // We already verified above that the user owns this workspace + ASIN, so
@@ -124,40 +135,87 @@ export async function POST(
     return fallback
   }
 
-  // ── Run BSR check: try worker first, then local Python (dev only) ────────
-  let result
+  // ── Run Amazon Catalog first, then persist the useful metadata ──────────
+  const checkedAt = new Date().toISOString()
+  let result: {
+    bsr: number | null
+    price: number | null
+    rating: number | null
+    review_count: number | null
+    buy_box_owner: string | null
+    buy_box_status: 'won' | 'lost' | 'suppressed' | 'unknown'
+    availability_score: number | null
+    scrape_status: 'success' | 'partial_success' | 'failed'
+    checked_at: string
+    source: string
+    title: string | null
+    brand: string | null
+    image_url: string | null
+    category: string | null
+    bsr_category: string | null
+  }
+
   try {
-    if (isWorkerConfigured()) {
-      console.log(`[bsr-refresh][5] calling checker worker for ${asin}`)
-      const workerRes = await runBsrFallbackCheck({
-        workspace_id:    workspaceId,
-        tracked_asin_id: trackedAsinId,
-        asin:            asin.toUpperCase(),
-        marketplace:     tracked.marketplace,
-      })
-      // Map worker response shape to local BsrScrapeResult shape
-      result = {
-        bsr:               workerRes.bsr,
-        price:             workerRes.price,
-        rating:            workerRes.rating,
-        review_count:      workerRes.review_count,
-        buy_box_owner:     null,
-        buy_box_status:    (workerRes.status === 'success' ? 'won' : 'unknown') as string,
-        availability_score: null,
-        scrape_status:     workerRes.status,
-        checked_at:        new Date().toISOString(),
-      }
-      console.log(`[bsr-refresh][5] OK   worker: bsr=${result.bsr} price=${result.price}`)
-    } else {
-      // Local dev: use Python adapter
-      result = await scrapeAsinBsr(asin.toUpperCase(), tracked.marketplace)
-      console.log(`[bsr-refresh][6] OK   scraper: bsr=${result.bsr} price=${result.price} status=${result.scrape_status}`)
+    const connection = await adminClient
+      .from('amazon_connections')
+      .select('id, status, marketplace_id, refresh_token_encrypted, access_token_encrypted, access_token_expires_at')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle()
+
+    if (connection.error) {
+      throw new Error('Amazon connection lookup failed')
     }
-    console.log(`[bsr-refresh][6] full result: ${JSON.stringify(result, null, 2)}`)
+
+    if (!connection.data || connection.data.status !== 'active' || !connection.data.refresh_token_encrypted) {
+      throw new Error('Amazon connection is not active for this workspace')
+    }
+
+    const marketplaceId = connection.data.marketplace_id ?? marketplaceIdFor(tracked.marketplace)
+    const refreshToken = decryptToken(connection.data.refresh_token_encrypted)
+    const tokenResult = await refreshAccessToken(refreshToken)
+
+    try {
+      const encryptedToken = encryptToken(tokenResult.access_token)
+      await adminClient
+        .from('amazon_connections')
+        .update({
+          access_token_encrypted: encryptedToken,
+          access_token_expires_at: new Date(Date.now() + tokenResult.expires_in * 1000).toISOString(),
+          updated_at: checkedAt,
+        })
+        .eq('workspace_id', workspaceId)
+    } catch (persistErr) {
+      console.error('[bsr-refresh][5] WARN could not persist refreshed access token:', String(persistErr))
+    }
+
+    const catalog = await getCatalogItemForAsin({
+      accessToken: tokenResult.access_token,
+      marketplaceId,
+      asin: asin.toUpperCase(),
+    })
+
+    result = {
+      bsr:                catalog.bsr,
+      price:              null,
+      rating:             null,
+      review_count:       null,
+      buy_box_owner:      null,
+      buy_box_status:     'unknown',
+      availability_score: null,
+      scrape_status:      catalog.bsr !== null ? 'success' : (hasUsefulCatalogData(catalog) ? 'partial_success' : 'failed'),
+      checked_at:         checkedAt,
+      source:             'Amazon Catalog API',
+      title:              catalog.title,
+      brand:              catalog.brand,
+      image_url:          catalog.image_url,
+      category:           catalog.category,
+      bsr_category:       catalog.bsr_category,
+    }
+
+    console.log(`[bsr-refresh][5] OK   catalog: asin=${catalog.asin} bsr=${catalog.bsr} title=${catalog.title ?? 'null'}`)
   } catch (err) {
-    const checkedAt = new Date().toISOString()
-    const isInfraError = err instanceof CheckerWorkerUnavailableError
-    console.error('[bsr-refresh][6] FAIL scraper:', String(err))
+    const safeErrorMessage = err instanceof Error ? err.message : String(err)
+    console.error('[bsr-refresh][6] FAIL catalog:', safeErrorMessage)
 
     const { data: failedSnap, error: failedInsertErr } = await insertSnapshotWithStatus({
       bsr: null,
@@ -165,7 +223,7 @@ export async function POST(
       rating: null,
       reviewCount: null,
       buyBoxOwner: null,
-      buyBoxStatus: 'checker_unavailable',
+      buyBoxStatus: 'unknown',
       availabilityScore: null,
       checkedAt,
     })
@@ -181,16 +239,36 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        scrape_status: 'checker_unavailable',
-        error: isInfraError ? BSR_RUNTIME_FAILURE_MESSAGE : String(err),
+        scrape_status: 'failed',
+        error: BSR_RUNTIME_FAILURE_MESSAGE,
         snapshot: failedSnap,
       },
-      { status: 502 },
+      { status: 200 },
     )
   }
 
-  const partialSuccess = result.bsr === null
-  const buyBoxStatusForInsert = partialSuccess ? 'partial_success' : result.buy_box_status
+  const partialSuccess = result.scrape_status === 'partial_success'
+  const success = result.scrape_status === 'success'
+
+  const metadataUpdate: Record<string, string> = {}
+  if (result.title) metadataUpdate.product_title = result.title
+  if (result.brand) metadataUpdate.brand = result.brand
+  if (result.category) metadataUpdate.category = result.category
+  if (result.image_url) metadataUpdate.image_url = result.image_url
+
+  try {
+    if (Object.keys(metadataUpdate).length > 0) {
+      await adminClient
+        .from('tracked_asins')
+        .update({
+          ...metadataUpdate,
+          updated_at: checkedAt,
+        })
+        .eq('id', trackedAsinId)
+    }
+  } catch (updateErr) {
+    console.error('[bsr-refresh][7] WARN tracked_asins update failed:', String(updateErr))
+  }
 
   console.log(`[bsr-refresh][7] inserting snapshot: workspace=${workspaceId} tracked_asin=${trackedAsinId}`)
   const { data: snapshot, error: insertErr } = await insertSnapshotWithStatus({
@@ -199,7 +277,7 @@ export async function POST(
     rating: result.rating,
     reviewCount: result.review_count,
     buyBoxOwner: result.buy_box_owner,
-    buyBoxStatus: buyBoxStatusForInsert,
+    buyBoxStatus: result.buy_box_status,
     availabilityScore: result.availability_score,
     checkedAt: result.checked_at,
   })
@@ -211,9 +289,12 @@ export async function POST(
   console.log(`[bsr-refresh][7] OK   snapshot inserted: id=${snapshot?.id} bsr=${snapshot?.bsr}`)
 
   return NextResponse.json({
-    success:       !partialSuccess,
-    scrape_status: partialSuccess ? 'partial_success' : result.scrape_status,
-    message:       partialSuccess ? 'BSR not found in this check. Snapshot saved.' : undefined,
+    success,
+    scrape_status: result.scrape_status,
+    source:        result.source,
+    message:       partialSuccess
+      ? 'Product details found, but BSR was not available from Amazon.'
+      : 'Amazon Catalog data saved successfully.',
     bsr:           snapshot?.bsr,
     price:         snapshot?.price,
     rating:        snapshot?.rating,

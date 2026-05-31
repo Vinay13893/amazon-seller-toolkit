@@ -246,14 +246,9 @@ export default function BsrTrackerPage() {
   function deriveBsrState(p: ProductSnapshot): 'never_checked' | 'bsr_not_found' | 'failed' | 'stale' | 'ok' {
     if (!p.captured_at) return 'never_checked'
 
-    const hasOtherSignals =
-      p.price !== null ||
-      p.rating !== null ||
-      p.review_count !== null ||
-      p.buybox_winner !== null ||
-      p.availability_score !== null
+    const hasCatalogSignals = p.label !== p.asin || p.category !== null
 
-    if (p.bsr_rank === null) return hasOtherSignals ? 'bsr_not_found' : 'failed'
+    if (p.bsr_rank === null) return hasCatalogSignals ? 'bsr_not_found' : 'failed'
 
     const ageMs = Date.now() - new Date(p.captured_at).getTime()
     if (ageMs > 24 * 60 * 60 * 1000) return 'stale'
@@ -322,7 +317,7 @@ export default function BsrTrackerPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">BSR Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Monitor Best Seller Rank movement and category performance for your tracked ASINs. Next: refresh ASIN data to keep ranks current. Data source: tracked_asins and asin_snapshots.
+            Monitor Best Seller Rank movement and category performance for your tracked ASINs. Next: refresh ASIN data to keep ranks current. Data source: Amazon Catalog API first, backed by tracked_asins and asin_snapshots.
           </p>
         </div>
         <Button render={<Link href="/dashboard/asins" />} className="gap-2 shrink-0">
@@ -506,7 +501,7 @@ export default function BsrTrackerPage() {
           {gainers.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-6">
               {productsWithBsr.length === 0
-                ? 'Click Refresh Data on an ASIN detail page to collect BSR data.'
+                ? 'Click Refresh Data on an ASIN detail page to collect BSR data from Amazon Catalog.'
                 : 'No improvements detected — need 2+ snapshots per ASIN.'}
             </p>
           ) : (
@@ -560,7 +555,7 @@ export default function BsrTrackerPage() {
           {losers.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-6">
               {productsWithBsr.length === 0
-                ? 'Click Refresh Data on an ASIN detail page to collect BSR data.'
+                ? 'Click Refresh Data on an ASIN detail page to collect BSR data from Amazon Catalog.'
                 : 'No drops detected yet.'}
             </p>
           ) : (

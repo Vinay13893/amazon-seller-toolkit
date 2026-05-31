@@ -538,7 +538,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     setRefreshing(true)
     try {
       const res  = await fetch(`/api/asins/${asin}/refresh`, { method: 'POST' })
-      const data = await res.json() as { error?: string; detail?: string; scrape_status?: string; success?: boolean; message?: string }
+      const data = await res.json() as { error?: string; detail?: string; scrape_status?: string; success?: boolean; message?: string; source?: string }
       if (!res.ok) {
         const msg = [data.error, data.detail, data.scrape_status].filter(Boolean).join(' — ')
         console.error('[bsr-refresh] API error:', data)
@@ -546,9 +546,11 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         await load()
       } else {
         if (data.scrape_status === 'partial_success') {
-          toast.warning('BSR not found in this check. Snapshot was saved.')
+          toast.warning(data.message || 'Product details found, but BSR was not available from Amazon.')
+        } else if (data.scrape_status === 'failed' || data.success === false) {
+          toast.info(data.message || 'Amazon Catalog data was not available for this ASIN yet.')
         } else {
-          toast.success('Snapshot updated successfully')
+          toast.success(data.message || 'Snapshot updated successfully')
         }
         await load()
       }
@@ -705,11 +707,14 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
   const bsrDisplay = product.bsr_rank !== null ? `#${product.bsr_rank.toLocaleString('en-IN')}` : 'BSR not available'
   // Show "last seen X ago" when BSR is from an older snapshot (latest had null)
   const bsrIsStale = product.bsr_rank !== null && product.bsr_captured_at !== product.captured_at
+  const hasCatalogDetails = Boolean(detail?.product_title || detail?.brand || detail?.category || detail?.image_url)
   const bsrSubLabel = bsrIsStale
     ? `Last seen ${timeAgo(product.bsr_captured_at!)}`
     : bsrChange !== null
       ? bsrChange < 0 ? `▲ ${Math.abs(bsrChange).toLocaleString('en-IN')} improved` : bsrChange > 0 ? `▼ ${bsrChange.toLocaleString('en-IN')} dropped` : 'No change'
-      : 'No data yet'
+      : hasCatalogDetails
+        ? 'Product details found, but BSR was not available from Amazon.'
+        : 'No data yet'
 
   const buyboxValue = product.buybox_is_self === true
     ? 'You ✓'
@@ -783,7 +788,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
                 {product.label}
               </h1>
               <p className="text-xs text-muted-foreground mb-1.5">
-                Review this ASIN's latest BSR, Buy Box, pincode and keyword performance. Next: run Refresh Data if this is your first check. Data source: tracked_asins, snapshot tables and checker APIs.
+                Review this ASIN's latest BSR, Buy Box, pincode and keyword performance. Next: run Refresh Data if this is your first check. Data source: Amazon Catalog API first, then snapshot tables and checker APIs.
               </p>
               {/* Category */}
               {product.category && (
