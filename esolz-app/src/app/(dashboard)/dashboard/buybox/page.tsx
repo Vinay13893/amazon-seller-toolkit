@@ -47,6 +47,7 @@ interface LiveEntry {
   asin:             string
   asin_id:          string
   product_name:     string
+  has_snapshot:     boolean
   current_owner:    string | null
   status:           BBStatus
   buy_box_price:    number | null
@@ -131,6 +132,15 @@ function statusLabel(status: BBStatus): string {
   if (status === 'partial_success') return 'Partial data'
   if (status === 'failed') return 'Check failed'
   return 'Unknown'
+}
+
+function ownerDisplay(entry: LiveEntry): string {
+  if (!entry.has_snapshot) return 'Not checked yet'
+  if (entry.status === 'unknown' || entry.status === 'partial_success') {
+    return 'Offer data available, ownership not confirmed'
+  }
+  if (entry.status === 'failed') return 'Check failed safely'
+  return entry.current_owner ?? '—'
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -263,11 +273,26 @@ export default function BuyboxPage() {
     )
 
     // 2. Latest buybox_snapshot per ASIN
-    const { data: snaps } = await supabase
+    const detailedSelect = 'tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, number_of_offers, number_of_buybox_eligible_offers, source, checked_at'
+    const baseSelect = 'tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, checked_at'
+
+    const detailedResult = await supabase
       .from('buybox_snapshots')
-      .select('tracked_asin_id, buy_box_owner, buy_box_status, buy_box_price, your_price, price_gap, fulfillment_type, number_of_offers, number_of_buybox_eligible_offers, source, checked_at')
+      .select(detailedSelect)
       .in('tracked_asin_id', asinIds)
       .order('checked_at', { ascending: false })
+
+    // Backward-compatible fallback for DBs that don't yet have optional Product Pricing fields.
+    let snaps: SnapRow[] = (detailedResult.data ?? []) as SnapRow[]
+    if (detailedResult.error) {
+      console.warn('[buybox-page] detailed snapshot select failed, retrying base select:', detailedResult.error.message)
+      const baseResult = await supabase
+        .from('buybox_snapshots')
+        .select(baseSelect)
+        .in('tracked_asin_id', asinIds)
+        .order('checked_at', { ascending: false })
+      snaps = (baseResult.data ?? []) as SnapRow[]
+    }
 
     type SnapRow = {
       tracked_asin_id: string; buy_box_owner: string | null; buy_box_status: string | null
@@ -286,6 +311,7 @@ export default function BuyboxPage() {
         asin:             a.asin,
         asin_id:          a.id,
         product_name:     a.product_title ?? a.asin,
+        has_snapshot:     Boolean(s),
         current_owner:    s?.buy_box_owner ?? null,
         status:           normalizeStatus(s?.buy_box_status ?? null),
         buy_box_price:    s?.buy_box_price ?? null,
@@ -455,12 +481,13 @@ export default function BuyboxPage() {
     const unknown = entries.filter(e => e.status === 'unknown').length
     const partial = entries.filter(e => e.status === 'partial_success').length
     const failed = entries.filter(e => e.status === 'failed').length
+    const unknownUnconfirmed = entries.filter(e => e.status !== 'won' && e.status !== 'lost').length
     const active = entries.filter(e => e.status === 'won' || e.status === 'lost').length
     const winRate = active > 0 ? Math.round((won / active) * 100) : 0
     const highRisk = competitors.filter(c => c.risk === 'high').length
     const score = calcHealth(entries)
     const hs = healthLabel(score)
-    return { won, lost, noBuyBox, unknown, partial, failed, active, winRate, highRisk, score, hs }
+    return { won, lost, noBuyBox, unknown, partial, failed, unknownUnconfirmed, active, winRate, highRisk, score, hs }
   }, [entries, competitors])
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -499,7 +526,7 @@ export default function BuyboxPage() {
         <KpiCard label="Total Tracked"        value={entries.length} icon={Package} />
         <KpiCard label="Buy Box Won"           value={stats.won}      icon={ShieldCheck}  sub="Active listings" />
         <KpiCard label="Buy Box Lost"          value={stats.lost}     icon={ShieldAlert} />
-        <KpiCard label="No Buy Box"            value={stats.noBuyBox} icon={ShieldOff} />
+        <KpiCard label="Unknown / Unconfirmed" value={stats.unknownUnconfirmed} icon={ShieldOff} />
         <KpiCard label="Competitor Sellers"    value={competitors.length} icon={AlertCircle}  sub="Detected" />
         <KpiCard label="BB Win Rate"           value={`${stats.winRate}%`} icon={BarChart2}  sub="Active ASINs" />
       </div>
@@ -708,8 +735,8 @@ export default function BuyboxPage() {
                           : entry.status === 'failed'
                             ? <AlertTriangle className="size-3 text-amber-400 flex-shrink-0" />
                           : <Store className="size-3 text-muted-foreground flex-shrink-0" />}
-                        <span className="text-xs text-foreground truncate max-w-[120px]">
-                          {entry.status === 'failed' ? 'Check failed safely' : (entry.current_owner ?? '—')}
+                        <span className="text-xs text-foreground max-w-[220px] truncate" title={ownerDisplay(entry)}>
+                          {ownerDisplay(entry)}
                         </span>
                       </div>
                     </td>
@@ -740,7 +767,7 @@ export default function BuyboxPage() {
                     </td>
                     <td className="px-4 py-4">
                       <span className="text-xs text-muted-foreground">
-                        {entry.checked_at ? `${timeAgo(entry.checked_at)} · ${statusLabel(entry.status)}` : 'Never'}
+                        {entry.checked_at ? `${timeAgo(entry.checked_at)} · ${statusLabel(entry.status)}` : 'Not checked yet'}
                       </span>
                     </td>
                     <td className="px-4 py-4">
