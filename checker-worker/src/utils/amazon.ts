@@ -148,33 +148,45 @@ export async function extractDeliveryPromise(page: Page): Promise<string | null>
 }
 
 export async function detectAvailability(page: Page): Promise<boolean | null> {
-  const bodyText = ((await page.textContent('body').catch(() => null)) || '').toLowerCase()
-  if (!bodyText) {
-    return null
-  }
-
   const unavailableHints = [
     'currently unavailable',
     'out of stock',
     "we don't know when or if this item will be back",
     'cannot be shipped to your selected delivery location',
+    'this item cannot be delivered to your selected location',
     'not deliverable to this address',
-    'unavailable for this pincode',
+    'not available for this pincode',
+    'this item is not eligible for delivery to your location',
   ]
 
-  const hasUnavailable = unavailableHints.some(hint => bodyText.includes(hint))
+  const focusedText = [
+    (await page.locator('#availability').first().textContent().catch(() => '')) || '',
+    (await page.locator('#deliveryBlockMessage').first().textContent().catch(() => '')) || '',
+    (await page.locator('#ddmDeliveryMessage').first().textContent().catch(() => '')) || '',
+    (await page.locator('#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE').first().textContent().catch(() => '')) || '',
+  ]
+    .map(text => normalizeWhitespace(text || ''))
+    .join(' | ')
+    .toLowerCase()
+
+  const bodyText = ((await page.textContent('body').catch(() => null)) || '').toLowerCase()
+  if (!focusedText && !bodyText) {
+    return null
+  }
+
+  const hasUnavailable = unavailableHints.some(hint => focusedText.includes(hint))
   if (hasUnavailable) {
     return false
   }
 
   const hasPositiveStockHint =
-    bodyText.includes('in stock') ||
-    bodyText.includes('free delivery') ||
-    bodyText.includes('get it by') ||
-    bodyText.includes('today') ||
-    bodyText.includes('tomorrow')
+    focusedText.includes('in stock') ||
+    focusedText.includes('free delivery') ||
+    focusedText.includes('get it by') ||
+    focusedText.includes('today') ||
+    focusedText.includes('tomorrow')
 
-  if (hasPositiveStockHint && bodyText.includes('delivering to')) {
+  if (hasPositiveStockHint && (focusedText.includes('delivering to') || bodyText.includes('delivering to'))) {
     return true
   }
 

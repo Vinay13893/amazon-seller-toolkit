@@ -35,6 +35,11 @@ type AvailabilityDecision = {
   available: boolean | null
   status: 'success' | 'unavailable' | 'failed'
   reason: string | null
+  reasonCode: string
+  matchedPositivePhrase: string | null
+  matchedNegativePhrase: string | null
+  locationConfirmed: boolean
+  deliveryTextFound: boolean
 }
 
 const OVERALL_TIMEOUT_MS = 40_000
@@ -52,14 +57,18 @@ const AVAILABLE_HINTS = [
   'usually dispatched',
 ]
 
-const UNAVAILABLE_HINTS = [
+const STRONG_UNAVAILABLE_HINTS = [
   'currently unavailable',
   'out of stock',
   "we don't know when or if this item will be back",
   'cannot be shipped to your selected delivery location',
+  'this item cannot be delivered to your selected location',
   'not deliverable to this address',
-  'unavailable for this pincode',
+  'not available for this pincode',
+  'this item is not eligible for delivery to your location',
 ]
+
+const PINCODE_UNCONFIRMED_MESSAGE = 'Pincode-specific delivery could not be confirmed.'
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
@@ -167,7 +176,11 @@ async function extractSnapshot(page: Page): Promise<{
   }
 }
 
-async function decideAvailability(page: Page, deliveryPromise: string | null): Promise<AvailabilityDecision> {
+async function decideAvailability(
+  page: Page,
+  deliveryPromise: string | null,
+  pincode: string,
+): Promise<AvailabilityDecision> {
   const availabilityText = await collectText(page, ['#availability', '#availability span'])
   const deliveryText = await collectText(page, [
     '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
@@ -175,29 +188,35 @@ async function decideAvailability(page: Page, deliveryPromise: string | null): P
     '#ddmDeliveryMessage',
   ])
   const locationText = await collectText(page, ['#glow-ingress-line2', '#contextualIngressPtLabel_deliveryShortLine'])
-  const bodyTextRaw = (await page.textContent('body').catch(() => '')) || ''
 
-  const combinedText = [
+  const focusedText = [
     availabilityText,
     deliveryPromise || '',
     deliveryText,
     locationText,
-    bodyTextRaw.slice(0, 6000),
   ]
     .join(' | ')
     .toLowerCase()
 
-  const clearUnavailableReason = includesAny(combinedText, UNAVAILABLE_HINTS)
+  const locationConfirmed = locationText.toLowerCase().includes(pincode) || locationText.toLowerCase().includes('delivering to')
+  const deliveryTextFound = Boolean(normalizeWhitespace(deliveryPromise || '') || normalizeWhitespace(deliveryText))
+
+  const clearUnavailableReason = includesAny(focusedText, STRONG_UNAVAILABLE_HINTS)
   if (clearUnavailableReason) {
     return {
       available: false,
       status: 'unavailable',
       reason: `Amazon indicates unavailability: ${clearUnavailableReason}.`,
+      reasonCode: 'strong_negative_evidence',
+      matchedPositivePhrase: null,
+      matchedNegativePhrase: clearUnavailableReason,
+      locationConfirmed,
+      deliveryTextFound,
     }
   }
 
-  const explicitAvailableHint = includesAny(combinedText, AVAILABLE_HINTS)
-  const hasDeliveringToSignal = combinedText.includes('delivering to')
+  const explicitAvailableHint = includesAny(focusedText, AVAILABLE_HINTS)
+  const hasDeliveringToSignal = focusedText.includes('delivering to')
 
   const deliveryDatePattern =
     /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|\d{1,2} \w{3})\b/i
@@ -206,19 +225,29 @@ async function decideAvailability(page: Page, deliveryPromise: string | null): P
 
   if (
     explicitAvailableHint
-    && (hasDeliveringToSignal || hasDeliveryDate || explicitAvailableHint === 'in stock')
+    && (hasDeliveringToSignal || hasDeliveryDate || locationConfirmed || explicitAvailableHint === 'in stock')
   ) {
     return {
       available: true,
       status: 'success',
       reason: null,
+      reasonCode: 'strong_positive_evidence',
+      matchedPositivePhrase: explicitAvailableHint,
+      matchedNegativePhrase: null,
+      locationConfirmed,
+      deliveryTextFound,
     }
   }
 
   return {
     available: null,
     status: 'failed',
-    reason: 'Delivery availability is unclear after setting pincode.',
+    reason: PINCODE_UNCONFIRMED_MESSAGE,
+    reasonCode: 'insufficient_evidence',
+    matchedPositivePhrase: explicitAvailableHint,
+    matchedNegativePhrase: null,
+    locationConfirmed,
+    deliveryTextFound,
   }
 }
 
@@ -298,10 +327,18 @@ export async function runPincodeAvailabilityCheck(
             price: fallback.price,
             seller: fallback.seller,
             status: 'failed',
-            error_message: 'Pincode-specific delivery could not be confirmed.',
+            error_message: PINCODE_UNCONFIRMED_MESSAGE,
           }
 
-          pincodeLog(input, 'finish', { final_status: response.status, available: response.available })
+          pincodeLog(input, 'finish', {
+            final_status: response.status,
+            available: response.available,
+            reason_code: 'pincode_not_confirmed',
+            matched_positive_phrase: null,
+            matched_negative_phrase: null,
+            location_confirmed: false,
+            delivery_text_found: Boolean(fallback.deliveryPromise),
+          })
           return response
         }
 
@@ -330,7 +367,7 @@ export async function runPincodeAvailabilityCheck(
           seller_present: Boolean(seller),
         })
 
-        const decision = await decideAvailability(page, deliveryPromise)
+        const decision = await decideAvailability(page, deliveryPromise, input.pincode)
 
         if (decision.available === null && availabilitySignal === true) {
           const response: PincodeAvailabilityResponse = {
@@ -343,7 +380,15 @@ export async function runPincodeAvailabilityCheck(
             error_message: null,
           }
 
-          pincodeLog(input, 'finish', { final_status: response.status, available: response.available })
+          pincodeLog(input, 'finish', {
+            final_status: response.status,
+            available: response.available,
+            reason_code: decision.reasonCode,
+            matched_positive_phrase: decision.matchedPositivePhrase,
+            matched_negative_phrase: decision.matchedNegativePhrase,
+            location_confirmed: decision.locationConfirmed,
+            delivery_text_found: decision.deliveryTextFound,
+          })
           return response
         }
 
@@ -358,7 +403,15 @@ export async function runPincodeAvailabilityCheck(
             error_message: null,
           }
 
-          pincodeLog(input, 'finish', { final_status: response.status, available: response.available })
+          pincodeLog(input, 'finish', {
+            final_status: response.status,
+            available: response.available,
+            reason_code: decision.reasonCode,
+            matched_positive_phrase: decision.matchedPositivePhrase,
+            matched_negative_phrase: decision.matchedNegativePhrase,
+            location_confirmed: decision.locationConfirmed,
+            delivery_text_found: decision.deliveryTextFound,
+          })
           return response
         }
 
@@ -370,10 +423,18 @@ export async function runPincodeAvailabilityCheck(
             price,
             seller,
             status: 'unavailable',
-            error_message: null,
+            error_message: decision.reason,
           }
 
-          pincodeLog(input, 'finish', { final_status: response.status, available: response.available })
+          pincodeLog(input, 'finish', {
+            final_status: response.status,
+            available: response.available,
+            reason_code: decision.reasonCode,
+            matched_positive_phrase: decision.matchedPositivePhrase,
+            matched_negative_phrase: decision.matchedNegativePhrase,
+            location_confirmed: decision.locationConfirmed,
+            delivery_text_found: decision.deliveryTextFound,
+          })
           return response
         }
 
@@ -387,7 +448,15 @@ export async function runPincodeAvailabilityCheck(
           error_message: decision.reason,
         }
 
-        pincodeLog(input, 'finish', { final_status: response.status, available: response.available })
+        pincodeLog(input, 'finish', {
+          final_status: response.status,
+          available: response.available,
+          reason_code: decision.reasonCode,
+          matched_positive_phrase: decision.matchedPositivePhrase,
+          matched_negative_phrase: decision.matchedNegativePhrase,
+          location_confirmed: decision.locationConfirmed,
+          delivery_text_found: decision.deliveryTextFound,
+        })
         return response
       }),
       OVERALL_TIMEOUT_MS,
