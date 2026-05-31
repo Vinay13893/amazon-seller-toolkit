@@ -6,6 +6,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "install:browsers": "playwright install chromium",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js"
   },
