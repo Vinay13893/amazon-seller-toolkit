@@ -109,7 +109,7 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
     .from('tracked_asins')
     .select(`
       id, asin, marketplace, product_title, category, status, created_at,
-      asin_snapshots(bsr, price, rating, review_count, buy_box_owner, availability_score, checked_at)
+      asin_snapshots(bsr, price, rating, review_count, buy_box_owner, availability_score, scrape_status, checked_at)
     `)
     .eq('workspace_id', workspaceId)
     .neq('status', 'archived')
@@ -145,6 +145,7 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
       buybox_is_self:     null,
       availability:       availabilityFromScore(latest?.availability_score ?? null),
       availability_score: latest?.availability_score ?? null,
+      scrape_status:      latest?.scrape_status ?? null,
       captured_at:        latest?.checked_at    ?? null,
     } satisfies ProductSnapshot
   })
@@ -194,6 +195,7 @@ export async function addTrackedAsin(
     buybox_is_self:     null,
     availability:       null,
     availability_score: null,
+    scrape_status:      null,
     captured_at:        null,
   }
 }

@@ -98,5 +98,6 @@ export interface ProductSnapshot {
   availability: Availability | null
   availability_score: number | null  // 0–100
   // Meta
+  scrape_status?: 'success' | 'partial_success' | 'failed' | null
   captured_at: string | null
 }

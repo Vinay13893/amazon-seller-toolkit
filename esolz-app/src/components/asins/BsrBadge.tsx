@@ -6,6 +6,7 @@ interface BsrBadgeProps {
   rank: number | null
   prevRank?: number | null
   checkedAt?: string | null
+  scrapeStatus?: 'success' | 'partial_success' | 'failed' | null
   hasOtherSignals?: boolean
   staleAfterHours?: number
   size?: 'sm' | 'md'
@@ -20,6 +21,7 @@ export function BsrBadge({
   rank,
   prevRank,
   checkedAt = null,
+  scrapeStatus = null,
   hasOtherSignals = false,
   staleAfterHours = 24,
   size = 'md',
@@ -28,10 +30,16 @@ export function BsrBadge({
     if (!checkedAt) {
       return <span className="text-muted-foreground/70 text-xs">Never checked</span>
     }
-    if (hasOtherSignals) {
-      return <span className="text-yellow-400 text-xs">BSR not found</span>
+    if (scrapeStatus === 'failed') {
+      return <span className="text-red-400 text-xs">Check failed</span>
     }
-    return <span className="text-red-400 text-xs">Failed</span>
+    if (scrapeStatus === 'partial_success') {
+      return <span className="text-yellow-400 text-xs">BSR not available</span>
+    }
+    if (hasOtherSignals) {
+      return <span className="text-muted-foreground text-xs">Product checked</span>
+    }
+    return <span className="text-yellow-400 text-xs">BSR not available</span>
   }
 
   // Positive delta → improved (lower rank number = better)

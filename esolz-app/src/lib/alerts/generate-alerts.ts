@@ -24,6 +24,8 @@ interface AlertInsert {
   recommended_action: string
 }
 
+const PINCODE_ALERTS_PAUSED = true
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 /**
@@ -237,10 +239,8 @@ export async function generateAlerts(workspaceId: string): Promise<number> {
   }
 
   // ── C. Pincode alerts ──────────────────────────────────────────────────────
-  // Rule: >30% of pincodes unavailable → critical / warning
-  //       any pincode unavailable → warning (if ≤30%)
-  //       checker/runtime failures are excluded from availability ratio
-  {
+  // Temporarily disabled during pincode reliability pause.
+  if (!PINCODE_ALERTS_PAUSED) {
     const { data: rows } = await admin
       .from('pincode_checks')
       .select('tracked_asin_id, pincode, available, checked_at, delivery_promise')

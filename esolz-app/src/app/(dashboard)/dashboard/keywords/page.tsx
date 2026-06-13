@@ -351,6 +351,14 @@ export default function KeywordsPage() {
   const [isMounted, setIsMounted] = useState(false)
   const researchRef = useRef<HTMLDivElement>(null)
 
+  async function parseJsonSafe<T>(res: Response): Promise<T | null> {
+    try {
+      return (await res.json()) as T
+    } catch {
+      return null
+    }
+  }
+
   const selectedProduct = productOptions.find(p => p.key === selectedProductKey) ?? null
   const suggestedSeeds = getKeywordSeedSuggestions(selectedProduct)
   const visibleTrackedData = keywordAsinFilter === 'all'
@@ -524,7 +532,7 @@ export default function KeywordsPage() {
         ? (latest.found ?? latest.organic_rank !== null)
         : false
       const scrapeStatus = latest
-        ? ((latest.scrape_status as 'success' | 'failed' | null) ?? 'success')
+        ? ((latest.scrape_status as 'success' | 'failed' | 'checker_unavailable' | null) ?? 'success')
         : 'never_checked'
       const asinFromTracked = kw.tracked_asin_id ? asinById.get(kw.tracked_asin_id) : null
       const asinValue = (asinFromTracked?.asin ?? kw.asin ?? '').toUpperCase() || '—'
@@ -670,25 +678,54 @@ export default function KeywordsPage() {
       toast.warning('Add at least one keyword first.')
       return
     }
+
+    if (!workspaceId) {
+      toast.error('Workspace not ready. Please retry in a moment.')
+      return
+    }
+
     setIsRefreshing(true)
+    const timeoutMs = 90_000
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
+
+    const refreshTrackedKeywordsWithTimeout = async () => {
+      await Promise.race([
+        loadTrackedKeywords(workspaceId),
+        new Promise<void>(resolve => {
+          window.setTimeout(() => resolve(), 12_000)
+        }),
+      ])
+    }
+
     try {
-      const res = await fetch('/api/keywords/refresh', { method: 'POST' })
-      const data = await res.json() as { checked?: number; message?: string; error?: string; ok?: boolean; status?: string }
+      const res = await fetch('/api/keywords/refresh', {
+        method: 'POST',
+        signal: controller.signal,
+      })
+      const data = await parseJsonSafe<{ checked?: number; message?: string; error?: string; ok?: boolean; status?: string }>(res)
+
       if (!res.ok) {
-        toast.error(data.error ?? 'Refresh failed')
-      } else if (data.status === 'failed' || data.status === 'checker_unavailable') {
+        toast.error(data?.error ?? `Refresh failed (HTTP ${res.status})`)
+      } else if (data?.status === 'failed' || data?.status === 'checker_unavailable') {
         toast.info('Keyword checker is temporarily unavailable. Your keyword was saved and will be checked later.')
-        if (workspaceId) await loadTrackedKeywords(workspaceId)
-      } else if (data.message) {
+        await refreshTrackedKeywordsWithTimeout()
+      } else if (data?.message) {
         toast.info(data.message)
-        if (workspaceId) await loadTrackedKeywords(workspaceId)
+        await refreshTrackedKeywordsWithTimeout()
       } else {
-        toast.success(`Refreshed ${data.checked ?? 0} keywords`)
-        if (workspaceId) await loadTrackedKeywords(workspaceId)
+        toast.success(`Refreshed ${data?.checked ?? 0} keywords`)
+        await refreshTrackedKeywordsWithTimeout()
       }
-    } catch {
-      toast.error('Failed to refresh keyword ranks')
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        toast.error('Refresh took too long and was stopped. Latest completed checks have been loaded.')
+      } else {
+        toast.error('Failed to refresh keyword ranks')
+      }
+      await refreshTrackedKeywordsWithTimeout()
     } finally {
+      window.clearTimeout(timeoutId)
       setIsRefreshing(false)
     }
   }

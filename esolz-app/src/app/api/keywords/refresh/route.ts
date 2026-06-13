@@ -85,6 +85,7 @@ export async function POST(_req: NextRequest) {
     trackedAsinId: string
     keyword: string
     checkedAt: string
+    scrapeStatus: 'failed' | 'checker_unavailable'
     errorMessage: string
   }) {
     await admin
@@ -99,7 +100,7 @@ export async function POST(_req: NextRequest) {
         page:               null,
         position_on_page:   null,
         found:              false,
-        scrape_status:      'checker_unavailable',
+          scrape_status:      params.scrapeStatus,
         error_message:      params.errorMessage,
         page_status:        null,
         checked_at:         params.checkedAt,
@@ -135,6 +136,7 @@ export async function POST(_req: NextRequest) {
         trackedAsinId,
         keyword: kw.keyword,
         checkedAt,
+        scrapeStatus: 'checker_unavailable',
         errorMessage: KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
       })
       results.push({
@@ -225,6 +227,9 @@ export async function POST(_req: NextRequest) {
       const safeError = runtimeUnavailable
         ? KEYWORD_RUNTIME_UNAVAILABLE_ERROR
         : (err instanceof Error ? err.message : 'Keyword rank check failed')
+      const failedStatus: 'failed' | 'checker_unavailable' = runtimeUnavailable
+        ? 'checker_unavailable'
+        : 'failed'
 
       if (runtimeUnavailable) {
         runtimeUnavailableDetected = true
@@ -241,6 +246,7 @@ export async function POST(_req: NextRequest) {
         trackedAsinId,
         keyword: kw.keyword,
         checkedAt,
+        scrapeStatus: failedStatus,
         errorMessage: safeError,
       })
 
@@ -251,7 +257,7 @@ export async function POST(_req: NextRequest) {
         organic_rank:  null,
         sponsored_rank: null,
         page_status:   null,
-        scan_status:   'checker_unavailable',
+        scan_status:   failedStatus,
         checked_at:    checkedAt,
         error:         safeError,
       })

@@ -99,6 +99,23 @@ interface ProductCardProps {
 }
 
 export function ProductCard({ product, onDelete }: ProductCardProps) {
+  const hasOtherSignals =
+    product.price !== null ||
+    product.rating !== null ||
+    product.review_count !== null ||
+    product.buybox_winner !== null ||
+    product.availability_score !== null
+
+  const bsrStatusHint = !product.captured_at
+    ? 'Never checked'
+    : product.scrape_status === 'failed'
+      ? 'Check failed'
+      : product.scrape_status === 'partial_success'
+        ? 'BSR not available'
+        : hasOtherSignals
+          ? 'Product checked'
+          : 'BSR not available'
+
   return (
     <div className="rounded-xl border border-border bg-card flex flex-col overflow-hidden">
       {/* ── Header ── */}
@@ -167,13 +184,8 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
             rank={product.bsr_rank}
             prevRank={product.bsr_rank_prev}
             checkedAt={product.captured_at}
-            hasOtherSignals={
-              product.price !== null ||
-              product.rating !== null ||
-              product.review_count !== null ||
-              product.buybox_winner !== null ||
-              product.availability_score !== null
-            }
+            scrapeStatus={product.scrape_status}
+            hasOtherSignals={hasOtherSignals}
           />
         </div>
 
@@ -233,13 +245,7 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
         {/* BSR status hint — full width */}
         {product.bsr_rank === null && (
           <div className="col-span-2 bg-muted/30 px-3 py-3 flex items-center justify-center">
-            <span className="text-xs text-muted-foreground">
-              {!product.captured_at
-                ? 'Never checked'
-                : (product.price !== null || product.rating !== null || product.review_count !== null || product.buybox_winner !== null || product.availability_score !== null)
-                  ? 'BSR not found'
-                  : 'Failed'}
-            </span>
+            <span className="text-xs text-muted-foreground">{bsrStatusHint}</span>
           </div>
         )}
       </div>
@@ -278,7 +284,7 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
             render={<Link href="/dashboard/pincode" />}
           >
             <MapPin className="size-3" />
-            Pincodes
+            Pincodes (Paused)
           </Button>
           <Button
             variant="ghost"

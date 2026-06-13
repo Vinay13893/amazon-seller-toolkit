@@ -44,6 +44,9 @@ interface DbPincodeCheck {
   checked_at:       string
 }
 
+const PINCODE_CHECKS_PAUSED = true
+const PINCODE_CHECKS_PAUSED_MESSAGE = 'Pincode checks are temporarily paused while we improve reliability.'
+
 function isFailedCheck(row: DbPincodeCheck): boolean {
   return (row.delivery_promise ?? '').toLowerCase().startsWith('check failed:')
 }
@@ -238,6 +241,11 @@ export default function PincodePage() {
   }
 
   async function handleCheck() {
+    if (PINCODE_CHECKS_PAUSED) {
+      toast.info(PINCODE_CHECKS_PAUSED_MESSAGE)
+      return
+    }
+
     const pincodes = parsePincodes(pincodeText)
     if (!pincodes.length || !selectedAsin) return
     setIsChecking(true)
@@ -323,9 +331,16 @@ export default function PincodePage() {
       {/* Header */}
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-foreground">Pincode Availability</h1>
+          <h1 className="text-xl font-bold text-foreground flex items-center gap-2">
+            Pincode Availability
+            {PINCODE_CHECKS_PAUSED && (
+              <Badge variant="outline" className="text-[10px] h-5 px-2 border-yellow-500/40 text-yellow-400">
+                Beta Paused
+              </Badge>
+            )}
+          </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Check whether your products are deliverable across important Indian pincodes. Next: select city presets and run Check Availability. Data source: pincode_checks and live checker runs.
+            Check whether your products are deliverable across important Indian pincodes. {PINCODE_CHECKS_PAUSED_MESSAGE} Data source: pincode_checks history.
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={handleRunNew} className="gap-2">
@@ -336,6 +351,12 @@ export default function PincodePage() {
 
       {/* ASIN selector + check form */}
       <div className="rounded-xl border border-border bg-card p-5 flex flex-col gap-5">
+        {PINCODE_CHECKS_PAUSED && (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2.5 text-sm text-yellow-100">
+            {PINCODE_CHECKS_PAUSED_MESSAGE}
+          </div>
+        )}
+
         {/* ASIN picker */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="flex-1">
@@ -381,8 +402,10 @@ export default function PincodePage() {
                   key={cp.city}
                   type="button"
                   onClick={() => toggleCity(cp.city, cp.pincodes)}
+                  disabled={PINCODE_CHECKS_PAUSED}
                   className={cn(
                     'inline-flex items-center gap-1.5 text-xs font-medium rounded-full px-3 py-1 border transition-colors',
+                    PINCODE_CHECKS_PAUSED && 'opacity-60 cursor-not-allowed',
                     allSelected
                       ? 'bg-primary/15 text-primary border-primary/30'
                       : 'bg-muted/50 text-muted-foreground border-border hover:border-primary/30 hover:text-foreground',
@@ -413,6 +436,7 @@ export default function PincodePage() {
               placeholder="Enter pincodes (comma, space, or newline separated)&#10;e.g. 110001, 400001, 560001"
               value={pincodeText}
               onChange={e => setPincodeText(e.target.value)}
+              disabled={PINCODE_CHECKS_PAUSED}
               className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground resize-none"
             />
             <p className="text-[10px] text-muted-foreground mt-1">
@@ -425,7 +449,7 @@ export default function PincodePage() {
             <Button
               type="button"
               onClick={handleCheck}
-              disabled={isChecking || parsePincodes(pincodeText).length === 0 || !selectedAsinId}
+              disabled={PINCODE_CHECKS_PAUSED || isChecking || parsePincodes(pincodeText).length === 0 || !selectedAsinId}
               className="w-full gap-2"
             >
               {isChecking ? (
@@ -434,7 +458,7 @@ export default function PincodePage() {
                   {checkProgress ? `${checkProgress.done}/${checkProgress.total}` : 'Checking...'}
                 </>
               ) : (
-                <><Play className="size-4" /> Check Availability</>
+                <><Play className="size-4" /> {PINCODE_CHECKS_PAUSED ? 'Checks Paused' : 'Check Availability'}</>
               )}
             </Button>
           </div>
@@ -460,7 +484,7 @@ export default function PincodePage() {
         <div className="bg-card border border-border rounded-xl flex flex-col items-center justify-center py-16 text-center gap-2 text-muted-foreground">
           <MapPin className="w-8 h-8 opacity-30" />
           <p className="text-sm font-medium">No pincode checks yet for {selectedLabel || selectedAsin}</p>
-          <p className="text-xs">Select city presets above and click &quot;Check Availability&quot; to collect data.</p>
+          <p className="text-xs">{PINCODE_CHECKS_PAUSED_MESSAGE}</p>
         </div>
       ) : (
         <>

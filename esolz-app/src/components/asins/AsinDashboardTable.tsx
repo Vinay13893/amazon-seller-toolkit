@@ -107,6 +107,7 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
                   rank={p.bsr_rank}
                   prevRank={p.bsr_rank_prev}
                   checkedAt={p.captured_at}
+                  scrapeStatus={p.scrape_status}
                   hasOtherSignals={
                     p.price !== null ||
                     p.rating !== null ||
@@ -240,7 +241,7 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
                     variant="ghost"
                     size="icon-sm"
                     className="text-muted-foreground hover:text-primary"
-                    title="Check pincodes"
+                    title="Pincode checks paused (beta)"
                     render={<Link href="/dashboard/pincode" />}
                   >
                     <MapPin className="size-3.5" />

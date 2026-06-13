@@ -25,7 +25,7 @@ const navSections = [
   {
     section: 'Monitoring',
     items: [
-      { href: '/dashboard/pincode',     icon: MapPin,         label: 'Pincode Checker', badge: 'Starter+' },
+      { href: '/dashboard/pincode',     icon: MapPin,         label: 'Pincode Checker (Paused)', badge: 'Beta' },
       { href: '/dashboard/buybox',      icon: ShoppingCart,   label: 'Buy Box',         badge: 'Pro+' },
       { href: '/dashboard/competitors', icon: Users,          label: 'Competitors',     badge: 'Pro+' },
       { href: '/dashboard/alerts',      icon: Bell,           label: 'Alerts' },
