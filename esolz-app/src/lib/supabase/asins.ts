@@ -105,21 +105,70 @@ export async function getAsinLimit(workspaceId: string): Promise<number> {
 
 export async function getTrackedAsins(workspaceId: string): Promise<ProductSnapshot[]> {
   const supabase = createClient()
-  const { data, error } = await supabase
+  const { data: asinRows, error: asinError } = await supabase
     .from('tracked_asins')
-    .select(`
-      id, asin, marketplace, product_title, category, status, created_at,
-      asin_snapshots(bsr, price, rating, review_count, buy_box_owner, availability_score, scrape_status, checked_at)
-    `)
+    .select('id, asin, marketplace, product_title, category, status, created_at')
     .eq('workspace_id', workspaceId)
     .neq('status', 'archived')
     .order('created_at', { ascending: false })
 
-  if (error || !data) return []
+  if (asinError || !asinRows) return []
+
+  const trackedAsinIds = asinRows.map(row => row.id as string).filter(Boolean)
+
+  type SnapshotWithStatus = {
+    tracked_asin_id: string
+    bsr: number | null
+    price: number | null
+    rating: number | null
+    review_count: number | null
+    buy_box_owner: string | null
+    availability_score: number | null
+    scrape_status: ProductSnapshot['scrape_status']
+    checked_at: string
+  }
+
+  type SnapshotNoStatus = Omit<SnapshotWithStatus, 'scrape_status'>
+
+  let snapshotsByAsinId = new Map<string, SnapshotWithStatus[]>()
+
+  if (trackedAsinIds.length > 0) {
+    const withStatus = await supabase
+      .from('asin_snapshots')
+      .select('tracked_asin_id, bsr, price, rating, review_count, buy_box_owner, availability_score, scrape_status, checked_at')
+      .in('tracked_asin_id', trackedAsinIds)
+      .order('checked_at', { ascending: false })
+
+    const withoutStatus = withStatus.error?.code === '42703'
+      ? await supabase
+          .from('asin_snapshots')
+          .select('tracked_asin_id, bsr, price, rating, review_count, buy_box_owner, availability_score, checked_at')
+          .in('tracked_asin_id', trackedAsinIds)
+          .order('checked_at', { ascending: false })
+      : null
+
+    const snapshots = (withoutStatus?.data ?? withStatus.data ?? []) as Array<SnapshotWithStatus | SnapshotNoStatus>
+
+    for (const snapshot of snapshots) {
+      const trackedAsinId = snapshot.tracked_asin_id
+      if (!trackedAsinId) continue
+      if (!snapshotsByAsinId.has(trackedAsinId)) snapshotsByAsinId.set(trackedAsinId, [])
+      const scrapeStatusRaw = 'scrape_status' in snapshot ? snapshot.scrape_status : null
+      const scrapeStatus: ProductSnapshot['scrape_status'] =
+        scrapeStatusRaw === 'success' || scrapeStatusRaw === 'partial_success' || scrapeStatusRaw === 'failed'
+          ? scrapeStatusRaw
+          : null
+
+      snapshotsByAsinId.get(trackedAsinId)?.push({
+        ...snapshot,
+        scrape_status: scrapeStatus,
+      })
+    }
+  }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return data.map((row: any) => {
-    const snapshots = ((row.asin_snapshots as any[]) || []).sort(
+  return asinRows.map((row: any) => {
+    const snapshots = (snapshotsByAsinId.get(row.id) ?? []).sort(
       (a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime()
     )
     const latest = snapshots[0] ?? null

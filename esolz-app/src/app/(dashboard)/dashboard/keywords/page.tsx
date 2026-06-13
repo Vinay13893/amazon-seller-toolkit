@@ -685,7 +685,7 @@ export default function KeywordsPage() {
     }
 
     setIsRefreshing(true)
-    const timeoutMs = 90_000
+    const timeoutMs = 35_000
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
 
@@ -699,10 +699,16 @@ export default function KeywordsPage() {
     }
 
     try {
-      const res = await fetch('/api/keywords/refresh', {
+      const fetchPromise = fetch('/api/keywords/refresh', {
         method: 'POST',
         signal: controller.signal,
       })
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        window.setTimeout(() => {
+          reject(new Error('refresh_request_timeout'))
+        }, timeoutMs)
+      })
+      const res = await Promise.race([fetchPromise, timeoutPromise])
       const data = await parseJsonSafe<{ checked?: number; message?: string; error?: string; ok?: boolean; status?: string }>(res)
 
       if (!res.ok) {
@@ -718,7 +724,10 @@ export default function KeywordsPage() {
         await refreshTrackedKeywordsWithTimeout()
       }
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
+      const isAbort = error instanceof DOMException && error.name === 'AbortError'
+      const isTimeout = error instanceof Error && error.message === 'refresh_request_timeout'
+      if (isAbort || isTimeout) {
+        controller.abort()
         toast.error('Refresh took too long and was stopped. Latest completed checks have been loaded.')
       } else {
         toast.error('Failed to refresh keyword ranks')

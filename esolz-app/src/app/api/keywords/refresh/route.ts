@@ -17,6 +17,22 @@ export const runtime    = 'nodejs'
 export const maxDuration = 120
 
 const RUNTIME_UNAVAILABLE_RESPONSE_MESSAGE = 'Keyword rank checker runtime is not available. Please try again later.'
+const KEYWORD_CHECK_TIMEOUT_MS = 25_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms)
+    promise
+      .then(value => {
+        clearTimeout(timer)
+        resolve(value)
+      })
+      .catch(error => {
+        clearTimeout(timer)
+        reject(error)
+      })
+  })
+}
 
 /**
  * POST /api/keywords/refresh
@@ -165,13 +181,17 @@ export async function POST(_req: NextRequest) {
 
       let res
       if (workerConfigured) {
-        const workerRes = await runKeywordRankCheck({
-          workspace_id:       workspaceId,
-          tracked_keyword_id: kw.id,
-          asin,
-          keyword:            kw.keyword,
-          marketplace:        workerMarket,
-        })
+        const workerRes = await withTimeout(
+          runKeywordRankCheck({
+            workspace_id:       workspaceId,
+            tracked_keyword_id: kw.id,
+            asin,
+            keyword:            kw.keyword,
+            marketplace:        workerMarket,
+          }),
+          KEYWORD_CHECK_TIMEOUT_MS,
+          'keyword rank check timed out',
+        )
         console.log('[keywords/refresh] worker result', {
           tracked_keyword_id: kw.id,
           asin,
@@ -187,7 +207,11 @@ export async function POST(_req: NextRequest) {
           checked_at:     new Date().toISOString(),
         }
       } else {
-        res = await checkKeywordRank(kw.keyword, asin, market)
+        res = await withTimeout(
+          checkKeywordRank(kw.keyword, asin, market),
+          KEYWORD_CHECK_TIMEOUT_MS,
+          'keyword rank check timed out',
+        )
       }
 
       console.log(`[keywords/refresh] rank result:`, { keyword: kw.keyword, asin, organic_rank: res.organic_rank, page_status: res.page_status })
