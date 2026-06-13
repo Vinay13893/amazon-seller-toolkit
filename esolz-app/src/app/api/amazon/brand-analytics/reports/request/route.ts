@@ -13,6 +13,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 30
 
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
+const SQP_REPORT_TYPE = 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT'
 
 interface RequestBody {
   reportType?: BrandAnalyticsReportType
@@ -26,7 +27,7 @@ interface RequestBody {
 function completedWeekWindowUtc(): { start: string; end: string } {
   const now = new Date()
   const day = now.getUTCDay() // 0 Sunday
-  const daysSinceWeekStart = (day + 6) % 7
+  const daysSinceWeekStart = day
 
   const currentWeekStart = new Date(Date.UTC(
     now.getUTCFullYear(),
@@ -49,6 +50,23 @@ function completedWeekWindowUtc(): { start: string; end: string } {
 
 function isOwnerOrAdmin(role: string | null | undefined): boolean {
   return role === 'owner' || role === 'admin'
+}
+
+function buildReportOptions(
+  reportType: BrandAnalyticsReportType,
+  asin: string | undefined,
+  reportPeriod: string,
+): Record<string, unknown> {
+  if (reportType === SQP_REPORT_TYPE) {
+    return {
+      asin,
+      reportPeriod,
+    }
+  }
+
+  return {
+    reportPeriod,
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -95,11 +113,19 @@ async function handlePost(req: NextRequest) {
   }
 
   const marketplaceId = body.marketplaceId?.trim() || DEFAULT_MARKETPLACE_ID
-  const reportPeriod = body.reportPeriod?.trim() || 'WEEK'
+  const reportPeriod = (body.reportPeriod?.trim() || 'WEEK').toUpperCase()
   const asin = body.asin?.trim().toUpperCase()
   const weekWindow = completedWeekWindowUtc()
   const dataStartTime = body.dataStartTime ?? weekWindow.start
   const dataEndTime = body.dataEndTime ?? weekWindow.end
+
+  if (!reportPeriod) {
+    return NextResponse.json({ error: 'reportPeriod is required' }, { status: 400 })
+  }
+
+  if (reportType === SQP_REPORT_TYPE && !asin) {
+    return NextResponse.json({ error: 'SQP report requires asin and reportPeriod' }, { status: 400 })
+  }
 
   const admin = createAdminClient()
 
@@ -146,7 +172,7 @@ async function handlePost(req: NextRequest) {
 
   let reportId = ''
   try {
-    const reportOptions = asin ? { asin } : undefined
+    const reportOptions = buildReportOptions(reportType, asin, reportPeriod)
     const response = await createAmazonReport(accessToken, {
       reportType,
       marketplaceIds: [marketplaceId],
