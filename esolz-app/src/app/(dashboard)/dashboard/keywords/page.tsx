@@ -75,7 +75,6 @@ type TrackedKeywordQueryRow = {
   search_volume: number | null
   marketplace: string | null
   tracked_asin_id: string | null
-  asin?: string | null
 }
 
 interface KeywordHistoryPoint {
@@ -475,28 +474,20 @@ export default function KeywordsPage() {
 
   const loadTrackedKeywords = useCallback(async (wsId: string) => {
     const supabase = createClient()
-    const queryWithAsin = await supabase
+    const { data: kws } = await supabase
       .from('tracked_keywords')
-      .select('id, keyword, search_volume, marketplace, tracked_asin_id, asin')
+      .select('id, keyword, search_volume, marketplace, tracked_asin_id')
       .eq('workspace_id', wsId)
       .order('created_at', { ascending: false })
 
-    const queryWithoutAsin = queryWithAsin.error?.code === '42703'
-      ? await supabase
-          .from('tracked_keywords')
-          .select('id, keyword, search_volume, marketplace, tracked_asin_id')
-          .eq('workspace_id', wsId)
-          .order('created_at', { ascending: false })
-      : null
+    const keywords = (kws ?? []) as TrackedKeywordQueryRow[]
 
-    const kws = (queryWithoutAsin?.data ?? queryWithAsin.data ?? []) as TrackedKeywordQueryRow[]
-
-    if (!kws || kws.length === 0) {
+    if (keywords.length === 0) {
       setTrackedData([])
       return
     }
 
-    const trackedAsinIds = [...new Set(kws.map(k => k.tracked_asin_id).filter(Boolean))] as string[]
+    const trackedAsinIds = [...new Set(keywords.map(k => k.tracked_asin_id).filter(Boolean))] as string[]
     const { data: asinRows } = trackedAsinIds.length
       ? await supabase
           .from('tracked_asins')
@@ -515,7 +506,7 @@ export default function KeywordsPage() {
     const { data: snaps } = await supabase
       .from('keyword_rank_snapshots')
       .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at, page, found, scrape_status, error_message')
-      .in('tracked_keyword_id', kws.map(k => k.id))
+      .in('tracked_keyword_id', keywords.map(k => k.id))
       .order('checked_at', { ascending: false })
 
     const snapsByKw: Record<string, KeywordSnapshotRow[]> = {}
@@ -524,7 +515,7 @@ export default function KeywordsPage() {
       snapsByKw[s.tracked_keyword_id].push(s as KeywordSnapshotRow)
     }
 
-    const mapped: TrackedKeywordRow[] = kws.map(kw => {
+    const mapped: TrackedKeywordRow[] = keywords.map(kw => {
       const kwSnaps = snapsByKw[kw.id] ?? []
       const latest  = kwSnaps[0]
       const prev    = kwSnaps[1]
@@ -535,7 +526,7 @@ export default function KeywordsPage() {
         ? ((latest.scrape_status as 'success' | 'failed' | 'checker_unavailable' | null) ?? 'success')
         : 'never_checked'
       const asinFromTracked = kw.tracked_asin_id ? asinById.get(kw.tracked_asin_id) : null
-      const asinValue = (asinFromTracked?.asin ?? kw.asin ?? '').toUpperCase() || '—'
+      const asinValue = (asinFromTracked?.asin ?? '').toUpperCase() || '—'
       const productTitle = asinFromTracked?.product_title ?? asinValue
 
       return {
