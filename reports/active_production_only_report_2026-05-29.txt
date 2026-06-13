@@ -1,0 +1,120 @@
+ACTIVE PRODUCTION ONLY REPORT (STRICT PASS)
+Date: 2026-05-29
+Workspace: e:\amazon-bsr-tracker
+
+Strict criteria used:
+1) Domain must respond live now.
+2) Core app pages must return expected production statuses (2xx/3xx).
+3) API routes checked against current code route inventory where possible.
+4) Services returning persistent 404 on all tested core endpoints are classified non-healthy/not active.
+
+====================================================================
+FINAL ACTIVE PRODUCTION ONLY
+====================================================================
+
+A) Sociomonkey Amazon Intelligence (ACTIVE + HEALTHY)
+- Domain: https://esolz-app.vercel.app
+- Frontend host: Vercel
+- Backend host: Vercel serverless API routes (inside Next.js app)
+- DB: Supabase Postgres
+- Auth: Supabase Auth + Amazon OAuth (LWA/SP-API)
+- Repo path: esolz-app/
+
+Live checks (strict sample):
+- GET /                                  -> 200 (535 ms)
+- GET /login                             -> 200 (182 ms)
+- GET /dashboard                         -> 200 (444 ms)
+- GET /api/amazon/connect/login          -> 307 (expected redirect in OAuth flow) (703 ms)
+- GET /api/amazon/connect/callback       -> 307 (expected when callback args/session missing) (1724 ms)
+- GET /api/amazon/sync/basic             -> 405 (route exists, GET not allowed) (616 ms)
+- GET /api/amazon/sync/listings/start    -> 405 (route exists, GET not allowed) (1492 ms)
+
+Assessment:
+- Healthy production application.
+- Routing + auth behavior consistent with an active protected SaaS app.
+
+Average response time (strict sample above): ~814 ms
+
+
+B) e-solz.com marketing site (ACTIVE, separate from app backend)
+- Domain: https://e-solz.com and https://www.e-solz.com
+- Current status: 200 on both
+- Served title: "e-solz.com"
+- Server header: DPS/2.0.0+sha-9cec6b8
+
+Assessment:
+- Live website, but not the Sociomonkey app runtime.
+- Treat as separate web property (marketing/corporate).
+
+Sample timing:
+- https://e-solz.com/      -> 200 (742 ms)
+- https://www.e-solz.com/  -> 200 (579 ms)
+
+
+====================================================================
+NOT ACTIVE OR NOT HEALTHY (STRICT)
+====================================================================
+
+1) Render backend domain candidate
+- Domain tested: https://esolz-web.onrender.com
+- Results:
+  - /health -> 404
+  - /api/docs -> 404
+  - /api/openapi.json -> 404
+  - / -> 404
+  - /app -> 404
+- Assessment: not healthy as a live production API endpoint right now.
+
+2) Legacy root Flask app
+- Deployment artifacts exist in repo (Dockerfile/render.yaml/app.py),
+  but no confirmed healthy public domain was identified in this pass.
+- Assessment: unknown/inactive from production perspective until domain is provided.
+
+
+====================================================================
+CLEANUP LIST (COST REDUCTION)
+====================================================================
+
+Priority 1 — likely immediate savings
+1) Disable Render services if not in use:
+   - esolz-web (web)
+   - esolz-worker (worker)
+   Evidence: domain currently 404 on all tested core endpoints.
+
+2) Disable any old Render deploy tied to root Flask legacy app if no traffic.
+
+Priority 2 — remove confusion / operational drift
+3) Remove/replace stale domain references in backend CORS if Render is retired:
+   - saas-backend/app/main.py contains:
+     - https://esolz-web.onrender.com
+     - https://e-solz.com
+     - https://www.e-solz.com
+
+4) Standardize OAuth route references in docs/runtime:
+   - Local code has /api/amazon/connect/start and /api/amazon/connect/login.
+   - Production check showed /login active (307) while /start returned 404 in earlier test.
+   - Audit and align frontend button/doc references to one canonical endpoint.
+
+Priority 3 — archive old assets
+5) Archive legacy documentation files that still describe old route/domain behaviors
+   if they are no longer true in production.
+
+6) Keep only one production architecture path in docs:
+   - Current active path: Vercel (frontend+API) + Supabase.
+   - Mark Render/legacy stack as deprecated if no longer used.
+
+
+====================================================================
+FINAL RECOMMENDATION
+====================================================================
+Production truth right now:
+- KEEP: esolz-app.vercel.app + Supabase
+- KEEP (if needed as marketing): e-solz.com
+- CANDIDATE TO SHUT DOWN: Render services/domain and legacy Flask deployment (after final traffic confirmation)
+
+Expected impact:
+- Lower monthly infra cost
+- Less routing/auth confusion
+- Cleaner incident debugging and faster onboarding
+
+END OF REPORT

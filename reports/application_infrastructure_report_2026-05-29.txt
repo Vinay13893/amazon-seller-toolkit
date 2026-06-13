@@ -1,0 +1,272 @@
+APPLICATION INFRASTRUCTURE REPORT
+Date: 2026-05-29
+Workspace: e:\amazon-bsr-tracker
+
+====================================================================
+EXECUTIVE SUMMARY
+====================================================================
+This report consolidates the deployment architecture discovered from:
+- Repository structure and config files
+- Environment variable templates and active env files
+- Live endpoint checks for known domains
+
+Primary stack split:
+1) Amazon Intelligence app (esolz-app)
+2) SaaS Backend service (saas-backend)
+3) Legacy BSR Web Tracker (root Flask app)
+
+
+====================================================================
+APPLICATION MATRIX
+====================================================================
+Application: Amazon Intelligence
+Frontend: Vercel (Next.js)
+Backend: Vercel serverless API routes (inside Next.js app)
+DB: Supabase Postgres
+Auth: Supabase Auth + Amazon OAuth/LWA (SP-API)
+
+Application: SaaS Backend
+Frontend: N/A (API-first, optional static via FastAPI)
+Backend: Render (Docker web + worker)
+DB: Supabase Postgres + Redis (Upstash intended)
+Auth: Custom JWT bearer (FastAPI)
+
+Application: BSR Web Tracker (Legacy)
+Frontend: Flask templates
+Backend: Flask app (Docker/Render pattern)
+DB: File/CSV workflow (no active managed DB proven in current checks)
+Auth: No clear user auth layer found
+
+
+====================================================================
+DETAILED PER-APPLICATION REPORT
+====================================================================
+
+--------------------------------------------------------------------
+1) AMAZON INTELLIGENCE
+--------------------------------------------------------------------
+Frontend hosting provider:
+- Vercel
+
+Backend hosting provider:
+- Vercel serverless functions via Next.js API routes in same project
+
+Database provider:
+- Supabase Postgres
+
+Auth mechanism:
+- Supabase Auth (app users)
+- Amazon OAuth (LWA) for SP-API connection and token exchange
+
+Domain:
+- https://esolz-app.vercel.app
+
+Repository path:
+- esolz-app/
+
+Environment variables used (from .env.local.example + code):
+Supabase:
+- NEXT_PUBLIC_SUPABASE_URL
+- NEXT_PUBLIC_SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY
+
+App/public domain:
+- APP_PUBLIC_URL
+- NEXT_PUBLIC_APP_URL
+
+Amazon SP-API:
+- SPAPI_APPLICATION_ID
+- SPAPI_LWA_CLIENT_ID
+- SPAPI_LWA_CLIENT_SECRET
+- SPAPI_LOGIN_URI
+- SPAPI_REDIRECT_URI
+- SPAPI_ENCRYPTION_KEY
+
+Runtime/dev:
+- BSR_PYTHON_BIN
+- NEXT_PUBLIC_DEV_AUTH_BYPASS
+
+Payments:
+- RAZORPAY_KEY_ID
+- RAZORPAY_KEY_SECRET
+- NEXT_PUBLIC_RAZORPAY_KEY_ID
+
+Monthly cost (estimated):
+- Vercel: 0 USD (Hobby) to paid tier (if upgraded)
+- Supabase: 0 USD (Free) to ~25+ USD (Pro)
+- Typical range: ~0 to ~25+ USD/month (excluding paid add-ons)
+
+Average API response time (sample 5 endpoints):
+Measured one-shot latencies:
+- https://esolz-app.vercel.app/                         200   1659 ms
+- https://esolz-app.vercel.app/login                    200    689 ms
+- https://esolz-app.vercel.app/signup                   200    727 ms
+- https://esolz-app.vercel.app/api/amazon/connect/status 401  1091 ms
+- https://esolz-app.vercel.app/api/amazon/connect/start 404  1180 ms
+
+Average of sample: ~1069 ms
+Notes:
+- 401 on /status is expected when unauthenticated.
+- 404 on /connect/start indicates route mismatch or endpoint not present under that exact path.
+
+
+--------------------------------------------------------------------
+2) SAAS BACKEND (SEPARATE SERVICE)
+--------------------------------------------------------------------
+Frontend hosting provider:
+- N/A (service is API-first)
+
+Backend hosting provider:
+- Render (defined in render.yaml)
+- Includes web service and worker service
+
+Database provider:
+- Supabase Postgres (DATABASE_URL)
+- Redis expected (REDIS_URL, likely Upstash in deployment notes)
+
+Auth mechanism:
+- JWT bearer token auth in FastAPI
+- Password hashing via bcrypt, JWT signing with SECRET_KEY
+
+Domain:
+- Config/cors references include https://esolz-web.onrender.com
+- Live checks returned 404 for tested routes (see timing section)
+
+Repository path:
+- saas-backend/
+
+Environment variables used:
+Core:
+- SECRET_KEY
+- ENCRYPTION_KEY
+- DATABASE_URL
+- REDIS_URL
+- DEBUG
+
+Admin/email:
+- ADMIN_EMAIL
+- FROM_EMAIL
+- RESEND_API_KEY
+
+AWS/S3:
+- AWS_ACCESS_KEY_ID
+- AWS_SECRET_ACCESS_KEY
+- AWS_S3_BUCKET
+- AWS_REGION
+
+Amazon SP-API:
+- SP_API_LWA_APP_ID
+- SP_API_LWA_CLIENT_SECRET
+- SP_API_AWS_ACCESS_KEY
+- SP_API_AWS_SECRET_KEY
+
+Amazon Ads:
+- ADS_CLIENT_ID
+- ADS_CLIENT_SECRET
+
+Monthly cost (estimated):
+- Render Starter web + worker: roughly ~14 USD/month combined (plan-dependent)
+- Redis (Upstash): 0 to ~10+ USD/month
+- Supabase: 0 to ~25+ USD/month
+- Typical range: ~14 to ~49+ USD/month
+
+Average API response time (sample 5 endpoints):
+Measured one-shot latencies:
+- https://esolz-web.onrender.com/health          404   402 ms
+- https://esolz-web.onrender.com/api/docs        404   262 ms
+- https://esolz-web.onrender.com/api/openapi.json 404  271 ms
+- https://esolz-web.onrender.com/                404   275 ms
+- https://esolz-web.onrender.com/app             404   286 ms
+
+Average of sample: ~299 ms
+Notes:
+- All tested endpoints returned 404, which strongly suggests one of:
+  1) different active domain,
+  2) service not currently deployed/routed,
+  3) path mapping changed.
+
+
+--------------------------------------------------------------------
+3) BSR WEB TRACKER (LEGACY ROOT APP)
+--------------------------------------------------------------------
+Frontend hosting provider:
+- Flask server-rendered templates
+
+Backend hosting provider:
+- Docker/Render style deployment indicated by Dockerfile + render.yaml docs
+
+Database provider:
+- No active managed DB proven for this legacy app in current scan
+- Workflow appears file/output driven
+
+Auth mechanism:
+- No first-class end-user auth mechanism identified in legacy root app
+
+Domain:
+- Not confirmed from current files for active production URL
+
+Repository path:
+- Root files:
+  - app.py
+  - amazon_bsr_tracker.py
+  - templates/
+  - Dockerfile
+  - render.yaml
+
+Environment variables used:
+- Not clearly documented in dedicated root .env.example within checked scope
+- Needs explicit extraction if this legacy app is still active
+
+Monthly cost (estimated):
+- Unknown unless currently deployed
+- If running on Render, cost depends on selected instance plan
+
+Average API response time (sample 5 endpoints):
+- Not measured (no confirmed public domain provided)
+
+
+====================================================================
+SOURCE EVIDENCE USED
+====================================================================
+Key files checked:
+- render.yaml
+- README.md
+- esolz-app/.env.local.example
+- saas-backend/.env.example
+- saas-backend/app/config.py
+- saas-backend/app/auth.py
+- saas-backend/app/main.py
+
+Live checks executed:
+- esolz-app.vercel.app (5 endpoint sample)
+- esolz-web.onrender.com (5 endpoint sample)
+
+
+====================================================================
+IMPORTANT OPERATIONAL NOTES
+====================================================================
+1) Sensitive configuration hygiene:
+- Keep .env and secret JSON files out of git tracking.
+- Rotate credentials immediately if exposed.
+
+2) LWA config consistency:
+- Ensure SPAPI_LWA_CLIENT_ID / SPAPI_LWA_CLIENT_SECRET are synchronized across active runtimes.
+
+3) Deployment correctness:
+- Verify which backend domain is truly active if Render endpoints return 404.
+
+4) Cost optimization opportunities:
+- Decommission inactive legacy services.
+- Keep only one production backend path per product.
+
+
+====================================================================
+OPEN ITEMS / UNKNOWNS
+====================================================================
+- Confirm active production domain for saas-backend (if not esolz-web.onrender.com).
+- Confirm whether legacy BSR Flask app is still serving production traffic.
+- Confirm real monthly billing from provider dashboards (this report uses estimates).
+- Confirm p95 latency from APM/monitoring (this report uses one-shot samples only).
+
+
+END OF REPORT

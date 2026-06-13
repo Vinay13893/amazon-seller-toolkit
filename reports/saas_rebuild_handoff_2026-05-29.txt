@@ -1,0 +1,166 @@
+SAAS REBUILD HANDOFF
+Date: 2026-05-29
+Workspace: e:\amazon-bsr-tracker
+Audience: ChatGPT / next engineering session
+
+====================================================================
+PROJECT SNAPSHOT
+====================================================================
+Primary repo:
+- https://github.com/Vinay13893/amazon-seller-toolkit
+
+Active app in production:
+- https://esolz-app.vercel.app
+
+Current architecture (active):
+- Frontend: Next.js app in esolz-app/ hosted on Vercel
+- Backend API (active app): Next.js API routes in esolz-app/src/app/api/*
+- Database: Supabase (project ref: okxfwcfxxrtmijmvztdq)
+- Auth: Supabase Auth + Amazon OAuth/LWA for SP-API
+
+Secondary/legacy services:
+- saas-backend/ exists (FastAPI + Render config), but Render domain checked as non-healthy (404 for tested endpoints)
+- Legacy root Flask tracker exists in repo; unclear if still production
+
+====================================================================
+WHAT WAS COMPLETED IN THIS SECURITY + STABILITY SESSION
+====================================================================
+1) Secret incident triage and cleanup
+- Git history was rewritten to remove sensitive files and large blobs.
+- GitHub push protection errors were resolved by removing secret-bearing files from history.
+- Repo was force-pushed after cleanup.
+
+2) LWA credential rotation workflow completed
+- Amazon LWA secret rotated in Amazon Solution Provider Portal.
+- Local runtime files updated by user.
+- Vercel Production env vars were updated and app redeployed.
+
+3) Post-redeploy health verification
+- App endpoints checked:
+  - /                 => 200
+  - /api/amazon/connect/login => reachable (auth flow response)
+  - /api/amazon/connect/status => 401 when unauthenticated (expected)
+  - /api/amazon/sync/basic => 405 for GET (expected for method-guarded endpoint)
+
+4) Hardening commit pushed
+- Commit: 6762cb1
+- Message: chore: harden gitignore for secret config paths
+- Added ignore rules for:
+  - amazon-pincode-checker/**/sp_api_config.json
+  - amazon-pincode-checker/**/secret/*.json
+
+5) Code safety fix applied
+- Removed accidental hardcoded LWA credentials from:
+  - amazon-pincode-checker/Store Replenish Auto/amazon_api.py
+- Restored config-based lookup:
+  - c['lwa_app_id']
+  - c['lwa_client_secret']
+
+====================================================================
+CURRENT KNOWN-STATE CHECKLIST
+====================================================================
+A) Local env/state
+- saas-backend/.env has new SECRET_KEY, ENCRYPTION_KEY, DATABASE_URL set (verified as present, values not logged).
+- esolz-app/.env.local contains SPAPI_LWA_CLIENT_ID and SPAPI_LWA_CLIENT_SECRET (verified as present).
+
+B) Vercel env
+- Production has keys present:
+  - SPAPI_LWA_CLIENT_ID
+  - SPAPI_LWA_CLIENT_SECRET
+  - SPAPI_LOGIN_URI
+  - SPAPI_REDIRECT_URI
+- Redeploy was performed after env update.
+
+C) Git safety
+- .env files and secret config paths are ignored.
+- Untracked files intentionally left uncommitted:
+  - ROTATE_CREDENTIALS.txt
+  - reports/
+
+====================================================================
+IMPORTANT: DO NOT INCLUDE SECRET VALUES IN CHAT
+====================================================================
+For any future assistant session:
+- Never paste actual client secrets, DB passwords, AWS keys, private keys, refresh tokens.
+- Only discuss key names and whether they are present/missing.
+
+====================================================================
+STRICT ACTIVE PRODUCTION STATUS (LATEST PASS)
+====================================================================
+Active + healthy:
+- esolz-app.vercel.app (Vercel + Supabase)
+
+Active but separate property:
+- e-solz.com / www.e-solz.com (marketing/corporate site)
+
+Likely inactive/non-healthy for app runtime:
+- esolz-web.onrender.com returned 404 on tested core endpoints
+
+====================================================================
+OPEN ACTIONS STILL RECOMMENDED (SECURITY)
+====================================================================
+1) Confirm all previously exposed credentials are rotated/revoked:
+- Supabase DB password
+- Old LWA secret (already rotated, verify old is unusable)
+- AWS keys (if ever exposed)
+- Google service account key JSON (if ever exposed)
+
+2) Verify GitHub secret scanning
+- Confirm no open active secret alerts remain in repository Security tab.
+
+3) Keep local sensitive documents out of commits
+- Avoid committing incident files with credential context.
+
+====================================================================
+RESTART PLAN: BUILDING SAAS AGAIN
+====================================================================
+Goal: Continue feature development safely on active architecture (Next.js + Supabase), while deciding fate of Render FastAPI backend.
+
+Recommended track:
+1) Decide canonical backend path:
+- Option A (recommended): Keep Next.js API routes as primary backend.
+- Option B: Revive saas-backend on Render and clearly separate responsibilities.
+
+2) If Option A (Next.js API primary):
+- Continue implementing features under esolz-app/src/app/api/
+- Keep Supabase schema + RLS migration-driven
+- Add monitoring for key API routes and OAuth failures
+
+3) If Option B (Render FastAPI revival):
+- Fix Render service/domain routing and health endpoint reachability
+- Align CORS and env vars
+- Move only selected heavy/background workloads to FastAPI worker
+
+4) Immediate engineering backlog to start now:
+- Add explicit /api/health endpoint in esolz-app for ops checks
+- Add structured error telemetry for Amazon connect/sync routes
+- Add a security checklist CI step (secret scan + forbidden file patterns)
+- Add docs page: "Production Architecture Source of Truth"
+
+5) Deployment hygiene rules:
+- Update env vars only in Vercel dashboard (Production)
+- Redeploy after env changes
+- Validate 3 endpoints after every deploy:
+  - / (200)
+  - /api/amazon/connect/login (reachable)
+  - /api/amazon/connect/status (auth-guard behavior)
+
+====================================================================
+SUGGESTED CHATGPT PROMPT TO CONTINUE WORK
+====================================================================
+"Use this handoff as source of truth. We are on Next.js + Supabase architecture in esolz-app. Do not change payment, schema, or SP-API core logic unless requested. Start by creating a prioritized execution plan for SaaS rebuilding with security-first defaults, beginning with observability, health endpoints, and production-safe API hardening. Then implement step by step."
+
+====================================================================
+FILES TO REVIEW FIRST IN NEXT SESSION
+====================================================================
+- esolz-app/src/app/api/amazon/connect/login/route.ts
+- esolz-app/src/app/api/amazon/connect/callback/route.ts
+- esolz-app/src/app/api/amazon/connect/status/route.ts
+- esolz-app/src/lib/amazon/lwa.ts
+- esolz-app/src/lib/supabase/admin.ts
+- esolz-app/.env.local.example
+- .gitignore
+- render.yaml
+- saas-backend/app/main.py
+
+END OF HANDOFF
