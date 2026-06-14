@@ -1,6 +1,7 @@
 import dotenv from 'dotenv'
 import express, { type Request, type Response } from 'express'
 import { ZodError } from 'zod'
+import { z } from 'zod'
 import { requireCheckerSecret } from './middleware/auth'
 import {
   keywordRankRequestSchema,
@@ -10,6 +11,7 @@ import {
   pincodeAvailabilityRequestSchema,
   runPincodeAvailabilityCheck,
 } from './checkers/pincodeAvailability'
+import { runBrandAnalyticsSync } from './brand-analytics/sync'
 
 dotenv.config()
 
@@ -27,6 +29,11 @@ app.get('/health', (_req: Request, res: Response) => {
 })
 
 app.use(requireCheckerSecret)
+
+const brandAnalyticsSyncRequestSchema = z.object({
+  jobId: z.string().uuid(),
+  batchSize: z.number().int().min(1).max(1000).optional(),
+})
 
 app.post('/keyword-rank', async (req: Request, res: Response) => {
   try {
@@ -90,6 +97,30 @@ app.post('/pincode-availability', async (req: Request, res: Response) => {
       ok: false,
       status: 'failed',
       error_message: 'Pincode availability check failed unexpectedly.',
+    })
+  }
+})
+
+app.post('/brand-analytics/sync', async (req: Request, res: Response) => {
+  try {
+    const payload = brandAnalyticsSyncRequestSchema.parse(req.body)
+    const result = await runBrandAnalyticsSync(payload)
+
+    const statusCode = result.status === 'success' ? 200 : 500
+    res.status(statusCode).json(result)
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json({
+        status: 'failed',
+        error: 'Invalid request payload for /brand-analytics/sync.',
+        details: error.flatten(),
+      })
+      return
+    }
+
+    res.status(500).json({
+      status: 'failed',
+      error: 'Brand Analytics sync failed unexpectedly.',
     })
   }
 })
