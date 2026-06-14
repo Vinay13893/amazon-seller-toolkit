@@ -62,20 +62,35 @@ function toNumeric(value: unknown): number | null {
   return null
 }
 
+function parseSyncWindow(request: Request): { limit: number | null; offset: number } {
+  const url = new URL(request.url)
+  const limitParam = url.searchParams.get('limit')
+  const offsetParam = url.searchParams.get('offset')
+
+  const limit = limitParam === null
+    ? null
+    : Math.min(1000, Math.max(0, Number.parseInt(limitParam, 10) || 0))
+  const offset = Math.max(0, Number.parseInt(offsetParam ?? '0', 10) || 0)
+
+  return { limit, offset }
+}
+
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ jobId: string }> },
 ) {
   try {
-    return await handlePost(params)
+    return await handlePost(req, params)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: `Unexpected server error: ${message}` }, { status: 500 })
   }
 }
 
-async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
+async function handlePost(request: Request, paramsPromise: Promise<{ jobId: string }>) {
   const { jobId } = await paramsPromise
+  const { limit, offset } = parseSyncWindow(request)
+  const limitedSync = limit !== null
   const supabase = await createClient()
 
   const { data: { user }, error: authErr } = await supabase.auth.getUser()
@@ -194,6 +209,9 @@ async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
     job.report_type as BrandAnalyticsReportType,
     rawContent,
   )
+  const rowsToProcess = limitedSync
+    ? parsed.rows.slice(offset, offset + limit)
+    : parsed.rows
 
   const reportType = job.report_type as BrandAnalyticsReportType
   const baseRow = {
@@ -215,7 +233,7 @@ async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
   if (reportType === 'GET_BRAND_ANALYTICS_SEARCH_QUERY_PERFORMANCE_REPORT') {
     targetTable = 'brand_analytics_search_query_rows'
     onConflict = 'workspace_id,report_id,search_query,asin'
-    rowsToUpsert = parsed.rows.map((row) => ({
+    rowsToUpsert = rowsToProcess.map((row) => ({
       ...baseRow,
       asin: toText(pickValue(row, ['asin', 'child_asin', 'product_asin'])) ?? '',
       search_query: toText(pickValue(row, ['search_query', 'query', 'customer_search_term', 'search_term'])) ?? '',
@@ -233,7 +251,7 @@ async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
   } else if (reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT') {
     targetTable = 'brand_analytics_search_terms_rows'
     onConflict = 'workspace_id,report_id,search_term,asin'
-    rowsToUpsert = parsed.rows.map((row) => ({
+    rowsToUpsert = rowsToProcess.map((row) => ({
       ...baseRow,
       asin: toText(pickValue(row, ['asin', 'child_asin', 'product_asin'])) ?? '',
       search_term: toText(pickValue(row, ['search_term', 'search_query', 'query'])) ?? '',
@@ -251,7 +269,7 @@ async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
   } else {
     targetTable = 'brand_analytics_search_catalog_rows'
     onConflict = 'workspace_id,report_id,asin,search_query'
-    rowsToUpsert = parsed.rows.map((row) => ({
+    rowsToUpsert = rowsToProcess.map((row) => ({
       ...baseRow,
       asin: toText(pickValue(row, ['asin', 'child_asin', 'product_asin'])) ?? '',
       search_query: toText(pickValue(row, ['search_query', 'query', 'search_term'])) ?? '',
@@ -286,6 +304,15 @@ async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
     parsed_row_count: parsed.rows.length,
     parsed_field_names: parsed.fieldNames,
     target_table: targetTable,
+    ...(limitedSync
+      ? {
+          sync_mode: 'limited',
+          sync_limit: limit,
+          sync_offset: offset,
+          sync_inserted_row_count: rowsToUpsert.length,
+          sync_next_offset: offset + rowsToUpsert.length < parsed.rows.length ? offset + rowsToUpsert.length : null,
+        }
+      : {}),
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -323,9 +350,32 @@ async function handlePost(paramsPromise: Promise<{ jobId: string }>) {
         report_id: job.report_id,
         report_type: reportType,
         target_table: targetTable,
-        row_count: parsed.rows.length,
+        row_count: limitedSync ? rowsToUpsert.length : parsed.rows.length,
+        ...(limitedSync
+          ? {
+              sync_mode: 'limited',
+              sync_limit: limit,
+              sync_offset: offset,
+            }
+          : {}),
       },
     })
+
+  const nextOffset = limitedSync && offset + rowsToUpsert.length < parsed.rows.length
+    ? offset + rowsToUpsert.length
+    : null
+
+  if (limitedSync) {
+    return NextResponse.json({
+      totalParsedRows: parsed.rows.length,
+      insertedRows: rowsToUpsert.length,
+      offset,
+      limit,
+      nextOffset,
+      fieldNames: parsed.fieldNames,
+      reportDocumentId: job.report_document_id,
+    })
+  }
 
   return NextResponse.json({
     ok: true,
