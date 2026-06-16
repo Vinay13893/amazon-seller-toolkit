@@ -515,6 +515,7 @@ publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Re
       (summaryStatus === 'queued' || summaryStatus === 'running' || summaryStatus === 'done' || summaryStatus === 'failed'
         ? summaryStatus
         : 'unknown')
+    const isDone = syncStatus === 'done'
 
     res.status(200).json({
       success: true,
@@ -529,16 +530,17 @@ publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Re
       rowCountByReportDocumentId,
       brandAnalyticsRowsAppearStored:
         (storedRowCount ?? 0) > 0 ||
+        (cumulativeStoredRowCount ?? 0) > 0 ||
         (rowCountByReportId ?? 0) > 0 ||
         (rowCountByReportDocumentId ?? 0) > 0,
-      failedStage: toNullableString(summary.last_failed_stage),
-      errorCode: run?.errorCode ?? toNullableString(summary.last_error_code),
-      errorMessage: run?.errorMessage ?? null,
-      dbErrorCode: run?.dbErrorCode ?? toNullableString(summary.db_error_code),
-      dbErrorHint: run?.dbErrorHint ?? toNullableString(summary.db_error_hint),
-      dbErrorMessage: run?.dbErrorMessage ?? toNullableString(summary.db_error_message),
-      failedBatchIndex: run?.failedBatchIndex ?? toNullableNumber(summary.failed_batch_index),
-      failedBatchSize: run?.failedBatchSize ?? toNullableNumber(summary.failed_batch_size),
+      failedStage: isDone ? null : toNullableString(summary.last_failed_stage),
+      errorCode: isDone ? null : run?.errorCode ?? toNullableString(summary.last_error_code),
+      errorMessage: isDone ? null : run?.errorMessage ?? null,
+      dbErrorCode: isDone ? null : run?.dbErrorCode ?? toNullableString(summary.db_error_code),
+      dbErrorHint: isDone ? null : run?.dbErrorHint ?? toNullableString(summary.db_error_hint),
+      dbErrorMessage: isDone ? null : run?.dbErrorMessage ?? toNullableString(summary.db_error_message),
+      failedBatchIndex: isDone ? null : run?.failedBatchIndex ?? toNullableNumber(summary.failed_batch_index),
+      failedBatchSize: isDone ? null : run?.failedBatchSize ?? toNullableNumber(summary.failed_batch_size),
       lastSuccessfulBatchIndex: run?.lastSuccessfulBatchIndex ?? toNullableNumber(summary.last_successful_batch_index),
       cumulativeStoredRowCount,
       existingRowCountBeforeSync,

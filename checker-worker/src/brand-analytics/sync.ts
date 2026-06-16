@@ -698,6 +698,13 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       existing_row_count_before_sync: diagnostics.existingRowCountBeforeSync,
       resume_from_index: diagnostics.resumeFromIndex,
       last_successful_batch_index: diagnostics.lastSuccessfulBatchIndex,
+      last_failed_stage: null,
+      last_error_code: null,
+      db_error_code: null,
+      db_error_hint: null,
+      db_error_message: null,
+      failed_batch_index: null,
+      failed_batch_size: null,
     }
 
     try {

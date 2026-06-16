@@ -63,6 +63,10 @@ export type BrandAnalyticsStatusDebugResult = {
   documentStoredRowCount: number | null
   rowCountByReportId: number | null
   rowCountByReportDocumentId: number | null
+  syncStatus: string | null
+  parsedRowCount: number | null
+  storedRowCount: number | null
+  countSource: 'exact' | 'sync_summary' | 'unavailable'
   brandAnalyticsRowsAppearStored: boolean | null
   errorCode: Exclude<BrandAnalyticsStatusDebugFailedStage, 'success'> | null
   errorMessage: string | null
@@ -114,6 +118,10 @@ function createDebugBaseResult(jobId: string): BrandAnalyticsStatusDebugResult {
     documentStoredRowCount: null,
     rowCountByReportId: null,
     rowCountByReportDocumentId: null,
+    syncStatus: null,
+    parsedRowCount: null,
+    storedRowCount: null,
+    countSource: 'unavailable',
     brandAnalyticsRowsAppearStored: null,
     errorCode: null,
     errorMessage: null,
@@ -342,6 +350,7 @@ export async function getBrandAnalyticsStatusDebug(
   const jobSummary = job.raw_summary ?? {}
   const parsedRowCount = toNullableNumber(jobSummary.parsed_row_count)
   const storedRowCount = toNullableNumber(jobSummary.stored_row_count)
+  const syncStatus = typeof jobSummary.sync_status === 'string' ? jobSummary.sync_status : null
 
   const jobScopedBase = {
     reportId: job.report_id,
@@ -350,6 +359,9 @@ export async function getBrandAnalyticsStatusDebug(
     jobProcessingStatus: job.processing_status,
     jobParsedRowCount: parsedRowCount,
     jobStoredRowCount: storedRowCount,
+    syncStatus,
+    parsedRowCount,
+    storedRowCount,
   }
 
   let documentProcessingStatus: string | null = null
@@ -388,29 +400,21 @@ export async function getBrandAnalyticsStatusDebug(
   }
 
   let rowCountByReportId: number | null = null
+  let reportIdCountSucceeded = false
   if (job.report_id) {
     const { count, error } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
       .eq('report_id', job.report_id)
 
-    if (error) {
-      return createDebugFailure(
-        baseResult,
-        'count_by_report_id_failed',
-        'Brand Analytics debug failed: row count by report id failed.',
-        {
-          ...jobScopedBase,
-          documentProcessingStatus,
-          documentStoredRowCount,
-        },
-      )
+    if (!error) {
+      rowCountByReportId = count ?? 0
+      reportIdCountSucceeded = true
     }
-
-    rowCountByReportId = count ?? 0
   }
 
   let rowCountByReportDocumentId: number | null = null
+  let documentIdCountSucceeded = false
   if (job.report_document_id) {
     const { count, error } = await supabase
       .from('brand_analytics_search_terms_rows')
@@ -421,8 +425,16 @@ export async function getBrandAnalyticsStatusDebug(
       rowCountByReportDocumentId = null
     } else {
       rowCountByReportDocumentId = count ?? 0
+      documentIdCountSucceeded = true
     }
   }
+
+  const countSource =
+    reportIdCountSucceeded || documentIdCountSucceeded
+      ? 'exact'
+      : (storedRowCount ?? documentStoredRowCount ?? parsedRowCount) !== null
+        ? 'sync_summary'
+        : 'unavailable'
 
   const brandAnalyticsRowsAppearStored =
     (storedRowCount ?? 0) > 0 ||
@@ -445,6 +457,10 @@ export async function getBrandAnalyticsStatusDebug(
     documentStoredRowCount,
     rowCountByReportId,
     rowCountByReportDocumentId,
+    syncStatus,
+    parsedRowCount,
+    storedRowCount,
+    countSource,
     brandAnalyticsRowsAppearStored,
     errorCode: null,
     errorMessage: null,
