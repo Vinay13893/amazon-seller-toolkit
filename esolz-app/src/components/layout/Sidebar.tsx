@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Package, TrendingUp, Tag, MapPin,
   ShoppingCart, Users, Bell, FileText, CreditCard,
-  Settings,
+  Settings, BarChart3,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { SidebarPlanCard } from '@/components/layout/SidebarPlanCard'
@@ -20,6 +20,7 @@ const navSections = [
       { href: '/dashboard/asins',     icon: Package,         label: 'ASINs' },
       { href: '/dashboard/bsr',       icon: TrendingUp,      label: 'BSR Tracker' },
       { href: '/dashboard/keywords',  icon: Tag,             label: 'Keywords',       badge: 'Starter+' },
+      { href: '/dashboard/brand-analytics/search-terms', icon: BarChart3, label: 'Brand Analytics', badge: 'Pro+' },
     ],
   },
   {

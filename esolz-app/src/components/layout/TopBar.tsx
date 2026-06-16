@@ -11,6 +11,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/dashboard/asins':     'ASIN Tracking',
   '/dashboard/bsr':       'BSR Tracker',
   '/dashboard/keywords':  'Keywords',
+  '/dashboard/brand-analytics/search-terms': 'Brand Analytics',
   '/dashboard/pincode':   'Pincode Checker (Paused)',
   '/dashboard/buybox':    'Buy Box',
   '/dashboard/competitors': 'Competitors',
