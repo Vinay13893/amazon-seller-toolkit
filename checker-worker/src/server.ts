@@ -34,6 +34,13 @@ const brandAnalyticsStatusRequestSchema = z.object({
 
 type BrandAnalyticsSyncDebugSafeResult = {
   success: boolean
+  envPresence: {
+    hasSupabaseUrl: boolean
+    hasSupabaseServiceRoleKey: boolean
+    hasSpapiEncryptionKey: boolean
+    hasSpapiLwaClientId: boolean
+    hasSpapiLwaClientSecret: boolean
+  }
   jobId: string
   reportId: string | null
   reportType: string | null
@@ -49,11 +56,22 @@ type BrandAnalyticsSyncDebugSafeResult = {
   errorMessage: string | null
 }
 
+function getBrandAnalyticsSyncEnvPresence(): BrandAnalyticsSyncDebugSafeResult['envPresence'] {
+  return {
+    hasSupabaseUrl: Boolean(process.env.SUPABASE_URL?.trim()),
+    hasSupabaseServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+    hasSpapiEncryptionKey: Boolean(process.env.SPAPI_ENCRYPTION_KEY?.trim()),
+    hasSpapiLwaClientId: Boolean(process.env.SPAPI_LWA_CLIENT_ID?.trim()),
+    hasSpapiLwaClientSecret: Boolean(process.env.SPAPI_LWA_CLIENT_SECRET?.trim()),
+  }
+}
+
 function createBrandAnalyticsSyncDebugSafeResult(
   overrides: Partial<BrandAnalyticsSyncDebugSafeResult>,
 ): BrandAnalyticsSyncDebugSafeResult {
   return {
     success: false,
+    envPresence: getBrandAnalyticsSyncEnvPresence(),
     jobId: '',
     reportId: null,
     reportType: null,
