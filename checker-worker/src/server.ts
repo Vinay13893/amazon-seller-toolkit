@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-import express, { type Request, type Response } from 'express'
+import express, { type NextFunction, type Request, type Response } from 'express'
 import { ZodError } from 'zod'
 import { z } from 'zod'
 import { requireCheckerSecret } from './middleware/auth'
@@ -90,6 +90,50 @@ function createBrandAnalyticsSyncDebugSafeResult(
 }
 
 app.use(express.json({ limit: '1mb' }))
+
+app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
+  if (error instanceof SyntaxError && 'body' in error) {
+    const jobId = typeof req.body?.jobId === 'string' ? req.body.jobId : ''
+
+    if (req.path === '/brand-analytics/sync-debug-temp') {
+      res.status(400).json(createBrandAnalyticsSyncDebugSafeResult({
+        failedStage: 'invalid_json',
+        jobId,
+        errorCode: 'invalid_json',
+        errorMessage: 'Invalid JSON request body.',
+      }))
+      return
+    }
+
+    if (req.path === '/brand-analytics/status-debug-temp') {
+      res.status(400).json({
+        success: false,
+        failedStage: 'invalid_json',
+        envPresence: {
+          hasSupabaseUrl: Boolean(process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()),
+          hasSupabaseServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+        },
+        jobId,
+        reportId: null,
+        reportType: null,
+        reportDocumentId: null,
+        jobProcessingStatus: null,
+        jobParsedRowCount: null,
+        jobStoredRowCount: null,
+        documentProcessingStatus: null,
+        documentStoredRowCount: null,
+        rowCountByReportId: null,
+        rowCountByReportDocumentId: null,
+        brandAnalyticsRowsAppearStored: null,
+        errorCode: 'invalid_json',
+        errorMessage: 'Invalid JSON request body.',
+      })
+      return
+    }
+  }
+
+  next(error)
+})
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({
