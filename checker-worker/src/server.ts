@@ -20,6 +20,15 @@ const app = express()
 const port = Number.parseInt(process.env.PORT || '3001', 10)
 const TEMP_ALLOWED_DEBUG_JOB_ID = '58761e56-4034-4ee9-a976-3fc968cd8e5e'
 
+const brandAnalyticsSyncRequestSchema = z.object({
+  jobId: z.string().uuid(),
+  batchSize: z.number().int().min(1).max(1000).optional(),
+})
+
+const brandAnalyticsStatusRequestSchema = z.object({
+  jobId: z.string().uuid(),
+})
+
 app.use(express.json({ limit: '1mb' }))
 
 app.get('/health', (_req: Request, res: Response) => {
@@ -30,8 +39,10 @@ app.get('/health', (_req: Request, res: Response) => {
   })
 })
 
+const publicDebugRouter = express.Router()
+
 // TODO TEMPORARY DEBUG ROUTE REMOVE BEFORE PRODUCTION
-app.get('/debug/routes', (_req: Request, res: Response) => {
+publicDebugRouter.get('/debug/routes', (_req: Request, res: Response) => {
   res.json({
     success: true,
     service: 'sociomonkey-checker-worker',
@@ -46,7 +57,7 @@ app.get('/debug/routes', (_req: Request, res: Response) => {
 })
 
 // TODO TEMPORARY DEBUG ROUTE REMOVE BEFORE PRODUCTION
-app.post('/brand-analytics/status-debug-temp', async (req: Request, res: Response) => {
+publicDebugRouter.post('/brand-analytics/status-debug-temp', async (req: Request, res: Response) => {
   try {
     const payload = brandAnalyticsStatusRequestSchema.parse(req.body)
 
@@ -81,16 +92,9 @@ app.post('/brand-analytics/status-debug-temp', async (req: Request, res: Respons
   }
 })
 
+app.use(publicDebugRouter)
+
 app.use(requireCheckerSecret)
-
-const brandAnalyticsSyncRequestSchema = z.object({
-  jobId: z.string().uuid(),
-  batchSize: z.number().int().min(1).max(1000).optional(),
-})
-
-const brandAnalyticsStatusRequestSchema = z.object({
-  jobId: z.string().uuid(),
-})
 
 app.post('/keyword-rank', async (req: Request, res: Response) => {
   try {
