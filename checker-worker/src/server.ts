@@ -18,6 +18,7 @@ dotenv.config()
 
 const app = express()
 const port = Number.parseInt(process.env.PORT || '3001', 10)
+const TEMP_ALLOWED_DEBUG_JOB_ID = '58761e56-4034-4ee9-a976-3fc968cd8e5e'
 
 app.use(express.json({ limit: '1mb' }))
 
@@ -27,6 +28,57 @@ app.get('/health', (_req: Request, res: Response) => {
     service: 'sociomonkey-checker-worker',
     version: '0.1.0',
   })
+})
+
+// TODO TEMPORARY DEBUG ROUTE REMOVE BEFORE PRODUCTION
+app.get('/debug/routes', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    service: 'sociomonkey-checker-worker',
+    version: '0.1.0',
+    availableRoutes: [
+      'GET /health',
+      'POST /brand-analytics/status',
+      'POST /brand-analytics/status-debug-temp',
+      'GET /debug/routes',
+    ],
+  })
+})
+
+// TODO TEMPORARY DEBUG ROUTE REMOVE BEFORE PRODUCTION
+app.post('/brand-analytics/status-debug-temp', async (req: Request, res: Response) => {
+  try {
+    const payload = brandAnalyticsStatusRequestSchema.parse(req.body)
+
+    if (payload.jobId !== TEMP_ALLOWED_DEBUG_JOB_ID) {
+      res.status(403).json({
+        success: false,
+        errorCode: 'forbidden_job_id',
+        errorMessage: 'Only the temporary debug jobId is allowed.',
+      })
+      return
+    }
+
+    const result = await getBrandAnalyticsStatus(payload)
+    const statusCode = result.success ? 200 : 500
+    res.status(statusCode).json(result)
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json({
+        success: false,
+        errorCode: 'invalid_request',
+        errorMessage: 'Invalid request payload for /brand-analytics/status-debug-temp.',
+        details: error.flatten(),
+      })
+      return
+    }
+
+    res.status(500).json({
+      success: false,
+      errorCode: 'status_failed',
+      errorMessage: 'Brand Analytics status debug failed unexpectedly.',
+    })
+  }
 })
 
 app.use(requireCheckerSecret)
