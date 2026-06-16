@@ -32,6 +32,45 @@ const brandAnalyticsStatusRequestSchema = z.object({
   jobId: z.string().uuid(),
 })
 
+type BrandAnalyticsSyncDebugSafeResult = {
+  success: boolean
+  jobId: string
+  reportId: string | null
+  reportType: string | null
+  reportDocumentId: string | null
+  processingStatus: string | null
+  parsedRowCount: number | null
+  storedRowCount: number | null
+  rowCountByReportId: number | null
+  rowCountByReportDocumentId: number | null
+  brandAnalyticsRowsAppearStored: boolean | null
+  failedStage: string | null
+  errorCode: string | null
+  errorMessage: string | null
+}
+
+function createBrandAnalyticsSyncDebugSafeResult(
+  overrides: Partial<BrandAnalyticsSyncDebugSafeResult>,
+): BrandAnalyticsSyncDebugSafeResult {
+  return {
+    success: false,
+    jobId: '',
+    reportId: null,
+    reportType: null,
+    reportDocumentId: null,
+    processingStatus: null,
+    parsedRowCount: null,
+    storedRowCount: null,
+    rowCountByReportId: null,
+    rowCountByReportDocumentId: null,
+    brandAnalyticsRowsAppearStored: null,
+    failedStage: null,
+    errorCode: null,
+    errorMessage: null,
+    ...overrides,
+  }
+}
+
 app.use(express.json({ limit: '1mb' }))
 
 app.get('/health', (_req: Request, res: Response) => {
@@ -61,6 +100,7 @@ publicDebugRouter.get('/debug/routes', (_req: Request, res: Response) => {
       'GET /health',
       'POST /brand-analytics/status',
       'POST /brand-analytics/status-debug-temp',
+      'POST /brand-analytics/sync-debug-temp',
       'GET /debug/routes',
     ],
   })
@@ -149,6 +189,76 @@ publicDebugRouter.post('/brand-analytics/status-debug-temp', async (req: Request
       errorCode: 'read_job_failed',
       errorMessage: 'Brand Analytics status debug failed unexpectedly.',
     })
+  }
+})
+
+// TODO TEMPORARY DEBUG ROUTE REMOVE BEFORE PRODUCTION
+publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, res: Response) => {
+  let jobId: string | undefined
+  try {
+    const payload = brandAnalyticsStatusRequestSchema.parse(req.body)
+    jobId = payload.jobId
+
+    if (jobId !== TEMP_ALLOWED_DEBUG_JOB_ID) {
+      res.status(403).json(createBrandAnalyticsSyncDebugSafeResult({
+        failedStage: 'job_not_allowed',
+        jobId,
+        errorCode: 'job_not_allowed',
+        errorMessage: 'Only the temporary debug jobId is allowed.',
+      }))
+      return
+    }
+
+    const result = await runBrandAnalyticsSync({ jobId })
+
+    // Only return safe aggregate counts; no raw rows or downloaded content.
+    const supabase = (await import('./brand-analytics/supabase')).createSupabaseAdminClient()
+    const { count: countByReportId } = await supabase
+      .from('brand_analytics_search_terms_rows')
+      .select('*', { head: true, count: 'exact' })
+      .eq('report_id', result.reportId ?? '__missing_report_id__')
+    const { count: countByDocumentId } = await supabase
+      .from('brand_analytics_search_terms_rows')
+      .select('*', { head: true, count: 'exact' })
+      .eq('report_document_id', result.reportDocumentId || '__missing_report_document_id__')
+
+    const rowsAppearStored =
+      (result.totalStoredRows ?? 0) > 0 ||
+      (countByReportId ?? 0) > 0 ||
+      (countByDocumentId ?? 0) > 0
+
+    res.status(result.status === 'success' ? 200 : 500).json(createBrandAnalyticsSyncDebugSafeResult({
+      success: result.status === 'success',
+      jobId: result.jobId,
+      reportId: result.reportId,
+      reportType: result.reportType,
+      reportDocumentId: result.reportDocumentId,
+      processingStatus: result.status,
+      parsedRowCount: result.totalParsedRows,
+      storedRowCount: result.totalStoredRows,
+      rowCountByReportId: countByReportId ?? 0,
+      rowCountByReportDocumentId: countByDocumentId ?? 0,
+      brandAnalyticsRowsAppearStored: rowsAppearStored,
+      failedStage: result.status === 'success' ? 'success' : 'sync_failed',
+      errorCode: result.errorCode ?? null,
+      errorMessage: result.errorMessage ?? null,
+    }))
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json(createBrandAnalyticsSyncDebugSafeResult({
+        failedStage: 'invalid_payload',
+        jobId: typeof req.body?.jobId === 'string' ? req.body.jobId : '',
+        errorCode: 'invalid_payload',
+        errorMessage: 'Invalid request payload for /brand-analytics/sync-debug-temp.',
+      }))
+      return
+    }
+    res.status(500).json(createBrandAnalyticsSyncDebugSafeResult({
+      failedStage: 'sync_failed',
+      jobId: jobId ?? '',
+      errorCode: 'sync_failed',
+      errorMessage: 'Brand Analytics sync debug failed unexpectedly.',
+    }))
   }
 })
 

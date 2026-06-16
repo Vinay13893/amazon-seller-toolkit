@@ -72,6 +72,7 @@ function toSafeErrorMessage(code: BrandAnalyticsSyncErrorCode): string {
 
 export type BrandAnalyticsSyncResult = {
   jobId: string
+  reportId: string | null
   reportType: string
   reportDocumentId: string
   totalParsedRows: number
@@ -207,6 +208,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
 
   const baseErrorResult: BrandAnalyticsSyncResult = {
     jobId: input.jobId,
+    reportId: null,
     reportType: '',
     reportDocumentId: '',
     totalParsedRows: 0,
@@ -340,6 +342,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
 
     return {
       jobId: input.jobId,
+      reportId: job.report_id,
       reportType,
       reportDocumentId: job.report_document_id,
       totalParsedRows: parsed.rows.length,
