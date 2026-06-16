@@ -239,7 +239,7 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
       rowCountByReportId: countByReportId ?? 0,
       rowCountByReportDocumentId: countByDocumentId ?? 0,
       brandAnalyticsRowsAppearStored: rowsAppearStored,
-      failedStage: result.status === 'success' ? 'success' : 'sync_failed',
+      failedStage: result.status === 'success' ? 'success' : result.errorCode ?? 'sync_failed',
       errorCode: result.errorCode ?? null,
       errorMessage: result.errorMessage ?? null,
     }))

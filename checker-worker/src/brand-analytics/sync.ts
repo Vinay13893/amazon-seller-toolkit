@@ -38,10 +38,20 @@ type BrandAnalyticsSyncErrorCode =
 class BrandAnalyticsSyncError extends Error {
   code: BrandAnalyticsSyncErrorCode
 
-  constructor(code: BrandAnalyticsSyncErrorCode) {
-    super(code)
+  constructor(code: BrandAnalyticsSyncErrorCode, safeMessage?: string) {
+    super(safeMessage ?? code)
     this.code = code
   }
+}
+
+function getMissingWorkerEnvNames(): string[] {
+  return [
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'SPAPI_ENCRYPTION_KEY',
+    'SPAPI_LWA_CLIENT_ID',
+    'SPAPI_LWA_CLIENT_SECRET',
+  ].filter((name) => !process.env[name]?.trim())
 }
 
 function isSupportedReportType(value: string): value is BrandAnalyticsReportType {
@@ -71,6 +81,13 @@ function toSafeErrorMessage(code: BrandAnalyticsSyncErrorCode): string {
     default:
       return 'Brand Analytics sync failed.'
   }
+}
+
+function getSafeSyncErrorMessage(error: unknown, code: BrandAnalyticsSyncErrorCode): string {
+  if (error instanceof BrandAnalyticsSyncError && error.message && error.message !== code) {
+    return error.message
+  }
+  return toSafeErrorMessage(code)
 }
 
 export type BrandAnalyticsSyncResult = {
@@ -225,7 +242,11 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     try {
       requireWorkerEnvForSync()
     } catch {
-      throw new BrandAnalyticsSyncError('env_missing')
+      const missingEnvNames = getMissingWorkerEnvNames()
+      const safeMessage = missingEnvNames.length > 0
+        ? `Brand Analytics sync failed: missing worker environment: ${missingEnvNames.join(', ')}.`
+        : toSafeErrorMessage('env_missing')
+      throw new BrandAnalyticsSyncError('env_missing', safeMessage)
     }
 
     const supabase = createSupabaseAdminClient()
@@ -374,7 +395,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       ...baseErrorResult,
       reportType,
       errorCode,
-      errorMessage: toSafeErrorMessage(errorCode),
+      errorMessage: getSafeSyncErrorMessage(error, errorCode),
     }
   }
 }
