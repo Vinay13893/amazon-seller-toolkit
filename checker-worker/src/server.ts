@@ -12,7 +12,10 @@ import {
   runPincodeAvailabilityCheck,
 } from './checkers/pincodeAvailability'
 import { runBrandAnalyticsSync } from './brand-analytics/sync'
-import { getBrandAnalyticsStatus } from './brand-analytics/status'
+import {
+  getBrandAnalyticsStatus,
+  getBrandAnalyticsStatusDebug,
+} from './brand-analytics/status'
 
 dotenv.config()
 
@@ -71,29 +74,79 @@ publicDebugRouter.post('/brand-analytics/status-debug-temp', async (req: Request
     if (payload.jobId !== TEMP_ALLOWED_DEBUG_JOB_ID) {
       res.status(403).json({
         success: false,
-        errorCode: 'forbidden_job_id',
+        failedStage: 'job_not_allowed',
+        envPresence: {
+          hasSupabaseUrl: Boolean(process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()),
+          hasSupabaseServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+        },
+        jobId: payload.jobId,
+        reportId: null,
+        reportType: null,
+        reportDocumentId: null,
+        jobProcessingStatus: null,
+        jobParsedRowCount: null,
+        jobStoredRowCount: null,
+        documentProcessingStatus: null,
+        documentStoredRowCount: null,
+        rowCountByReportId: null,
+        rowCountByReportDocumentId: null,
+        brandAnalyticsRowsAppearStored: null,
+        errorCode: 'job_not_allowed',
         errorMessage: 'Only the temporary debug jobId is allowed.',
       })
       return
     }
 
-    const result = await getBrandAnalyticsStatus(payload)
+    const result = await getBrandAnalyticsStatusDebug(payload)
     const statusCode = result.success ? 200 : 500
     res.status(statusCode).json(result)
   } catch (error) {
     if (error instanceof ZodError) {
       res.status(400).json({
         success: false,
-        errorCode: 'invalid_request',
+        failedStage: 'invalid_payload',
+        envPresence: {
+          hasSupabaseUrl: Boolean(process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()),
+          hasSupabaseServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+        },
+        jobId: typeof req.body?.jobId === 'string' ? req.body.jobId : '',
+        reportId: null,
+        reportType: null,
+        reportDocumentId: null,
+        jobProcessingStatus: null,
+        jobParsedRowCount: null,
+        jobStoredRowCount: null,
+        documentProcessingStatus: null,
+        documentStoredRowCount: null,
+        rowCountByReportId: null,
+        rowCountByReportDocumentId: null,
+        brandAnalyticsRowsAppearStored: null,
+        errorCode: 'invalid_payload',
         errorMessage: 'Invalid request payload for /brand-analytics/status-debug-temp.',
-        details: error.flatten(),
       })
       return
     }
 
     res.status(500).json({
       success: false,
-      errorCode: 'status_failed',
+      failedStage: 'read_job_failed',
+      envPresence: {
+        hasSupabaseUrl: Boolean(process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()),
+        hasSupabaseServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()),
+      },
+      jobId: typeof req.body?.jobId === 'string' ? req.body.jobId : '',
+      reportId: null,
+      reportType: null,
+      reportDocumentId: null,
+      jobProcessingStatus: null,
+      jobParsedRowCount: null,
+      jobStoredRowCount: null,
+      documentProcessingStatus: null,
+      documentStoredRowCount: null,
+      rowCountByReportId: null,
+      rowCountByReportDocumentId: null,
+      brandAnalyticsRowsAppearStored: null,
+      errorCode: 'read_job_failed',
       errorMessage: 'Brand Analytics status debug failed unexpectedly.',
     })
   }
