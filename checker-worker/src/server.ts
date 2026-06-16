@@ -136,19 +136,27 @@ async function getSafeBrandAnalyticsRowCounts(
   let rowCountByReportDocumentId: number | null = null
 
   if (reportId) {
-    const { count } = await supabase
-      .from('brand_analytics_search_terms_rows')
-      .select('*', { head: true, count: 'exact' })
-      .eq('report_id', reportId)
-    rowCountByReportId = count ?? null
+    try {
+      const { count } = await supabase
+        .from('brand_analytics_search_terms_rows')
+        .select('*', { head: true, count: 'exact' })
+        .eq('report_id', reportId)
+      rowCountByReportId = count ?? null
+    } catch {
+      rowCountByReportId = null
+    }
   }
 
   if (reportDocumentId) {
-    const { count } = await supabase
-      .from('brand_analytics_search_terms_rows')
-      .select('*', { head: true, count: 'exact' })
-      .eq('report_document_id', reportDocumentId)
-    rowCountByReportDocumentId = count ?? null
+    try {
+      const { count } = await supabase
+        .from('brand_analytics_search_terms_rows')
+        .select('*', { head: true, count: 'exact' })
+        .eq('report_document_id', reportDocumentId)
+      rowCountByReportDocumentId = count ?? null
+    } catch {
+      rowCountByReportDocumentId = null
+    }
   }
 
   return { rowCountByReportId, rowCountByReportDocumentId }
