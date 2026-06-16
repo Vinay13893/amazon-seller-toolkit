@@ -275,14 +275,34 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
 
     // Only return safe aggregate counts; no raw rows or downloaded content.
     const supabase = (await import('./brand-analytics/supabase')).createSupabaseAdminClient()
-    const { count: countByReportId } = await supabase
+    const { count: countByReportId, error: countByReportIdError } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
       .eq('report_id', result.reportId ?? '__missing_report_id__')
-    const { count: countByDocumentId } = await supabase
+    const { count: countByDocumentId, error: countByDocumentIdError } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
       .eq('report_document_id', result.reportDocumentId || '__missing_report_document_id__')
+
+    if (countByReportIdError || countByDocumentIdError) {
+      res.status(500).json(createBrandAnalyticsSyncDebugSafeResult({
+        success: false,
+        jobId: result.jobId,
+        reportId: result.reportId,
+        reportType: result.reportType,
+        reportDocumentId: result.reportDocumentId,
+        processingStatus: result.status,
+        parsedRowCount: result.totalParsedRows,
+        storedRowCount: result.totalStoredRows,
+        rowCountByReportId: countByReportId ?? null,
+        rowCountByReportDocumentId: countByDocumentId ?? null,
+        brandAnalyticsRowsAppearStored: null,
+        failedStage: 'count_rows_failed',
+        errorCode: 'count_rows_failed',
+        errorMessage: 'Brand Analytics sync failed: stored row counts could not be read.',
+      }))
+      return
+    }
 
     const rowsAppearStored =
       (result.totalStoredRows ?? 0) > 0 ||

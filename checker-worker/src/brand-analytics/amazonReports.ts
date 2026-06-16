@@ -33,6 +33,20 @@ export interface ParsedBrandAnalyticsReport {
   format: 'json' | 'jsonl' | 'csv' | 'tsv' | 'unknown'
 }
 
+export type AmazonReportDocumentStageErrorCode =
+  | 'report_document_url_missing'
+  | 'download_report_document_failed'
+  | 'decompress_report_failed'
+
+export class AmazonReportDocumentStageError extends Error {
+  code: AmazonReportDocumentStageErrorCode
+
+  constructor(code: AmazonReportDocumentStageErrorCode) {
+    super(code)
+    this.code = code
+  }
+}
+
 function safeHttpError(status: number): Error {
   return new Error(`SP-API request failed with HTTP ${status}`)
 }
@@ -112,7 +126,7 @@ export async function getAmazonReportDocument(
 
   const data = await res.json() as Partial<AmazonReportDocumentResult>
   if (!data.reportDocumentId || !data.url) {
-    throw new Error('Unexpected SP-API report document response')
+    throw new AmazonReportDocumentStageError('report_document_url_missing')
   }
 
   return {
@@ -151,25 +165,43 @@ function decodeEncryptedContent(
 export async function downloadAmazonReportDocument(
   document: AmazonReportDocumentResult,
 ): Promise<string> {
-  const res = await fetch(document.url, {
-    method: 'GET',
-    headers: {
-      'content-type': 'application/octet-stream',
-    },
-  })
-
-  if (!res.ok) {
-    throw new Error(`Report document download failed with HTTP ${res.status}`)
+  let res: Response
+  try {
+    res = await fetch(document.url, {
+      method: 'GET',
+      headers: {
+        'content-type': 'application/octet-stream',
+      },
+    })
+  } catch {
+    throw new AmazonReportDocumentStageError('download_report_document_failed')
   }
 
-  let bytes: Uint8Array = new Uint8Array(await res.arrayBuffer())
+  if (!res.ok) {
+    throw new AmazonReportDocumentStageError('download_report_document_failed')
+  }
+
+  let bytes: Uint8Array
+  try {
+    bytes = new Uint8Array(await res.arrayBuffer())
+  } catch {
+    throw new AmazonReportDocumentStageError('download_report_document_failed')
+  }
 
   if (document.encryptionDetails) {
-    bytes = decodeEncryptedContent(bytes, document.encryptionDetails)
+    try {
+      bytes = decodeEncryptedContent(bytes, document.encryptionDetails)
+    } catch {
+      throw new AmazonReportDocumentStageError('download_report_document_failed')
+    }
   }
 
   if (document.compressionAlgorithm?.toUpperCase() === 'GZIP') {
-    bytes = gunzipSync(bytes)
+    try {
+      bytes = gunzipSync(bytes)
+    } catch {
+      throw new AmazonReportDocumentStageError('decompress_report_failed')
+    }
   }
 
   return Buffer.from(bytes).toString('utf8')

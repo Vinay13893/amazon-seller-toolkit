@@ -1,4 +1,5 @@
 import {
+  AmazonReportDocumentStageError,
   BRAND_ANALYTICS_REPORT_TYPES,
   type BrandAnalyticsReportType,
   decryptToken,
@@ -24,15 +25,22 @@ type SyncInput = {
 }
 
 type BrandAnalyticsSyncErrorCode =
+  | 'read_job_failed'
   | 'env_missing'
   | 'job_not_found'
-  | 'job_not_done'
-  | 'missing_report_document'
+  | 'missing_job_report_document_id'
+  | 'load_spapi_credentials_failed'
+  | 'missing_spapi_credentials'
+  | 'decrypt_refresh_token_failed'
+  | 'lwa_access_token_failed'
+  | 'get_report_document_failed'
+  | 'report_document_url_missing'
+  | 'download_report_document_failed'
+  | 'decompress_report_failed'
+  | 'parse_report_failed'
   | 'unsupported_report_type'
-  | 'connection_unavailable'
-  | 'document_download_failed'
-  | 'row_store_failed'
-  | 'summary_update_failed'
+  | 'store_rows_failed'
+  | 'count_rows_failed'
   | 'sync_failed'
 
 class BrandAnalyticsSyncError extends Error {
@@ -62,22 +70,36 @@ function toSafeErrorMessage(code: BrandAnalyticsSyncErrorCode): string {
   switch (code) {
     case 'env_missing':
       return 'Brand Analytics sync failed: required worker environment is missing.'
+    case 'read_job_failed':
+      return 'Brand Analytics sync failed: report job could not be read.'
     case 'job_not_found':
       return 'Brand Analytics sync failed: job not found.'
-    case 'job_not_done':
-      return 'Brand Analytics sync failed: job is not DONE.'
-    case 'missing_report_document':
+    case 'missing_job_report_document_id':
       return 'Brand Analytics sync failed: report document is missing.'
+    case 'load_spapi_credentials_failed':
+      return 'Brand Analytics sync failed: SP-API credentials could not be loaded.'
+    case 'missing_spapi_credentials':
+      return 'Brand Analytics sync failed: SP-API credentials are missing.'
+    case 'decrypt_refresh_token_failed':
+      return 'Stored SP-API credential could not be decrypted; verify SPAPI_ENCRYPTION_KEY matches production app.'
+    case 'lwa_access_token_failed':
+      return 'Amazon LWA token exchange failed; verify matching client id/client secret pair.'
+    case 'get_report_document_failed':
+      return 'Brand Analytics sync failed: report document metadata could not be read.'
+    case 'report_document_url_missing':
+      return 'Brand Analytics sync failed: report document URL is missing.'
+    case 'download_report_document_failed':
+      return 'Brand Analytics sync failed: report document download failed.'
+    case 'decompress_report_failed':
+      return 'Brand Analytics sync failed: report document decompression failed.'
+    case 'parse_report_failed':
+      return 'Brand Analytics sync failed: report document could not be parsed.'
     case 'unsupported_report_type':
       return 'Brand Analytics sync failed: unsupported report type.'
-    case 'connection_unavailable':
-      return 'Brand Analytics sync failed: Amazon connection unavailable.'
-    case 'document_download_failed':
-      return 'Brand Analytics sync failed: report document download failed.'
-    case 'row_store_failed':
+    case 'store_rows_failed':
       return 'Brand Analytics sync failed: storing parsed rows failed.'
-    case 'summary_update_failed':
-      return 'Brand Analytics sync failed: summary update failed.'
+    case 'count_rows_failed':
+      return 'Brand Analytics sync failed: stored row counts could not be read.'
     default:
       return 'Brand Analytics sync failed.'
   }
@@ -237,6 +259,11 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     errorCode: null,
     errorMessage: null,
   }
+  let safeContext: Pick<BrandAnalyticsSyncResult, 'reportId' | 'reportType' | 'reportDocumentId'> = {
+    reportId: null,
+    reportType: '',
+    reportDocumentId: '',
+  }
 
   try {
     try {
@@ -250,17 +277,29 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     }
 
     const supabase = createSupabaseAdminClient()
-    const job = await getBrandAnalyticsJob(supabase, input.jobId)
+    let job
+    try {
+      job = await getBrandAnalyticsJob(supabase, input.jobId)
+    } catch {
+      throw new BrandAnalyticsSyncError('read_job_failed')
+    }
+
     if (!job) {
       throw new BrandAnalyticsSyncError('job_not_found')
     }
 
+    safeContext = {
+      reportId: job.report_id,
+      reportType: job.report_type,
+      reportDocumentId: job.report_document_id ?? '',
+    }
+
     if (job.processing_status !== 'DONE') {
-      throw new BrandAnalyticsSyncError('job_not_done')
+      throw new BrandAnalyticsSyncError('read_job_failed')
     }
 
     if (!job.report_document_id) {
-      throw new BrandAnalyticsSyncError('missing_report_document')
+      throw new BrandAnalyticsSyncError('missing_job_report_document_id')
     }
 
     if (!isSupportedReportType(job.report_type)) {
@@ -268,24 +307,57 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     }
 
     const reportType = job.report_type
-    const connection = await getAmazonConnection(supabase, job.amazon_connection_id)
-    if (!connection || connection.status !== 'active' || !connection.refresh_token_encrypted) {
-      throw new BrandAnalyticsSyncError('connection_unavailable')
+    let connection
+    try {
+      connection = await getAmazonConnection(supabase, job.amazon_connection_id)
+    } catch {
+      throw new BrandAnalyticsSyncError('load_spapi_credentials_failed')
     }
 
-    const refreshToken = decryptToken(connection.refresh_token_encrypted)
-    const { accessToken } = await refreshAccessToken(refreshToken)
+    if (!connection || connection.status !== 'active' || !connection.refresh_token_encrypted) {
+      throw new BrandAnalyticsSyncError('missing_spapi_credentials')
+    }
+
+    let refreshToken
+    try {
+      refreshToken = decryptToken(connection.refresh_token_encrypted)
+    } catch {
+      throw new BrandAnalyticsSyncError('decrypt_refresh_token_failed')
+    }
+
+    let accessToken
+    try {
+      ;({ accessToken } = await refreshAccessToken(refreshToken))
+    } catch {
+      throw new BrandAnalyticsSyncError('lwa_access_token_failed')
+    }
 
     let document
-    let rawContent = ''
     try {
       document = await getAmazonReportDocument(accessToken, job.report_document_id)
-      rawContent = await downloadAmazonReportDocument(document)
-    } catch {
-      throw new BrandAnalyticsSyncError('document_download_failed')
+    } catch (error) {
+      if (error instanceof AmazonReportDocumentStageError && error.code === 'report_document_url_missing') {
+        throw new BrandAnalyticsSyncError('report_document_url_missing')
+      }
+      throw new BrandAnalyticsSyncError('get_report_document_failed')
     }
 
-    const parsed = parseBrandAnalyticsReport(reportType, rawContent)
+    let rawContent = ''
+    try {
+      rawContent = await downloadAmazonReportDocument(document)
+    } catch (error) {
+      if (error instanceof AmazonReportDocumentStageError) {
+        throw new BrandAnalyticsSyncError(error.code)
+      }
+      throw new BrandAnalyticsSyncError('download_report_document_failed')
+    }
+
+    let parsed
+    try {
+      parsed = parseBrandAnalyticsReport(reportType, rawContent)
+    } catch {
+      throw new BrandAnalyticsSyncError('parse_report_failed')
+    }
 
     const now = new Date().toISOString()
     await updateAmazonReportDocument(supabase, {
@@ -332,7 +404,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         .upsert(chunk, { onConflict: mapped.onConflict })
 
       if (upsertError) {
-        throw new BrandAnalyticsSyncError('row_store_failed')
+        throw new BrandAnalyticsSyncError('store_rows_failed')
       }
 
       totalStoredRows += chunk.length
@@ -365,7 +437,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         updated_at: now,
       })
     } catch {
-      throw new BrandAnalyticsSyncError('summary_update_failed')
+      throw new BrandAnalyticsSyncError('store_rows_failed')
     }
 
     return {
@@ -384,8 +456,6 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     }
   } catch (error) {
     const errorCode = error instanceof BrandAnalyticsSyncError ? error.code : 'sync_failed'
-    const reportType = errorCode === 'unsupported_report_type' ? 'UNSUPPORTED' : ''
-
     console.error('[brand-analytics-sync] failed', {
       jobId: input.jobId,
       errorCode,
@@ -393,7 +463,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
 
     return {
       ...baseErrorResult,
-      reportType,
+      ...safeContext,
       errorCode,
       errorMessage: getSafeSyncErrorMessage(error, errorCode),
     }
