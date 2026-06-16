@@ -133,7 +133,16 @@ function getSafeSyncErrorMessage(error: unknown, code: BrandAnalyticsSyncErrorCo
 
 function getRequiredInsertColumns(targetTable: string): string[] {
   if (targetTable === 'brand_analytics_search_terms_rows') {
-    return ['workspace_id', 'amazon_connection_id', 'marketplace_id', 'report_id', 'search_term', 'asin']
+    return [
+      'workspace_id',
+      'amazon_connection_id',
+      'marketplace_id',
+      'report_document_id',
+      'department_name',
+      'search_term',
+      'clicked_asin',
+      'click_share_rank',
+    ]
   }
   if (targetTable === 'brand_analytics_search_query_rows') {
     return ['workspace_id', 'amazon_connection_id', 'marketplace_id', 'report_id', 'search_query', 'asin']
@@ -296,17 +305,23 @@ function mapRowsForTable(
   if (reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT') {
     return {
       targetTable: 'brand_analytics_search_terms_rows',
-      onConflict: 'workspace_id,report_id,search_term,asin',
+      onConflict: 'workspace_id,report_document_id,department_name,search_term,clicked_asin,click_share_rank',
       rowsToUpsert: rows.map((row) => ({
         ...baseRow,
-        asin: toText(pickValue(row, ['asin', 'child_asin', 'product_asin'])) ?? '',
+        department_name: toText(pickValue(row, ['department_name', 'department'])) ?? '',
+        search_frequency_rank: toInt(pickValue(row, ['search_frequency_rank'])),
+        clicked_asin: toText(pickValue(row, ['clicked_asin', 'asin', 'child_asin', 'product_asin'])) ?? '',
+        clicked_item_name: toText(pickValue(row, ['clicked_item_name', 'item_name', 'product_title'])),
+        click_share_rank: toInt(pickValue(row, ['click_share_rank'])) ?? 0,
+        conversion_share: toNumeric(pickValue(row, ['conversion_share', 'purchase_share'])),
+        asin: toText(pickValue(row, ['clicked_asin', 'asin', 'child_asin', 'product_asin'])) ?? '',
         search_term: toText(pickValue(row, ['search_term', 'search_query', 'query'])) ?? '',
         impressions: toInt(pickValue(row, ['impressions', 'search_term_impressions'])),
         clicks: toInt(pickValue(row, ['clicks', 'search_term_clicks'])),
         cart_adds: toInt(pickValue(row, ['cart_adds', 'add_to_carts', 'cart_additions'])),
         purchases: toInt(pickValue(row, ['purchases', 'units_ordered'])),
         click_share: toNumeric(pickValue(row, ['click_share', 'clickthrough_share'])),
-        purchase_share: toNumeric(pickValue(row, ['purchase_share'])),
+        purchase_share: toNumeric(pickValue(row, ['purchase_share', 'conversion_share'])),
         top_clicked_asin_1: toText(pickValue(row, ['top_clicked_asin_1', 'top_clicked_asin1'])),
         top_clicked_asin_2: toText(pickValue(row, ['top_clicked_asin_2', 'top_clicked_asin2'])),
         top_clicked_asin_3: toText(pickValue(row, ['top_clicked_asin_3', 'top_clicked_asin3'])),
