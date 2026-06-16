@@ -24,6 +24,7 @@ type SyncInput = {
 }
 
 type BrandAnalyticsSyncErrorCode =
+  | 'env_missing'
   | 'job_not_found'
   | 'job_not_done'
   | 'missing_report_document'
@@ -49,6 +50,8 @@ function isSupportedReportType(value: string): value is BrandAnalyticsReportType
 
 function toSafeErrorMessage(code: BrandAnalyticsSyncErrorCode): string {
   switch (code) {
+    case 'env_missing':
+      return 'Brand Analytics sync failed: required worker environment is missing.'
     case 'job_not_found':
       return 'Brand Analytics sync failed: job not found.'
     case 'job_not_done':
@@ -201,9 +204,6 @@ function mapRowsForTable(
 }
 
 export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnalyticsSyncResult> {
-  requireWorkerEnvForSync()
-
-  const supabase = createSupabaseAdminClient()
   const batchSize = getSafeBatchSize(input.batchSize)
 
   const baseErrorResult: BrandAnalyticsSyncResult = {
@@ -222,6 +222,13 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
   }
 
   try {
+    try {
+      requireWorkerEnvForSync()
+    } catch {
+      throw new BrandAnalyticsSyncError('env_missing')
+    }
+
+    const supabase = createSupabaseAdminClient()
     const job = await getBrandAnalyticsJob(supabase, input.jobId)
     if (!job) {
       throw new BrandAnalyticsSyncError('job_not_found')
