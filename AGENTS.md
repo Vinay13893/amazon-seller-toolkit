@@ -17,7 +17,7 @@
 - Report type: GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT
 - Report document status: DONE
 - Job status: DONE
-- Current rows stored: 0 as of latest check
+- Current rows stored: 691247 as of latest Brand Analytics sync
 
 ## Critical Current Status
 
@@ -25,8 +25,10 @@
 - Auto-deploy is now On Commit.
 - `/health` shows buildMarker `ba-debug-health-marker-20260616-d007072`.
 - Render env now has `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
-- `/brand-analytics/status-debug-temp` returns 200 and confirms job/document DONE but rows are not stored.
-- Next required action: add/run temporary one-job sync route or protected sync route for jobId `58761e56-4034-4ee9-a976-3fc968cd8e5e`.
+- Phase 1 Brand Analytics sync/storage is complete.
+- `GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT` stored 691247 rows for jobId `58761e56-4034-4ee9-a976-3fc968cd8e5e`.
+- Temporary public Brand Analytics debug routes have been removed/protected.
+- Next phase: Brand Analytics dashboard UI.
 
 ## Security Rules
 
@@ -51,9 +53,9 @@
 
 ## Current Next Task
 
-Add temporary one-job Brand Analytics sync route:
+Build Brand Analytics dashboard UI:
 
-- `POST /brand-analytics/sync-debug-temp`
-- Allow only jobId `58761e56-4034-4ee9-a976-3fc968cd8e5e`
-- Run once, then verify `/brand-analytics/status-debug-temp` shows rows stored.
-- Do not expose raw rows.
+- Show stored Search Terms data safely.
+- Add loading, empty, and error states.
+- Add safe row-count and last-sync status.
+- Do not expose raw rows, secrets, tokens, auth headers, Amazon document URLs, search terms, ASINs, or keywords in logs/chat.
