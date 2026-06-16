@@ -16,12 +16,22 @@ import {
   getBrandAnalyticsStatus,
   getBrandAnalyticsStatusDebug,
 } from './brand-analytics/status'
+import {
+  createSupabaseAdminClient,
+  getBrandAnalyticsJob,
+} from './brand-analytics/supabase'
 
 dotenv.config()
 
 const app = express()
 const port = Number.parseInt(process.env.PORT || '3001', 10)
 const TEMP_ALLOWED_DEBUG_JOB_ID = '58761e56-4034-4ee9-a976-3fc968cd8e5e'
+const tempBrandAnalyticsSyncRuns = new Map<string, {
+  status: 'queued' | 'running' | 'done' | 'failed'
+  updatedAt: string
+  errorCode: string | null
+  errorMessage: string | null
+}>()
 
 const brandAnalyticsSyncRequestSchema = z.object({
   jobId: z.string().uuid(),
@@ -34,6 +44,7 @@ const brandAnalyticsStatusRequestSchema = z.object({
 
 type BrandAnalyticsSyncDebugSafeResult = {
   success: boolean
+  message: string | null
   envPresence: {
     hasSupabaseUrl: boolean
     hasSupabaseServiceRoleKey: boolean
@@ -80,6 +91,7 @@ function createBrandAnalyticsSyncDebugSafeResult(
 ): BrandAnalyticsSyncDebugSafeResult {
   return {
     success: false,
+    message: null,
     envPresence: getBrandAnalyticsSyncEnvPresence(),
     jobId: '',
     reportId: null,
@@ -105,6 +117,41 @@ function createBrandAnalyticsSyncDebugSafeResult(
     unsupportedReportType: false,
     ...overrides,
   }
+}
+
+function toNullableNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function toNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+async function getSafeBrandAnalyticsRowCounts(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  reportId: string | null | undefined,
+  reportDocumentId: string | null | undefined,
+): Promise<{ rowCountByReportId: number | null; rowCountByReportDocumentId: number | null }> {
+  let rowCountByReportId: number | null = null
+  let rowCountByReportDocumentId: number | null = null
+
+  if (reportId) {
+    const { count } = await supabase
+      .from('brand_analytics_search_terms_rows')
+      .select('*', { head: true, count: 'exact' })
+      .eq('report_id', reportId)
+    rowCountByReportId = count ?? null
+  }
+
+  if (reportDocumentId) {
+    const { count } = await supabase
+      .from('brand_analytics_search_terms_rows')
+      .select('*', { head: true, count: 'exact' })
+      .eq('report_document_id', reportDocumentId)
+    rowCountByReportDocumentId = count ?? null
+  }
+
+  return { rowCountByReportId, rowCountByReportDocumentId }
 }
 
 app.use(express.json({ limit: '1mb' }))
@@ -181,6 +228,7 @@ publicDebugRouter.get('/debug/routes', (_req: Request, res: Response) => {
       'POST /brand-analytics/status',
       'POST /brand-analytics/status-debug-temp',
       'POST /brand-analytics/sync-debug-temp',
+      'POST /brand-analytics/sync-status-debug-temp',
       'GET /debug/routes',
     ],
   })
@@ -289,77 +337,69 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
       return
     }
 
-    const result = await runBrandAnalyticsSync({ jobId })
-
-    // Only return safe aggregate counts; no raw rows or downloaded content.
-    const supabase = (await import('./brand-analytics/supabase')).createSupabaseAdminClient()
-    const { count: countByReportId, error: countByReportIdError } = await supabase
-      .from('brand_analytics_search_terms_rows')
-      .select('*', { head: true, count: 'exact' })
-      .eq('report_id', result.reportId ?? '__missing_report_id__')
-    const { count: countByDocumentId, error: countByDocumentIdError } = await supabase
-      .from('brand_analytics_search_terms_rows')
-      .select('*', { head: true, count: 'exact' })
-      .eq('report_document_id', result.reportDocumentId || '__missing_report_document_id__')
-
-    if (countByReportIdError || countByDocumentIdError) {
-      res.status(500).json(createBrandAnalyticsSyncDebugSafeResult({
-        success: false,
-        jobId: result.jobId,
-        reportId: result.reportId,
-        reportType: result.reportType,
-        reportDocumentId: result.reportDocumentId,
-        targetTable: result.targetTable,
-        processingStatus: result.status,
-        parsedRowCount: result.totalParsedRows,
-        rowsPreparedForInsertCount: result.rowsPreparedForInsertCount,
-        storedRowCount: result.totalStoredRows,
-        rowCountByReportId: countByReportId ?? null,
-        rowCountByReportDocumentId: countByDocumentId ?? null,
-        brandAnalyticsRowsAppearStored: null,
-        failedStage: 'count_rows_failed',
-        errorCode: 'count_rows_failed',
-        errorMessage: 'Brand Analytics sync failed: stored row counts could not be read.',
-        dbErrorCode: result.dbErrorCode,
-        dbErrorHint: result.dbErrorHint,
-        dbErrorMessage: result.dbErrorMessage,
-        parsedFieldNames: result.fieldNames,
-        insertColumnNames: result.insertColumnNames,
-        missingRequiredColumns: result.missingRequiredColumns,
-        unsupportedReportType: result.unsupportedReportType,
+    const supabase = createSupabaseAdminClient()
+    const job = await getBrandAnalyticsJob(supabase, jobId)
+    if (!job) {
+      res.status(404).json(createBrandAnalyticsSyncDebugSafeResult({
+        failedStage: 'job_not_found',
+        jobId,
+        errorCode: 'job_not_found',
+        errorMessage: 'Brand Analytics sync failed: job not found.',
       }))
       return
     }
 
-    const rowsAppearStored =
-      (result.totalStoredRows ?? 0) > 0 ||
-      (countByReportId ?? 0) > 0 ||
-      (countByDocumentId ?? 0) > 0
+    const { rowCountByReportId, rowCountByReportDocumentId } =
+      await getSafeBrandAnalyticsRowCounts(supabase, job.report_id, job.report_document_id)
 
-    res.status(result.status === 'success' ? 200 : 500).json(createBrandAnalyticsSyncDebugSafeResult({
-      success: result.status === 'success',
-      jobId: result.jobId,
-      reportId: result.reportId,
-      reportType: result.reportType,
-      reportDocumentId: result.reportDocumentId,
-      targetTable: result.targetTable,
-      processingStatus: result.status,
-      parsedRowCount: result.totalParsedRows,
-      rowsPreparedForInsertCount: result.rowsPreparedForInsertCount,
-      storedRowCount: result.totalStoredRows,
-      rowCountByReportId: countByReportId ?? 0,
-      rowCountByReportDocumentId: countByDocumentId ?? 0,
-      brandAnalyticsRowsAppearStored: rowsAppearStored,
-      failedStage: result.status === 'success' ? 'success' : result.errorCode ?? 'sync_failed',
-      errorCode: result.errorCode ?? null,
-      errorMessage: result.errorMessage ?? null,
-      dbErrorCode: result.dbErrorCode,
-      dbErrorHint: result.dbErrorHint,
-      dbErrorMessage: result.dbErrorMessage,
-      parsedFieldNames: result.fieldNames,
-      insertColumnNames: result.insertColumnNames,
-      missingRequiredColumns: result.missingRequiredColumns,
-      unsupportedReportType: result.unsupportedReportType,
+    const currentRun = tempBrandAnalyticsSyncRuns.get(jobId)
+    if (!currentRun || currentRun.status === 'done' || currentRun.status === 'failed') {
+      const startedAt = new Date().toISOString()
+      tempBrandAnalyticsSyncRuns.set(jobId, {
+        status: 'queued',
+        updatedAt: startedAt,
+        errorCode: null,
+        errorMessage: null,
+      })
+
+      void (async () => {
+        tempBrandAnalyticsSyncRuns.set(jobId!, {
+          status: 'running',
+          updatedAt: new Date().toISOString(),
+          errorCode: null,
+          errorMessage: null,
+        })
+        const result = await runBrandAnalyticsSync({ jobId: jobId!, batchSize: 5000 })
+        tempBrandAnalyticsSyncRuns.set(jobId!, {
+          status: result.status === 'success' ? 'done' : 'failed',
+          updatedAt: new Date().toISOString(),
+          errorCode: result.errorCode,
+          errorMessage: result.errorMessage,
+        })
+      })().catch(() => {
+        tempBrandAnalyticsSyncRuns.set(jobId!, {
+          status: 'failed',
+          updatedAt: new Date().toISOString(),
+          errorCode: 'sync_failed',
+          errorMessage: 'Brand Analytics sync failed.',
+        })
+      })
+    }
+
+    res.status(202).json(createBrandAnalyticsSyncDebugSafeResult({
+      success: true,
+      message: 'sync started',
+      jobId,
+      reportId: job.report_id,
+      reportType: job.report_type,
+      reportDocumentId: job.report_document_id,
+      processingStatus: tempBrandAnalyticsSyncRuns.get(jobId)?.status ?? 'queued',
+      rowCountByReportId,
+      rowCountByReportDocumentId,
+      brandAnalyticsRowsAppearStored: (rowCountByReportId ?? 0) > 0 || (rowCountByReportDocumentId ?? 0) > 0,
+      failedStage: null,
+      errorCode: null,
+      errorMessage: null,
     }))
   } catch (error) {
     if (error instanceof ZodError) {
@@ -377,6 +417,93 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
       errorCode: 'sync_failed',
       errorMessage: 'Brand Analytics sync debug failed unexpectedly.',
     }))
+  }
+})
+
+// TODO TEMPORARY DEBUG ROUTE REMOVE BEFORE PRODUCTION
+publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Request, res: Response) => {
+  try {
+    const payload = brandAnalyticsStatusRequestSchema.parse(req.body)
+
+    if (payload.jobId !== TEMP_ALLOWED_DEBUG_JOB_ID) {
+      res.status(403).json({
+        success: false,
+        jobId: payload.jobId,
+        syncStatus: 'unknown',
+        failedStage: 'job_not_allowed',
+        errorCode: 'job_not_allowed',
+        errorMessage: 'Only the temporary debug jobId is allowed.',
+      })
+      return
+    }
+
+    const supabase = createSupabaseAdminClient()
+    const job = await getBrandAnalyticsJob(supabase, payload.jobId)
+    if (!job) {
+      res.status(404).json({
+        success: false,
+        jobId: payload.jobId,
+        syncStatus: 'unknown',
+        failedStage: 'job_not_found',
+        errorCode: 'job_not_found',
+        errorMessage: 'Brand Analytics sync failed: job not found.',
+      })
+      return
+    }
+
+    const summary = job.raw_summary ?? {}
+    const run = tempBrandAnalyticsSyncRuns.get(payload.jobId)
+    const { rowCountByReportId, rowCountByReportDocumentId } =
+      await getSafeBrandAnalyticsRowCounts(supabase, job.report_id, job.report_document_id)
+    const parsedRowCount = toNullableNumber(summary.parsed_row_count)
+    const storedRowCount = toNullableNumber(summary.stored_row_count)
+    const summaryStatus = toNullableString(summary.sync_status)
+    const syncStatus =
+      run?.status ??
+      (summaryStatus === 'queued' || summaryStatus === 'running' || summaryStatus === 'done' || summaryStatus === 'failed'
+        ? summaryStatus
+        : 'unknown')
+
+    res.status(200).json({
+      success: true,
+      jobId: job.id,
+      reportId: job.report_id,
+      reportType: job.report_type,
+      reportDocumentId: job.report_document_id,
+      syncStatus,
+      parsedRowCount,
+      storedRowCount,
+      rowCountByReportId,
+      rowCountByReportDocumentId,
+      brandAnalyticsRowsAppearStored:
+        (storedRowCount ?? 0) > 0 ||
+        (rowCountByReportId ?? 0) > 0 ||
+        (rowCountByReportDocumentId ?? 0) > 0,
+      failedStage: toNullableString(summary.last_failed_stage),
+      errorCode: run?.errorCode ?? toNullableString(summary.last_error_code),
+      errorMessage: run?.errorMessage ?? null,
+      updatedAt: run?.updatedAt ?? toNullableString(summary.sync_updated_at),
+    })
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json({
+        success: false,
+        jobId: typeof req.body?.jobId === 'string' ? req.body.jobId : '',
+        syncStatus: 'unknown',
+        failedStage: 'invalid_payload',
+        errorCode: 'invalid_payload',
+        errorMessage: 'Invalid request payload for /brand-analytics/sync-status-debug-temp.',
+      })
+      return
+    }
+    res.status(500).json({
+      success: false,
+      jobId: typeof req.body?.jobId === 'string' ? req.body.jobId : '',
+      syncStatus: 'unknown',
+      failedStage: 'sync_failed',
+      errorCode: 'sync_failed',
+      errorMessage: 'Brand Analytics sync status debug failed unexpectedly.',
+    })
   }
 })
 

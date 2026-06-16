@@ -135,7 +135,7 @@ export async function updateAmazonDocumentSummary(
 export function getSafeBatchSize(input: number | undefined): number {
   if (!input || !Number.isFinite(input)) return 500
   const normalized = Math.trunc(input)
-  return Math.min(1000, Math.max(1, normalized))
+  return Math.min(10000, Math.max(1, normalized))
 }
 
 export function requireWorkerEnvForSync(): void {

@@ -418,20 +418,10 @@ export async function getBrandAnalyticsStatusDebug(
       .eq('report_document_id', job.report_document_id)
 
     if (error) {
-      return createDebugFailure(
-        baseResult,
-        'count_by_document_id_failed',
-        'Brand Analytics debug failed: row count by document id failed.',
-        {
-          ...jobScopedBase,
-          documentProcessingStatus,
-          documentStoredRowCount,
-          rowCountByReportId,
-        },
-      )
+      rowCountByReportDocumentId = null
+    } else {
+      rowCountByReportDocumentId = count ?? 0
     }
-
-    rowCountByReportDocumentId = count ?? 0
   }
 
   const brandAnalyticsRowsAppearStored =

@@ -353,6 +353,7 @@ function mapRowsForTable(
 
 export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnalyticsSyncResult> {
   const batchSize = getSafeBatchSize(input.batchSize)
+  const syncStartedAt = new Date().toISOString()
 
   const baseErrorResult: BrandAnalyticsSyncResult = {
     jobId: input.jobId,
@@ -528,6 +529,26 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     diagnostics.missingRequiredColumns = getMissingRequiredColumns(mapped.targetTable, diagnostics.insertColumnNames)
     let totalStoredRows = 0
 
+    const createProgressSummary = (status: 'running' | 'done' | 'failed', overrides: Record<string, unknown> = {}) => ({
+      ...(job.raw_summary ?? {}),
+      sync_status: status,
+      sync_started_at: syncStartedAt,
+      sync_updated_at: new Date().toISOString(),
+      parsed_row_count: parsed.rows.length,
+      rows_prepared_for_insert_count: mapped.rowsToUpsert.length,
+      stored_row_count: totalStoredRows,
+      parsed_field_names: parsed.fieldNames,
+      target_table: mapped.targetTable,
+      sync_runner: 'checker-worker',
+      sync_batch_size: batchSize,
+      ...overrides,
+    })
+
+    await updateAmazonJobSummary(supabase, input.jobId, {
+      raw_summary: createProgressSummary('running'),
+      updated_at: new Date().toISOString(),
+    })
+
     for (let i = 0; i < mapped.rowsToUpsert.length; i += batchSize) {
       const chunk = mapped.rowsToUpsert.slice(i, i + batchSize)
       if (chunk.length === 0) continue
@@ -544,13 +565,25 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       }
 
       totalStoredRows += chunk.length
+
+      await updateAmazonJobSummary(supabase, input.jobId, {
+        raw_summary: createProgressSummary('running', {
+          stored_row_count: totalStoredRows,
+          sync_offset: i + chunk.length,
+        }),
+        updated_at: new Date().toISOString(),
+      })
     }
 
     const mergedSummary = {
       ...(job.raw_summary ?? {}),
       synced_at: now,
+      sync_status: 'done',
+      sync_started_at: syncStartedAt,
+      sync_updated_at: now,
       parse_format: parsed.format,
       parsed_row_count: parsed.rows.length,
+      rows_prepared_for_insert_count: mapped.rowsToUpsert.length,
       stored_row_count: totalStoredRows,
       parsed_field_names: parsed.fieldNames,
       target_table: mapped.targetTable,
@@ -605,7 +638,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       errorCode,
     })
 
-    return {
+    const failedResult = {
       ...baseErrorResult,
       ...safeContext,
       totalParsedRows: diagnostics.parsedRowCount,
@@ -621,5 +654,29 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       errorCode,
       errorMessage: getSafeSyncErrorMessage(error, errorCode),
     }
+
+    try {
+      const supabase = createSupabaseAdminClient()
+      const job = await getBrandAnalyticsJob(supabase, input.jobId)
+      await updateAmazonJobSummary(supabase, input.jobId, {
+        raw_summary: {
+          ...(job?.raw_summary ?? {}),
+          sync_status: 'failed',
+          sync_started_at: syncStartedAt,
+          sync_updated_at: new Date().toISOString(),
+          parsed_row_count: failedResult.totalParsedRows,
+          rows_prepared_for_insert_count: failedResult.rowsPreparedForInsertCount,
+          stored_row_count: failedResult.totalStoredRows,
+          target_table: failedResult.targetTable,
+          last_failed_stage: errorCode,
+          last_error_code: errorCode,
+        },
+        updated_at: new Date().toISOString(),
+      })
+    } catch {
+      // Best-effort progress update only.
+    }
+
+    return failedResult
   }
 }
