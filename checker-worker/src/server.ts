@@ -45,8 +45,10 @@ type BrandAnalyticsSyncDebugSafeResult = {
   reportId: string | null
   reportType: string | null
   reportDocumentId: string | null
+  targetTable: string | null
   processingStatus: string | null
   parsedRowCount: number | null
+  rowsPreparedForInsertCount: number | null
   storedRowCount: number | null
   rowCountByReportId: number | null
   rowCountByReportDocumentId: number | null
@@ -54,6 +56,13 @@ type BrandAnalyticsSyncDebugSafeResult = {
   failedStage: string | null
   errorCode: string | null
   errorMessage: string | null
+  dbErrorCode: string | null
+  dbErrorHint: string | null
+  dbErrorMessage: string | null
+  parsedFieldNames: string[]
+  insertColumnNames: string[]
+  missingRequiredColumns: string[]
+  unsupportedReportType: boolean
 }
 
 function getBrandAnalyticsSyncEnvPresence(): BrandAnalyticsSyncDebugSafeResult['envPresence'] {
@@ -76,8 +85,10 @@ function createBrandAnalyticsSyncDebugSafeResult(
     reportId: null,
     reportType: null,
     reportDocumentId: null,
+    targetTable: null,
     processingStatus: null,
     parsedRowCount: null,
+    rowsPreparedForInsertCount: null,
     storedRowCount: null,
     rowCountByReportId: null,
     rowCountByReportDocumentId: null,
@@ -85,6 +96,13 @@ function createBrandAnalyticsSyncDebugSafeResult(
     failedStage: null,
     errorCode: null,
     errorMessage: null,
+    dbErrorCode: null,
+    dbErrorHint: null,
+    dbErrorMessage: null,
+    parsedFieldNames: [],
+    insertColumnNames: [],
+    missingRequiredColumns: [],
+    unsupportedReportType: false,
     ...overrides,
   }
 }
@@ -291,8 +309,10 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
         reportId: result.reportId,
         reportType: result.reportType,
         reportDocumentId: result.reportDocumentId,
+        targetTable: result.targetTable,
         processingStatus: result.status,
         parsedRowCount: result.totalParsedRows,
+        rowsPreparedForInsertCount: result.rowsPreparedForInsertCount,
         storedRowCount: result.totalStoredRows,
         rowCountByReportId: countByReportId ?? null,
         rowCountByReportDocumentId: countByDocumentId ?? null,
@@ -300,6 +320,13 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
         failedStage: 'count_rows_failed',
         errorCode: 'count_rows_failed',
         errorMessage: 'Brand Analytics sync failed: stored row counts could not be read.',
+        dbErrorCode: result.dbErrorCode,
+        dbErrorHint: result.dbErrorHint,
+        dbErrorMessage: result.dbErrorMessage,
+        parsedFieldNames: result.fieldNames,
+        insertColumnNames: result.insertColumnNames,
+        missingRequiredColumns: result.missingRequiredColumns,
+        unsupportedReportType: result.unsupportedReportType,
       }))
       return
     }
@@ -315,8 +342,10 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
       reportId: result.reportId,
       reportType: result.reportType,
       reportDocumentId: result.reportDocumentId,
+      targetTable: result.targetTable,
       processingStatus: result.status,
       parsedRowCount: result.totalParsedRows,
+      rowsPreparedForInsertCount: result.rowsPreparedForInsertCount,
       storedRowCount: result.totalStoredRows,
       rowCountByReportId: countByReportId ?? 0,
       rowCountByReportDocumentId: countByDocumentId ?? 0,
@@ -324,6 +353,13 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
       failedStage: result.status === 'success' ? 'success' : result.errorCode ?? 'sync_failed',
       errorCode: result.errorCode ?? null,
       errorMessage: result.errorMessage ?? null,
+      dbErrorCode: result.dbErrorCode,
+      dbErrorHint: result.dbErrorHint,
+      dbErrorMessage: result.dbErrorMessage,
+      parsedFieldNames: result.fieldNames,
+      insertColumnNames: result.insertColumnNames,
+      missingRequiredColumns: result.missingRequiredColumns,
+      unsupportedReportType: result.unsupportedReportType,
     }))
   } catch (error) {
     if (error instanceof ZodError) {

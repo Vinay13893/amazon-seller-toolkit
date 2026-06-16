@@ -52,6 +52,25 @@ class BrandAnalyticsSyncError extends Error {
   }
 }
 
+type SafeDbError = {
+  code: string | null
+  hint: string | null
+  message: string | null
+}
+
+type SafeSyncDiagnostics = {
+  parsedRowCount: number
+  rowsPreparedForInsertCount: number
+  targetTable: string
+  parsedFieldNames: string[]
+  insertColumnNames: string[]
+  missingRequiredColumns: string[]
+  unsupportedReportType: boolean
+  dbErrorCode: string | null
+  dbErrorHint: string | null
+  dbErrorMessage: string | null
+}
+
 function getMissingWorkerEnvNames(): string[] {
   return [
     'SUPABASE_URL',
@@ -112,16 +131,91 @@ function getSafeSyncErrorMessage(error: unknown, code: BrandAnalyticsSyncErrorCo
   return toSafeErrorMessage(code)
 }
 
+function getRequiredInsertColumns(targetTable: string): string[] {
+  if (targetTable === 'brand_analytics_search_terms_rows') {
+    return ['workspace_id', 'amazon_connection_id', 'marketplace_id', 'report_id', 'search_term', 'asin']
+  }
+  if (targetTable === 'brand_analytics_search_query_rows') {
+    return ['workspace_id', 'amazon_connection_id', 'marketplace_id', 'report_id', 'search_query', 'asin']
+  }
+  if (targetTable === 'brand_analytics_search_catalog_rows') {
+    return ['workspace_id', 'amazon_connection_id', 'marketplace_id', 'report_id', 'search_query', 'asin']
+  }
+  return []
+}
+
+function getInsertColumnNames(rows: Record<string, unknown>[]): string[] {
+  return Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).sort()
+}
+
+function getMissingRequiredColumns(targetTable: string, insertColumnNames: string[]): string[] {
+  const columnSet = new Set(insertColumnNames)
+  return getRequiredInsertColumns(targetTable).filter((column) => !columnSet.has(column))
+}
+
+function sanitizeDbError(error: unknown): SafeDbError {
+  const record = error && typeof error === 'object'
+    ? error as { code?: unknown; hint?: unknown; message?: unknown; details?: unknown }
+    : {}
+  const code = typeof record.code === 'string' ? record.code : null
+  const rawMessage = typeof record.message === 'string' ? record.message : ''
+  const rawHint = typeof record.hint === 'string' ? record.hint : ''
+  const rawDetails = typeof record.details === 'string' ? record.details : ''
+  const combined = `${rawMessage} ${rawDetails}`.toLowerCase()
+
+  let message = 'Database write failed.'
+  if (combined.includes('row-level security')) {
+    message = 'Database write failed: row-level security policy blocked the write.'
+  } else if (combined.includes('schema cache') || combined.includes('could not find')) {
+    message = 'Database write failed: table or column was not found in schema cache.'
+  } else if (combined.includes('not-null') || combined.includes('null value')) {
+    message = 'Database write failed: required column was null.'
+  } else if (combined.includes('duplicate key') || combined.includes('unique constraint')) {
+    message = 'Database write failed: unique constraint conflict.'
+  } else if (combined.includes('foreign key')) {
+    message = 'Database write failed: foreign key constraint failed.'
+  } else if (combined.includes('invalid input syntax')) {
+    message = 'Database write failed: invalid value type for a column.'
+  } else if (combined.includes('no unique') || combined.includes('on conflict')) {
+    message = 'Database write failed: onConflict columns do not match a unique constraint.'
+  }
+
+  const hint = rawHint && !/[=:]/.test(rawHint) ? rawHint.slice(0, 160) : null
+  return { code, hint, message }
+}
+
+function createBaseDiagnostics(): SafeSyncDiagnostics {
+  return {
+    parsedRowCount: 0,
+    rowsPreparedForInsertCount: 0,
+    targetTable: '',
+    parsedFieldNames: [],
+    insertColumnNames: [],
+    missingRequiredColumns: [],
+    unsupportedReportType: false,
+    dbErrorCode: null,
+    dbErrorHint: null,
+    dbErrorMessage: null,
+  }
+}
+
 export type BrandAnalyticsSyncResult = {
   jobId: string
   reportId: string | null
   reportType: string
   reportDocumentId: string
   totalParsedRows: number
+  rowsPreparedForInsertCount: number
   totalStoredRows: number
   batchSize: number
   fieldNames: string[]
   targetTable: string
+  insertColumnNames: string[]
+  missingRequiredColumns: string[]
+  unsupportedReportType: boolean
+  dbErrorCode: string | null
+  dbErrorHint: string | null
+  dbErrorMessage: string | null
   status: 'success' | 'failed'
   errorCode: BrandAnalyticsSyncErrorCode | null
   errorMessage: string | null
@@ -251,10 +345,17 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     reportType: '',
     reportDocumentId: '',
     totalParsedRows: 0,
+    rowsPreparedForInsertCount: 0,
     totalStoredRows: 0,
     batchSize,
     fieldNames: [],
     targetTable: '',
+    insertColumnNames: [],
+    missingRequiredColumns: [],
+    unsupportedReportType: false,
+    dbErrorCode: null,
+    dbErrorHint: null,
+    dbErrorMessage: null,
     status: 'failed',
     errorCode: null,
     errorMessage: null,
@@ -264,6 +365,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     reportType: '',
     reportDocumentId: '',
   }
+  const diagnostics = createBaseDiagnostics()
 
   try {
     try {
@@ -303,6 +405,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     }
 
     if (!isSupportedReportType(job.report_type)) {
+      diagnostics.unsupportedReportType = true
       throw new BrandAnalyticsSyncError('unsupported_report_type')
     }
 
@@ -358,9 +461,12 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     } catch {
       throw new BrandAnalyticsSyncError('parse_report_failed')
     }
+    diagnostics.parsedRowCount = parsed.rows.length
+    diagnostics.parsedFieldNames = parsed.fieldNames
 
     const now = new Date().toISOString()
-    await updateAmazonReportDocument(supabase, {
+    try {
+      await updateAmazonReportDocument(supabase, {
       workspace_id: job.workspace_id,
       amazon_connection_id: job.amazon_connection_id,
       amazon_report_job_id: job.id,
@@ -379,7 +485,14 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         document_encrypted: !!document.encryptionDetails,
       },
       updated_at: now,
-    })
+      })
+    } catch (error) {
+      const dbError = sanitizeDbError(error)
+      diagnostics.dbErrorCode = dbError.code
+      diagnostics.dbErrorHint = dbError.hint
+      diagnostics.dbErrorMessage = dbError.message
+      throw new BrandAnalyticsSyncError('store_rows_failed')
+    }
 
     const baseRow = {
       workspace_id: job.workspace_id,
@@ -394,6 +507,10 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     }
 
     const mapped = mapRowsForTable(reportType, parsed.rows, baseRow)
+    diagnostics.targetTable = mapped.targetTable
+    diagnostics.rowsPreparedForInsertCount = mapped.rowsToUpsert.length
+    diagnostics.insertColumnNames = getInsertColumnNames(mapped.rowsToUpsert)
+    diagnostics.missingRequiredColumns = getMissingRequiredColumns(mapped.targetTable, diagnostics.insertColumnNames)
     let totalStoredRows = 0
 
     for (let i = 0; i < mapped.rowsToUpsert.length; i += batchSize) {
@@ -404,6 +521,10 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         .upsert(chunk, { onConflict: mapped.onConflict })
 
       if (upsertError) {
+        const dbError = sanitizeDbError(upsertError)
+        diagnostics.dbErrorCode = dbError.code
+        diagnostics.dbErrorHint = dbError.hint
+        diagnostics.dbErrorMessage = dbError.message
         throw new BrandAnalyticsSyncError('store_rows_failed')
       }
 
@@ -437,6 +558,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         updated_at: now,
       })
     } catch {
+      diagnostics.dbErrorMessage = diagnostics.dbErrorMessage ?? 'Database write failed: summary update failed.'
       throw new BrandAnalyticsSyncError('store_rows_failed')
     }
 
@@ -446,10 +568,17 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       reportType,
       reportDocumentId: job.report_document_id,
       totalParsedRows: parsed.rows.length,
+      rowsPreparedForInsertCount: diagnostics.rowsPreparedForInsertCount,
       totalStoredRows,
       batchSize,
       fieldNames: parsed.fieldNames,
       targetTable: mapped.targetTable,
+      insertColumnNames: diagnostics.insertColumnNames,
+      missingRequiredColumns: diagnostics.missingRequiredColumns,
+      unsupportedReportType: diagnostics.unsupportedReportType,
+      dbErrorCode: null,
+      dbErrorHint: null,
+      dbErrorMessage: null,
       status: 'success',
       errorCode: null,
       errorMessage: null,
@@ -464,6 +593,16 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     return {
       ...baseErrorResult,
       ...safeContext,
+      totalParsedRows: diagnostics.parsedRowCount,
+      targetTable: diagnostics.targetTable,
+      rowsPreparedForInsertCount: diagnostics.rowsPreparedForInsertCount,
+      fieldNames: diagnostics.parsedFieldNames,
+      insertColumnNames: diagnostics.insertColumnNames,
+      missingRequiredColumns: diagnostics.missingRequiredColumns,
+      unsupportedReportType: diagnostics.unsupportedReportType,
+      dbErrorCode: diagnostics.dbErrorCode,
+      dbErrorHint: diagnostics.dbErrorHint,
+      dbErrorMessage: diagnostics.dbErrorMessage,
       errorCode,
       errorMessage: getSafeSyncErrorMessage(error, errorCode),
     }

@@ -22,6 +22,15 @@ export interface AmazonConnectionRow {
   refresh_token_encrypted: string | null
 }
 
+function createSupabaseWriteError(message: string, error: { code?: string; hint?: string; message?: string; details?: string }): Error {
+  return Object.assign(new Error(message), {
+    code: error.code,
+    hint: error.hint,
+    message: error.message,
+    details: error.details,
+  })
+}
+
 function getRequiredEnv(name: string): string {
   const value = process.env[name]
   if (!value || !value.trim()) {
@@ -87,7 +96,7 @@ export async function updateAmazonReportDocument(
     .upsert(payload, { onConflict: 'workspace_id,report_document_id' })
 
   if (error) {
-    throw new Error('Failed to upsert amazon_report_documents row')
+    throw createSupabaseWriteError('Failed to upsert amazon_report_documents row', error)
   }
 }
 
@@ -102,7 +111,7 @@ export async function updateAmazonJobSummary(
     .eq('id', jobId)
 
   if (error) {
-    throw new Error('Failed to update amazon_report_jobs')
+    throw createSupabaseWriteError('Failed to update amazon_report_jobs', error)
   }
 }
 
@@ -119,7 +128,7 @@ export async function updateAmazonDocumentSummary(
     .eq('report_document_id', reportDocumentId)
 
   if (error) {
-    throw new Error('Failed to update amazon_report_documents')
+    throw createSupabaseWriteError('Failed to update amazon_report_documents', error)
   }
 }
 
