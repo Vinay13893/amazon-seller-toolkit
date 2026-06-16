@@ -38,6 +38,8 @@ const tempBrandAnalyticsSyncRuns = new Map<string, {
   failedBatchSize?: number | null
   lastSuccessfulBatchIndex?: number | null
   cumulativeStoredRowCount?: number | null
+  existingRowCountBeforeSync?: number | null
+  resumeFromIndex?: number | null
   targetTable?: string | null
   onConflictKey?: string | null
   insertColumnNames?: string[]
@@ -84,6 +86,8 @@ type BrandAnalyticsSyncDebugSafeResult = {
   failedBatchSize: number | null
   lastSuccessfulBatchIndex: number | null
   cumulativeStoredRowCount: number | null
+  existingRowCountBeforeSync: number | null
+  resumeFromIndex: number | null
   onConflictKey: string | null
   parsedFieldNames: string[]
   insertColumnNames: string[]
@@ -130,6 +134,8 @@ function createBrandAnalyticsSyncDebugSafeResult(
     failedBatchSize: null,
     lastSuccessfulBatchIndex: null,
     cumulativeStoredRowCount: null,
+    existingRowCountBeforeSync: null,
+    resumeFromIndex: null,
     onConflictKey: null,
     parsedFieldNames: [],
     insertColumnNames: [],
@@ -397,7 +403,7 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
           errorCode: null,
           errorMessage: null,
         })
-        const result = await runBrandAnalyticsSync({ jobId: jobId!, batchSize: 5000 })
+        const result = await runBrandAnalyticsSync({ jobId: jobId!, batchSize: 500 })
         tempBrandAnalyticsSyncRuns.set(jobId!, {
           status: result.status === 'success' ? 'done' : 'failed',
           updatedAt: new Date().toISOString(),
@@ -410,6 +416,8 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
           failedBatchSize: result.failedBatchSize,
           lastSuccessfulBatchIndex: result.lastSuccessfulBatchIndex,
           cumulativeStoredRowCount: result.cumulativeStoredRowCount,
+          existingRowCountBeforeSync: result.existingRowCountBeforeSync,
+          resumeFromIndex: result.resumeFromIndex,
           targetTable: result.targetTable,
           onConflictKey: result.onConflictKey,
           insertColumnNames: result.insertColumnNames,
@@ -496,6 +504,8 @@ publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Re
     const parsedRowCount = toNullableNumber(summary.parsed_row_count)
     const storedRowCount = toNullableNumber(summary.stored_row_count)
     const cumulativeStoredRowCount = run?.cumulativeStoredRowCount ?? toNullableNumber(summary.cumulative_stored_row_count)
+    const existingRowCountBeforeSync = run?.existingRowCountBeforeSync ?? toNullableNumber(summary.existing_row_count_before_sync)
+    const resumeFromIndex = run?.resumeFromIndex ?? toNullableNumber(summary.resume_from_index)
     const summaryStatus = toNullableString(summary.sync_status)
     const summaryInsertColumnNames = Array.isArray(summary.insert_column_names)
       ? summary.insert_column_names.filter((value): value is string => typeof value === 'string')
@@ -531,6 +541,8 @@ publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Re
       failedBatchSize: run?.failedBatchSize ?? toNullableNumber(summary.failed_batch_size),
       lastSuccessfulBatchIndex: run?.lastSuccessfulBatchIndex ?? toNullableNumber(summary.last_successful_batch_index),
       cumulativeStoredRowCount,
+      existingRowCountBeforeSync,
+      resumeFromIndex,
       targetTable: run?.targetTable ?? toNullableString(summary.target_table),
       onConflictKey: run?.onConflictKey ?? toNullableString(summary.on_conflict_key),
       insertColumnNames: run?.insertColumnNames ?? summaryInsertColumnNames,

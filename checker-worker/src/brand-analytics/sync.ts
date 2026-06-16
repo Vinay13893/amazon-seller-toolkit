@@ -24,6 +24,9 @@ type SyncInput = {
   batchSize?: number
 }
 
+const SEARCH_TERMS_INSERT_BATCH_SIZE = 500
+const SEARCH_TERMS_RESUME_OVERLAP_ROWS = 1000
+
 type BrandAnalyticsSyncErrorCode =
   | 'read_job_failed'
   | 'env_missing'
@@ -74,6 +77,8 @@ type SafeSyncDiagnostics = {
   failedBatchSize: number | null
   lastSuccessfulBatchIndex: number | null
   cumulativeStoredRowCount: number
+  existingRowCountBeforeSync: number | null
+  resumeFromIndex: number
 }
 
 function getMissingWorkerEnvNames(): string[] {
@@ -215,6 +220,8 @@ function createBaseDiagnostics(): SafeSyncDiagnostics {
     failedBatchSize: null,
     lastSuccessfulBatchIndex: null,
     cumulativeStoredRowCount: 0,
+    existingRowCountBeforeSync: null,
+    resumeFromIndex: 0,
   }
 }
 
@@ -240,9 +247,37 @@ export type BrandAnalyticsSyncResult = {
   failedBatchSize: number | null
   lastSuccessfulBatchIndex: number | null
   cumulativeStoredRowCount: number
+  existingRowCountBeforeSync: number | null
+  resumeFromIndex: number
   status: 'success' | 'failed'
   errorCode: BrandAnalyticsSyncErrorCode | null
   errorMessage: string | null
+}
+
+async function countExistingSearchTermsRows(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  reportId: string | null,
+  reportDocumentId: string,
+): Promise<number | null> {
+  if (reportDocumentId) {
+    const { count, error } = await supabase
+      .from('brand_analytics_search_terms_rows')
+      .select('*', { head: true, count: 'exact' })
+      .eq('report_document_id', reportDocumentId)
+
+    if (!error && typeof count === 'number') return count
+  }
+
+  if (reportId) {
+    const { count, error } = await supabase
+      .from('brand_analytics_search_terms_rows')
+      .select('*', { head: true, count: 'exact' })
+      .eq('report_id', reportId)
+
+    if (!error && typeof count === 'number') return count
+  }
+
+  return null
 }
 
 function pickValue(row: Record<string, unknown>, keys: string[]): unknown {
@@ -340,7 +375,6 @@ function mapRowsForTable(
         top_clicked_asin_1: toText(pickValue(row, ['top_clicked_asin_1', 'top_clicked_asin1'])),
         top_clicked_asin_2: toText(pickValue(row, ['top_clicked_asin_2', 'top_clicked_asin2'])),
         top_clicked_asin_3: toText(pickValue(row, ['top_clicked_asin_3', 'top_clicked_asin3'])),
-        raw_row: row,
       })),
     }
   }
@@ -392,6 +426,8 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     failedBatchSize: null,
     lastSuccessfulBatchIndex: null,
     cumulativeStoredRowCount: 0,
+    existingRowCountBeforeSync: null,
+    resumeFromIndex: 0,
     status: 'failed',
     errorCode: null,
     errorMessage: null,
@@ -549,6 +585,23 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     diagnostics.insertColumnNames = getInsertColumnNames(mapped.rowsToUpsert)
     diagnostics.missingRequiredColumns = getMissingRequiredColumns(mapped.targetTable, diagnostics.insertColumnNames)
     let totalStoredRows = 0
+    const effectiveBatchSize = reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
+      ? SEARCH_TERMS_INSERT_BATCH_SIZE
+      : batchSize
+
+    if (reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT') {
+      diagnostics.existingRowCountBeforeSync = await countExistingSearchTermsRows(
+        supabase,
+        job.report_id,
+        job.report_document_id,
+      )
+      diagnostics.resumeFromIndex = Math.max(
+        0,
+        (diagnostics.existingRowCountBeforeSync ?? 0) - SEARCH_TERMS_RESUME_OVERLAP_ROWS,
+      )
+      diagnostics.cumulativeStoredRowCount = diagnostics.existingRowCountBeforeSync ?? 0
+      totalStoredRows = diagnostics.cumulativeStoredRowCount
+    }
 
     const createProgressSummary = (status: 'running' | 'done' | 'failed', overrides: Record<string, unknown> = {}) => ({
       ...(job.raw_summary ?? {}),
@@ -563,7 +616,9 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       target_table: mapped.targetTable,
       on_conflict_key: mapped.onConflict,
       sync_runner: 'checker-worker',
-      sync_batch_size: batchSize,
+      sync_batch_size: effectiveBatchSize,
+      existing_row_count_before_sync: diagnostics.existingRowCountBeforeSync,
+      resume_from_index: diagnostics.resumeFromIndex,
       ...overrides,
     })
 
@@ -572,13 +627,14 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       updated_at: new Date().toISOString(),
     })
 
-    for (let i = 0; i < mapped.rowsToUpsert.length; i += batchSize) {
-      const batchIndex = Math.floor(i / batchSize)
-      const chunk = mapped.rowsToUpsert.slice(i, i + batchSize)
+    for (let i = diagnostics.resumeFromIndex; i < mapped.rowsToUpsert.length; i += effectiveBatchSize) {
+      const batchIndex = Math.floor(i / effectiveBatchSize)
+      const chunk = mapped.rowsToUpsert.slice(i, i + effectiveBatchSize)
       if (chunk.length === 0) continue
-      const { error: upsertError } = await supabase
-        .from(mapped.targetTable)
-        .upsert(chunk, { onConflict: mapped.onConflict })
+      const query = supabase.from(mapped.targetTable)
+      const { error: upsertError } = reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
+        ? await query.upsert(chunk, { onConflict: mapped.onConflict, ignoreDuplicates: true })
+        : await query.upsert(chunk, { onConflict: mapped.onConflict })
 
       if (upsertError) {
         const dbError = sanitizeDbError(upsertError)
@@ -607,7 +663,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         throw new BrandAnalyticsSyncError('store_rows_failed')
       }
 
-      totalStoredRows += chunk.length
+      totalStoredRows = Math.max(totalStoredRows, i + chunk.length)
       diagnostics.cumulativeStoredRowCount = totalStoredRows
       diagnostics.lastSuccessfulBatchIndex = batchIndex
 
@@ -632,10 +688,16 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       parsed_row_count: parsed.rows.length,
       rows_prepared_for_insert_count: mapped.rowsToUpsert.length,
       stored_row_count: totalStoredRows,
+      cumulative_stored_row_count: totalStoredRows,
       parsed_field_names: parsed.fieldNames,
+      insert_column_names: diagnostics.insertColumnNames,
       target_table: mapped.targetTable,
+      on_conflict_key: mapped.onConflict,
       sync_runner: 'checker-worker',
-      sync_batch_size: batchSize,
+      sync_batch_size: effectiveBatchSize,
+      existing_row_count_before_sync: diagnostics.existingRowCountBeforeSync,
+      resume_from_index: diagnostics.resumeFromIndex,
+      last_successful_batch_index: diagnostics.lastSuccessfulBatchIndex,
     }
 
     try {
@@ -665,7 +727,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       totalParsedRows: parsed.rows.length,
       rowsPreparedForInsertCount: diagnostics.rowsPreparedForInsertCount,
       totalStoredRows,
-      batchSize,
+      batchSize: effectiveBatchSize,
       fieldNames: parsed.fieldNames,
       targetTable: mapped.targetTable,
       onConflictKey: mapped.onConflict,
@@ -679,6 +741,8 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       failedBatchSize: null,
       lastSuccessfulBatchIndex: diagnostics.lastSuccessfulBatchIndex,
       cumulativeStoredRowCount: totalStoredRows,
+      existingRowCountBeforeSync: diagnostics.existingRowCountBeforeSync,
+      resumeFromIndex: diagnostics.resumeFromIndex,
       status: 'success',
       errorCode: null,
       errorMessage: null,
@@ -709,6 +773,8 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       failedBatchSize: diagnostics.failedBatchSize,
       lastSuccessfulBatchIndex: diagnostics.lastSuccessfulBatchIndex,
       cumulativeStoredRowCount: diagnostics.cumulativeStoredRowCount,
+      existingRowCountBeforeSync: diagnostics.existingRowCountBeforeSync,
+      resumeFromIndex: diagnostics.resumeFromIndex,
       errorCode,
       errorMessage: getSafeSyncErrorMessage(error, errorCode),
     }
@@ -737,6 +803,8 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
           failed_batch_index: failedResult.failedBatchIndex,
           failed_batch_size: failedResult.failedBatchSize,
           last_successful_batch_index: failedResult.lastSuccessfulBatchIndex,
+          existing_row_count_before_sync: failedResult.existingRowCountBeforeSync,
+          resume_from_index: failedResult.resumeFromIndex,
         },
         updated_at: new Date().toISOString(),
       })
