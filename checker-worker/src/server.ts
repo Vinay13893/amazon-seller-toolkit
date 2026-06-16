@@ -36,6 +36,13 @@ app.get('/health', (_req: Request, res: Response) => {
     ok: true,
     service: 'sociomonkey-checker-worker',
     version: '0.1.0',
+    buildMarker: 'ba-debug-health-marker-20260616-d007072',
+    availableRoutes: [
+      'GET /health',
+      'GET /debug/routes',
+      'POST /brand-analytics/status',
+      'POST /brand-analytics/status-debug-temp',
+    ],
   })
 })
 
