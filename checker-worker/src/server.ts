@@ -31,6 +31,16 @@ const tempBrandAnalyticsSyncRuns = new Map<string, {
   updatedAt: string
   errorCode: string | null
   errorMessage: string | null
+  dbErrorCode?: string | null
+  dbErrorHint?: string | null
+  dbErrorMessage?: string | null
+  failedBatchIndex?: number | null
+  failedBatchSize?: number | null
+  lastSuccessfulBatchIndex?: number | null
+  cumulativeStoredRowCount?: number | null
+  targetTable?: string | null
+  onConflictKey?: string | null
+  insertColumnNames?: string[]
 }>()
 
 const brandAnalyticsSyncRequestSchema = z.object({
@@ -70,6 +80,11 @@ type BrandAnalyticsSyncDebugSafeResult = {
   dbErrorCode: string | null
   dbErrorHint: string | null
   dbErrorMessage: string | null
+  failedBatchIndex: number | null
+  failedBatchSize: number | null
+  lastSuccessfulBatchIndex: number | null
+  cumulativeStoredRowCount: number | null
+  onConflictKey: string | null
   parsedFieldNames: string[]
   insertColumnNames: string[]
   missingRequiredColumns: string[]
@@ -111,6 +126,11 @@ function createBrandAnalyticsSyncDebugSafeResult(
     dbErrorCode: null,
     dbErrorHint: null,
     dbErrorMessage: null,
+    failedBatchIndex: null,
+    failedBatchSize: null,
+    lastSuccessfulBatchIndex: null,
+    cumulativeStoredRowCount: null,
+    onConflictKey: null,
     parsedFieldNames: [],
     insertColumnNames: [],
     missingRequiredColumns: [],
@@ -383,6 +403,16 @@ publicDebugRouter.post('/brand-analytics/sync-debug-temp', async (req: Request, 
           updatedAt: new Date().toISOString(),
           errorCode: result.errorCode,
           errorMessage: result.errorMessage,
+          dbErrorCode: result.dbErrorCode,
+          dbErrorHint: result.dbErrorHint,
+          dbErrorMessage: result.dbErrorMessage,
+          failedBatchIndex: result.failedBatchIndex,
+          failedBatchSize: result.failedBatchSize,
+          lastSuccessfulBatchIndex: result.lastSuccessfulBatchIndex,
+          cumulativeStoredRowCount: result.cumulativeStoredRowCount,
+          targetTable: result.targetTable,
+          onConflictKey: result.onConflictKey,
+          insertColumnNames: result.insertColumnNames,
         })
       })().catch(() => {
         tempBrandAnalyticsSyncRuns.set(jobId!, {
@@ -465,7 +495,11 @@ publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Re
       await getSafeBrandAnalyticsRowCounts(supabase, job.report_id, job.report_document_id)
     const parsedRowCount = toNullableNumber(summary.parsed_row_count)
     const storedRowCount = toNullableNumber(summary.stored_row_count)
+    const cumulativeStoredRowCount = run?.cumulativeStoredRowCount ?? toNullableNumber(summary.cumulative_stored_row_count)
     const summaryStatus = toNullableString(summary.sync_status)
+    const summaryInsertColumnNames = Array.isArray(summary.insert_column_names)
+      ? summary.insert_column_names.filter((value): value is string => typeof value === 'string')
+      : []
     const syncStatus =
       run?.status ??
       (summaryStatus === 'queued' || summaryStatus === 'running' || summaryStatus === 'done' || summaryStatus === 'failed'
@@ -490,6 +524,16 @@ publicDebugRouter.post('/brand-analytics/sync-status-debug-temp', async (req: Re
       failedStage: toNullableString(summary.last_failed_stage),
       errorCode: run?.errorCode ?? toNullableString(summary.last_error_code),
       errorMessage: run?.errorMessage ?? null,
+      dbErrorCode: run?.dbErrorCode ?? toNullableString(summary.db_error_code),
+      dbErrorHint: run?.dbErrorHint ?? toNullableString(summary.db_error_hint),
+      dbErrorMessage: run?.dbErrorMessage ?? toNullableString(summary.db_error_message),
+      failedBatchIndex: run?.failedBatchIndex ?? toNullableNumber(summary.failed_batch_index),
+      failedBatchSize: run?.failedBatchSize ?? toNullableNumber(summary.failed_batch_size),
+      lastSuccessfulBatchIndex: run?.lastSuccessfulBatchIndex ?? toNullableNumber(summary.last_successful_batch_index),
+      cumulativeStoredRowCount,
+      targetTable: run?.targetTable ?? toNullableString(summary.target_table),
+      onConflictKey: run?.onConflictKey ?? toNullableString(summary.on_conflict_key),
+      insertColumnNames: run?.insertColumnNames ?? summaryInsertColumnNames,
       updatedAt: run?.updatedAt ?? toNullableString(summary.sync_updated_at),
     })
   } catch (error) {

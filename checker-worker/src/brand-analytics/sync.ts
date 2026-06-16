@@ -62,6 +62,7 @@ type SafeSyncDiagnostics = {
   parsedRowCount: number
   rowsPreparedForInsertCount: number
   targetTable: string
+  onConflictKey: string | null
   parsedFieldNames: string[]
   insertColumnNames: string[]
   missingRequiredColumns: string[]
@@ -69,6 +70,10 @@ type SafeSyncDiagnostics = {
   dbErrorCode: string | null
   dbErrorHint: string | null
   dbErrorMessage: string | null
+  failedBatchIndex: number | null
+  failedBatchSize: number | null
+  lastSuccessfulBatchIndex: number | null
+  cumulativeStoredRowCount: number
 }
 
 function getMissingWorkerEnvNames(): string[] {
@@ -198,6 +203,7 @@ function createBaseDiagnostics(): SafeSyncDiagnostics {
     parsedRowCount: 0,
     rowsPreparedForInsertCount: 0,
     targetTable: '',
+    onConflictKey: null,
     parsedFieldNames: [],
     insertColumnNames: [],
     missingRequiredColumns: [],
@@ -205,6 +211,10 @@ function createBaseDiagnostics(): SafeSyncDiagnostics {
     dbErrorCode: null,
     dbErrorHint: null,
     dbErrorMessage: null,
+    failedBatchIndex: null,
+    failedBatchSize: null,
+    lastSuccessfulBatchIndex: null,
+    cumulativeStoredRowCount: 0,
   }
 }
 
@@ -219,12 +229,17 @@ export type BrandAnalyticsSyncResult = {
   batchSize: number
   fieldNames: string[]
   targetTable: string
+  onConflictKey: string | null
   insertColumnNames: string[]
   missingRequiredColumns: string[]
   unsupportedReportType: boolean
   dbErrorCode: string | null
   dbErrorHint: string | null
   dbErrorMessage: string | null
+  failedBatchIndex: number | null
+  failedBatchSize: number | null
+  lastSuccessfulBatchIndex: number | null
+  cumulativeStoredRowCount: number
   status: 'success' | 'failed'
   errorCode: BrandAnalyticsSyncErrorCode | null
   errorMessage: string | null
@@ -366,12 +381,17 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     batchSize,
     fieldNames: [],
     targetTable: '',
+    onConflictKey: null,
     insertColumnNames: [],
     missingRequiredColumns: [],
     unsupportedReportType: false,
     dbErrorCode: null,
     dbErrorHint: null,
     dbErrorMessage: null,
+    failedBatchIndex: null,
+    failedBatchSize: null,
+    lastSuccessfulBatchIndex: null,
+    cumulativeStoredRowCount: 0,
     status: 'failed',
     errorCode: null,
     errorMessage: null,
@@ -524,6 +544,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
 
     const mapped = mapRowsForTable(reportType, parsed.rows, baseRow)
     diagnostics.targetTable = mapped.targetTable
+    diagnostics.onConflictKey = mapped.onConflict
     diagnostics.rowsPreparedForInsertCount = mapped.rowsToUpsert.length
     diagnostics.insertColumnNames = getInsertColumnNames(mapped.rowsToUpsert)
     diagnostics.missingRequiredColumns = getMissingRequiredColumns(mapped.targetTable, diagnostics.insertColumnNames)
@@ -538,7 +559,9 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       rows_prepared_for_insert_count: mapped.rowsToUpsert.length,
       stored_row_count: totalStoredRows,
       parsed_field_names: parsed.fieldNames,
+      insert_column_names: diagnostics.insertColumnNames,
       target_table: mapped.targetTable,
+      on_conflict_key: mapped.onConflict,
       sync_runner: 'checker-worker',
       sync_batch_size: batchSize,
       ...overrides,
@@ -550,6 +573,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     })
 
     for (let i = 0; i < mapped.rowsToUpsert.length; i += batchSize) {
+      const batchIndex = Math.floor(i / batchSize)
       const chunk = mapped.rowsToUpsert.slice(i, i + batchSize)
       if (chunk.length === 0) continue
       const { error: upsertError } = await supabase
@@ -561,15 +585,38 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         diagnostics.dbErrorCode = dbError.code
         diagnostics.dbErrorHint = dbError.hint
         diagnostics.dbErrorMessage = dbError.message
+        diagnostics.failedBatchIndex = batchIndex
+        diagnostics.failedBatchSize = chunk.length
+        diagnostics.lastSuccessfulBatchIndex = batchIndex > 0 ? batchIndex - 1 : null
+        diagnostics.cumulativeStoredRowCount = totalStoredRows
+        await updateAmazonJobSummary(supabase, input.jobId, {
+          raw_summary: createProgressSummary('failed', {
+            stored_row_count: totalStoredRows,
+            cumulative_stored_row_count: totalStoredRows,
+            last_failed_stage: 'store_rows_failed',
+            last_error_code: 'store_rows_failed',
+            db_error_code: dbError.code,
+            db_error_hint: dbError.hint,
+            db_error_message: dbError.message,
+            failed_batch_index: diagnostics.failedBatchIndex,
+            failed_batch_size: diagnostics.failedBatchSize,
+            last_successful_batch_index: diagnostics.lastSuccessfulBatchIndex,
+          }),
+          updated_at: new Date().toISOString(),
+        })
         throw new BrandAnalyticsSyncError('store_rows_failed')
       }
 
       totalStoredRows += chunk.length
+      diagnostics.cumulativeStoredRowCount = totalStoredRows
+      diagnostics.lastSuccessfulBatchIndex = batchIndex
 
       await updateAmazonJobSummary(supabase, input.jobId, {
         raw_summary: createProgressSummary('running', {
           stored_row_count: totalStoredRows,
+          cumulative_stored_row_count: totalStoredRows,
           sync_offset: i + chunk.length,
+          last_successful_batch_index: batchIndex,
         }),
         updated_at: new Date().toISOString(),
       })
@@ -621,12 +668,17 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       batchSize,
       fieldNames: parsed.fieldNames,
       targetTable: mapped.targetTable,
+      onConflictKey: mapped.onConflict,
       insertColumnNames: diagnostics.insertColumnNames,
       missingRequiredColumns: diagnostics.missingRequiredColumns,
       unsupportedReportType: diagnostics.unsupportedReportType,
       dbErrorCode: null,
       dbErrorHint: null,
       dbErrorMessage: null,
+      failedBatchIndex: null,
+      failedBatchSize: null,
+      lastSuccessfulBatchIndex: diagnostics.lastSuccessfulBatchIndex,
+      cumulativeStoredRowCount: totalStoredRows,
       status: 'success',
       errorCode: null,
       errorMessage: null,
@@ -643,7 +695,9 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       ...safeContext,
       totalParsedRows: diagnostics.parsedRowCount,
       targetTable: diagnostics.targetTable,
+      onConflictKey: diagnostics.onConflictKey,
       rowsPreparedForInsertCount: diagnostics.rowsPreparedForInsertCount,
+      totalStoredRows: diagnostics.cumulativeStoredRowCount,
       fieldNames: diagnostics.parsedFieldNames,
       insertColumnNames: diagnostics.insertColumnNames,
       missingRequiredColumns: diagnostics.missingRequiredColumns,
@@ -651,6 +705,10 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       dbErrorCode: diagnostics.dbErrorCode,
       dbErrorHint: diagnostics.dbErrorHint,
       dbErrorMessage: diagnostics.dbErrorMessage,
+      failedBatchIndex: diagnostics.failedBatchIndex,
+      failedBatchSize: diagnostics.failedBatchSize,
+      lastSuccessfulBatchIndex: diagnostics.lastSuccessfulBatchIndex,
+      cumulativeStoredRowCount: diagnostics.cumulativeStoredRowCount,
       errorCode,
       errorMessage: getSafeSyncErrorMessage(error, errorCode),
     }
@@ -667,9 +725,18 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
           parsed_row_count: failedResult.totalParsedRows,
           rows_prepared_for_insert_count: failedResult.rowsPreparedForInsertCount,
           stored_row_count: failedResult.totalStoredRows,
+          cumulative_stored_row_count: failedResult.cumulativeStoredRowCount,
           target_table: failedResult.targetTable,
+          on_conflict_key: failedResult.onConflictKey,
+          insert_column_names: failedResult.insertColumnNames,
           last_failed_stage: errorCode,
           last_error_code: errorCode,
+          db_error_code: failedResult.dbErrorCode,
+          db_error_hint: failedResult.dbErrorHint,
+          db_error_message: failedResult.dbErrorMessage,
+          failed_batch_index: failedResult.failedBatchIndex,
+          failed_batch_size: failedResult.failedBatchSize,
+          last_successful_batch_index: failedResult.lastSuccessfulBatchIndex,
         },
         updated_at: new Date().toISOString(),
       })
