@@ -65,6 +65,47 @@ const SEARCH_TERMS_COLUMNS = [
   'data_end_time',
 ]
 
+type SearchTermSourceRow = {
+  department_name: string | null
+  search_term: string | null
+  search_frequency_rank: number | null
+  clicked_asin: string | null
+  clicked_item_name: string | null
+  click_share_rank: number | null
+  click_share: number | null
+  conversion_share: number | null
+  report_id: string | null
+  report_document_id: string | null
+  marketplace_id: string | null
+  data_start_time: string | null
+  data_end_time: string | null
+}
+
+type TopClickedProduct = {
+  rank: number | null
+  asin: string | null
+  itemName: string | null
+  clickShare: number | null
+  conversionShare: number | null
+}
+
+type GroupedSearchTermRow = {
+  departmentName: string | null
+  searchTerm: string | null
+  searchFrequencyRank: number | null
+  reportId: string | null
+  reportDocumentId: string | null
+  marketplaceId: string | null
+  dataStartTime: string | null
+  dataEndTime: string | null
+  topClickedProducts: TopClickedProduct[]
+  topClickedAsin: string | null
+  topClickShare: number | null
+  topConversionShare: number | null
+  opportunityTag: 'Winning term' | 'Conversion gap' | 'Click share opportunity' | 'Monitor'
+  suggestedAction: string
+}
+
 function sanitizeDbText(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null
   return value.replace(/"[^"]+"/g, '"[redacted]"').slice(0, 180)
@@ -141,6 +182,88 @@ function getAppliedFilters(input: {
   return filters
 }
 
+function getOpportunity(row: SearchTermSourceRow): Pick<GroupedSearchTermRow, 'opportunityTag' | 'suggestedAction'> {
+  const rank = row.search_frequency_rank ?? Number.MAX_SAFE_INTEGER
+  const clickShare = row.click_share ?? 0
+  const conversionShare = row.conversion_share ?? 0
+
+  if (rank <= 5000 && clickShare >= 0.35 && conversionShare >= 0.08) {
+    return {
+      opportunityTag: 'Winning term',
+      suggestedAction: 'Protect winning term',
+    }
+  }
+
+  if (rank <= 25000 && clickShare >= 0.15 && conversionShare < 0.04) {
+    return {
+      opportunityTag: 'Conversion gap',
+      suggestedAction: 'Improve image/title/price/reviews',
+    }
+  }
+
+  if (rank <= 25000 && clickShare < 0.15) {
+    return {
+      opportunityTag: 'Click share opportunity',
+      suggestedAction: 'Add to exact-match campaign',
+    }
+  }
+
+  return {
+    opportunityTag: 'Monitor',
+    suggestedAction: 'Monitor next report',
+  }
+}
+
+function groupSearchTerms(rows: SearchTermSourceRow[], pageSize: number): GroupedSearchTermRow[] {
+  const groups = new Map<string, GroupedSearchTermRow>()
+
+  for (const row of rows) {
+    const key = [
+      row.report_document_id ?? '',
+      row.department_name ?? '',
+      row.search_term ?? '',
+      row.search_frequency_rank ?? '',
+    ].join('|')
+
+    let group = groups.get(key)
+    if (!group) {
+      const opportunity = getOpportunity(row)
+      group = {
+        departmentName: row.department_name,
+        searchTerm: row.search_term,
+        searchFrequencyRank: row.search_frequency_rank,
+        reportId: row.report_id,
+        reportDocumentId: row.report_document_id,
+        marketplaceId: row.marketplace_id,
+        dataStartTime: row.data_start_time,
+        dataEndTime: row.data_end_time,
+        topClickedProducts: [],
+        topClickedAsin: row.clicked_asin,
+        topClickShare: row.click_share,
+        topConversionShare: row.conversion_share,
+        ...opportunity,
+      }
+      groups.set(key, group)
+    }
+
+    if (group.topClickedProducts.length < 3) {
+      group.topClickedProducts.push({
+        rank: row.click_share_rank,
+        asin: row.clicked_asin,
+        itemName: row.clicked_item_name,
+        clickShare: row.click_share,
+        conversionShare: row.conversion_share,
+      })
+    }
+
+    if (groups.size >= pageSize && group.topClickedProducts.length >= 3) {
+      continue
+    }
+  }
+
+  return Array.from(groups.values()).slice(0, pageSize)
+}
+
 export async function GET(req: Request) {
   try {
     const supabase = await createClient()
@@ -171,7 +294,9 @@ export async function GET(req: Request) {
       MAX_PAGE_SIZE,
       toPositiveInt(url.searchParams.get('pageSize'), DEFAULT_PAGE_SIZE),
     )
-    const offset = (page - 1) * pageSize
+    const sourceRowsPerTerm = 3
+    const sourcePageSize = pageSize * sourceRowsPerTerm
+    const offset = (page - 1) * sourcePageSize
 
     const searchTerm = url.searchParams.get('searchTerm')?.trim() ?? ''
     const clickedAsin = url.searchParams.get('clickedAsin')?.trim() ?? ''
@@ -282,11 +407,12 @@ export async function GET(req: Request) {
     if (departmentName) query = query.ilike('department_name', `%${departmentName}%`)
     if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
     if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
+    query = query.lte('click_share_rank', 3)
 
     const { data, error } = await query
       .order('search_frequency_rank', { ascending: true, nullsFirst: false })
       .order('click_share_rank', { ascending: true, nullsFirst: false })
-      .range(offset, offset + pageSize)
+      .range(offset, offset + sourcePageSize)
 
     if (error) {
       return safeError(
@@ -316,8 +442,9 @@ export async function GET(req: Request) {
       )
     }
 
-    const rows = Array.isArray(data) ? data.slice(0, pageSize) : []
-    const hasMore = Array.isArray(data) && data.length > pageSize
+    const sourceRows = Array.isArray(data) ? data as SearchTermSourceRow[] : []
+    const rows = groupSearchTerms(sourceRows, pageSize)
+    const hasMore = sourceRows.length > sourcePageSize
     const parsedRowCount = getSummaryNumber(latestSummary, 'parsed_row_count', 'parsedRowCount')
     let storedRowCount = getSummaryNumber(
       latestSummary,
@@ -341,6 +468,7 @@ export async function GET(req: Request) {
       hasMore,
       rowsReturned: rows.length,
       rows,
+      viewMode: 'grouped_top_search_terms',
       meta: {
         latestReportId: toNullableString(latestReport?.report_id),
         latestReportDocumentId: toNullableString(latestReport?.report_document_id),

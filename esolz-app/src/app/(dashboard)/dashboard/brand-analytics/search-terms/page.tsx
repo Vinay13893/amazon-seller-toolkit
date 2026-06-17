@@ -1,26 +1,54 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BarChart3, ChevronLeft, ChevronRight, Loader2, Search, SlidersHorizontal } from 'lucide-react'
+import {
+  ArrowUpRight,
+  BarChart3,
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Search,
+  ShieldCheck,
+  SlidersHorizontal,
+  Target,
+  TrendingUp,
+} from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
+
+type TopClickedProduct = {
+  rank: number | null
+  asin: string | null
+  itemName: string | null
+  clickShare: number | null
+  conversionShare: number | null
+}
 
 type SearchTermRow = {
-  department_name: string | null
-  search_term: string | null
-  search_frequency_rank: number | null
-  clicked_asin: string | null
-  clicked_item_name: string | null
-  click_share_rank: number | null
-  click_share: number | null
-  conversion_share: number | null
-  report_id: string | null
-  report_document_id: string | null
-  marketplace_id: string | null
-  data_start_time: string | null
-  data_end_time: string | null
+  departmentName: string | null
+  searchTerm: string | null
+  searchFrequencyRank: number | null
+  reportId: string | null
+  reportDocumentId: string | null
+  marketplaceId: string | null
+  dataStartTime: string | null
+  dataEndTime: string | null
+  topClickedProducts: TopClickedProduct[]
+  topClickedAsin: string | null
+  topClickShare: number | null
+  topConversionShare: number | null
+  opportunityTag: 'Winning term' | 'Conversion gap' | 'Click share opportunity' | 'Monitor'
+  suggestedAction: string
 }
 
 type ApiMeta = {
@@ -45,6 +73,7 @@ type ApiResponse = {
   hasMore: boolean
   rowsReturned: number
   rows: SearchTermRow[]
+  viewMode?: 'grouped_top_search_terms'
   meta: ApiMeta
 }
 
@@ -77,9 +106,9 @@ function formatNumber(value: number | null | undefined): string {
 }
 
 function formatPercent(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Not available'
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
   const normalized = Math.abs(value) <= 1 ? value * 100 : value
-  return `${normalized.toFixed(2)}%`
+  return `${normalized.toFixed(1)}%`
 }
 
 function formatDate(value: string | null | undefined): string {
@@ -95,6 +124,51 @@ function compactId(value: string | null | undefined): string {
   return `${value.slice(0, 8)}...${value.slice(-6)}`
 }
 
+function opportunityTone(tag: SearchTermRow['opportunityTag']): string {
+  switch (tag) {
+    case 'Winning term':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+    case 'Conversion gap':
+      return 'border-amber-200 bg-amber-50 text-amber-700'
+    case 'Click share opportunity':
+      return 'border-sky-200 bg-sky-50 text-sky-700'
+    default:
+      return 'border-border bg-muted text-muted-foreground'
+  }
+}
+
+function opportunityIcon(tag: SearchTermRow['opportunityTag']) {
+  if (tag === 'Winning term') return <ShieldCheck className="size-3.5" />
+  if (tag === 'Conversion gap') return <TrendingUp className="size-3.5" />
+  if (tag === 'Click share opportunity') return <Target className="size-3.5" />
+  return <BarChart3 className="size-3.5" />
+}
+
+function insightSummary(rows: SearchTermRow[]) {
+  return [
+    {
+      label: 'High-demand terms',
+      value: rows.filter(row => (row.searchFrequencyRank ?? Number.MAX_SAFE_INTEGER) <= 10000).length,
+      note: 'Prioritize bids and listing quality',
+    },
+    {
+      label: 'Conversion gaps',
+      value: rows.filter(row => row.opportunityTag === 'Conversion gap').length,
+      note: 'Improve offer and PDP conversion',
+    },
+    {
+      label: 'Click share opportunities',
+      value: rows.filter(row => row.opportunityTag === 'Click share opportunity').length,
+      note: 'Add exact-match campaigns',
+    },
+    {
+      label: 'Competitor ASIN opportunities',
+      value: rows.filter(row => row.topClickedProducts.some(product => product.asin)).length,
+      note: 'Track products winning clicks',
+    },
+  ]
+}
+
 export default function BrandAnalyticsSearchTermsPage() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS)
   const [appliedFilters, setAppliedFilters] = useState<Filters>(DEFAULT_FILTERS)
@@ -106,6 +180,7 @@ export default function BrandAnalyticsSearchTermsPage() {
   const [rowsReturned, setRowsReturned] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [selectedRow, setSelectedRow] = useState<SearchTermRow | null>(null)
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams()
@@ -181,14 +256,15 @@ export default function BrandAnalyticsSearchTermsPage() {
   const storedRowsLabel = typeof meta?.storedRowCount === 'number'
     ? formatNumber(meta.storedRowCount)
     : 'Available after data refresh'
+  const insights = insightSummary(rows)
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-foreground">Brand Analytics — Search Terms</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Data connection status: {connectionStatus}
+          <h1 className="text-2xl font-semibold text-foreground">Top Search Terms</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Brand Analytics translated into demand, winners, gaps, and next actions.
           </p>
         </div>
         <Button type="button" variant="outline" onClick={() => void loadRows()} disabled={loading}>
@@ -197,33 +273,30 @@ export default function BrandAnalyticsSearchTermsPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Card className="rounded-lg">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+        <Card className="rounded-lg border-border/70 shadow-none">
           <CardContent>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Stored Rows</p>
-            <p className="mt-2 text-2xl font-black text-foreground">{storedRowsLabel}</p>
-            {meta?.countSource && (
-              <p className="mt-1 text-[11px] text-muted-foreground">Source: {meta.countSource.replace('_', ' ')}</p>
-            )}
+            <p className="text-xs font-medium text-muted-foreground">Status</p>
+            <p className="mt-2 text-base font-semibold text-foreground">{connectionStatus}</p>
+            <p className="mt-1 text-xs text-muted-foreground">{latestStatus}</p>
           </CardContent>
         </Card>
-        <Card className="rounded-lg">
+        <Card className="rounded-lg border-border/70 shadow-none">
           <CardContent>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Latest Status</p>
-            <p className="mt-2 text-sm font-semibold text-foreground">{latestStatus}</p>
-            <p className="mt-1 text-[11px] text-muted-foreground">{compactId(meta?.latestReportDocumentId)}</p>
+            <p className="text-xs font-medium text-muted-foreground">Period</p>
+            <p className="mt-2 text-base font-semibold text-foreground">{dataPeriod}</p>
           </CardContent>
         </Card>
-        <Card className="rounded-lg">
+        <Card className="rounded-lg border-border/70 shadow-none">
           <CardContent>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Data Period</p>
-            <p className="mt-2 text-sm font-semibold text-foreground">{dataPeriod}</p>
+            <p className="text-xs font-medium text-muted-foreground">Stored rows</p>
+            <p className="mt-2 text-base font-semibold text-foreground">{storedRowsLabel}</p>
           </CardContent>
         </Card>
-        <Card className="rounded-lg">
+        <Card className="rounded-lg border-border/70 shadow-none">
           <CardContent>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Page Size</p>
-            <p className="mt-2 text-2xl font-black text-foreground">{pageSize}</p>
+            <p className="text-xs font-medium text-muted-foreground">Latest document</p>
+            <p className="mt-2 text-base font-semibold text-foreground">{compactId(meta?.latestReportDocumentId)}</p>
           </CardContent>
         </Card>
       </div>
@@ -234,9 +307,9 @@ export default function BrandAnalyticsSearchTermsPage() {
         </div>
       )}
 
-      <Card className="rounded-lg">
+      <Card className="rounded-lg border-border/70 shadow-none">
         <CardContent>
-          <div className="mb-3 flex items-center gap-2">
+          <div className="mb-4 flex items-center gap-2">
             <SlidersHorizontal className="size-4 text-muted-foreground" />
             <h2 className="text-sm font-semibold text-foreground">Filters</h2>
           </div>
@@ -303,108 +376,218 @@ export default function BrandAnalyticsSearchTermsPage() {
         </CardContent>
       </Card>
 
-      <Card className="rounded-lg">
-        <CardContent className="px-0">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-4 pb-4">
-            <div className="flex items-center gap-2">
-              <BarChart3 className="size-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold text-foreground">Search Terms</h2>
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_320px]">
+        <Card className="rounded-lg border-border/70 shadow-none">
+          <CardContent className="px-0">
+            <div className="flex items-center justify-between gap-3 border-b border-border px-5 pb-4">
+              <div>
+                <h2 className="text-base font-semibold text-foreground">Top Search Terms</h2>
+                <p className="mt-1 text-xs text-muted-foreground">One row per term with the top clicked products and recommended action.</p>
+              </div>
+              <p className="text-xs text-muted-foreground">Page {page} - {rowsReturned} terms</p>
             </div>
-            <p className="text-xs text-muted-foreground">Page {page} - {rowsReturned} rows returned</p>
-          </div>
 
-          {loading && (
-            <div className="flex items-center justify-center gap-2 py-16">
-              <Loader2 className="size-4 animate-spin text-muted-foreground" />
-              <span className="text-sm text-muted-foreground">Loading Search Terms...</span>
-            </div>
-          )}
+            {loading && (
+              <div className="flex items-center justify-center gap-2 py-16">
+                <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                <span className="text-sm text-muted-foreground">Loading Top Search Terms...</span>
+              </div>
+            )}
 
-          {!loading && error && (
-            <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-              <p className="text-sm font-medium text-foreground">Could not load Search Terms</p>
-              <p className="max-w-sm text-xs text-muted-foreground">{error}</p>
-              <Button type="button" variant="outline" onClick={() => void loadRows()}>
-                Retry
+            {!loading && error && (
+              <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+                <p className="text-sm font-medium text-foreground">Could not load Top Search Terms</p>
+                <p className="max-w-sm text-xs text-muted-foreground">{error}</p>
+                <Button type="button" variant="outline" onClick={() => void loadRows()}>
+                  Retry
+                </Button>
+              </div>
+            )}
+
+            {!loading && !error && rows.length === 0 && (
+              <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+                <BarChart3 className="size-8 text-muted-foreground/40" />
+                <p className="text-sm font-medium text-foreground">No terms match these filters</p>
+                <p className="max-w-sm text-xs text-muted-foreground">Adjust the filters or clear them to browse the latest synced report.</p>
+              </div>
+            )}
+
+            {!loading && !error && rows.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[920px] text-left">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/30">
+                      <th className="px-5 py-3 text-xs font-medium text-muted-foreground">Search term</th>
+                      <th className="px-4 py-3 text-xs font-medium text-muted-foreground">Demand</th>
+                      <th className="px-4 py-3 text-xs font-medium text-muted-foreground">Top clicked products</th>
+                      <th className="px-4 py-3 text-xs font-medium text-muted-foreground">Opportunity</th>
+                      <th className="px-4 py-3 text-xs font-medium text-muted-foreground">Suggested action</th>
+                      <th className="px-5 py-3 text-right text-xs font-medium text-muted-foreground">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, index) => (
+                      <tr
+                        key={`${row.reportDocumentId ?? 'doc'}-${row.searchFrequencyRank ?? index}-${row.searchTerm ?? index}`}
+                        className="border-b border-border last:border-0 hover:bg-muted/20"
+                      >
+                        <td className="max-w-[260px] px-5 py-4 align-top">
+                          <p className="line-clamp-2 text-sm font-semibold text-foreground">{row.searchTerm || 'Not available'}</p>
+                          <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{row.departmentName || 'Department not available'}</p>
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <p className="text-sm font-semibold text-foreground">#{formatNumber(row.searchFrequencyRank)}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">Search frequency rank</p>
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <div className="grid gap-2">
+                            {row.topClickedProducts.slice(0, 3).map((product, productIndex) => (
+                              <div key={`${product.asin ?? 'asin'}-${productIndex}`} className="rounded-md border border-border/70 px-3 py-2">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="truncate font-mono text-xs font-medium text-foreground">
+                                      #{product.rank ?? productIndex + 1} {product.asin || 'ASIN unavailable'}
+                                    </p>
+                                    <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{product.itemName || 'Item name unavailable'}</p>
+                                  </div>
+                                  <p className="shrink-0 text-xs font-semibold text-foreground">{formatPercent(product.clickShare)}</p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <Badge variant="outline" className={opportunityTone(row.opportunityTag)}>
+                            {opportunityIcon(row.opportunityTag)}
+                            {row.opportunityTag}
+                          </Badge>
+                        </td>
+                        <td className="max-w-[190px] px-4 py-4 align-top">
+                          <p className="text-sm text-foreground">{row.suggestedAction}</p>
+                        </td>
+                        <td className="px-5 py-4 text-right align-top">
+                          <Button type="button" variant="outline" size="sm" onClick={() => setSelectedRow(row)}>
+                            Explain
+                            <ArrowUpRight className="size-3.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-3 border-t border-border px-5 pt-4">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setPage(current => Math.max(1, current - 1))}
+                disabled={loading || page === 1}
+              >
+                <ChevronLeft className="size-4" />
+                Previous
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {rowsReturned > 0 ? `${rowsReturned} grouped terms shown` : 'No terms shown'}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setPage(current => current + 1)}
+                disabled={loading || !hasMore}
+              >
+                Next
+                <ChevronRight className="size-4" />
               </Button>
             </div>
-          )}
+          </CardContent>
+        </Card>
 
-          {!loading && !error && rows.length === 0 && (
-            <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-              <BarChart3 className="size-8 text-muted-foreground/40" />
-              <p className="text-sm font-medium text-foreground">No rows match these filters</p>
-              <p className="max-w-sm text-xs text-muted-foreground">Adjust the filters or clear them to browse the latest synced report.</p>
+        <Card className="rounded-lg border-border/70 shadow-none">
+          <CardContent>
+            <div className="mb-4">
+              <h2 className="text-base font-semibold text-foreground">Growth Opportunities</h2>
+              <p className="mt-1 text-xs text-muted-foreground">Fast read on what deserves attention next.</p>
             </div>
-          )}
+            <div className="grid gap-3">
+              {insights.map(insight => (
+                <div key={insight.label} className="rounded-md border border-border/70 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium text-foreground">{insight.label}</p>
+                    <p className="text-lg font-semibold text-foreground">{insight.value}</p>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{insight.note}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
-          {!loading && !error && rows.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1040px] text-left">
-                <thead>
-                  <tr className="border-b border-border bg-border/20">
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Search Term</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Search Frequency Rank</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Department</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Clicked ASIN</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Clicked Item Name</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Click Share Rank</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Click Share</th>
-                    <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Conversion Share</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => (
-                    <tr
-                      key={`${row.report_document_id ?? 'doc'}-${row.search_frequency_rank ?? index}-${row.click_share_rank ?? index}-${index}`}
-                      className="border-b border-border last:border-0 hover:bg-border/10"
-                    >
-                      <td className="max-w-[260px] px-4 py-3 text-xs font-medium text-foreground">
-                        <span className="line-clamp-2">{row.search_term || '-'}</span>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-foreground">{formatNumber(row.search_frequency_rank)}</td>
-                      <td className="max-w-[180px] px-4 py-3 text-xs text-muted-foreground">
-                        <span className="line-clamp-2">{row.department_name || '-'}</span>
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs text-foreground">{row.clicked_asin || '-'}</td>
-                      <td className="max-w-[260px] px-4 py-3 text-xs text-muted-foreground">
-                        <span className="line-clamp-2">{row.clicked_item_name || '-'}</span>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-foreground">{formatNumber(row.click_share_rank)}</td>
-                      <td className="px-4 py-3 text-xs text-foreground">{formatPercent(row.click_share)}</td>
-                      <td className="px-4 py-3 text-xs text-foreground">{formatPercent(row.conversion_share)}</td>
-                    </tr>
+      <Sheet open={Boolean(selectedRow)} onOpenChange={open => !open && setSelectedRow(null)}>
+        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle>{selectedRow?.searchTerm || 'Search term details'}</SheetTitle>
+            <SheetDescription>
+              Seller-friendly explanation based on the latest Brand Analytics report.
+            </SheetDescription>
+          </SheetHeader>
+
+          {selectedRow && (
+            <div className="grid gap-5 px-4 pb-6">
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-xs font-medium text-muted-foreground">What this means</p>
+                <p className="mt-2 text-sm text-foreground">
+                  This term ranks #{formatNumber(selectedRow.searchFrequencyRank)} by search frequency. The current top clicked product gets {formatPercent(selectedRow.topClickShare)} click share, with {formatPercent(selectedRow.topConversionShare)} conversion share.
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-xs font-medium text-muted-foreground">Opportunity</p>
+                <div className="mt-2">
+                  <Badge variant="outline" className={opportunityTone(selectedRow.opportunityTag)}>
+                    {opportunityIcon(selectedRow.opportunityTag)}
+                    {selectedRow.opportunityTag}
+                  </Badge>
+                </div>
+                <p className="mt-3 text-sm font-medium text-foreground">{selectedRow.suggestedAction}</p>
+              </div>
+
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-xs font-medium text-muted-foreground">Top clicked products</p>
+                <div className="mt-3 grid gap-3">
+                  {selectedRow.topClickedProducts.map((product, index) => (
+                    <div key={`${product.asin ?? 'product'}-${index}`} className="rounded-md bg-muted/40 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs font-semibold text-foreground">#{product.rank ?? index + 1} {product.asin || 'ASIN unavailable'}</p>
+                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{product.itemName || 'Item name unavailable'}</p>
+                        </div>
+                        <div className="text-right text-xs">
+                          <p className="font-semibold text-foreground">{formatPercent(product.clickShare)}</p>
+                          <p className="text-muted-foreground">click share</p>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs text-muted-foreground">Conversion share: {formatPercent(product.conversionShare)}</p>
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border p-4">
+                <p className="text-xs font-medium text-muted-foreground">Next actions to build later</p>
+                <div className="mt-3 grid gap-2 text-sm text-foreground">
+                  <p>Add keyword to watchlist</p>
+                  <p>Track competitor ASIN</p>
+                  <p>Create weekly change alert</p>
+                  <p>Add action to checklist</p>
+                </div>
+              </div>
             </div>
           )}
-
-          <div className="flex items-center justify-between gap-3 border-t border-border px-4 pt-4">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setPage(current => Math.max(1, current - 1))}
-              disabled={loading || page === 1}
-            >
-              <ChevronLeft className="size-4" />
-              Previous
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              {rowsReturned > 0 ? `${rowsReturned} rows shown` : 'No rows shown'}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setPage(current => current + 1)}
-              disabled={loading || !hasMore}
-            >
-              Next
-              <ChevronRight className="size-4" />
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
