@@ -56,6 +56,9 @@ type TriggerResponse = {
 }
 
 const DEFAULT_PINCODES = '110001\n560001'
+const MAX_ASINS = 10
+const MAX_PINCODES = 20
+const MAX_CHECKS = 200
 
 function parseAsins(value: string): string[] {
   return Array.from(new Set(
@@ -63,7 +66,7 @@ function parseAsins(value: string): string[] {
       .split(/[\s,]+/)
       .map(item => item.trim().toUpperCase())
       .filter(item => /^[A-Z0-9]{10}$/.test(item)),
-  )).slice(0, 3)
+  ))
 }
 
 function parsePincodes(value: string): string[] {
@@ -72,7 +75,7 @@ function parsePincodes(value: string): string[] {
       .split(/[\s,]+/)
       .map(item => item.trim())
       .filter(item => /^\d{6}$/.test(item)),
-  )).slice(0, 5)
+  ))
 }
 
 function statusTone(status: string | null) {
@@ -103,6 +106,14 @@ export default function PincodeCheckerPage() {
 
   const asins = useMemo(() => parseAsins(asinText), [asinText])
   const pincodes = useMemo(() => parsePincodes(pincodeText), [pincodeText])
+  const totalChecks = asins.length * pincodes.length
+  const limitError = asins.length > MAX_ASINS
+    ? `Use ${MAX_ASINS} ASINs or fewer.`
+    : pincodes.length > MAX_PINCODES
+      ? `Use ${MAX_PINCODES} pincodes or fewer.`
+      : totalChecks > MAX_CHECKS
+        ? `Use ${MAX_CHECKS} total checks or fewer.`
+        : null
   const progressPercent = job?.progressTotal
     ? Math.round((job.progressCurrent / job.progressTotal) * 100)
     : 0
@@ -238,6 +249,7 @@ export default function PincodeCheckerPage() {
           <MapPin className="size-5 text-primary" />
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Pincode Availability Checker</h1>
           <Badge variant="secondary" className="h-5 text-[10px]">Queue beta</Badge>
+          <Badge variant="outline" className="h-5 text-[10px]">Bulk Mode</Badge>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Check Amazon availability, delivery promise, price visibility, and buy box by pincode.
@@ -256,10 +268,12 @@ export default function PincodeCheckerPage() {
                 value={asinText}
                 onChange={event => setAsinText(event.target.value)}
                 rows={5}
-                placeholder="Enter up to 3 ASINs"
+                placeholder="Enter up to 10 ASINs"
                 className="min-h-32 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
               />
-              <span className="text-xs text-muted-foreground">{asins.length}/3 valid ASINs</span>
+              <span className={cn('text-xs', asins.length > MAX_ASINS ? 'text-red-400' : 'text-muted-foreground')}>
+                {asins.length}/{MAX_ASINS} valid ASINs
+              </span>
             </label>
 
             <label className="flex flex-col gap-2">
@@ -268,10 +282,12 @@ export default function PincodeCheckerPage() {
                 value={pincodeText}
                 onChange={event => setPincodeText(event.target.value)}
                 rows={5}
-                placeholder="Enter up to 5 pincodes"
+                placeholder="Enter up to 20 pincodes"
                 className="min-h-32 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
               />
-              <span className="text-xs text-muted-foreground">{pincodes.length}/5 valid pincodes</span>
+              <span className={cn('text-xs', pincodes.length > MAX_PINCODES ? 'text-red-400' : 'text-muted-foreground')}>
+                {pincodes.length}/{MAX_PINCODES} valid pincodes
+              </span>
             </label>
           </div>
 
@@ -279,7 +295,7 @@ export default function PincodeCheckerPage() {
             <Button
               type="button"
               onClick={startJob}
-              disabled={loading || asins.length === 0 || pincodes.length === 0}
+              disabled={loading || asins.length === 0 || pincodes.length === 0 || Boolean(limitError)}
               className="gap-2"
             >
               {loading ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
@@ -295,7 +311,13 @@ export default function PincodeCheckerPage() {
               {polling ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               Refresh status
             </Button>
-            <span className="text-xs text-muted-foreground">Current limit: 3 ASINs x 5 pincodes. Bulk mode coming next: 10 ASINs x 20 pincodes.</span>
+            <span className={cn('text-xs', limitError ? 'text-red-400' : 'text-muted-foreground')}>
+              Bulk Mode: up to 10 ASINs x 20 pincodes. Selected: {totalChecks}/{MAX_CHECKS} checks.
+            </span>
+          </div>
+          <div className="mt-3 text-xs text-muted-foreground">
+            Estimated time depends on Amazon page response; jobs run conservatively one check at a time.
+            {limitError && <span className="ml-2 text-red-400">{limitError}</span>}
           </div>
         </div>
 
@@ -323,7 +345,11 @@ export default function PincodeCheckerPage() {
           <div className="mt-4 h-2 rounded-full bg-muted">
             <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progressPercent}%` }} />
           </div>
-          <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+          <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div>
+              <p className="text-xs text-muted-foreground">Processed</p>
+              <p className="font-semibold text-foreground">{job ? `${job.progressCurrent}/${job.progressTotal}` : '0/0'}</p>
+            </div>
             <div>
               <p className="text-xs text-muted-foreground">Available</p>
               <p className="font-semibold text-foreground">{job?.resultSummary?.available ?? 0}</p>

@@ -5,8 +5,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
 export const runtime = 'nodejs'
 
 const JOB_TYPE = 'PINCODE_AVAILABILITY_CHECK'
-const MAX_ASINS = 3
-const MAX_PINCODES = 5
+const MAX_ASINS = 10
+const MAX_PINCODES = 20
+const MAX_CHECKS = 200
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
 
 type RequestBody = {
@@ -25,7 +26,7 @@ function normalizeAsins(value: unknown): string[] {
     value
       .map(item => typeof item === 'string' ? item.trim().toUpperCase() : '')
       .filter(item => /^[A-Z0-9]{10}$/.test(item)),
-  )).slice(0, MAX_ASINS)
+  ))
 }
 
 function normalizePincodes(value: unknown): string[] {
@@ -34,7 +35,7 @@ function normalizePincodes(value: unknown): string[] {
     value
       .map(item => typeof item === 'string' ? item.trim() : '')
       .filter(item => /^\d{6}$/.test(item)),
-  )).slice(0, MAX_PINCODES)
+  ))
 }
 
 export async function POST(req: Request) {
@@ -70,15 +71,27 @@ export async function POST(req: Request) {
     : DEFAULT_MARKETPLACE_ID
 
   if (asins.length === 0) {
-    return safeError(400, 'invalid_asins', 'Provide 1 to 3 valid ASINs.')
+    return safeError(400, 'invalid_asins', 'Provide 1 to 10 valid ASINs.')
+  }
+
+  if (asins.length > MAX_ASINS) {
+    return safeError(400, 'too_many_asins', 'Provide 10 ASINs or fewer.')
   }
 
   if (pincodes.length === 0) {
-    return safeError(400, 'invalid_pincodes', 'Provide 1 to 5 valid Indian pincodes.')
+    return safeError(400, 'invalid_pincodes', 'Provide 1 to 20 valid Indian pincodes.')
+  }
+
+  if (pincodes.length > MAX_PINCODES) {
+    return safeError(400, 'too_many_pincodes', 'Provide 20 Indian pincodes or fewer.')
   }
 
   const admin = createAdminClient()
   const progressTotal = asins.length * pincodes.length
+
+  if (progressTotal > MAX_CHECKS) {
+    return safeError(400, 'too_many_checks', 'Provide 200 total checks or fewer.')
+  }
 
   const { data: job, error: insertError } = await admin
     .from('scraping_jobs')

@@ -67,7 +67,7 @@ export async function GET(
     .eq('workspace_id', member.workspace_id)
     .eq('job_id', jobId)
     .order('checked_at', { ascending: false })
-    .limit(50)
+    .limit(200)
 
   if (resultsError) {
     return safeError(500, 'results_read_failed', 'Unable to read pincode availability results.')

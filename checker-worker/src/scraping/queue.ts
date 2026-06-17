@@ -4,13 +4,22 @@ import { createSupabaseAdminClient } from '../brand-analytics/supabase'
 
 const JOB_TYPE_PINCODE_AVAILABILITY = 'PINCODE_AVAILABILITY_CHECK'
 const WORKER_ID = process.env.RENDER_SERVICE_NAME || 'checker-worker'
-const MAX_ASINS = 3
-const MAX_PINCODES = 5
+const MAX_ASINS = 10
+const MAX_PINCODES = 20
+const MAX_CHECKS = 200
 
 const pincodePayloadSchema = z.object({
   marketplaceId: z.string().min(1),
   asins: z.array(z.string().min(1)).min(1).max(MAX_ASINS),
   pincodes: z.array(z.string().regex(/^\d{6}$/)).min(1).max(MAX_PINCODES),
+}).superRefine((payload, ctx) => {
+  if (payload.asins.length * payload.pincodes.length > MAX_CHECKS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Pincode availability jobs are limited to 200 checks.',
+      path: ['pincodes'],
+    })
+  }
 })
 
 const jobStatusSchema = z.object({
