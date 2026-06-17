@@ -52,6 +52,11 @@ type PincodeDiagnostics = {
   availability_selector_found: boolean
   price_selector_found: boolean
   buy_box_selector_found: boolean
+  reloaded_after_location: boolean
+  post_location_product_page_detected: boolean
+  post_location_price_found: boolean
+  post_location_delivery_found: boolean
+  post_location_buy_box_found: boolean
   final_page_type: 'product' | 'captcha' | 'unavailable' | 'unknown'
 }
 
@@ -97,6 +102,11 @@ function emptyDiagnostics(): PincodeDiagnostics {
     availability_selector_found: false,
     price_selector_found: false,
     buy_box_selector_found: false,
+    reloaded_after_location: false,
+    post_location_product_page_detected: false,
+    post_location_price_found: false,
+    post_location_delivery_found: false,
+    post_location_buy_box_found: false,
     final_page_type: 'unknown',
   }
 }
@@ -181,6 +191,11 @@ function diagnosticsMessage(diagnostics: PincodeDiagnostics): string {
     `availability_selector_found=${diagnostics.availability_selector_found}`,
     `price_selector_found=${diagnostics.price_selector_found}`,
     `buy_box_selector_found=${diagnostics.buy_box_selector_found}`,
+    `reloaded_after_location=${diagnostics.reloaded_after_location}`,
+    `post_location_product_page_detected=${diagnostics.post_location_product_page_detected}`,
+    `post_location_price_found=${diagnostics.post_location_price_found}`,
+    `post_location_delivery_found=${diagnostics.post_location_delivery_found}`,
+    `post_location_buy_box_found=${diagnostics.post_location_buy_box_found}`,
     `final_page_type=${diagnostics.final_page_type}`,
   ].join('; ')
 }
@@ -316,23 +331,54 @@ async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Pro
     '#desktop_buybox',
     '#buybox',
   ])
+  const visibleSignalText = await collectText(page, [
+    'body',
+  ])
+  const visibleSignalLower = visibleSignalText.toLowerCase()
+  const textDeliveryFound = [
+    'delivery',
+    'delivered',
+    'in stock',
+    'currently unavailable',
+    'out of stock',
+    'cannot be delivered',
+    'not deliverable',
+  ].some(phrase => visibleSignalLower.includes(phrase))
+  const textBuyBoxFound = visibleSignalLower.includes('add to cart') || visibleSignalLower.includes('buy now')
 
   return {
     ...previous,
-    product_page_detected: productPageDetected || buyBoxSelectorFound,
+    product_page_detected: productPageDetected || buyBoxSelectorFound || textBuyBoxFound,
     location_modal_found: locationModalFound,
     pincode_input_found: pincodeInputFound,
     captcha_or_robot_detected: captchaOrRobotDetected,
-    availability_selector_found: availabilitySelectorFound,
+    availability_selector_found: availabilitySelectorFound || textDeliveryFound,
     price_selector_found: priceSelectorFound,
-    buy_box_selector_found: buyBoxSelectorFound,
+    buy_box_selector_found: buyBoxSelectorFound || textBuyBoxFound,
     final_page_type: captchaOrRobotDetected
       ? 'captcha'
-      : productPageDetected || buyBoxSelectorFound
+      : productPageDetected || buyBoxSelectorFound || textBuyBoxFound
         ? 'product'
-        : availabilitySelectorFound
+        : availabilitySelectorFound || textDeliveryFound
           ? 'unavailable'
           : 'unknown',
+  }
+}
+
+async function reloadAfterLocation(page: Page, productUrl: string): Promise<boolean> {
+  await page.waitForTimeout(1200).catch(() => undefined)
+  await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS }).catch(() => null)
+  await page.waitForTimeout(1200).catch(() => undefined)
+  return true
+}
+
+function withPostLocationDiagnostics(diagnostics: PincodeDiagnostics): PincodeDiagnostics {
+  return {
+    ...diagnostics,
+    post_location_product_page_detected: diagnostics.product_page_detected,
+    post_location_price_found: diagnostics.price_selector_found,
+    post_location_delivery_found: diagnostics.availability_selector_found,
+    post_location_buy_box_found: diagnostics.buy_box_selector_found,
   }
 }
 
@@ -545,7 +591,16 @@ export async function runPincodeAvailabilityCheck(
           return response
         }
 
+        currentStage = 'timeout_post_location_reload'
+        const reloadedAfterLocation = await reloadAfterLocation(page, productUrl)
+        diagnostics = {
+          ...diagnostics,
+          reloaded_after_location: reloadedAfterLocation,
+        }
+        latestDiagnostics = diagnostics
+
         diagnostics = await collectDiagnostics(page, diagnostics)
+        diagnostics = withPostLocationDiagnostics(diagnostics)
         latestDiagnostics = diagnostics
         if (diagnostics.captcha_or_robot_detected) {
           pincodeLog(input, 'blocked_detected_after_pincode')
@@ -577,6 +632,7 @@ export async function runPincodeAvailabilityCheck(
 
         const decision = await decideAvailability(page, deliveryPromise, input.pincode)
         diagnostics = await collectDiagnostics(page, diagnostics)
+        diagnostics = withPostLocationDiagnostics(diagnostics)
         latestDiagnostics = diagnostics
 
         if (decision.available === null && availabilitySignal === true) {
@@ -666,7 +722,11 @@ export async function runPincodeAvailabilityCheck(
           status: 'failed',
           error_code: diagnostics.buy_box_selector_found
             ? 'selectors_partial'
-            : diagnostics.availability_selector_found || diagnostics.price_selector_found
+            : diagnostics.product_page_detected && diagnostics.location_set_success
+              ? 'selectors_not_found_after_location'
+              : diagnostics.product_page_detected
+                ? 'no_buyable_offer_detected'
+                : diagnostics.availability_selector_found || diagnostics.price_selector_found
               ? 'pincode_not_applied'
               : 'selectors_not_found',
           error_message: diagnosticsMessage(diagnostics),
