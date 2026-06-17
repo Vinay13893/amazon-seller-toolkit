@@ -39,11 +39,14 @@ type SafeErrorDetails = {
   dbErrorCode?: string | null
   dbErrorMessage?: string | null
   dbErrorHint?: string | null
-  queryColumns?: string[]
-  orderColumn?: string
+  queryMode?: 'latest_document_paginated'
+  countMode?: 'summary_or_unavailable'
+  selectedColumns?: string[]
+  orderColumns?: string[]
   filtersApplied?: string[]
   workspaceResolved?: boolean
   workspaceIdPresent?: boolean
+  pageSize?: number
 }
 
 const SEARCH_TERMS_COLUMNS = [
@@ -236,8 +239,8 @@ export async function GET(req: Request) {
           'Brand Analytics API failed to read latest stored row metadata.',
           {
             ...safeDbDetails(latestRowError),
-            queryColumns: ['report_id', 'report_document_id', 'marketplace_id', 'data_start_time', 'data_end_time'],
-            orderColumn: 'data_end_time,search_frequency_rank',
+            selectedColumns: ['report_id', 'report_document_id', 'marketplace_id', 'data_start_time', 'data_end_time'],
+            orderColumns: ['data_end_time', 'search_frequency_rank'],
             filtersApplied: ['workspace_id'],
             workspaceResolved: true,
             workspaceIdPresent: Boolean(workspaceId),
@@ -259,6 +262,8 @@ export async function GET(req: Request) {
     const latestReport = latestJob ?? latestRowMeta
     const effectiveReportId = reportId || latestReport?.report_id || ''
     const effectiveReportDocumentId = reportDocumentId || latestReport?.report_document_id || ''
+    const queryMode = 'latest_document_paginated' as const
+    const countMode = 'summary_or_unavailable' as const
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let query = (readClient as any)
@@ -291,8 +296,10 @@ export async function GET(req: Request) {
         'Brand Analytics API failed to load paginated Search Terms rows.',
         {
           ...safeDbDetails(error),
-          queryColumns: SEARCH_TERMS_COLUMNS,
-          orderColumn: 'search_frequency_rank,click_share_rank',
+          queryMode,
+          countMode,
+          selectedColumns: SEARCH_TERMS_COLUMNS,
+          orderColumns: ['search_frequency_rank', 'click_share_rank'],
           filtersApplied: getAppliedFilters({
             reportId: effectiveReportId,
             reportDocumentId: effectiveReportDocumentId,
@@ -304,6 +311,7 @@ export async function GET(req: Request) {
           }),
           workspaceResolved: true,
           workspaceIdPresent: Boolean(workspaceId),
+          pageSize,
         },
       )
     }
@@ -318,27 +326,8 @@ export async function GET(req: Request) {
       'storedRowCount',
       'cumulativeStoredRowCount',
     )
-    let countSource: 'sync_summary' | 'exact' | 'unavailable' =
+    const countSource: 'sync_summary' | 'unavailable' =
       storedRowCount !== null ? 'sync_summary' : 'unavailable'
-
-    if (storedRowCount === null && (effectiveReportDocumentId || effectiveReportId)) {
-      let countQuery = readClient
-        .from('brand_analytics_search_terms_rows')
-        .select('id', { count: 'exact', head: true })
-        .eq('workspace_id', workspaceId)
-
-      if (effectiveReportDocumentId) {
-        countQuery = countQuery.eq('report_document_id', effectiveReportDocumentId)
-      } else {
-        countQuery = countQuery.eq('report_id', effectiveReportId)
-      }
-
-      const { count, error: countError } = await countQuery
-      if (!countError && typeof count === 'number') {
-        storedRowCount = count
-        countSource = 'exact'
-      }
-    }
 
     const latestStatus = normalizeStatus(
       toNullableString(latestSummary.sync_status)
@@ -370,6 +359,7 @@ export async function GET(req: Request) {
         storedRowCount,
         parsedRowCount,
         countSource,
+        countMode,
       },
     })
   } catch {

@@ -35,7 +35,8 @@ type ApiMeta = {
   completedAt: string | null
   storedRowCount: number | null
   parsedRowCount: number | null
-  countSource: 'sync_summary' | 'exact' | 'unavailable'
+  countSource: 'sync_summary' | 'unavailable'
+  countMode?: 'summary_or_unavailable'
 }
 
 type ApiResponse = {
@@ -177,6 +178,9 @@ export default function BrandAnalyticsSearchTermsPage() {
     : 'Not available'
   const connectionStatus = loading ? 'Loading' : error ? 'Error' : 'Connected'
   const latestStatus = meta?.latestStatus ?? meta?.processingStatus ?? 'Not available'
+  const storedRowsLabel = typeof meta?.storedRowCount === 'number'
+    ? formatNumber(meta.storedRowCount)
+    : 'Available after data refresh'
 
   return (
     <div className="flex flex-col gap-5">
@@ -197,7 +201,7 @@ export default function BrandAnalyticsSearchTermsPage() {
         <Card className="rounded-lg">
           <CardContent>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Stored Rows</p>
-            <p className="mt-2 text-2xl font-black text-foreground">{formatNumber(meta?.storedRowCount)}</p>
+            <p className="mt-2 text-2xl font-black text-foreground">{storedRowsLabel}</p>
             {meta?.countSource && (
               <p className="mt-1 text-[11px] text-muted-foreground">Source: {meta.countSource.replace('_', ' ')}</p>
             )}
