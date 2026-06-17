@@ -19,6 +19,7 @@ import {
   getScrapingJobStatus,
   runNextScrapingJob,
   scrapingJobStatusRequestSchema,
+  scrapingRunNextRequestSchema,
 } from './scraping/queue'
 
 dotenv.config()
@@ -133,12 +134,23 @@ app.post('/pincode-availability', async (req: Request, res: Response) => {
   }
 })
 
-app.post('/scraping/run-next', async (_req: Request, res: Response) => {
+app.post('/scraping/run-next', async (req: Request, res: Response) => {
   try {
-    const result = await runNextScrapingJob()
+    const payload = scrapingRunNextRequestSchema.parse(req.body ?? {})
+    const result = await runNextScrapingJob(payload)
     const statusCode = result.status === 'idle' ? 200 : result.success ? 200 : 500
     res.status(statusCode).json(result)
-  } catch {
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json({
+        success: false,
+        status: 'failed',
+        errorCode: 'invalid_payload',
+        errorMessage: 'Invalid request payload for /scraping/run-next.',
+      })
+      return
+    }
+
     res.status(500).json({
       success: false,
       status: 'failed',

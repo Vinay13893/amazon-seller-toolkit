@@ -12,6 +12,11 @@ function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
 
+function sanitizeErrorMessage(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  return value.replace(/https?:\/\/\S+/g, '[redacted_url]').slice(0, 180)
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ jobId: string }> },
@@ -43,7 +48,7 @@ export async function GET(
   const admin = createAdminClient()
   const { data: job, error: jobError } = await admin
     .from('scraping_jobs')
-    .select('id, job_type, status, progress_current, progress_total, attempts, max_attempts, result_summary, error_code, error_message, started_at, completed_at, created_at, updated_at')
+    .select('id, job_type, status, progress_current, progress_total, attempts, max_attempts, result_summary, error_code, error_message, locked_at, started_at, completed_at, created_at, updated_at')
     .eq('id', jobId)
     .eq('workspace_id', member.workspace_id)
     .maybeSingle()
@@ -80,7 +85,10 @@ export async function GET(
       maxAttempts: job.max_attempts ?? 0,
       resultSummary: job.result_summary ?? null,
       errorCode: job.error_code,
-      errorMessage: job.error_message,
+      errorMessage: sanitizeErrorMessage(job.error_message),
+      lockedAtPresent: Boolean(job.locked_at),
+      startedAtPresent: Boolean(job.started_at),
+      completedAtPresent: Boolean(job.completed_at),
       startedAt: job.started_at,
       completedAt: job.completed_at,
       createdAt: job.created_at,

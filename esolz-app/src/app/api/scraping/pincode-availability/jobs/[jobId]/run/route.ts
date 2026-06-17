@@ -84,7 +84,7 @@ export async function POST(
         'content-type': 'application/json',
         'x-checker-secret': workerSecret,
       },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ jobId }),
       signal: controller.signal,
     })
 

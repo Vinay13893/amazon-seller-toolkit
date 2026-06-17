@@ -17,7 +17,12 @@ const jobStatusSchema = z.object({
   jobId: z.string().uuid(),
 })
 
+const runNextSchema = z.object({
+  jobId: z.string().uuid().optional(),
+})
+
 export const scrapingJobStatusRequestSchema = jobStatusSchema
+export const scrapingRunNextRequestSchema = runNextSchema
 
 type ScrapingJobRow = {
   id: string
@@ -138,16 +143,22 @@ async function markJobFailed(
     .eq('id', jobId)
 }
 
-export async function runNextScrapingJob() {
+export async function runNextScrapingJob(input?: z.infer<typeof runNextSchema>) {
   const supabase = createSupabaseAdminClient()
 
-  const { data: queued, error: readError } = await supabase
+  let queuedQuery = supabase
     .from('scraping_jobs')
     .select('*')
     .eq('status', 'queued')
     .eq('job_type', JOB_TYPE_PINCODE_AVAILABILITY)
     .order('created_at', { ascending: true })
     .limit(1)
+
+  if (input?.jobId) {
+    queuedQuery = queuedQuery.eq('id', input.jobId)
+  }
+
+  const { data: queued, error: readError } = await queuedQuery
     .maybeSingle()
 
   if (readError) {
