@@ -318,6 +318,7 @@ export default function PincodeCheckerPage() {
                   <th className="px-4 py-3 text-left font-medium">Delivery</th>
                   <th className="px-4 py-3 text-left font-medium">Price</th>
                   <th className="px-4 py-3 text-left font-medium">Buy Box</th>
+                  <th className="px-4 py-3 text-left font-medium">Reason</th>
                   <th className="px-5 py-3 text-left font-medium">Checked</th>
                 </tr>
               </thead>
@@ -339,6 +340,9 @@ export default function PincodeCheckerPage() {
                       </td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? 'Detected' : 'Not detected'}</td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.buy_box_detected ? 'Detected' : 'Not detected'}</td>
+                      <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">
+                        {result.error_code ?? result.error_message ?? 'No issue reported'}
+                      </td>
                       <td className="px-5 py-3 text-xs text-muted-foreground">
                         {result.checked_at ? new Date(result.checked_at).toLocaleString() : 'Not checked'}
                       </td>

@@ -28,7 +28,9 @@ export type PincodeAvailabilityResponse = {
   price: number | null
   seller: string | null
   status: 'success' | 'unavailable' | 'blocked' | 'failed'
+  error_code?: string | null
   error_message: string | null
+  diagnostics?: PincodeDiagnostics
 }
 
 type AvailabilityDecision = {
@@ -40,6 +42,18 @@ type AvailabilityDecision = {
   matchedNegativePhrase: string | null
   locationConfirmed: boolean
   deliveryTextFound: boolean
+}
+
+type PincodeDiagnostics = {
+  page_loaded: boolean
+  product_page_detected: boolean
+  location_set_attempted: boolean
+  location_set_success: boolean
+  captcha_or_robot_detected: boolean
+  availability_selector_found: boolean
+  price_selector_found: boolean
+  buy_box_selector_found: boolean
+  final_page_type: 'product' | 'captcha' | 'unavailable' | 'unknown'
 }
 
 const OVERALL_TIMEOUT_MS = 40_000
@@ -69,6 +83,20 @@ const STRONG_UNAVAILABLE_HINTS = [
 ]
 
 const PINCODE_UNCONFIRMED_MESSAGE = 'Pincode-specific delivery could not be confirmed.'
+
+function emptyDiagnostics(): PincodeDiagnostics {
+  return {
+    page_loaded: false,
+    product_page_detected: false,
+    location_set_attempted: false,
+    location_set_success: false,
+    captcha_or_robot_detected: false,
+    availability_selector_found: false,
+    price_selector_found: false,
+    buy_box_selector_found: false,
+    final_page_type: 'unknown',
+  }
+}
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim()
@@ -119,6 +147,42 @@ function pincodeLog(input: PincodeAvailabilityRequest, phase: string, details?: 
   )
 }
 
+async function selectorFound(page: Page, selectors: string[]): Promise<boolean> {
+  for (const selector of selectors) {
+    const found = await page.locator(selector).first().isVisible().catch(() => false)
+    if (found) return true
+  }
+  return false
+}
+
+async function detectProductPage(page: Page): Promise<boolean> {
+  const hasProductSelector = await selectorFound(page, [
+    '#productTitle',
+    '#dp',
+    '#centerCol',
+    '#ppd',
+    '#ASIN',
+  ])
+  if (hasProductSelector) return true
+
+  const url = page.url().toLowerCase()
+  return url.includes('/dp/') || url.includes('/gp/product/')
+}
+
+function diagnosticsMessage(diagnostics: PincodeDiagnostics): string {
+  return [
+    `page_loaded=${diagnostics.page_loaded}`,
+    `product_page_detected=${diagnostics.product_page_detected}`,
+    `location_set_attempted=${diagnostics.location_set_attempted}`,
+    `location_set_success=${diagnostics.location_set_success}`,
+    `captcha_or_robot_detected=${diagnostics.captcha_or_robot_detected}`,
+    `availability_selector_found=${diagnostics.availability_selector_found}`,
+    `price_selector_found=${diagnostics.price_selector_found}`,
+    `buy_box_selector_found=${diagnostics.buy_box_selector_found}`,
+    `final_page_type=${diagnostics.final_page_type}`,
+  ].join('; ')
+}
+
 function timeoutResponse(
   message = 'Pincode check timed out before availability could be confirmed.',
 ): PincodeAvailabilityResponse {
@@ -129,7 +193,9 @@ function timeoutResponse(
     price: null,
     seller: null,
     status: 'failed',
+    error_code: 'checker_timeout',
     error_message: message,
+    diagnostics: emptyDiagnostics(),
   }
 }
 
@@ -172,6 +238,51 @@ async function extractSnapshot(page: Page): Promise<{
     price,
     seller,
     availabilitySignal,
+  }
+}
+
+async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Promise<PincodeDiagnostics> {
+  const captchaOrRobotDetected = previous.captcha_or_robot_detected || await isBlockedPage(page)
+  const productPageDetected = await detectProductPage(page)
+  const availabilitySelectorFound = await selectorFound(page, [
+    '#availability',
+    '#availability span',
+    '#availability_feature_div',
+    '#outOfStock',
+    '#deliveryBlockMessage',
+    '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
+    '#ddmDeliveryMessage',
+  ])
+  const priceSelectorFound = await selectorFound(page, [
+    '.a-price .a-offscreen',
+    '#corePrice_feature_div .a-price .a-offscreen',
+    '#priceblock_ourprice',
+    '#priceblock_dealprice',
+    '#price_inside_buybox',
+  ])
+  const buyBoxSelectorFound = await selectorFound(page, [
+    '#add-to-cart-button',
+    '#buy-now-button',
+    '#submit.add-to-cart',
+    '#submit.buy-now',
+    '#desktop_buybox',
+    '#buybox',
+  ])
+
+  return {
+    ...previous,
+    product_page_detected: productPageDetected,
+    captcha_or_robot_detected: captchaOrRobotDetected,
+    availability_selector_found: availabilitySelectorFound,
+    price_selector_found: priceSelectorFound,
+    buy_box_selector_found: buyBoxSelectorFound,
+    final_page_type: captchaOrRobotDetected
+      ? 'captcha'
+      : productPageDetected
+        ? 'product'
+        : availabilitySelectorFound
+          ? 'unavailable'
+          : 'unknown',
   }
 }
 
@@ -261,7 +372,9 @@ export async function runPincodeAvailabilityCheck(
       price: null,
       seller: null,
       status: 'failed',
+      error_code: 'unsupported_marketplace',
       error_message: 'Only Amazon India marketplace is supported by this checker.',
+      diagnostics: emptyDiagnostics(),
     }
   }
 
@@ -272,6 +385,7 @@ export async function runPincodeAvailabilityCheck(
 
     return await withTimeout(
       withBrowserPage(async page => {
+        let diagnostics = emptyDiagnostics()
         page.setDefaultTimeout(PAGE_ACTION_TIMEOUT_MS)
         page.setDefaultNavigationTimeout(NAVIGATION_ACTION_TIMEOUT_MS)
 
@@ -282,9 +396,14 @@ export async function runPincodeAvailabilityCheck(
           GOTO_TIMEOUT_MS,
           'Timed out while opening Amazon product page.',
         )
+        diagnostics = {
+          ...diagnostics,
+          page_loaded: true,
+        }
         pincodeLog(input, 'goto_completed')
 
-        if (await isBlockedPage(page)) {
+        diagnostics = await collectDiagnostics(page, diagnostics)
+        if (diagnostics.captcha_or_robot_detected) {
           pincodeLog(input, 'blocked_detected_after_goto')
           return {
             ok: false,
@@ -293,19 +412,30 @@ export async function runPincodeAvailabilityCheck(
             price: null,
             seller: null,
             status: 'blocked',
-            error_message: 'Amazon blocked the pincode check. Try again later.',
+            error_code: 'amazon_blocked_or_captcha',
+            error_message: diagnosticsMessage(diagnostics),
+            diagnostics,
           }
         }
 
         pincodeLog(input, 'pincode_set_started')
+        diagnostics = {
+          ...diagnostics,
+          location_set_attempted: true,
+        }
         const pincodeSet = await withTimeout(
           trySetPincode(page, input.pincode),
           8_000,
           'Timed out while setting pincode on delivery widget.',
         )
+        diagnostics = {
+          ...diagnostics,
+          location_set_success: pincodeSet,
+        }
         pincodeLog(input, 'pincode_set_completed', { pincode_set: pincodeSet })
 
         if (!pincodeSet) {
+          diagnostics = await collectDiagnostics(page, diagnostics)
           pincodeLog(input, 'fallback_extraction_started')
           const fallback = await withTimeout(
             extractSnapshot(page),
@@ -326,7 +456,9 @@ export async function runPincodeAvailabilityCheck(
             price: fallback.price,
             seller: fallback.seller,
             status: 'failed',
-            error_message: PINCODE_UNCONFIRMED_MESSAGE,
+            error_code: 'pincode_not_applied',
+            error_message: diagnosticsMessage(diagnostics),
+            diagnostics,
           }
 
           pincodeLog(input, 'finish', {
@@ -341,7 +473,8 @@ export async function runPincodeAvailabilityCheck(
           return response
         }
 
-        if (await isBlockedPage(page)) {
+        diagnostics = await collectDiagnostics(page, diagnostics)
+        if (diagnostics.captcha_or_robot_detected) {
           pincodeLog(input, 'blocked_detected_after_pincode')
           return {
             ok: false,
@@ -350,7 +483,9 @@ export async function runPincodeAvailabilityCheck(
             price: null,
             seller: null,
             status: 'blocked',
-            error_message: 'Amazon blocked the pincode check. Try again later.',
+            error_code: 'amazon_blocked_or_captcha',
+            error_message: diagnosticsMessage(diagnostics),
+            diagnostics,
           }
         }
 
@@ -367,6 +502,7 @@ export async function runPincodeAvailabilityCheck(
         })
 
         const decision = await decideAvailability(page, deliveryPromise, input.pincode)
+        diagnostics = await collectDiagnostics(page, diagnostics)
 
         if (decision.available === null && availabilitySignal === true) {
           const response: PincodeAvailabilityResponse = {
@@ -376,7 +512,9 @@ export async function runPincodeAvailabilityCheck(
             price,
             seller,
             status: 'success',
+            error_code: null,
             error_message: null,
+            diagnostics,
           }
 
           pincodeLog(input, 'finish', {
@@ -399,7 +537,9 @@ export async function runPincodeAvailabilityCheck(
             price,
             seller,
             status: 'success',
+            error_code: null,
             error_message: null,
+            diagnostics,
           }
 
           pincodeLog(input, 'finish', {
@@ -422,7 +562,12 @@ export async function runPincodeAvailabilityCheck(
             price,
             seller,
             status: 'unavailable',
+            error_code: 'product_unavailable',
             error_message: decision.reason,
+            diagnostics: {
+              ...diagnostics,
+              final_page_type: 'unavailable',
+            },
           }
 
           pincodeLog(input, 'finish', {
@@ -444,7 +589,11 @@ export async function runPincodeAvailabilityCheck(
           price,
           seller,
           status: 'failed',
-          error_message: decision.reason,
+          error_code: diagnostics.availability_selector_found || diagnostics.price_selector_found || diagnostics.buy_box_selector_found
+            ? 'pincode_not_applied'
+            : 'selectors_not_found',
+          error_message: diagnosticsMessage(diagnostics),
+          diagnostics,
         }
 
         pincodeLog(input, 'finish', {
@@ -478,7 +627,9 @@ export async function runPincodeAvailabilityCheck(
       price: null,
       seller: null,
       status: 'failed',
+      error_code: timeoutLike ? 'checker_timeout' : 'checker_failed',
       error_message: message,
+      diagnostics: emptyDiagnostics(),
     }
   }
 }

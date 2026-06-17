@@ -83,7 +83,7 @@ function toAvailabilityStatus(status: string, available: boolean | null): string
 }
 
 function categorizeDeliveryMessage(status: string, available: boolean | null): string {
-  if (status === 'blocked') return 'blocked'
+  if (status === 'blocked') return 'blocked_or_captcha'
   if (available === true) return 'available'
   if (available === false) return 'unavailable'
   return 'unknown'
@@ -243,6 +243,9 @@ export async function runNextScrapingJob(input?: z.infer<typeof runNextSchema>) 
         })
 
         const availabilityStatus = toAvailabilityStatus(result.status, result.available)
+        const diagnostics = result.diagnostics ?? {
+          buy_box_selector_found: Boolean(result.seller),
+        }
         if (availabilityStatus === 'available') available += 1
         else if (availabilityStatus === 'unavailable') unavailable += 1
         else unknown += 1
@@ -257,10 +260,10 @@ export async function runNextScrapingJob(input?: z.infer<typeof runNextSchema>) 
           delivery_message_category: categorizeDeliveryMessage(result.status, result.available),
           delivery_message: result.delivery_promise,
           price_detected: result.price !== null,
-          buy_box_detected: Boolean(result.seller),
+          buy_box_detected: Boolean(diagnostics.buy_box_selector_found),
           seller_name: result.seller,
           checked_at: checkedAt,
-          error_code: result.ok ? null : result.status,
+          error_code: result.error_code ?? (result.ok ? null : result.status),
           error_message: sanitizeErrorMessage(result.error_message),
         })
 
