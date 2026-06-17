@@ -20,6 +20,14 @@ type LatestReportMeta = {
   raw_summary?: Record<string, unknown> | null
 }
 
+type OpportunityFilter =
+  | 'all'
+  | 'high-demand'
+  | 'conversion-gap'
+  | 'click-share-opportunity'
+  | 'winning-term'
+  | 'competitor-asin'
+
 type SafeErrorStage =
   | 'auth'
   | 'workspace_resolution'
@@ -170,6 +178,7 @@ function getAppliedFilters(input: {
   departmentName: string
   minRank: number | null
   maxRank: number | null
+  opportunity: OpportunityFilter
 }): string[] {
   const filters = ['workspace_id']
   if (input.reportDocumentId) filters.push('report_document_id')
@@ -179,6 +188,7 @@ function getAppliedFilters(input: {
   if (input.departmentName) filters.push('department_name')
   if (input.minRank !== null) filters.push('min_search_frequency_rank')
   if (input.maxRank !== null) filters.push('max_search_frequency_rank')
+  if (input.opportunity !== 'all') filters.push('opportunity')
   return filters
 }
 
@@ -264,6 +274,28 @@ function groupSearchTerms(rows: SearchTermSourceRow[], pageSize: number): Groupe
   return Array.from(groups.values()).slice(0, pageSize)
 }
 
+function matchesOpportunity(row: GroupedSearchTermRow, opportunity: OpportunityFilter): boolean {
+  if (opportunity === 'all') return true
+  if (opportunity === 'high-demand') return (row.searchFrequencyRank ?? Number.MAX_SAFE_INTEGER) <= 10000
+  if (opportunity === 'conversion-gap') return row.opportunityTag === 'Conversion gap'
+  if (opportunity === 'click-share-opportunity') return row.opportunityTag === 'Click share opportunity'
+  if (opportunity === 'winning-term') return row.opportunityTag === 'Winning term'
+  return row.topClickedProducts.some(product => Boolean(product.asin))
+}
+
+function normalizeOpportunity(value: string | null): OpportunityFilter {
+  if (
+    value === 'high-demand' ||
+    value === 'conversion-gap' ||
+    value === 'click-share-opportunity' ||
+    value === 'winning-term' ||
+    value === 'competitor-asin'
+  ) {
+    return value
+  }
+  return 'all'
+}
+
 export async function GET(req: Request) {
   try {
     const supabase = await createClient()
@@ -305,6 +337,7 @@ export async function GET(req: Request) {
     const reportDocumentId = url.searchParams.get('reportDocumentId')?.trim() ?? ''
     const minRank = toNullableInt(url.searchParams.get('minRank'))
     const maxRank = toNullableInt(url.searchParams.get('maxRank'))
+    const opportunity = normalizeOpportunity(url.searchParams.get('opportunity'))
     const workspaceId = member.workspace_id as string
 
     let readClient: Awaited<ReturnType<typeof createClient>> | ReturnType<typeof createAdminClient>
@@ -407,6 +440,7 @@ export async function GET(req: Request) {
     if (departmentName) query = query.ilike('department_name', `%${departmentName}%`)
     if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
     if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
+    if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
     query = query.lte('click_share_rank', 3)
 
     const { data, error } = await query
@@ -434,6 +468,7 @@ export async function GET(req: Request) {
             departmentName,
             minRank,
             maxRank,
+            opportunity,
           }),
           workspaceResolved: true,
           workspaceIdPresent: Boolean(workspaceId),
@@ -443,7 +478,9 @@ export async function GET(req: Request) {
     }
 
     const sourceRows = Array.isArray(data) ? data as SearchTermSourceRow[] : []
-    const rows = groupSearchTerms(sourceRows, pageSize)
+    const rows = groupSearchTerms(sourceRows, pageSize * 2)
+      .filter(row => matchesOpportunity(row, opportunity))
+      .slice(0, pageSize)
     const hasMore = sourceRows.length > sourcePageSize
     const parsedRowCount = getSummaryNumber(latestSummary, 'parsed_row_count', 'parsedRowCount')
     let storedRowCount = getSummaryNumber(
@@ -461,6 +498,30 @@ export async function GET(req: Request) {
         ?? toNullableString(latestJob?.processing_status)
         ?? (storedRowCount && storedRowCount > 0 ? 'done' : null),
     )
+
+    let departments: string[] = []
+    if (effectiveReportDocumentId || effectiveReportId) {
+      let departmentQuery = readClient
+        .from('brand_analytics_search_terms_rows')
+        .select('department_name')
+        .eq('workspace_id', workspaceId)
+        .neq('department_name', '')
+        .order('department_name', { ascending: true })
+        .limit(1000)
+
+      if (effectiveReportDocumentId) {
+        departmentQuery = departmentQuery.eq('report_document_id', effectiveReportDocumentId)
+      } else {
+        departmentQuery = departmentQuery.eq('report_id', effectiveReportId)
+      }
+
+      const { data: departmentRows } = await departmentQuery
+      departments = Array.from(new Set(
+        (Array.isArray(departmentRows) ? departmentRows : [])
+          .map(row => typeof row.department_name === 'string' ? row.department_name.trim() : '')
+          .filter(Boolean),
+      )).slice(0, 100)
+    }
 
     return NextResponse.json({
       page,
@@ -488,6 +549,13 @@ export async function GET(req: Request) {
         parsedRowCount,
         countSource,
         countMode,
+        departments,
+        fieldCompleteness: {
+          impressions: false,
+          clicks: false,
+          purchases: false,
+          cartAdds: false,
+        },
       },
     })
   } catch {

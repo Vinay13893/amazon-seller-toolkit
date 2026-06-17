@@ -6,6 +6,7 @@ import {
   BarChart3,
   ChevronLeft,
   ChevronRight,
+  Download,
   Loader2,
   Search,
   ShieldCheck,
@@ -65,6 +66,13 @@ type ApiMeta = {
   parsedRowCount: number | null
   countSource: 'sync_summary' | 'unavailable'
   countMode?: 'summary_or_unavailable'
+  departments?: string[]
+  fieldCompleteness?: {
+    impressions: boolean
+    clicks: boolean
+    purchases: boolean
+    cartAdds: boolean
+  }
 }
 
 type ApiResponse = {
@@ -90,7 +98,16 @@ type Filters = {
   departmentName: string
   minRank: string
   maxRank: string
+  opportunity: OpportunityKey
 }
+
+type OpportunityKey =
+  | 'all'
+  | 'high-demand'
+  | 'conversion-gap'
+  | 'click-share-opportunity'
+  | 'winning-term'
+  | 'competitor-asin'
 
 const DEFAULT_FILTERS: Filters = {
   searchTerm: '',
@@ -98,7 +115,41 @@ const DEFAULT_FILTERS: Filters = {
   departmentName: '',
   minRank: '',
   maxRank: '',
+  opportunity: 'all',
 }
+
+const OPPORTUNITIES: Array<{ key: OpportunityKey; label: string; why: string; action: string }> = [
+  {
+    key: 'high-demand',
+    label: 'High-demand terms',
+    why: 'These terms have strong search frequency and deserve listing and ad focus.',
+    action: 'Prioritize bids and listing quality',
+  },
+  {
+    key: 'conversion-gap',
+    label: 'Conversion gaps',
+    why: 'Shoppers click, but conversion share is weak compared with demand.',
+    action: 'Improve image/title/price/reviews',
+  },
+  {
+    key: 'click-share-opportunity',
+    label: 'Click share opportunities',
+    why: 'Demand exists, but the winning product is not capturing enough clicks.',
+    action: 'Add exact-match campaigns',
+  },
+  {
+    key: 'winning-term',
+    label: 'Winning terms',
+    why: 'Strong click and conversion share signals that this term should be protected.',
+    action: 'Protect winning term',
+  },
+  {
+    key: 'competitor-asin',
+    label: 'Competitor ASIN opportunities',
+    why: 'These terms reveal products winning shopper attention.',
+    action: 'Track competitor ASINs',
+  },
+]
 
 function formatNumber(value: number | null | undefined): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 'Not available'
@@ -124,6 +175,11 @@ function compactId(value: string | null | undefined): string {
   return `${value.slice(0, 8)}...${value.slice(-6)}`
 }
 
+function amazonProductUrl(asin: string | null): string | null {
+  if (!asin) return null
+  return `https://www.amazon.in/dp/${encodeURIComponent(asin)}`
+}
+
 function opportunityTone(tag: SearchTermRow['opportunityTag']): string {
   switch (tag) {
     case 'Winning term':
@@ -145,28 +201,15 @@ function opportunityIcon(tag: SearchTermRow['opportunityTag']) {
 }
 
 function insightSummary(rows: SearchTermRow[]) {
-  return [
-    {
-      label: 'High-demand terms',
-      value: rows.filter(row => (row.searchFrequencyRank ?? Number.MAX_SAFE_INTEGER) <= 10000).length,
-      note: 'Prioritize bids and listing quality',
-    },
-    {
-      label: 'Conversion gaps',
-      value: rows.filter(row => row.opportunityTag === 'Conversion gap').length,
-      note: 'Improve offer and PDP conversion',
-    },
-    {
-      label: 'Click share opportunities',
-      value: rows.filter(row => row.opportunityTag === 'Click share opportunity').length,
-      note: 'Add exact-match campaigns',
-    },
-    {
-      label: 'Competitor ASIN opportunities',
-      value: rows.filter(row => row.topClickedProducts.some(product => product.asin)).length,
-      note: 'Track products winning clicks',
-    },
-  ]
+  return OPPORTUNITIES.map(opportunity => {
+    let value = 0
+    if (opportunity.key === 'high-demand') value = rows.filter(row => (row.searchFrequencyRank ?? Number.MAX_SAFE_INTEGER) <= 10000).length
+    if (opportunity.key === 'conversion-gap') value = rows.filter(row => row.opportunityTag === 'Conversion gap').length
+    if (opportunity.key === 'click-share-opportunity') value = rows.filter(row => row.opportunityTag === 'Click share opportunity').length
+    if (opportunity.key === 'winning-term') value = rows.filter(row => row.opportunityTag === 'Winning term').length
+    if (opportunity.key === 'competitor-asin') value = rows.filter(row => row.topClickedProducts.some(product => product.asin)).length
+    return { ...opportunity, value }
+  })
 }
 
 export default function BrandAnalyticsSearchTermsPage() {
@@ -248,6 +291,19 @@ export default function BrandAnalyticsSearchTermsPage() {
     setPage(1)
   }
 
+  function viewOpportunity(opportunity: OpportunityKey) {
+    const nextFilters = { ...DEFAULT_FILTERS, opportunity }
+    if (opportunity === 'high-demand') nextFilters.maxRank = '10000'
+    setFilters(nextFilters)
+    setAppliedFilters(nextFilters)
+    setPage(1)
+  }
+
+  function downloadCsv() {
+    const params = new URLSearchParams(queryString)
+    window.open(`/api/brand-analytics/search-terms/export?${params.toString()}`, '_blank', 'noopener,noreferrer')
+  }
+
   const dataPeriod = meta?.dataStartTime || meta?.dataEndTime
     ? `${formatDate(meta?.dataStartTime)} to ${formatDate(meta?.dataEndTime)}`
     : 'Not available'
@@ -257,6 +313,7 @@ export default function BrandAnalyticsSearchTermsPage() {
     ? formatNumber(meta.storedRowCount)
     : 'Available after data refresh'
   const insights = insightSummary(rows)
+  const viewingOpportunity = OPPORTUNITIES.find(item => item.key === appliedFilters.opportunity)
 
   return (
     <div className="flex flex-col gap-6">
@@ -270,6 +327,10 @@ export default function BrandAnalyticsSearchTermsPage() {
         <Button type="button" variant="outline" onClick={() => void loadRows()} disabled={loading}>
           {loading ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
           Refresh
+        </Button>
+        <Button type="button" variant="outline" onClick={downloadCsv} disabled={loading}>
+          <Download className="size-4" />
+          Download CSV
         </Button>
       </div>
 
@@ -334,12 +395,17 @@ export default function BrandAnalyticsSearchTermsPage() {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="departmentName">Department</Label>
-              <Input
+              <select
                 id="departmentName"
+                className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                 value={filters.departmentName}
                 onChange={event => setFilters(current => ({ ...current, departmentName: event.target.value }))}
-                placeholder="Department"
-              />
+              >
+                <option value="">All departments</option>
+                {(meta?.departments ?? []).map(department => (
+                  <option key={department} value={department}>{department}</option>
+                ))}
+              </select>
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1.5">
@@ -373,6 +439,14 @@ export default function BrandAnalyticsSearchTermsPage() {
               </Button>
             </div>
           </div>
+          {appliedFilters.opportunity !== 'all' && viewingOpportunity && (
+            <div className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
+              <p className="text-xs text-muted-foreground">Viewing: <span className="font-medium text-foreground">{viewingOpportunity.label}</span></p>
+              <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
+                Clear view
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -445,9 +519,20 @@ export default function BrandAnalyticsSearchTermsPage() {
                               <div key={`${product.asin ?? 'asin'}-${productIndex}`} className="rounded-md border border-border/70 px-3 py-2">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
-                                    <p className="truncate font-mono text-xs font-medium text-foreground">
-                                      #{product.rank ?? productIndex + 1} {product.asin || 'ASIN unavailable'}
-                                    </p>
+                                    {amazonProductUrl(product.asin) ? (
+                                      <a
+                                        href={amazonProductUrl(product.asin) ?? undefined}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="block truncate font-mono text-xs font-medium text-foreground hover:underline"
+                                      >
+                                        #{product.rank ?? productIndex + 1} {product.asin}
+                                      </a>
+                                    ) : (
+                                      <p className="truncate font-mono text-xs font-medium text-foreground">
+                                        #{product.rank ?? productIndex + 1} ASIN unavailable
+                                      </p>
+                                    )}
                                     <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{product.itemName || 'Item name unavailable'}</p>
                                   </div>
                                   <p className="shrink-0 text-xs font-semibold text-foreground">{formatPercent(product.clickShare)}</p>
@@ -508,17 +593,23 @@ export default function BrandAnalyticsSearchTermsPage() {
           <CardContent>
             <div className="mb-4">
               <h2 className="text-base font-semibold text-foreground">Growth Opportunities</h2>
-              <p className="mt-1 text-xs text-muted-foreground">Fast read on what deserves attention next.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Click an opportunity to see the terms behind it.</p>
             </div>
             <div className="grid gap-3">
               {insights.map(insight => (
-                <div key={insight.label} className="rounded-md border border-border/70 p-3">
+                <button
+                  key={insight.label}
+                  type="button"
+                  onClick={() => viewOpportunity(insight.key)}
+                  className="rounded-md border border-border/70 p-3 text-left transition hover:bg-muted/40"
+                >
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm font-medium text-foreground">{insight.label}</p>
                     <p className="text-lg font-semibold text-foreground">{insight.value}</p>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{insight.note}</p>
-                </div>
+                  <p className="mt-1 text-xs text-muted-foreground">{insight.action}</p>
+                  <p className="mt-2 text-xs text-muted-foreground">Why? {insight.why}</p>
+                </button>
               ))}
             </div>
           </CardContent>
@@ -561,7 +652,18 @@ export default function BrandAnalyticsSearchTermsPage() {
                     <div key={`${product.asin ?? 'product'}-${index}`} className="rounded-md bg-muted/40 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="font-mono text-xs font-semibold text-foreground">#{product.rank ?? index + 1} {product.asin || 'ASIN unavailable'}</p>
+                          {amazonProductUrl(product.asin) ? (
+                            <a
+                              href={amazonProductUrl(product.asin) ?? undefined}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block font-mono text-xs font-semibold text-foreground hover:underline"
+                            >
+                              #{product.rank ?? index + 1} {product.asin}
+                            </a>
+                          ) : (
+                            <p className="font-mono text-xs font-semibold text-foreground">#{product.rank ?? index + 1} ASIN unavailable</p>
+                          )}
                           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{product.itemName || 'Item name unavailable'}</p>
                         </div>
                         <div className="text-right text-xs">
@@ -576,12 +678,12 @@ export default function BrandAnalyticsSearchTermsPage() {
               </div>
 
               <div className="rounded-lg border border-border p-4">
-                <p className="text-xs font-medium text-muted-foreground">Next actions to build later</p>
-                <div className="mt-3 grid gap-2 text-sm text-foreground">
-                  <p>Add keyword to watchlist</p>
-                  <p>Track competitor ASIN</p>
-                  <p>Create weekly change alert</p>
-                  <p>Add action to checklist</p>
+                <p className="text-xs font-medium text-muted-foreground">Coming soon</p>
+                <div className="mt-3 grid gap-2">
+                  <Button type="button" variant="outline" disabled>Create exact-match campaign</Button>
+                  <Button type="button" variant="outline" disabled>Add keyword to existing campaign</Button>
+                  <Button type="button" variant="outline" disabled>Add ASIN to competitor watchlist</Button>
+                  <Button type="button" variant="outline" disabled>Save action</Button>
                 </div>
               </div>
             </div>
