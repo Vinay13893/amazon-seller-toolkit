@@ -48,6 +48,13 @@ type JobResponse = {
   message?: string
 }
 
+type TriggerResponse = {
+  success: boolean
+  errorCode?: string
+  message?: string
+  workerStatus?: string | null
+}
+
 const DEFAULT_PINCODES = '110001\n560001'
 
 function parseAsins(value: string): string[] {
@@ -90,6 +97,7 @@ export default function PincodeCheckerPage() {
   const [loading, setLoading] = useState(false)
   const [polling, setPolling] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const asins = useMemo(() => parseAsins(asinText), [asinText])
   const pincodes = useMemo(() => parsePincodes(pincodeText), [pincodeText])
@@ -125,6 +133,7 @@ export default function PincodeCheckerPage() {
   async function startJob() {
     setLoading(true)
     setError(null)
+    setNotice(null)
     setResults([])
 
     try {
@@ -143,6 +152,21 @@ export default function PincodeCheckerPage() {
         return
       }
       setJob(body.job)
+
+      const triggerRes = await fetch(`/api/scraping/pincode-availability/jobs/${body.job.id}/run`, {
+        method: 'POST',
+      })
+      const triggerBody = await readJson(triggerRes) as TriggerResponse
+      if (!triggerRes.ok || !triggerBody.success) {
+        if (triggerBody.errorCode === 'worker_trigger_not_configured') {
+          setNotice('Job queued. Worker trigger is not configured yet.')
+        } else {
+          setNotice('Job queued. Worker trigger failed safely; refresh after the worker runs.')
+        }
+      } else {
+        setNotice('Job queued and worker trigger accepted.')
+      }
+
       await pollJob(body.job.id)
     } catch {
       setError('job_create_failed')
@@ -260,6 +284,12 @@ export default function PincodeCheckerPage() {
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
           Pincode queue API failed: {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+          {notice}
         </div>
       )}
 
