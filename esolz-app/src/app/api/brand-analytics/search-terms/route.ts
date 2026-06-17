@@ -9,6 +9,17 @@ const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
 const SEARCH_TERMS_REPORT_TYPE = 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
 
+type LatestReportMeta = {
+  report_id?: string | null
+  report_document_id?: string | null
+  report_type?: string | null
+  processing_status?: string | null
+  data_start_time?: string | null
+  data_end_time?: string | null
+  completed_at?: string | null
+  raw_summary?: Record<string, unknown> | null
+}
+
 function toPositiveInt(value: string | null, fallback: number): number {
   if (!value) return fallback
   const parsed = Number.parseInt(value, 10)
@@ -27,6 +38,19 @@ function toNullableNumber(value: unknown): number | null {
 
 function toNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null
+}
+
+function normalizeStatus(value: string | null): string | null {
+  if (!value) return null
+  return value.toLowerCase() === 'done' ? 'done' : value
+}
+
+function getSummaryNumber(summary: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const value = toNullableNumber(summary[key])
+    if (value !== null) return value
+  }
+  return null
 }
 
 export async function GET(req: Request) {
@@ -67,21 +91,47 @@ export async function GET(req: Request) {
     const admin = createAdminClient()
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data: latestJob } = await (admin as any)
+    const { data: latestJobData } = await (admin as any)
       .from('amazon_report_jobs')
       .select('report_id, report_document_id, report_type, processing_status, data_start_time, data_end_time, completed_at, raw_summary')
       .eq('workspace_id', member.workspace_id)
       .eq('report_type', SEARCH_TERMS_REPORT_TYPE)
       .order('completed_at', { ascending: false, nullsFirst: false })
+      .order('requested_at', { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle()
 
+    const latestJob = (latestJobData ?? null) as LatestReportMeta | null
     const latestSummary = latestJob?.raw_summary && typeof latestJob.raw_summary === 'object'
-      ? latestJob.raw_summary as Record<string, unknown>
+      ? latestJob.raw_summary
       : {}
 
-    const effectiveReportId = reportId || latestJob?.report_id || ''
-    const effectiveReportDocumentId = reportDocumentId || latestJob?.report_document_id || ''
+    let latestRowMeta: LatestReportMeta | null = null
+    if (!latestJob?.report_document_id && !latestJob?.report_id) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const { data: latestRow } = await (admin as any)
+        .from('brand_analytics_search_terms_rows')
+        .select('report_id, report_document_id, marketplace_id, data_start_time, data_end_time')
+        .eq('workspace_id', member.workspace_id)
+        .order('data_end_time', { ascending: false, nullsFirst: false })
+        .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (latestRow) {
+        latestRowMeta = {
+          ...latestRow,
+          report_type: SEARCH_TERMS_REPORT_TYPE,
+          processing_status: null,
+          completed_at: null,
+          raw_summary: null,
+        }
+      }
+    }
+
+    const latestReport = latestJob ?? latestRowMeta
+    const effectiveReportId = reportId || latestReport?.report_id || ''
+    const effectiveReportDocumentId = reportDocumentId || latestReport?.report_document_id || ''
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let query = (admin as any)
@@ -126,25 +176,66 @@ export async function GET(req: Request) {
 
     const rows = Array.isArray(data) ? data.slice(0, pageSize) : []
     const hasMore = Array.isArray(data) && data.length > pageSize
-    const storedRowCount = toNullableNumber(latestSummary.stored_row_count)
-      ?? toNullableNumber(latestSummary.cumulative_stored_row_count)
-    const parsedRowCount = toNullableNumber(latestSummary.parsed_row_count)
+    const parsedRowCount = getSummaryNumber(latestSummary, 'parsed_row_count', 'parsedRowCount')
+    let storedRowCount = getSummaryNumber(
+      latestSummary,
+      'stored_row_count',
+      'cumulative_stored_row_count',
+      'storedRowCount',
+      'cumulativeStoredRowCount',
+    )
+    let countSource: 'sync_summary' | 'exact' | 'unavailable' =
+      storedRowCount !== null ? 'sync_summary' : 'unavailable'
+
+    if (storedRowCount === null && (effectiveReportDocumentId || effectiveReportId)) {
+      let countQuery = admin
+        .from('brand_analytics_search_terms_rows')
+        .select('id', { count: 'exact', head: true })
+        .eq('workspace_id', member.workspace_id)
+
+      if (effectiveReportDocumentId) {
+        countQuery = countQuery.eq('report_document_id', effectiveReportDocumentId)
+      } else {
+        countQuery = countQuery.eq('report_id', effectiveReportId)
+      }
+
+      const { count, error: countError } = await countQuery
+      if (!countError && typeof count === 'number') {
+        storedRowCount = count
+        countSource = 'exact'
+      }
+    }
+
+    const latestStatus = normalizeStatus(
+      toNullableString(latestSummary.sync_status)
+        ?? toNullableString(latestJob?.processing_status)
+        ?? (storedRowCount && storedRowCount > 0 ? 'done' : null),
+    )
 
     return NextResponse.json({
       page,
       pageSize,
       hasMore,
+      rowsReturned: rows.length,
       rows,
       meta: {
-        latestReportId: toNullableString(latestJob?.report_id),
-        latestReportDocumentId: toNullableString(latestJob?.report_document_id),
-        reportType: toNullableString(latestJob?.report_type),
-        processingStatus: toNullableString(latestJob?.processing_status),
-        dataStartTime: toNullableString(latestJob?.data_start_time),
-        dataEndTime: toNullableString(latestJob?.data_end_time),
-        completedAt: toNullableString(latestJob?.completed_at),
+        latestReportId: toNullableString(latestReport?.report_id),
+        latestReportDocumentId: toNullableString(latestReport?.report_document_id),
+        reportType: toNullableString(latestReport?.report_type) ?? SEARCH_TERMS_REPORT_TYPE,
+        processingStatus: normalizeStatus(toNullableString(latestJob?.processing_status)),
+        latestStatus,
+        dataStartTime: toNullableString(latestReport?.data_start_time),
+        dataEndTime: toNullableString(latestReport?.data_end_time),
+        reportPeriod: toNullableString(latestReport?.data_start_time) || toNullableString(latestReport?.data_end_time)
+          ? {
+              start: toNullableString(latestReport?.data_start_time),
+              end: toNullableString(latestReport?.data_end_time),
+            }
+          : null,
+        completedAt: toNullableString(latestReport?.completed_at),
         storedRowCount,
         parsedRowCount,
+        countSource,
       },
     })
   } catch {

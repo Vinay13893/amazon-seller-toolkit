@@ -28,17 +28,21 @@ type ApiMeta = {
   latestReportDocumentId: string | null
   reportType: string | null
   processingStatus: string | null
+  latestStatus: string | null
   dataStartTime: string | null
   dataEndTime: string | null
+  reportPeriod: { start: string | null; end: string | null } | null
   completedAt: string | null
   storedRowCount: number | null
   parsedRowCount: number | null
+  countSource: 'sync_summary' | 'exact' | 'unavailable'
 }
 
 type ApiResponse = {
   page: number
   pageSize: number
   hasMore: boolean
+  rowsReturned: number
   rows: SearchTermRow[]
   meta: ApiMeta
 }
@@ -60,25 +64,25 @@ const DEFAULT_FILTERS: Filters = {
 }
 
 function formatNumber(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Not available'
   return new Intl.NumberFormat('en-IN').format(value)
 }
 
 function formatPercent(value: number | null | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'Not available'
   const normalized = Math.abs(value) <= 1 ? value * 100 : value
   return `${normalized.toFixed(2)}%`
 }
 
 function formatDate(value: string | null | undefined): string {
-  if (!value) return '-'
+  if (!value) return 'Not available'
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
+  if (Number.isNaN(date.getTime())) return 'Not available'
   return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' }).format(date)
 }
 
 function compactId(value: string | null | undefined): string {
-  if (!value) return '-'
+  if (!value) return 'Not available'
   if (value.length <= 18) return value
   return `${value.slice(0, 8)}...${value.slice(-6)}`
 }
@@ -90,6 +94,8 @@ export default function BrandAnalyticsSearchTermsPage() {
   const [rows, setRows] = useState<SearchTermRow[]>([])
   const [meta, setMeta] = useState<ApiMeta | null>(null)
   const [hasMore, setHasMore] = useState(false)
+  const [pageSize, setPageSize] = useState(50)
+  const [rowsReturned, setRowsReturned] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -115,6 +121,7 @@ export default function BrandAnalyticsSearchTermsPage() {
 
       if (!res.ok) {
         setRows([])
+        setRowsReturned(0)
         setError('Unable to load Brand Analytics rows right now.')
         return
       }
@@ -123,8 +130,11 @@ export default function BrandAnalyticsSearchTermsPage() {
       setRows(Array.isArray(body.rows) ? body.rows : [])
       setMeta(body.meta ?? null)
       setHasMore(Boolean(body.hasMore))
+      setPageSize(typeof body.pageSize === 'number' ? body.pageSize : 50)
+      setRowsReturned(typeof body.rowsReturned === 'number' ? body.rowsReturned : Array.isArray(body.rows) ? body.rows.length : 0)
     } catch {
       setRows([])
+      setRowsReturned(0)
       setError('Network error while loading Brand Analytics rows.')
     } finally {
       setLoading(false)
@@ -148,7 +158,9 @@ export default function BrandAnalyticsSearchTermsPage() {
 
   const dataPeriod = meta?.dataStartTime || meta?.dataEndTime
     ? `${formatDate(meta?.dataStartTime)} to ${formatDate(meta?.dataEndTime)}`
-    : '-'
+    : 'Not available'
+  const connectionStatus = loading ? 'Loading' : error ? 'Error' : 'Connected'
+  const latestStatus = meta?.latestStatus ?? meta?.processingStatus ?? 'Not available'
 
   return (
     <div className="flex flex-col gap-5">
@@ -156,7 +168,7 @@ export default function BrandAnalyticsSearchTermsPage() {
         <div>
           <h1 className="text-xl font-semibold text-foreground">Brand Analytics — Search Terms</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Explore stored Search Terms rows with server-side filters and pagination.
+            Data connection status: {connectionStatus}
           </p>
         </div>
         <Button type="button" variant="outline" onClick={() => void loadRows()} disabled={loading}>
@@ -170,12 +182,15 @@ export default function BrandAnalyticsSearchTermsPage() {
           <CardContent>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Stored Rows</p>
             <p className="mt-2 text-2xl font-black text-foreground">{formatNumber(meta?.storedRowCount)}</p>
+            {meta?.countSource && (
+              <p className="mt-1 text-[11px] text-muted-foreground">Source: {meta.countSource.replace('_', ' ')}</p>
+            )}
           </CardContent>
         </Card>
         <Card className="rounded-lg">
           <CardContent>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Latest Status</p>
-            <p className="mt-2 text-sm font-semibold text-foreground">{meta?.processingStatus ?? '-'}</p>
+            <p className="mt-2 text-sm font-semibold text-foreground">{latestStatus}</p>
             <p className="mt-1 text-[11px] text-muted-foreground">{compactId(meta?.latestReportDocumentId)}</p>
           </CardContent>
         </Card>
@@ -188,10 +203,16 @@ export default function BrandAnalyticsSearchTermsPage() {
         <Card className="rounded-lg">
           <CardContent>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Page Size</p>
-            <p className="mt-2 text-2xl font-black text-foreground">50</p>
+            <p className="mt-2 text-2xl font-black text-foreground">{pageSize}</p>
           </CardContent>
         </Card>
       </div>
+
+      {error && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <Card className="rounded-lg">
         <CardContent>
@@ -269,7 +290,7 @@ export default function BrandAnalyticsSearchTermsPage() {
               <BarChart3 className="size-4 text-muted-foreground" />
               <h2 className="text-sm font-semibold text-foreground">Search Terms</h2>
             </div>
-            <p className="text-xs text-muted-foreground">Page {page}</p>
+            <p className="text-xs text-muted-foreground">Page {page} - {rowsReturned} rows returned</p>
           </div>
 
           {loading && (
@@ -350,7 +371,7 @@ export default function BrandAnalyticsSearchTermsPage() {
               Previous
             </Button>
             <span className="text-xs text-muted-foreground">
-              {rows.length > 0 ? `${rows.length} rows shown` : 'No rows shown'}
+              {rowsReturned > 0 ? `${rowsReturned} rows shown` : 'No rows shown'}
             </span>
             <Button
               type="button"
