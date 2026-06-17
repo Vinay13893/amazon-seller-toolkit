@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useTheme } from 'next-themes'
 import AmazonConnectionCard from './AmazonConnectionCard'
+import AmazonAdsCard from './AmazonAdsCard'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -468,6 +469,8 @@ export default function SettingsPage() {
 
           {/* ── 6. Amazon Connection ──────────────────────────────────── */}
           <AmazonConnectionCard />
+
+          <AmazonAdsCard />
 
           {/* ── 7. Security ──────────────────────────────────────────────── */}
           <Section icon={Shield} title="Security" description="Manage your account security and session">
