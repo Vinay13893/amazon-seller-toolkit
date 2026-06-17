@@ -17,6 +17,28 @@ function sanitizeErrorMessage(value: unknown): string | null {
   return value.replace(/https?:\/\/\S+/g, '[redacted_url]').slice(0, 180)
 }
 
+function cleanPipeSeparatedText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const cleaned = Array.from(new Set(
+    value
+      .split('|')
+      .map(part => part.trim())
+      .filter(Boolean),
+  )).join(' | ')
+  return cleaned || null
+}
+
+function formatPrice(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (/[₹$€£]/.test(trimmed)) return trimmed
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    return `₹${Number(trimmed).toLocaleString('en-IN')}`
+  }
+  return trimmed
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ jobId: string }> },
@@ -94,7 +116,81 @@ export async function GET(
     },
     results: (results ?? []).map(result => ({
       ...result,
+      price_text: formatPrice(result.price_text),
+      seller_name: cleanPipeSeparatedText(result.seller_name),
       error_message: sanitizeErrorMessage(result.error_message),
     })),
+  })
+}
+
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ jobId: string }> },
+) {
+  const { jobId } = await params
+
+  if (!isUuid(jobId)) {
+    return safeError(400, 'invalid_job_id', 'Invalid Buy Box job id.')
+  }
+
+  const supabase = await createClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    return safeError(401, 'unauthorized', 'Unauthorized')
+  }
+
+  const { data: member, error: memberError } = await supabase
+    .from('workspace_members')
+    .select('workspace_id')
+    .eq('user_id', user.id)
+    .limit(1)
+    .maybeSingle()
+
+  if (memberError || !member?.workspace_id) {
+    return safeError(404, 'workspace_not_found', 'No workspace found for authenticated user.')
+  }
+
+  const admin = createAdminClient()
+  const { data: job, error: jobError } = await admin
+    .from('scraping_jobs')
+    .select('id')
+    .eq('id', jobId)
+    .eq('workspace_id', member.workspace_id)
+    .eq('job_type', 'BUY_BOX_CHECK')
+    .maybeSingle()
+
+  if (jobError) {
+    return safeError(500, 'job_read_failed', 'Unable to read Buy Box job.')
+  }
+
+  if (!job) {
+    return safeError(404, 'job_not_found', 'Buy Box job was not found.')
+  }
+
+  const { error: deleteResultsError } = await admin
+    .from('buy_box_results')
+    .delete()
+    .eq('workspace_id', member.workspace_id)
+    .eq('job_id', jobId)
+
+  if (deleteResultsError) {
+    return safeError(500, 'results_clear_failed', 'Unable to clear Buy Box results.')
+  }
+
+  const { error: deleteJobError } = await admin
+    .from('scraping_jobs')
+    .delete()
+    .eq('workspace_id', member.workspace_id)
+    .eq('id', jobId)
+
+  if (deleteJobError) {
+    return safeError(500, 'job_clear_failed', 'Unable to clear Buy Box job.')
+  }
+
+  return NextResponse.json({
+    success: true,
+    jobId,
+    cleared: true,
   })
 }

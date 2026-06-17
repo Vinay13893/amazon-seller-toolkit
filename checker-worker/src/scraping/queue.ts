@@ -98,6 +98,16 @@ function sanitizeErrorMessage(value: unknown): string | null {
   return value.replace(/https?:\/\/\S+/g, '[redacted_url]').slice(0, 180)
 }
 
+function cleanPipeSeparatedText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const parts = value
+    .split('|')
+    .map(part => part.trim())
+    .filter(Boolean)
+  const cleaned = Array.from(new Set(parts)).join(' | ')
+  return cleaned || null
+}
+
 function normalizeMarketplace(value: string): string {
   const normalized = value.trim()
   if (normalized === 'A21TJRUUN4KGV') return 'amazon.in'
@@ -261,7 +271,7 @@ async function processBuyBoxJob(job: ScrapingJobRow) {
         buy_box_detected: detected,
         price_detected: result.price !== null,
         price_text: result.price !== null ? String(result.price) : null,
-        seller_name: result.seller,
+        seller_name: cleanPipeSeparatedText(result.seller),
         availability_status: toAvailabilityStatus(result.status, result.available),
         page_status: pageStatus,
         error_code: result.error_code ?? (result.ok ? null : result.status),

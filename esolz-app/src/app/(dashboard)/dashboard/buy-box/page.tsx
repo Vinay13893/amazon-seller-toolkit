@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { AlertTriangle, CheckCircle2, Clock, Loader2, Play, RefreshCw, ShoppingCart, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, Play, RefreshCw, ShoppingCart, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -79,12 +79,42 @@ function resultIcon(result: BuyBoxResult) {
   return Clock
 }
 
+function cleanPipeSeparatedText(value: string | null): string | null {
+  if (!value) return null
+  const cleaned = Array.from(new Set(
+    value
+      .split('|')
+      .map(part => part.trim())
+      .filter(Boolean),
+  )).join(' | ')
+  return cleaned || null
+}
+
+function formatPrice(value: string | null): string | null {
+  if (!value) return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (/[₹$€£]/.test(trimmed)) return trimmed
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    return `₹${Number(trimmed).toLocaleString('en-IN')}`
+  }
+  return trimmed
+}
+
+function reasonLabel(result: BuyBoxResult): string {
+  if (result.error_code) return result.error_code
+  if (result.page_status === 'blocked') return 'blocked_or_captcha'
+  return 'No issue reported'
+}
+
 export default function BuyBoxMonitorPage() {
   const [asinText, setAsinText] = useState('')
   const [job, setJob] = useState<BuyBoxJob | null>(null)
   const [results, setResults] = useState<BuyBoxResult[]>([])
   const [loading, setLoading] = useState(false)
   const [polling, setPolling] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -158,6 +188,60 @@ export default function BuyBoxMonitorPage() {
       setError('job_create_failed')
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function downloadCsv() {
+    if (!job?.id) return
+    setExporting(true)
+    setError(null)
+
+    try {
+      const res = await fetch(`/api/scraping/buy-box/jobs/${job.id}/export`)
+      if (!res.ok) {
+        const body = await readJson(res)
+        setError(body.errorCode ?? body.message ?? 'csv_export_failed')
+        return
+      }
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `buy-box-${job.id.slice(0, 8)}.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError('csv_export_failed')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  async function clearCurrentResults() {
+    if (!job?.id) return
+    setClearing(true)
+    setError(null)
+    setNotice(null)
+
+    try {
+      const res = await fetch(`/api/scraping/buy-box/jobs/${job.id}`, {
+        method: 'DELETE',
+      })
+      const body = await readJson(res)
+      if (!res.ok || !body.success) {
+        setError(body.errorCode ?? body.message ?? 'clear_job_failed')
+        return
+      }
+      setJob(null)
+      setResults([])
+      setNotice('Current Buy Box results cleared.')
+    } catch {
+      setError('clear_job_failed')
+    } finally {
+      setClearing(false)
     }
   }
 
@@ -268,9 +352,33 @@ export default function BuyBoxMonitorPage() {
         <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h2 className="font-semibold text-foreground">Results</h2>
-            <p className="text-xs text-muted-foreground">Structured fields only. No raw page data is stored.</p>
+            <p className="text-xs text-muted-foreground">Structured fields only. No raw HTML, screenshots, cookies, or page dumps are stored.</p>
           </div>
-          <Badge variant="secondary">{results.length} rows</Badge>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={downloadCsv}
+              disabled={exporting || !job?.id || results.length === 0}
+              className="gap-2"
+            >
+              {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+              Download CSV
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={clearCurrentResults}
+              disabled={clearing || !job?.id}
+              className="gap-2"
+            >
+              {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+              Clear current results
+            </Button>
+            <Badge variant="secondary">{results.length} rows</Badge>
+          </div>
         </div>
 
         {results.length === 0 ? (
@@ -304,11 +412,11 @@ export default function BuyBoxMonitorPage() {
                           {result.buy_box_detected === true ? 'Detected' : result.buy_box_detected === false ? 'Not detected' : 'Unknown'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? result.price_text ?? 'Detected' : 'Not detected'}</td>
-                      <td className="max-w-[260px] px-4 py-3 text-xs text-muted-foreground">{result.seller_name ?? 'Not detected'}</td>
+                      <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? formatPrice(result.price_text) ?? 'Detected' : 'Not detected'}</td>
+                      <td className="max-w-[260px] px-4 py-3 text-xs text-muted-foreground">{cleanPipeSeparatedText(result.seller_name) ?? 'Not detected'}</td>
                       <td className="px-4 py-3 text-xs text-muted-foreground capitalize">{result.availability_status ?? 'unknown'}</td>
                       <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">
-                        <span className="font-medium text-foreground">{result.error_code ?? result.page_status ?? 'No issue reported'}</span>
+                        <span className="font-medium text-foreground">{reasonLabel(result)}</span>
                         {result.error_message && <span className="mt-1 line-clamp-2 block">{result.error_message}</span>}
                       </td>
                       <td className="px-5 py-3 text-xs text-muted-foreground">
