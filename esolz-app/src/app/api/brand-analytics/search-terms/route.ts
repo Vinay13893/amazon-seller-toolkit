@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
 
 export const runtime = 'nodejs'
 export const maxDuration = 20
@@ -22,13 +23,66 @@ type LatestReportMeta = {
 type SafeErrorStage =
   | 'auth'
   | 'workspace_resolution'
+  | 'read_client'
   | 'latest_report_lookup'
   | 'latest_row_lookup'
   | 'rows_query'
   | 'unexpected'
 
-function safeError(stage: SafeErrorStage, status: number, errorCode: string, message: string) {
-  return NextResponse.json({ errorCode, stage, message }, { status })
+type SafeDbError = {
+  code?: string
+  message?: string
+  hint?: string
+}
+
+type SafeErrorDetails = {
+  dbErrorCode?: string | null
+  dbErrorMessage?: string | null
+  dbErrorHint?: string | null
+  queryColumns?: string[]
+  orderColumn?: string
+  filtersApplied?: string[]
+  workspaceResolved?: boolean
+  workspaceIdPresent?: boolean
+}
+
+const SEARCH_TERMS_COLUMNS = [
+  'department_name',
+  'search_term',
+  'search_frequency_rank',
+  'clicked_asin',
+  'clicked_item_name',
+  'click_share_rank',
+  'click_share',
+  'conversion_share',
+  'report_id',
+  'report_document_id',
+  'marketplace_id',
+  'data_start_time',
+  'data_end_time',
+]
+
+function sanitizeDbText(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  return value.replace(/"[^"]+"/g, '"[redacted]"').slice(0, 180)
+}
+
+function safeDbDetails(error: SafeDbError | null | undefined): Pick<SafeErrorDetails, 'dbErrorCode' | 'dbErrorMessage' | 'dbErrorHint'> {
+  return {
+    dbErrorCode: typeof error?.code === 'string' ? error.code : null,
+    dbErrorMessage: sanitizeDbText(error?.message),
+    dbErrorHint: sanitizeDbText(error?.hint),
+  }
+}
+
+function safeError(
+  stage: SafeErrorStage,
+  status: number,
+  errorCode: string,
+  message: string,
+  details: SafeErrorDetails = {},
+) {
+  return NextResponse.json({ errorCode, stage, message, ...details }, { status })
 }
 
 function toPositiveInt(value: string | null, fallback: number): number {
@@ -62,6 +116,26 @@ function getSummaryNumber(summary: Record<string, unknown>, ...keys: string[]): 
     if (value !== null) return value
   }
   return null
+}
+
+function getAppliedFilters(input: {
+  reportId: string
+  reportDocumentId: string
+  searchTerm: string
+  clickedAsin: string
+  departmentName: string
+  minRank: number | null
+  maxRank: number | null
+}): string[] {
+  const filters = ['workspace_id']
+  if (input.reportDocumentId) filters.push('report_document_id')
+  else if (input.reportId) filters.push('report_id')
+  if (input.searchTerm) filters.push('search_term')
+  if (input.clickedAsin) filters.push('clicked_asin')
+  if (input.departmentName) filters.push('department_name')
+  if (input.minRank !== null) filters.push('min_search_frequency_rank')
+  if (input.maxRank !== null) filters.push('max_search_frequency_rank')
+  return filters
 }
 
 export async function GET(req: Request) {
@@ -103,12 +177,20 @@ export async function GET(req: Request) {
     const reportDocumentId = url.searchParams.get('reportDocumentId')?.trim() ?? ''
     const minRank = toNullableInt(url.searchParams.get('minRank'))
     const maxRank = toNullableInt(url.searchParams.get('maxRank'))
+    const workspaceId = member.workspace_id as string
+
+    let readClient: Awaited<ReturnType<typeof createClient>> | ReturnType<typeof createAdminClient>
+    try {
+      readClient = createAdminClient()
+    } catch {
+      readClient = supabase
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data: latestJobData, error: latestJobError } = await (supabase as any)
+    const { data: latestJobData, error: latestJobError } = await (readClient as any)
       .from('amazon_report_jobs')
       .select('report_id, report_document_id, report_type, processing_status, data_start_time, data_end_time, completed_at, raw_summary')
-      .eq('workspace_id', member.workspace_id)
+      .eq('workspace_id', workspaceId)
       .eq('report_type', SEARCH_TERMS_REPORT_TYPE)
       .order('completed_at', { ascending: false, nullsFirst: false })
       .order('requested_at', { ascending: false, nullsFirst: false })
@@ -121,6 +203,11 @@ export async function GET(req: Request) {
         500,
         'latest_report_lookup_failed',
         'Brand Analytics API failed to read latest report metadata.',
+        {
+          ...safeDbDetails(latestJobError),
+          workspaceResolved: true,
+          workspaceIdPresent: Boolean(workspaceId),
+        },
       )
     }
 
@@ -132,10 +219,10 @@ export async function GET(req: Request) {
     let latestRowMeta: LatestReportMeta | null = null
     if (!latestJob?.report_document_id && !latestJob?.report_id) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data: latestRow, error: latestRowError } = await (supabase as any)
+      const { data: latestRow, error: latestRowError } = await (readClient as any)
         .from('brand_analytics_search_terms_rows')
         .select('report_id, report_document_id, marketplace_id, data_start_time, data_end_time')
-        .eq('workspace_id', member.workspace_id)
+        .eq('workspace_id', workspaceId)
         .order('data_end_time', { ascending: false, nullsFirst: false })
         .order('search_frequency_rank', { ascending: true, nullsFirst: false })
         .limit(1)
@@ -147,6 +234,14 @@ export async function GET(req: Request) {
           500,
           'latest_row_lookup_failed',
           'Brand Analytics API failed to read latest stored row metadata.',
+          {
+            ...safeDbDetails(latestRowError),
+            queryColumns: ['report_id', 'report_document_id', 'marketplace_id', 'data_start_time', 'data_end_time'],
+            orderColumn: 'data_end_time,search_frequency_rank',
+            filtersApplied: ['workspace_id'],
+            workspaceResolved: true,
+            workspaceIdPresent: Boolean(workspaceId),
+          },
         )
       }
 
@@ -166,24 +261,10 @@ export async function GET(req: Request) {
     const effectiveReportDocumentId = reportDocumentId || latestReport?.report_document_id || ''
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let query = (supabase as any)
+    let query = (readClient as any)
       .from('brand_analytics_search_terms_rows')
-      .select([
-        'department_name',
-        'search_term',
-        'search_frequency_rank',
-        'clicked_asin',
-        'clicked_item_name',
-        'click_share_rank',
-        'click_share',
-        'conversion_share',
-        'report_id',
-        'report_document_id',
-        'marketplace_id',
-        'data_start_time',
-        'data_end_time',
-      ].join(', '))
-      .eq('workspace_id', member.workspace_id)
+      .select(SEARCH_TERMS_COLUMNS.join(', '))
+      .eq('workspace_id', workspaceId)
 
     if (effectiveReportDocumentId) {
       query = query.eq('report_document_id', effectiveReportDocumentId)
@@ -208,6 +289,22 @@ export async function GET(req: Request) {
         500,
         'rows_query_failed',
         'Brand Analytics API failed to load paginated Search Terms rows.',
+        {
+          ...safeDbDetails(error),
+          queryColumns: SEARCH_TERMS_COLUMNS,
+          orderColumn: 'search_frequency_rank,click_share_rank',
+          filtersApplied: getAppliedFilters({
+            reportId: effectiveReportId,
+            reportDocumentId: effectiveReportDocumentId,
+            searchTerm,
+            clickedAsin,
+            departmentName,
+            minRank,
+            maxRank,
+          }),
+          workspaceResolved: true,
+          workspaceIdPresent: Boolean(workspaceId),
+        },
       )
     }
 
@@ -225,10 +322,10 @@ export async function GET(req: Request) {
       storedRowCount !== null ? 'sync_summary' : 'unavailable'
 
     if (storedRowCount === null && (effectiveReportDocumentId || effectiveReportId)) {
-      let countQuery = supabase
+      let countQuery = readClient
         .from('brand_analytics_search_terms_rows')
         .select('id', { count: 'exact', head: true })
-        .eq('workspace_id', member.workspace_id)
+        .eq('workspace_id', workspaceId)
 
       if (effectiveReportDocumentId) {
         countQuery = countQuery.eq('report_document_id', effectiveReportDocumentId)

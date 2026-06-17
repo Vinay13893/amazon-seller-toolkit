@@ -51,6 +51,7 @@ type ApiErrorResponse = {
   errorCode?: string
   stage?: string
   message?: string
+  dbErrorCode?: string | null
 }
 
 type Filters = {
@@ -130,7 +131,7 @@ export default function BrandAnalyticsSearchTermsPage() {
         try {
           const body = await res.json() as ApiErrorResponse
           if (body?.stage || body?.errorCode) {
-            safeDetail = [body.stage, body.errorCode].filter(Boolean).join(' / ')
+            safeDetail = [body.stage, body.errorCode, body.dbErrorCode].filter(Boolean).join(' / ')
           }
         } catch {
           safeDetail = `status_${res.status}`
