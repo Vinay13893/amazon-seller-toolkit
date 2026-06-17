@@ -2,10 +2,6 @@ import type { Page } from 'playwright'
 import { z } from 'zod'
 import { withBrowserPage } from '../utils/browser'
 import {
-  detectAvailability,
-  extractDeliveryPromise,
-  extractPrice,
-  extractSeller,
   isAmazonIndiaMarketplace,
   isBlockedPage,
   trySetPincode,
@@ -113,21 +109,13 @@ async function collectText(page: Page, selectors: string[]): Promise<string> {
   const collected: string[] = []
 
   for (const selector of selectors) {
-    const locator = page.locator(selector)
-    const count = await locator.count().catch(() => 0)
-    const limit = Math.min(count, 3)
+    const texts = await page
+      .$$eval(selector, elements => elements.slice(0, 3).map(element => element.textContent || ''))
+      .catch(() => [])
 
-    for (let index = 0; index < limit; index += 1) {
-      const text = await locator
-        .nth(index)
-        .textContent()
-        .then(value => value ?? '')
-        .catch(() => '')
-
+    for (const text of texts) {
       const normalized = normalizeWhitespace(text)
-      if (normalized) {
-        collected.push(normalized)
-      }
+      if (normalized) collected.push(normalized)
     }
   }
 
@@ -169,6 +157,10 @@ async function detectProductPage(page: Page): Promise<boolean> {
     '#centerCol',
     '#ppd',
     '#ASIN',
+    '#add-to-cart-button',
+    '#buy-now-button',
+    '#desktop_buybox',
+    '#buybox',
   ])
   if (hasProductSelector) return true
 
@@ -198,6 +190,9 @@ function timeoutResponse(
   errorCode = 'timeout_unknown',
   diagnostics: PincodeDiagnostics = emptyDiagnostics(),
 ): PincodeAvailabilityResponse {
+  const safeErrorCode = diagnostics.buy_box_selector_found && errorCode === 'timeout_selectors'
+    ? 'selectors_partial'
+    : errorCode
   return {
     ok: false,
     available: null,
@@ -205,9 +200,11 @@ function timeoutResponse(
     price: null,
     seller: null,
     status: 'failed',
-    error_code: errorCode,
+    error_code: safeErrorCode,
     error_message: `${message} ${diagnosticsMessage(diagnostics)}`.slice(0, 500),
-    diagnostics,
+    diagnostics: diagnostics.buy_box_selector_found
+      ? { ...diagnostics, product_page_detected: true, final_page_type: 'product' }
+      : diagnostics,
   }
 }
 
@@ -238,17 +235,40 @@ async function extractSnapshot(page: Page): Promise<{
   seller: string | null
   availabilitySignal: boolean | null
 }> {
-  const [deliveryPromise, price, seller, availabilitySignal] = await Promise.all([
-    extractDeliveryPromise(page),
-    extractPrice(page),
-    extractSeller(page),
-    detectAvailability(page),
+  const [deliveryPromise, priceText, sellerText] = await Promise.all([
+    collectText(page, [
+      '#availability',
+      '#availability span',
+      '#deliveryBlockMessage',
+      '#mir-layout-DELIVERY_BLOCK',
+      '#ddmDeliveryMessage',
+      '#contextualIngressPtLabel_deliveryShortLine',
+    ]),
+    collectText(page, [
+      '#corePriceDisplay_desktop_feature_div .a-price .a-offscreen',
+      '#priceblock_ourprice',
+      '#priceblock_dealprice',
+      '.a-price .a-offscreen',
+      '[data-a-color="price"] .a-offscreen',
+    ]),
+    collectText(page, [
+      '#sellerProfileTriggerId',
+      '#merchant-info',
+      '#tabular-buybox .tabular-buybox-text',
+    ]),
   ])
+  const priceMatch = priceText.replace(/,/g, '').match(/(\d+(?:\.\d+)?)/)
+  const focusedText = deliveryPromise.toLowerCase()
+  const availabilitySignal = includesAny(focusedText, AVAILABLE_HINTS)
+    ? true
+    : includesAny(focusedText, STRONG_UNAVAILABLE_HINTS)
+      ? false
+      : null
 
   return {
-    deliveryPromise,
-    price,
-    seller,
+    deliveryPromise: deliveryPromise || null,
+    price: priceMatch ? Number(priceMatch[1]) : null,
+    seller: sellerText || null,
     availabilitySignal,
   }
 }
@@ -274,15 +294,19 @@ async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Pro
     '#availability_feature_div',
     '#outOfStock',
     '#deliveryBlockMessage',
+    '#mir-layout-DELIVERY_BLOCK',
     '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
     '#ddmDeliveryMessage',
+    '#contextualIngressPtLabel_deliveryShortLine',
   ])
   const priceSelectorFound = await selectorFound(page, [
-    '.a-price .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .a-price .a-offscreen',
     '#corePrice_feature_div .a-price .a-offscreen',
     '#priceblock_ourprice',
     '#priceblock_dealprice',
     '#price_inside_buybox',
+    '.a-price .a-offscreen',
+    '[data-a-color="price"] .a-offscreen',
   ])
   const buyBoxSelectorFound = await selectorFound(page, [
     '#add-to-cart-button',
@@ -295,7 +319,7 @@ async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Pro
 
   return {
     ...previous,
-    product_page_detected: productPageDetected,
+    product_page_detected: productPageDetected || buyBoxSelectorFound,
     location_modal_found: locationModalFound,
     pincode_input_found: pincodeInputFound,
     captcha_or_robot_detected: captchaOrRobotDetected,
@@ -304,7 +328,7 @@ async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Pro
     buy_box_selector_found: buyBoxSelectorFound,
     final_page_type: captchaOrRobotDetected
       ? 'captcha'
-      : productPageDetected
+      : productPageDetected || buyBoxSelectorFound
         ? 'product'
         : availabilitySelectorFound
           ? 'unavailable'
@@ -319,9 +343,11 @@ async function decideAvailability(
 ): Promise<AvailabilityDecision> {
   const availabilityText = await collectText(page, ['#availability', '#availability span'])
   const deliveryText = await collectText(page, [
+    '#mir-layout-DELIVERY_BLOCK',
     '#mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE',
     '#deliveryBlockMessage',
     '#ddmDeliveryMessage',
+    '#contextualIngressPtLabel_deliveryShortLine',
   ])
   const locationText = await collectText(page, ['#glow-ingress-line2', '#contextualIngressPtLabel_deliveryShortLine'])
 
@@ -638,11 +664,15 @@ export async function runPincodeAvailabilityCheck(
           price,
           seller,
           status: 'failed',
-          error_code: diagnostics.availability_selector_found || diagnostics.price_selector_found || diagnostics.buy_box_selector_found
-            ? 'pincode_not_applied'
-            : 'selectors_not_found',
+          error_code: diagnostics.buy_box_selector_found
+            ? 'selectors_partial'
+            : diagnostics.availability_selector_found || diagnostics.price_selector_found
+              ? 'pincode_not_applied'
+              : 'selectors_not_found',
           error_message: diagnosticsMessage(diagnostics),
-          diagnostics,
+          diagnostics: diagnostics.buy_box_selector_found
+            ? { ...diagnostics, product_page_detected: true, final_page_type: 'product' }
+            : diagnostics,
         }
 
         pincodeLog(input, 'finish', {

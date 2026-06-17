@@ -336,7 +336,7 @@ export default function PincodeCheckerPage() {
                         </span>
                       </td>
                       <td className="max-w-[320px] px-4 py-3 text-xs text-muted-foreground">
-                        {result.delivery_message ?? result.delivery_message_category ?? 'Not available'}
+                        {result.delivery_message ?? (result.delivery_message_category === 'unknown' ? 'Not detected' : result.delivery_message_category) ?? 'Not detected'}
                       </td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? 'Detected' : 'Not detected'}</td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.buy_box_detected ? 'Detected' : 'Not detected'}</td>
