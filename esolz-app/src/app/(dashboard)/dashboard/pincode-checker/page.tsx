@@ -341,7 +341,10 @@ export default function PincodeCheckerPage() {
                       <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? 'Detected' : 'Not detected'}</td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.buy_box_detected ? 'Detected' : 'Not detected'}</td>
                       <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">
-                        {result.error_code ?? result.error_message ?? 'No issue reported'}
+                        <span className="font-medium text-foreground">{result.error_code ?? 'No issue reported'}</span>
+                        {result.error_message && (
+                          <span className="mt-1 line-clamp-2 block">{result.error_message}</span>
+                        )}
                       </td>
                       <td className="px-5 py-3 text-xs text-muted-foreground">
                         {result.checked_at ? new Date(result.checked_at).toLocaleString() : 'Not checked'}

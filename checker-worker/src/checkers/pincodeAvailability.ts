@@ -45,9 +45,12 @@ type AvailabilityDecision = {
 }
 
 type PincodeDiagnostics = {
+  navigation_started: boolean
   page_loaded: boolean
   product_page_detected: boolean
   location_set_attempted: boolean
+  location_modal_found: boolean
+  pincode_input_found: boolean
   location_set_success: boolean
   captcha_or_robot_detected: boolean
   availability_selector_found: boolean
@@ -56,11 +59,12 @@ type PincodeDiagnostics = {
   final_page_type: 'product' | 'captcha' | 'unavailable' | 'unknown'
 }
 
-const OVERALL_TIMEOUT_MS = 40_000
-const GOTO_TIMEOUT_MS = 15_000
-const DELIVERY_EXTRACTION_TIMEOUT_MS = 8_000
-const PAGE_ACTION_TIMEOUT_MS = 5_000
-const NAVIGATION_ACTION_TIMEOUT_MS = 15_000
+const OVERALL_TIMEOUT_MS = 55_000
+const GOTO_TIMEOUT_MS = 12_000
+const DELIVERY_EXTRACTION_TIMEOUT_MS = 4_000
+const PAGE_ACTION_TIMEOUT_MS = 1_500
+const NAVIGATION_ACTION_TIMEOUT_MS = 12_000
+const PINCODE_APPLY_TIMEOUT_MS = 6_000
 
 const AVAILABLE_HINTS = [
   'in stock',
@@ -86,9 +90,12 @@ const PINCODE_UNCONFIRMED_MESSAGE = 'Pincode-specific delivery could not be conf
 
 function emptyDiagnostics(): PincodeDiagnostics {
   return {
+    navigation_started: false,
     page_loaded: false,
     product_page_detected: false,
     location_set_attempted: false,
+    location_modal_found: false,
+    pincode_input_found: false,
     location_set_success: false,
     captcha_or_robot_detected: false,
     availability_selector_found: false,
@@ -149,7 +156,7 @@ function pincodeLog(input: PincodeAvailabilityRequest, phase: string, details?: 
 
 async function selectorFound(page: Page, selectors: string[]): Promise<boolean> {
   for (const selector of selectors) {
-    const found = await page.locator(selector).first().isVisible().catch(() => false)
+    const found = await page.$(selector).then(Boolean).catch(() => false)
     if (found) return true
   }
   return false
@@ -171,9 +178,12 @@ async function detectProductPage(page: Page): Promise<boolean> {
 
 function diagnosticsMessage(diagnostics: PincodeDiagnostics): string {
   return [
+    `navigation_started=${diagnostics.navigation_started}`,
     `page_loaded=${diagnostics.page_loaded}`,
     `product_page_detected=${diagnostics.product_page_detected}`,
     `location_set_attempted=${diagnostics.location_set_attempted}`,
+    `location_modal_found=${diagnostics.location_modal_found}`,
+    `pincode_input_found=${diagnostics.pincode_input_found}`,
     `location_set_success=${diagnostics.location_set_success}`,
     `captcha_or_robot_detected=${diagnostics.captcha_or_robot_detected}`,
     `availability_selector_found=${diagnostics.availability_selector_found}`,
@@ -185,6 +195,8 @@ function diagnosticsMessage(diagnostics: PincodeDiagnostics): string {
 
 function timeoutResponse(
   message = 'Pincode check timed out before availability could be confirmed.',
+  errorCode = 'timeout_unknown',
+  diagnostics: PincodeDiagnostics = emptyDiagnostics(),
 ): PincodeAvailabilityResponse {
   return {
     ok: false,
@@ -193,9 +205,9 @@ function timeoutResponse(
     price: null,
     seller: null,
     status: 'failed',
-    error_code: 'checker_timeout',
-    error_message: message,
-    diagnostics: emptyDiagnostics(),
+    error_code: errorCode,
+    error_message: `${message} ${diagnosticsMessage(diagnostics)}`.slice(0, 500),
+    diagnostics,
   }
 }
 
@@ -243,6 +255,18 @@ async function extractSnapshot(page: Page): Promise<{
 
 async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Promise<PincodeDiagnostics> {
   const captchaOrRobotDetected = previous.captcha_or_robot_detected || await isBlockedPage(page)
+  const locationModalFound = previous.location_modal_found || await selectorFound(page, [
+    '#GLUXZipUpdate',
+    '#GLUXZipUpdateInput',
+    '.a-popover-modal',
+    '#a-popover-content-1',
+  ])
+  const pincodeInputFound = previous.pincode_input_found || await selectorFound(page, [
+    '#GLUXZipUpdateInput',
+    'input[name="zipCode"]',
+    'input[aria-label*="pincode" i]',
+    'input[placeholder*="pincode" i]',
+  ])
   const productPageDetected = await detectProductPage(page)
   const availabilitySelectorFound = await selectorFound(page, [
     '#availability',
@@ -272,6 +296,8 @@ async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Pro
   return {
     ...previous,
     product_page_detected: productPageDetected,
+    location_modal_found: locationModalFound,
+    pincode_input_found: pincodeInputFound,
     captcha_or_robot_detected: captchaOrRobotDetected,
     availability_selector_found: availabilitySelectorFound,
     price_selector_found: priceSelectorFound,
@@ -364,6 +390,9 @@ async function decideAvailability(
 export async function runPincodeAvailabilityCheck(
   input: PincodeAvailabilityRequest,
 ): Promise<PincodeAvailabilityResponse> {
+  let currentStage = 'timeout_unknown'
+  let latestDiagnostics = emptyDiagnostics()
+
   if (!isAmazonIndiaMarketplace(input.marketplace)) {
     return {
       ok: false,
@@ -386,11 +415,18 @@ export async function runPincodeAvailabilityCheck(
     return await withTimeout(
       withBrowserPage(async page => {
         let diagnostics = emptyDiagnostics()
+        latestDiagnostics = diagnostics
         page.setDefaultTimeout(PAGE_ACTION_TIMEOUT_MS)
         page.setDefaultNavigationTimeout(NAVIGATION_ACTION_TIMEOUT_MS)
 
         const productUrl = `https://www.amazon.in/dp/${encodeURIComponent(asin)}`
-        pincodeLog(input, 'goto_started', { product_url_present: Boolean(productUrl) })
+        currentStage = 'timeout_navigation'
+        diagnostics = {
+          ...diagnostics,
+          navigation_started: true,
+        }
+        latestDiagnostics = diagnostics
+        pincodeLog(input, 'navigation_started', { product_url_present: Boolean(productUrl) })
         await withTimeout(
           page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS }),
           GOTO_TIMEOUT_MS,
@@ -400,9 +436,11 @@ export async function runPincodeAvailabilityCheck(
           ...diagnostics,
           page_loaded: true,
         }
+        latestDiagnostics = diagnostics
         pincodeLog(input, 'goto_completed')
 
         diagnostics = await collectDiagnostics(page, diagnostics)
+        latestDiagnostics = diagnostics
         if (diagnostics.captcha_or_robot_detected) {
           pincodeLog(input, 'blocked_detected_after_goto')
           return {
@@ -419,24 +457,32 @@ export async function runPincodeAvailabilityCheck(
         }
 
         pincodeLog(input, 'pincode_set_started')
+        currentStage = 'timeout_location_modal'
         diagnostics = {
           ...diagnostics,
           location_set_attempted: true,
         }
+        latestDiagnostics = diagnostics
+        diagnostics = await collectDiagnostics(page, diagnostics)
+        latestDiagnostics = diagnostics
+        currentStage = 'timeout_pincode_apply'
         const pincodeSet = await withTimeout(
           trySetPincode(page, input.pincode),
-          8_000,
+          PINCODE_APPLY_TIMEOUT_MS,
           'Timed out while setting pincode on delivery widget.',
         )
         diagnostics = {
           ...diagnostics,
           location_set_success: pincodeSet,
         }
+        latestDiagnostics = diagnostics
         pincodeLog(input, 'pincode_set_completed', { pincode_set: pincodeSet })
 
         if (!pincodeSet) {
           diagnostics = await collectDiagnostics(page, diagnostics)
+          latestDiagnostics = diagnostics
           pincodeLog(input, 'fallback_extraction_started')
+          currentStage = 'timeout_selectors'
           const fallback = await withTimeout(
             extractSnapshot(page),
             DELIVERY_EXTRACTION_TIMEOUT_MS,
@@ -474,6 +520,7 @@ export async function runPincodeAvailabilityCheck(
         }
 
         diagnostics = await collectDiagnostics(page, diagnostics)
+        latestDiagnostics = diagnostics
         if (diagnostics.captcha_or_robot_detected) {
           pincodeLog(input, 'blocked_detected_after_pincode')
           return {
@@ -490,6 +537,7 @@ export async function runPincodeAvailabilityCheck(
         }
 
         pincodeLog(input, 'delivery_extraction_started')
+        currentStage = 'timeout_selectors'
         const { deliveryPromise, price, seller, availabilitySignal } = await withTimeout(
           extractSnapshot(page),
           DELIVERY_EXTRACTION_TIMEOUT_MS,
@@ -503,6 +551,7 @@ export async function runPincodeAvailabilityCheck(
 
         const decision = await decideAvailability(page, deliveryPromise, input.pincode)
         diagnostics = await collectDiagnostics(page, diagnostics)
+        latestDiagnostics = diagnostics
 
         if (decision.available === null && availabilitySignal === true) {
           const response: PincodeAvailabilityResponse = {
@@ -615,8 +664,12 @@ export async function runPincodeAvailabilityCheck(
     const timeoutLike = message.toLowerCase().includes('timed out')
 
     if (timeoutLike) {
-      pincodeLog(input, 'timeout', { error_message: message })
-      return timeoutResponse()
+      pincodeLog(input, 'timeout', { timeout_stage: currentStage })
+      return timeoutResponse(
+        'Pincode check timed out before availability could be confirmed.',
+        currentStage,
+        latestDiagnostics,
+      )
     }
 
     pincodeLog(input, 'error', { error_message: message })
