@@ -285,6 +285,10 @@ export default function BrandAnalyticsSearchTermsPage() {
     setAppliedFilters(filters)
   }
 
+  function updateManualFilter<K extends Exclude<keyof Filters, 'opportunity'>>(key: K, value: Filters[K]) {
+    setFilters(current => ({ ...current, [key]: value, opportunity: 'all' }))
+  }
+
   function clearFilters() {
     setFilters(DEFAULT_FILTERS)
     setAppliedFilters(DEFAULT_FILTERS)
@@ -314,6 +318,19 @@ export default function BrandAnalyticsSearchTermsPage() {
     : 'Available after data refresh'
   const insights = insightSummary(rows)
   const viewingOpportunity = OPPORTUNITIES.find(item => item.key === appliedFilters.opportunity)
+  const meaningfulDepartments = (meta?.departments ?? []).filter(department => {
+    const normalized = department.trim().toLowerCase()
+    return normalized && normalized !== 'amazon.in' && normalized !== 'amazon india'
+  })
+  const showDepartmentFilter = meaningfulDepartments.length > 1
+  const activeFilterLabels = [
+    appliedFilters.searchTerm ? 'Search term' : null,
+    appliedFilters.clickedAsin ? 'Clicked ASIN' : null,
+    appliedFilters.departmentName ? 'Category / Source' : null,
+    appliedFilters.minRank ? 'Min rank' : null,
+    appliedFilters.maxRank ? 'Max rank' : null,
+    viewingOpportunity ? viewingOpportunity.label : null,
+  ].filter(Boolean)
 
   return (
     <div className="flex flex-col gap-6">
@@ -380,7 +397,7 @@ export default function BrandAnalyticsSearchTermsPage() {
               <Input
                 id="searchTerm"
                 value={filters.searchTerm}
-                onChange={event => setFilters(current => ({ ...current, searchTerm: event.target.value }))}
+                onChange={event => updateManualFilter('searchTerm', event.target.value)}
                 placeholder="Contains"
               />
             </div>
@@ -389,24 +406,33 @@ export default function BrandAnalyticsSearchTermsPage() {
               <Input
                 id="clickedAsin"
                 value={filters.clickedAsin}
-                onChange={event => setFilters(current => ({ ...current, clickedAsin: event.target.value }))}
+                onChange={event => updateManualFilter('clickedAsin', event.target.value)}
                 placeholder="ASIN"
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="departmentName">Department</Label>
-              <select
-                id="departmentName"
-                className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                value={filters.departmentName}
-                onChange={event => setFilters(current => ({ ...current, departmentName: event.target.value }))}
-              >
-                <option value="">All departments</option>
-                {(meta?.departments ?? []).map(department => (
-                  <option key={department} value={department}>{department}</option>
-                ))}
-              </select>
-            </div>
+            {showDepartmentFilter ? (
+              <div className="space-y-1.5">
+                <Label htmlFor="departmentName">Category / Source</Label>
+                <select
+                  id="departmentName"
+                  className="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                  value={filters.departmentName}
+                  onChange={event => updateManualFilter('departmentName', event.target.value)}
+                >
+                  <option value="">All categories</option>
+                  {meaningfulDepartments.map(department => (
+                    <option key={department} value={department}>{department}</option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <Label>Category / Source</Label>
+                <div className="flex h-9 items-center rounded-md border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
+                  Not available in this report
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1.5">
                 <Label htmlFor="minRank">Min rank</Label>
@@ -415,7 +441,7 @@ export default function BrandAnalyticsSearchTermsPage() {
                   type="number"
                   min="1"
                   value={filters.minRank}
-                  onChange={event => setFilters(current => ({ ...current, minRank: event.target.value }))}
+                  onChange={event => updateManualFilter('minRank', event.target.value)}
                 />
               </div>
               <div className="space-y-1.5">
@@ -425,7 +451,7 @@ export default function BrandAnalyticsSearchTermsPage() {
                   type="number"
                   min="1"
                   value={filters.maxRank}
-                  onChange={event => setFilters(current => ({ ...current, maxRank: event.target.value }))}
+                  onChange={event => updateManualFilter('maxRank', event.target.value)}
                 />
               </div>
             </div>
@@ -439,12 +465,26 @@ export default function BrandAnalyticsSearchTermsPage() {
               </Button>
             </div>
           </div>
-          {appliedFilters.opportunity !== 'all' && viewingOpportunity && (
+          {activeFilterLabels.length > 0 && (
             <div className="mt-4 flex flex-wrap items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-3 py-2">
-              <p className="text-xs text-muted-foreground">Viewing: <span className="font-medium text-foreground">{viewingOpportunity.label}</span></p>
-              <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-                Clear view
-              </Button>
+              <p className="text-xs text-muted-foreground">
+                Active filters: <span className="font-medium text-foreground">{activeFilterLabels.join(', ')}</span>
+              </p>
+              {viewingOpportunity && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    const nextFilters = { ...appliedFilters, opportunity: 'all' as OpportunityKey }
+                    setFilters(nextFilters)
+                    setAppliedFilters(nextFilters)
+                    setPage(1)
+                  }}
+                >
+                  Clear view
+                </Button>
+              )}
             </div>
           )}
         </CardContent>
@@ -481,7 +521,7 @@ export default function BrandAnalyticsSearchTermsPage() {
             {!loading && !error && rows.length === 0 && (
               <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
                 <BarChart3 className="size-8 text-muted-foreground/40" />
-                <p className="text-sm font-medium text-foreground">No terms match these filters</p>
+                <p className="text-sm font-medium text-foreground">No matching search terms found for this filter.</p>
                 <p className="max-w-sm text-xs text-muted-foreground">Adjust the filters or clear them to browse the latest synced report.</p>
               </div>
             )}

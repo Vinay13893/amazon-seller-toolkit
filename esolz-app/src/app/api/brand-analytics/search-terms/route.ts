@@ -8,6 +8,10 @@ export const maxDuration = 20
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
 const SEARCH_TERMS_REPORT_TYPE = 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
+const WINNING_CLICK_SHARE_PERCENT = 35
+const WINNING_CONVERSION_SHARE_PERCENT = 8
+const OPPORTUNITY_CLICK_SHARE_PERCENT = 15
+const LOW_CONVERSION_SHARE_PERCENT = 4
 
 type LatestReportMeta = {
   report_id?: string | null
@@ -157,6 +161,15 @@ function toNullableString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null
 }
 
+function normalizeSearchInput(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 80)
+}
+
+function normalizeSharePercent(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.abs(value) <= 1 ? value * 100 : value
+}
+
 function normalizeStatus(value: string | null): string | null {
   if (!value) return null
   return value.toLowerCase() === 'done' ? 'done' : value
@@ -194,24 +207,24 @@ function getAppliedFilters(input: {
 
 function getOpportunity(row: SearchTermSourceRow): Pick<GroupedSearchTermRow, 'opportunityTag' | 'suggestedAction'> {
   const rank = row.search_frequency_rank ?? Number.MAX_SAFE_INTEGER
-  const clickShare = row.click_share ?? 0
-  const conversionShare = row.conversion_share ?? 0
+  const clickShare = normalizeSharePercent(row.click_share)
+  const conversionShare = normalizeSharePercent(row.conversion_share)
 
-  if (rank <= 5000 && clickShare >= 0.35 && conversionShare >= 0.08) {
+  if (rank <= 5000 && clickShare >= WINNING_CLICK_SHARE_PERCENT && conversionShare >= WINNING_CONVERSION_SHARE_PERCENT) {
     return {
       opportunityTag: 'Winning term',
       suggestedAction: 'Protect winning term',
     }
   }
 
-  if (rank <= 25000 && clickShare >= 0.15 && conversionShare < 0.04) {
+  if (rank <= 25000 && clickShare >= OPPORTUNITY_CLICK_SHARE_PERCENT && conversionShare < LOW_CONVERSION_SHARE_PERCENT) {
     return {
       opportunityTag: 'Conversion gap',
       suggestedAction: 'Improve image/title/price/reviews',
     }
   }
 
-  if (rank <= 25000 && clickShare < 0.15) {
+  if (rank <= 25000 && clickShare < OPPORTUNITY_CLICK_SHARE_PERCENT) {
     return {
       opportunityTag: 'Click share opportunity',
       suggestedAction: 'Add to exact-match campaign',
@@ -330,8 +343,8 @@ export async function GET(req: Request) {
     const sourcePageSize = pageSize * sourceRowsPerTerm
     const offset = (page - 1) * sourcePageSize
 
-    const searchTerm = url.searchParams.get('searchTerm')?.trim() ?? ''
-    const clickedAsin = url.searchParams.get('clickedAsin')?.trim() ?? ''
+    const searchTerm = normalizeSearchInput(url.searchParams.get('searchTerm') ?? '')
+    const clickedAsin = normalizeSearchInput(url.searchParams.get('clickedAsin') ?? '').toUpperCase()
     const departmentName = url.searchParams.get('departmentName')?.trim() ?? ''
     const reportId = url.searchParams.get('reportId')?.trim() ?? ''
     const reportDocumentId = url.searchParams.get('reportDocumentId')?.trim() ?? ''
@@ -436,11 +449,28 @@ export async function GET(req: Request) {
     }
 
     if (searchTerm) query = query.ilike('search_term', `%${searchTerm}%`)
-    if (clickedAsin) query = query.ilike('clicked_asin', `%${clickedAsin}%`)
-    if (departmentName) query = query.ilike('department_name', `%${departmentName}%`)
+    if (clickedAsin) query = query.eq('clicked_asin', clickedAsin)
+    if (departmentName) query = query.eq('department_name', departmentName)
     if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
     if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
     if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
+    if (opportunity === 'winning-term') {
+      query = query
+        .lte('search_frequency_rank', 5000)
+        .gte('click_share', WINNING_CLICK_SHARE_PERCENT)
+        .gte('conversion_share', WINNING_CONVERSION_SHARE_PERCENT)
+    }
+    if (opportunity === 'conversion-gap') {
+      query = query
+        .lte('search_frequency_rank', 25000)
+        .gte('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+        .lt('conversion_share', LOW_CONVERSION_SHARE_PERCENT)
+    }
+    if (opportunity === 'click-share-opportunity') {
+      query = query
+        .lte('search_frequency_rank', 25000)
+        .lt('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+    }
     query = query.lte('click_share_rank', 3)
 
     const { data, error } = await query

@@ -8,6 +8,10 @@ export const maxDuration = 25
 const SEARCH_TERMS_REPORT_TYPE = 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
 const EXPORT_GROUP_LIMIT = 5000
 const EXPORT_SOURCE_LIMIT = EXPORT_GROUP_LIMIT * 3
+const WINNING_CLICK_SHARE_PERCENT = 35
+const WINNING_CONVERSION_SHARE_PERCENT = 8
+const OPPORTUNITY_CLICK_SHARE_PERCENT = 15
+const LOW_CONVERSION_SHARE_PERCENT = 4
 
 type OpportunityFilter =
   | 'all'
@@ -63,18 +67,27 @@ function toNullableInt(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function normalizeSearchInput(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 80)
+}
+
+function normalizeSharePercent(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  return Math.abs(value) <= 1 ? value * 100 : value
+}
+
 function getOpportunity(row: SourceRow): Pick<ExportRow, 'opportunityTag' | 'suggestedAction'> {
   const rank = row.search_frequency_rank ?? Number.MAX_SAFE_INTEGER
-  const clickShare = row.click_share ?? 0
-  const conversionShare = row.conversion_share ?? 0
+  const clickShare = normalizeSharePercent(row.click_share)
+  const conversionShare = normalizeSharePercent(row.conversion_share)
 
-  if (rank <= 5000 && clickShare >= 0.35 && conversionShare >= 0.08) {
+  if (rank <= 5000 && clickShare >= WINNING_CLICK_SHARE_PERCENT && conversionShare >= WINNING_CONVERSION_SHARE_PERCENT) {
     return { opportunityTag: 'Winning term', suggestedAction: 'Protect winning term' }
   }
-  if (rank <= 25000 && clickShare >= 0.15 && conversionShare < 0.04) {
+  if (rank <= 25000 && clickShare >= OPPORTUNITY_CLICK_SHARE_PERCENT && conversionShare < LOW_CONVERSION_SHARE_PERCENT) {
     return { opportunityTag: 'Conversion gap', suggestedAction: 'Improve image/title/price/reviews' }
   }
-  if (rank <= 25000 && clickShare < 0.15) {
+  if (rank <= 25000 && clickShare < OPPORTUNITY_CLICK_SHARE_PERCENT) {
     return { opportunityTag: 'Click share opportunity', suggestedAction: 'Add to exact-match campaign' }
   }
   return { opportunityTag: 'Monitor', suggestedAction: 'Monitor next report' }
@@ -183,8 +196,8 @@ export async function GET(req: Request) {
   }
 
   const url = new URL(req.url)
-  const searchTerm = url.searchParams.get('searchTerm')?.trim() ?? ''
-  const clickedAsin = url.searchParams.get('clickedAsin')?.trim() ?? ''
+  const searchTerm = normalizeSearchInput(url.searchParams.get('searchTerm') ?? '')
+  const clickedAsin = normalizeSearchInput(url.searchParams.get('clickedAsin') ?? '').toUpperCase()
   const departmentName = url.searchParams.get('departmentName')?.trim() ?? ''
   const minRank = toNullableInt(url.searchParams.get('minRank'))
   const maxRank = toNullableInt(url.searchParams.get('maxRank'))
@@ -218,11 +231,28 @@ export async function GET(req: Request) {
   if (latestJob?.report_document_id) query = query.eq('report_document_id', latestJob.report_document_id)
   else if (latestJob?.report_id) query = query.eq('report_id', latestJob.report_id)
   if (searchTerm) query = query.ilike('search_term', `%${searchTerm}%`)
-  if (clickedAsin) query = query.ilike('clicked_asin', `%${clickedAsin}%`)
+  if (clickedAsin) query = query.eq('clicked_asin', clickedAsin)
   if (departmentName) query = query.eq('department_name', departmentName)
   if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
   if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
   if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
+  if (opportunity === 'winning-term') {
+    query = query
+      .lte('search_frequency_rank', 5000)
+      .gte('click_share', WINNING_CLICK_SHARE_PERCENT)
+      .gte('conversion_share', WINNING_CONVERSION_SHARE_PERCENT)
+  }
+  if (opportunity === 'conversion-gap') {
+    query = query
+      .lte('search_frequency_rank', 25000)
+      .gte('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+      .lt('conversion_share', LOW_CONVERSION_SHARE_PERCENT)
+  }
+  if (opportunity === 'click-share-opportunity') {
+    query = query
+      .lte('search_frequency_rank', 25000)
+      .lt('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+  }
 
   const { data, error } = await query
     .order('search_frequency_rank', { ascending: true, nullsFirst: false })
