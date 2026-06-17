@@ -322,6 +322,7 @@ export default function BrandAnalyticsSearchTermsPage() {
     const normalized = department.trim().toLowerCase()
     return normalized && normalized !== 'amazon.in' && normalized !== 'amazon india'
   })
+  // TODO: Enrich true product category later from SP-API Catalog Items or controlled product-page/category scraping.
   const showDepartmentFilter = meaningfulDepartments.length > 1
   const activeFilterLabels = [
     appliedFilters.searchTerm ? 'Search term' : null,
@@ -432,7 +433,7 @@ export default function BrandAnalyticsSearchTermsPage() {
               <div className="space-y-1.5">
                 <Label>Category / Source</Label>
                 <div className="flex h-9 items-center rounded-md border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
-                  Not available in this report
+                  Category data is not available in this uploaded report.
                 </div>
               </div>
             )}
