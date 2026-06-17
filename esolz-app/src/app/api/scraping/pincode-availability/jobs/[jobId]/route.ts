@@ -97,3 +97,75 @@ export async function GET(
     results: results ?? [],
   })
 }
+
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ jobId: string }> },
+) {
+  const { jobId } = await params
+
+  if (!isUuid(jobId)) {
+    return safeError(400, 'invalid_job_id', 'Invalid scraping job id.')
+  }
+
+  const supabase = await createClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    return safeError(401, 'unauthorized', 'Unauthorized')
+  }
+
+  const { data: member, error: memberError } = await supabase
+    .from('workspace_members')
+    .select('workspace_id')
+    .eq('user_id', user.id)
+    .limit(1)
+    .maybeSingle()
+
+  if (memberError || !member?.workspace_id) {
+    return safeError(404, 'workspace_not_found', 'No workspace found for authenticated user.')
+  }
+
+  const admin = createAdminClient()
+  const { data: job, error: jobError } = await admin
+    .from('scraping_jobs')
+    .select('id')
+    .eq('id', jobId)
+    .eq('workspace_id', member.workspace_id)
+    .maybeSingle()
+
+  if (jobError) {
+    return safeError(500, 'job_read_failed', 'Unable to read pincode availability job.')
+  }
+
+  if (!job) {
+    return safeError(404, 'job_not_found', 'Pincode availability job was not found.')
+  }
+
+  // TODO: replace manual clearing with scheduled retention for pincode results older than 7-30 days.
+  const { error: deleteResultsError } = await admin
+    .from('pincode_availability_results')
+    .delete()
+    .eq('workspace_id', member.workspace_id)
+    .eq('job_id', jobId)
+
+  if (deleteResultsError) {
+    return safeError(500, 'results_clear_failed', 'Unable to clear pincode availability results.')
+  }
+
+  const { error: deleteJobError } = await admin
+    .from('scraping_jobs')
+    .delete()
+    .eq('workspace_id', member.workspace_id)
+    .eq('id', jobId)
+
+  if (deleteJobError) {
+    return safeError(500, 'job_clear_failed', 'Unable to clear pincode availability job.')
+  }
+
+  return NextResponse.json({
+    success: true,
+    jobId,
+    cleared: true,
+  })
+}

@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { AlertTriangle, CheckCircle2, Clock, Loader2, MapPin, Play, RefreshCw, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, MapPin, Play, RefreshCw, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -96,6 +96,8 @@ export default function PincodeCheckerPage() {
   const [results, setResults] = useState<PincodeResult[]>([])
   const [loading, setLoading] = useState(false)
   const [polling, setPolling] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -175,6 +177,60 @@ export default function PincodeCheckerPage() {
     }
   }
 
+  async function downloadCsv() {
+    if (!job?.id) return
+    setExporting(true)
+    setError(null)
+
+    try {
+      const res = await fetch(`/api/scraping/pincode-availability/jobs/${job.id}/export`)
+      if (!res.ok) {
+        const body = await readJson(res)
+        setError(body.errorCode ?? body.message ?? 'csv_export_failed')
+        return
+      }
+
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `pincode-availability-${job.id.slice(0, 8)}.csv`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      setError('csv_export_failed')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  async function clearCurrentResults() {
+    if (!job?.id) return
+    setClearing(true)
+    setError(null)
+    setNotice(null)
+
+    try {
+      const res = await fetch(`/api/scraping/pincode-availability/jobs/${job.id}`, {
+        method: 'DELETE',
+      })
+      const body = await readJson(res)
+      if (!res.ok || !body.success) {
+        setError(body.errorCode ?? body.message ?? 'clear_job_failed')
+        return
+      }
+      setJob(null)
+      setResults([])
+      setNotice('Current pincode results cleared.')
+    } catch {
+      setError('clear_job_failed')
+    } finally {
+      setClearing(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6 p-6">
       <div className="flex flex-col gap-2">
@@ -184,7 +240,10 @@ export default function PincodeCheckerPage() {
           <Badge variant="secondary" className="h-5 text-[10px]">Queue beta</Badge>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
-          Create a small availability job, let the Render worker process it safely, then review structured results without raw page data.
+          Check Amazon availability, delivery promise, price visibility, and buy box by pincode.
+        </p>
+        <p className="max-w-3xl text-xs text-muted-foreground">
+          Results are stored temporarily so you can export them. No raw HTML, screenshots, cookies, or page dumps are stored.
         </p>
       </div>
 
@@ -236,7 +295,7 @@ export default function PincodeCheckerPage() {
               {polling ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
               Refresh status
             </Button>
-            <span className="text-xs text-muted-foreground">Limits: 3 ASINs, 5 pincodes, worker concurrency 1.</span>
+            <span className="text-xs text-muted-foreground">Current limit: 3 ASINs x 5 pincodes. Bulk mode coming next: 10 ASINs x 20 pincodes.</span>
           </div>
         </div>
 
@@ -299,7 +358,31 @@ export default function PincodeCheckerPage() {
             <h2 className="font-semibold text-foreground">Structured Results</h2>
             <p className="text-xs text-muted-foreground">No raw HTML, screenshots, cookies, or page dumps are stored.</p>
           </div>
-          <Badge variant="secondary">{results.length} rows</Badge>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={downloadCsv}
+              disabled={exporting || !job?.id || results.length === 0}
+              className="gap-2"
+            >
+              {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+              Download CSV
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={clearCurrentResults}
+              disabled={clearing || !job?.id}
+              className="gap-2"
+            >
+              {clearing ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+              Clear current results
+            </Button>
+            <Badge variant="secondary">{results.length} rows</Badge>
+          </div>
         </div>
 
         {results.length === 0 ? (
