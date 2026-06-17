@@ -92,6 +92,25 @@ function statusIcon(status: string | null) {
   return Clock
 }
 
+function cleanDeliveryMessage(value: string | null): string | null {
+  if (!value) return null
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (!compact) return null
+
+  const segments = compact
+    .replace(/\{[^{}]*\}/g, ' | ')
+    .split(/\s+\|\s+| • | \u2022 |(?<=\.)\s+(?=[A-Z])/)
+    .map(segment => segment.trim())
+    .filter(Boolean)
+    .filter(segment => !segment.startsWith('{') && !segment.startsWith('['))
+    .filter(segment => !/"?[A-Za-z0-9_]+"?\s*:/.test(segment))
+    .filter(segment => !segment.includes('isInternal') && !segment.includes('showInsightsHub'))
+
+  const unique = Array.from(new Set(segments))
+  const cleaned = unique.join(' | ').replace(/\s+/g, ' ').trim()
+  return cleaned || null
+}
+
 export default function PincodeCheckerPage() {
   const [asinText, setAsinText] = useState('')
   const [pincodeText, setPincodeText] = useState(DEFAULT_PINCODES)
@@ -316,7 +335,7 @@ export default function PincodeCheckerPage() {
             </span>
           </div>
           <div className="mt-3 text-xs text-muted-foreground">
-            Estimated time depends on Amazon page response; jobs run conservatively one check at a time.
+            Current limit: 10 ASINs x 20 pincodes. Max 200 checks per job. Worker concurrency stays conservative at one check at a time.
             {limitError && <span className="ml-2 text-red-400">{limitError}</span>}
           </div>
         </div>
@@ -445,7 +464,7 @@ export default function PincodeCheckerPage() {
                         </span>
                       </td>
                       <td className="max-w-[320px] px-4 py-3 text-xs text-muted-foreground">
-                        {result.delivery_message ?? (result.delivery_message_category === 'unknown' ? 'Not detected' : result.delivery_message_category) ?? 'Not detected'}
+                        {cleanDeliveryMessage(result.delivery_message) ?? (result.delivery_message_category === 'unknown' ? 'Not detected' : result.delivery_message_category) ?? 'Not detected'}
                       </td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? 'Detected' : 'Not detected'}</td>
                       <td className="px-4 py-3 text-xs text-foreground">{result.buy_box_detected ? 'Detected' : 'Not detected'}</td>

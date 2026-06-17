@@ -29,6 +29,25 @@ function csvCell(value: unknown): string {
   return `"${text.replace(/"/g, '""')}"`
 }
 
+function cleanDeliveryMessage(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (!compact) return null
+
+  const segments = compact
+    .replace(/\{[^{}]*\}/g, ' | ')
+    .split(/\s+\|\s+| • | \u2022 |(?<=\.)\s+(?=[A-Z])/)
+    .map(segment => segment.trim())
+    .filter(Boolean)
+    .filter(segment => !segment.startsWith('{') && !segment.startsWith('['))
+    .filter(segment => !/"?[A-Za-z0-9_]+"?\s*:/.test(segment))
+    .filter(segment => !segment.includes('isInternal') && !segment.includes('showInsightsHub'))
+
+  const unique = Array.from(new Set(segments))
+  const cleaned = unique.join(' | ').replace(/\s+/g, ' ').trim()
+  return cleaned ? cleaned.slice(0, 240) : null
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ jobId: string }> },
@@ -89,7 +108,7 @@ export async function GET(
     result.asin,
     result.pincode,
     result.availability_status,
-    result.delivery_message,
+    cleanDeliveryMessage(result.delivery_message),
     result.price_detected ? 'Yes' : 'No',
     result.buy_box_detected ? 'Yes' : 'No',
     result.seller_name,
