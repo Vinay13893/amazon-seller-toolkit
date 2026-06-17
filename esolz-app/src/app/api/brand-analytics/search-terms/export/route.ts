@@ -8,6 +8,7 @@ export const maxDuration = 25
 const SEARCH_TERMS_REPORT_TYPE = 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
 const EXPORT_GROUP_LIMIT = 5000
 const EXPORT_SOURCE_LIMIT = EXPORT_GROUP_LIMIT * 3
+const EXPORT_CANDIDATE_LIMIT = 5000
 const WINNING_CLICK_SHARE_PERCENT = 35
 const WINNING_CONVERSION_SHARE_PERCENT = 8
 const OPPORTUNITY_CLICK_SHARE_PERCENT = 15
@@ -30,6 +31,12 @@ type SourceRow = {
   click_share_rank: number | null
   click_share: number | null
   conversion_share: number | null
+}
+
+type CandidateRow = {
+  department_name: string | null
+  search_term: string | null
+  search_frequency_rank: number | null
 }
 
 type Product = {
@@ -118,6 +125,35 @@ function groupRows(rows: SourceRow[]): ExportRow[] {
     }
   }
   return Array.from(groups.values()).slice(0, EXPORT_GROUP_LIMIT)
+}
+
+function candidateKey(row: CandidateRow): string {
+  return [
+    row.department_name ?? '',
+    row.search_term ?? '',
+    row.search_frequency_rank ?? '',
+  ].join('|')
+}
+
+function uniqueCandidates(rows: CandidateRow[]): CandidateRow[] {
+  const seen = new Set<string>()
+  const candidates: CandidateRow[] = []
+  for (const row of rows) {
+    if (!row.search_term) continue
+    const key = candidateKey(row)
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push(row)
+  }
+  return candidates
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)))
+}
+
+function uniqueNumbers(values: Array<number | null | undefined>): number[] {
+  return Array.from(new Set(values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value))))
 }
 
 function matchesOpportunity(row: ExportRow, opportunity: OpportunityFilter): boolean {
@@ -222,48 +258,110 @@ export async function GET(req: Request) {
     .limit(1)
     .maybeSingle()
 
-  let query = readClient
-    .from('brand_analytics_search_terms_rows')
-    .select('department_name, search_term, search_frequency_rank, clicked_asin, clicked_item_name, click_share_rank, click_share, conversion_share')
-    .eq('workspace_id', workspaceId)
-    .lte('click_share_rank', 3)
+  let sourceRows: SourceRow[] = []
 
-  if (latestJob?.report_document_id) query = query.eq('report_document_id', latestJob.report_document_id)
-  else if (latestJob?.report_id) query = query.eq('report_id', latestJob.report_id)
-  if (searchTerm) query = query.ilike('search_term', `%${searchTerm}%`)
-  if (clickedAsin) query = query.eq('clicked_asin', clickedAsin)
-  if (departmentName) query = query.eq('department_name', departmentName)
-  if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
-  if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
-  if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
-  if (opportunity === 'winning-term') {
-    query = query
-      .lte('search_frequency_rank', 5000)
-      .gte('click_share', WINNING_CLICK_SHARE_PERCENT)
-      .gte('conversion_share', WINNING_CONVERSION_SHARE_PERCENT)
-  }
-  if (opportunity === 'conversion-gap') {
-    query = query
-      .lte('search_frequency_rank', 25000)
-      .gte('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
-      .lt('conversion_share', LOW_CONVERSION_SHARE_PERCENT)
-  }
-  if (opportunity === 'click-share-opportunity') {
-    query = query
-      .lte('search_frequency_rank', 25000)
-      .lt('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+  if (searchTerm) {
+    let candidateQuery = readClient
+      .from('brand_analytics_search_terms_rows')
+      .select('department_name, search_term, search_frequency_rank')
+      .eq('workspace_id', workspaceId)
+      .ilike('search_term', `%${searchTerm}%`)
+
+    if (latestJob?.report_document_id) candidateQuery = candidateQuery.eq('report_document_id', latestJob.report_document_id)
+    else if (latestJob?.report_id) candidateQuery = candidateQuery.eq('report_id', latestJob.report_id)
+    if (clickedAsin) candidateQuery = candidateQuery.eq('clicked_asin', clickedAsin)
+    if (departmentName) candidateQuery = candidateQuery.eq('department_name', departmentName)
+    if (minRank !== null) candidateQuery = candidateQuery.gte('search_frequency_rank', minRank)
+    if (maxRank !== null) candidateQuery = candidateQuery.lte('search_frequency_rank', maxRank)
+    if (opportunity === 'high-demand') candidateQuery = candidateQuery.lte('search_frequency_rank', 10000)
+
+    const { data: candidateData, error: candidateError } = await candidateQuery
+      .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+      .limit(EXPORT_CANDIDATE_LIMIT)
+
+    if (candidateError) {
+      return NextResponse.json({ errorCode: 'export_query_failed', stage: 'export_candidate_query', message: 'Export failed safely.' }, { status: 500 })
+    }
+
+    const candidates = uniqueCandidates(Array.isArray(candidateData) ? candidateData as CandidateRow[] : [])
+      .slice(0, EXPORT_GROUP_LIMIT)
+
+    if (candidates.length > 0) {
+      const candidateKeys = new Set(candidates.map(candidateKey))
+      const searchTerms = uniqueStrings(candidates.map(row => row.search_term))
+      const ranks = uniqueNumbers(candidates.map(row => row.search_frequency_rank))
+      const departments = uniqueStrings(candidates.map(row => row.department_name))
+
+      let detailQuery = readClient
+        .from('brand_analytics_search_terms_rows')
+        .select('department_name, search_term, search_frequency_rank, clicked_asin, clicked_item_name, click_share_rank, click_share, conversion_share')
+        .eq('workspace_id', workspaceId)
+        .in('search_term', searchTerms)
+        .lte('click_share_rank', 3)
+
+      if (latestJob?.report_document_id) detailQuery = detailQuery.eq('report_document_id', latestJob.report_document_id)
+      else if (latestJob?.report_id) detailQuery = detailQuery.eq('report_id', latestJob.report_id)
+      if (ranks.length > 0) detailQuery = detailQuery.in('search_frequency_rank', ranks)
+      if (departments.length > 0) detailQuery = detailQuery.in('department_name', departments)
+      if (clickedAsin) detailQuery = detailQuery.eq('clicked_asin', clickedAsin)
+
+      const { data: detailData, error: detailError } = await detailQuery
+        .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+        .order('click_share_rank', { ascending: true, nullsFirst: false })
+        .limit(candidates.length * 3)
+
+      if (detailError) {
+        return NextResponse.json({ errorCode: 'export_query_failed', stage: 'export_detail_query', message: 'Export failed safely.' }, { status: 500 })
+      }
+
+      sourceRows = (Array.isArray(detailData) ? detailData as SourceRow[] : [])
+        .filter(row => candidateKeys.has(candidateKey(row)))
+    }
+  } else {
+    let query = readClient
+      .from('brand_analytics_search_terms_rows')
+      .select('department_name, search_term, search_frequency_rank, clicked_asin, clicked_item_name, click_share_rank, click_share, conversion_share')
+      .eq('workspace_id', workspaceId)
+      .lte('click_share_rank', 3)
+
+    if (latestJob?.report_document_id) query = query.eq('report_document_id', latestJob.report_document_id)
+    else if (latestJob?.report_id) query = query.eq('report_id', latestJob.report_id)
+    if (clickedAsin) query = query.eq('clicked_asin', clickedAsin)
+    if (departmentName) query = query.eq('department_name', departmentName)
+    if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
+    if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
+    if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
+    if (opportunity === 'winning-term') {
+      query = query
+        .lte('search_frequency_rank', 5000)
+        .gte('click_share', WINNING_CLICK_SHARE_PERCENT)
+        .gte('conversion_share', WINNING_CONVERSION_SHARE_PERCENT)
+    }
+    if (opportunity === 'conversion-gap') {
+      query = query
+        .lte('search_frequency_rank', 25000)
+        .gte('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+        .lt('conversion_share', LOW_CONVERSION_SHARE_PERCENT)
+    }
+    if (opportunity === 'click-share-opportunity') {
+      query = query
+        .lte('search_frequency_rank', 25000)
+        .lt('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+    }
+
+    const { data, error } = await query
+      .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+      .order('click_share_rank', { ascending: true, nullsFirst: false })
+      .limit(EXPORT_SOURCE_LIMIT)
+
+    if (error) {
+      return NextResponse.json({ errorCode: 'export_query_failed', stage: 'export_query', message: 'Export failed safely.' }, { status: 500 })
+    }
+
+    sourceRows = Array.isArray(data) ? data as SourceRow[] : []
   }
 
-  const { data, error } = await query
-    .order('search_frequency_rank', { ascending: true, nullsFirst: false })
-    .order('click_share_rank', { ascending: true, nullsFirst: false })
-    .limit(EXPORT_SOURCE_LIMIT)
-
-  if (error) {
-    return NextResponse.json({ errorCode: 'export_query_failed', stage: 'export_query', message: 'Export failed safely.' }, { status: 500 })
-  }
-
-  const rows = groupRows(Array.isArray(data) ? data as SourceRow[] : [])
+  const rows = groupRows(sourceRows)
     .filter(row => matchesOpportunity(row, opportunity))
     .slice(0, EXPORT_GROUP_LIMIT)
   const csv = toCsv(rows)

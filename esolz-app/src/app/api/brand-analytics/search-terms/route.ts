@@ -12,6 +12,7 @@ const WINNING_CLICK_SHARE_PERCENT = 35
 const WINNING_CONVERSION_SHARE_PERCENT = 8
 const OPPORTUNITY_CLICK_SHARE_PERCENT = 15
 const LOW_CONVERSION_SHARE_PERCENT = 4
+const SEARCH_CANDIDATE_LIMIT = 250
 
 type LatestReportMeta = {
   report_id?: string | null
@@ -51,7 +52,7 @@ type SafeErrorDetails = {
   dbErrorCode?: string | null
   dbErrorMessage?: string | null
   dbErrorHint?: string | null
-  queryMode?: 'latest_document_paginated'
+  queryMode?: 'latest_document_paginated' | 'candidate_first_search'
   countMode?: 'summary_or_unavailable'
   selectedColumns?: string[]
   orderColumns?: string[]
@@ -91,6 +92,12 @@ type SearchTermSourceRow = {
   marketplace_id: string | null
   data_start_time: string | null
   data_end_time: string | null
+}
+
+type SearchTermCandidateRow = {
+  department_name: string | null
+  search_term: string | null
+  search_frequency_rank: number | null
 }
 
 type TopClickedProduct = {
@@ -287,6 +294,35 @@ function groupSearchTerms(rows: SearchTermSourceRow[], pageSize: number): Groupe
   return Array.from(groups.values()).slice(0, pageSize)
 }
 
+function candidateKey(row: SearchTermCandidateRow): string {
+  return [
+    row.department_name ?? '',
+    row.search_term ?? '',
+    row.search_frequency_rank ?? '',
+  ].join('|')
+}
+
+function uniqueCandidates(rows: SearchTermCandidateRow[]): SearchTermCandidateRow[] {
+  const seen = new Set<string>()
+  const candidates: SearchTermCandidateRow[] = []
+  for (const row of rows) {
+    if (!row.search_term) continue
+    const key = candidateKey(row)
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push(row)
+  }
+  return candidates
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)))
+}
+
+function uniqueNumbers(values: Array<number | null | undefined>): number[] {
+  return Array.from(new Set(values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value))))
+}
+
 function matchesOpportunity(row: GroupedSearchTermRow, opportunity: OpportunityFilter): boolean {
   if (opportunity === 'all') return true
   if (opportunity === 'high-demand') return (row.searchFrequencyRank ?? Number.MAX_SAFE_INTEGER) <= 10000
@@ -342,6 +378,7 @@ export async function GET(req: Request) {
     const sourceRowsPerTerm = 3
     const sourcePageSize = pageSize * sourceRowsPerTerm
     const offset = (page - 1) * sourcePageSize
+    const candidateOffset = (page - 1) * pageSize
 
     const searchTerm = normalizeSearchInput(url.searchParams.get('searchTerm') ?? '')
     const clickedAsin = normalizeSearchInput(url.searchParams.get('clickedAsin') ?? '').toUpperCase()
@@ -433,85 +470,208 @@ export async function GET(req: Request) {
     const latestReport = latestJob ?? latestRowMeta
     const effectiveReportId = reportId || latestReport?.report_id || ''
     const effectiveReportDocumentId = reportDocumentId || latestReport?.report_document_id || ''
-    const queryMode = 'latest_document_paginated' as const
+    const queryMode = searchTerm ? 'candidate_first_search' as const : 'latest_document_paginated' as const
     const countMode = 'summary_or_unavailable' as const
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let query = (readClient as any)
-      .from('brand_analytics_search_terms_rows')
-      .select(SEARCH_TERMS_COLUMNS.join(', '))
-      .eq('workspace_id', workspaceId)
+    let sourceRows: SearchTermSourceRow[] = []
+    let hasMore = false
 
-    if (effectiveReportDocumentId) {
-      query = query.eq('report_document_id', effectiveReportDocumentId)
-    } else if (effectiveReportId) {
-      query = query.eq('report_id', effectiveReportId)
+    if (searchTerm) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let candidateQuery = (readClient as any)
+        .from('brand_analytics_search_terms_rows')
+        .select('department_name, search_term, search_frequency_rank')
+        .eq('workspace_id', workspaceId)
+        .ilike('search_term', `%${searchTerm}%`)
+
+      if (effectiveReportDocumentId) {
+        candidateQuery = candidateQuery.eq('report_document_id', effectiveReportDocumentId)
+      } else if (effectiveReportId) {
+        candidateQuery = candidateQuery.eq('report_id', effectiveReportId)
+      }
+
+      if (clickedAsin) candidateQuery = candidateQuery.eq('clicked_asin', clickedAsin)
+      if (departmentName) candidateQuery = candidateQuery.eq('department_name', departmentName)
+      if (minRank !== null) candidateQuery = candidateQuery.gte('search_frequency_rank', minRank)
+      if (maxRank !== null) candidateQuery = candidateQuery.lte('search_frequency_rank', maxRank)
+      if (opportunity === 'high-demand') candidateQuery = candidateQuery.lte('search_frequency_rank', 10000)
+
+      const { data: candidateData, error: candidateError } = await candidateQuery
+        .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+        .limit(SEARCH_CANDIDATE_LIMIT)
+
+      if (candidateError) {
+        return safeError(
+          'rows_query',
+          500,
+          'rows_query_failed',
+          'Brand Analytics API failed to load Search Terms candidates.',
+          {
+            ...safeDbDetails(candidateError),
+            queryMode,
+            countMode,
+            selectedColumns: ['department_name', 'search_term', 'search_frequency_rank'],
+            orderColumns: ['search_frequency_rank'],
+            filtersApplied: getAppliedFilters({
+              reportId: effectiveReportId,
+              reportDocumentId: effectiveReportDocumentId,
+              searchTerm,
+              clickedAsin,
+              departmentName,
+              minRank,
+              maxRank,
+              opportunity,
+            }),
+            workspaceResolved: true,
+            workspaceIdPresent: Boolean(workspaceId),
+            pageSize,
+          },
+        )
+      }
+
+      const candidates = uniqueCandidates(Array.isArray(candidateData) ? candidateData as SearchTermCandidateRow[] : [])
+      const pageCandidates = candidates.slice(candidateOffset, candidateOffset + pageSize)
+      hasMore = candidates.length > candidateOffset + pageSize
+
+      if (pageCandidates.length > 0) {
+        const candidateKeys = new Set(pageCandidates.map(candidateKey))
+        const searchTerms = uniqueStrings(pageCandidates.map(row => row.search_term))
+        const ranks = uniqueNumbers(pageCandidates.map(row => row.search_frequency_rank))
+        const departments = uniqueStrings(pageCandidates.map(row => row.department_name))
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let detailQuery = (readClient as any)
+          .from('brand_analytics_search_terms_rows')
+          .select(SEARCH_TERMS_COLUMNS.join(', '))
+          .eq('workspace_id', workspaceId)
+          .in('search_term', searchTerms)
+          .lte('click_share_rank', 3)
+
+        if (effectiveReportDocumentId) {
+          detailQuery = detailQuery.eq('report_document_id', effectiveReportDocumentId)
+        } else if (effectiveReportId) {
+          detailQuery = detailQuery.eq('report_id', effectiveReportId)
+        }
+
+        if (ranks.length > 0) detailQuery = detailQuery.in('search_frequency_rank', ranks)
+        if (departments.length > 0) detailQuery = detailQuery.in('department_name', departments)
+        if (clickedAsin) detailQuery = detailQuery.eq('clicked_asin', clickedAsin)
+
+        const { data: detailData, error: detailError } = await detailQuery
+          .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+          .order('click_share_rank', { ascending: true, nullsFirst: false })
+          .limit(pageCandidates.length * sourceRowsPerTerm)
+
+        if (detailError) {
+          return safeError(
+            'rows_query',
+            500,
+            'rows_query_failed',
+            'Brand Analytics API failed to load matching Search Terms rows.',
+            {
+              ...safeDbDetails(detailError),
+              queryMode,
+              countMode,
+              selectedColumns: SEARCH_TERMS_COLUMNS,
+              orderColumns: ['search_frequency_rank', 'click_share_rank'],
+              filtersApplied: getAppliedFilters({
+                reportId: effectiveReportId,
+                reportDocumentId: effectiveReportDocumentId,
+                searchTerm,
+                clickedAsin,
+                departmentName,
+                minRank,
+                maxRank,
+                opportunity,
+              }),
+              workspaceResolved: true,
+              workspaceIdPresent: Boolean(workspaceId),
+              pageSize,
+            },
+          )
+        }
+
+        sourceRows = (Array.isArray(detailData) ? detailData as SearchTermSourceRow[] : [])
+          .filter(row => candidateKeys.has(candidateKey(row)))
+      }
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let query = (readClient as any)
+        .from('brand_analytics_search_terms_rows')
+        .select(SEARCH_TERMS_COLUMNS.join(', '))
+        .eq('workspace_id', workspaceId)
+
+      if (effectiveReportDocumentId) {
+        query = query.eq('report_document_id', effectiveReportDocumentId)
+      } else if (effectiveReportId) {
+        query = query.eq('report_id', effectiveReportId)
+      }
+
+      if (clickedAsin) query = query.eq('clicked_asin', clickedAsin)
+      if (departmentName) query = query.eq('department_name', departmentName)
+      if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
+      if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
+      if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
+      if (opportunity === 'winning-term') {
+        query = query
+          .lte('search_frequency_rank', 5000)
+          .gte('click_share', WINNING_CLICK_SHARE_PERCENT)
+          .gte('conversion_share', WINNING_CONVERSION_SHARE_PERCENT)
+      }
+      if (opportunity === 'conversion-gap') {
+        query = query
+          .lte('search_frequency_rank', 25000)
+          .gte('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+          .lt('conversion_share', LOW_CONVERSION_SHARE_PERCENT)
+      }
+      if (opportunity === 'click-share-opportunity') {
+        query = query
+          .lte('search_frequency_rank', 25000)
+          .lt('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
+      }
+      query = query.lte('click_share_rank', 3)
+
+      const { data, error } = await query
+        .order('search_frequency_rank', { ascending: true, nullsFirst: false })
+        .order('click_share_rank', { ascending: true, nullsFirst: false })
+        .range(offset, offset + sourcePageSize)
+
+      if (error) {
+        return safeError(
+          'rows_query',
+          500,
+          'rows_query_failed',
+          'Brand Analytics API failed to load paginated Search Terms rows.',
+          {
+            ...safeDbDetails(error),
+            queryMode,
+            countMode,
+            selectedColumns: SEARCH_TERMS_COLUMNS,
+            orderColumns: ['search_frequency_rank', 'click_share_rank'],
+            filtersApplied: getAppliedFilters({
+              reportId: effectiveReportId,
+              reportDocumentId: effectiveReportDocumentId,
+              searchTerm,
+              clickedAsin,
+              departmentName,
+              minRank,
+              maxRank,
+              opportunity,
+            }),
+            workspaceResolved: true,
+            workspaceIdPresent: Boolean(workspaceId),
+            pageSize,
+          },
+        )
+      }
+
+      sourceRows = Array.isArray(data) ? data as SearchTermSourceRow[] : []
+      hasMore = sourceRows.length > sourcePageSize
     }
 
-    if (searchTerm) query = query.ilike('search_term', `%${searchTerm}%`)
-    if (clickedAsin) query = query.eq('clicked_asin', clickedAsin)
-    if (departmentName) query = query.eq('department_name', departmentName)
-    if (minRank !== null) query = query.gte('search_frequency_rank', minRank)
-    if (maxRank !== null) query = query.lte('search_frequency_rank', maxRank)
-    if (opportunity === 'high-demand') query = query.lte('search_frequency_rank', 10000)
-    if (opportunity === 'winning-term') {
-      query = query
-        .lte('search_frequency_rank', 5000)
-        .gte('click_share', WINNING_CLICK_SHARE_PERCENT)
-        .gte('conversion_share', WINNING_CONVERSION_SHARE_PERCENT)
-    }
-    if (opportunity === 'conversion-gap') {
-      query = query
-        .lte('search_frequency_rank', 25000)
-        .gte('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
-        .lt('conversion_share', LOW_CONVERSION_SHARE_PERCENT)
-    }
-    if (opportunity === 'click-share-opportunity') {
-      query = query
-        .lte('search_frequency_rank', 25000)
-        .lt('click_share', OPPORTUNITY_CLICK_SHARE_PERCENT)
-    }
-    query = query.lte('click_share_rank', 3)
-
-    const { data, error } = await query
-      .order('search_frequency_rank', { ascending: true, nullsFirst: false })
-      .order('click_share_rank', { ascending: true, nullsFirst: false })
-      .range(offset, offset + sourcePageSize)
-
-    if (error) {
-      return safeError(
-        'rows_query',
-        500,
-        'rows_query_failed',
-        'Brand Analytics API failed to load paginated Search Terms rows.',
-        {
-          ...safeDbDetails(error),
-          queryMode,
-          countMode,
-          selectedColumns: SEARCH_TERMS_COLUMNS,
-          orderColumns: ['search_frequency_rank', 'click_share_rank'],
-          filtersApplied: getAppliedFilters({
-            reportId: effectiveReportId,
-            reportDocumentId: effectiveReportDocumentId,
-            searchTerm,
-            clickedAsin,
-            departmentName,
-            minRank,
-            maxRank,
-            opportunity,
-          }),
-          workspaceResolved: true,
-          workspaceIdPresent: Boolean(workspaceId),
-          pageSize,
-        },
-      )
-    }
-
-    const sourceRows = Array.isArray(data) ? data as SearchTermSourceRow[] : []
     const rows = groupSearchTerms(sourceRows, pageSize * 2)
       .filter(row => matchesOpportunity(row, opportunity))
       .slice(0, pageSize)
-    const hasMore = sourceRows.length > sourcePageSize
     const parsedRowCount = getSummaryNumber(latestSummary, 'parsed_row_count', 'parsedRowCount')
     let storedRowCount = getSummaryNumber(
       latestSummary,

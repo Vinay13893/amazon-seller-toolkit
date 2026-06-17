@@ -400,6 +400,9 @@ export default function BrandAnalyticsSearchTermsPage() {
                 onChange={event => updateManualFilter('searchTerm', event.target.value)}
                 placeholder="Contains"
               />
+              <p className="text-[11px] text-muted-foreground">
+                Search is optimized for exact or close term lookup. Broader analysis starts from the ranked view.
+              </p>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="clickedAsin">Clicked ASIN</Label>
