@@ -109,11 +109,10 @@ function includesAny(haystack: string, hints: string[]): string | null {
 }
 
 function pincodeLog(input: PincodeAvailabilityRequest, phase: string, details?: Record<string, unknown>): void {
+  void input
   console.log(
     JSON.stringify({
       checker: 'pincode-availability',
-      asin: input.asin,
-      pincode: input.pincode,
       phase,
       ...details,
     }),
@@ -277,7 +276,7 @@ export async function runPincodeAvailabilityCheck(
         page.setDefaultNavigationTimeout(NAVIGATION_ACTION_TIMEOUT_MS)
 
         const productUrl = `https://www.amazon.in/dp/${encodeURIComponent(asin)}`
-        pincodeLog(input, 'goto_started', { product_url: productUrl })
+        pincodeLog(input, 'goto_started', { product_url_present: Boolean(productUrl) })
         await withTimeout(
           page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: GOTO_TIMEOUT_MS }),
           GOTO_TIMEOUT_MS,

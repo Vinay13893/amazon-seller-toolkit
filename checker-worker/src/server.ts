@@ -15,6 +15,11 @@ import { runBrandAnalyticsSync } from './brand-analytics/sync'
 import {
   getBrandAnalyticsStatus,
 } from './brand-analytics/status'
+import {
+  getScrapingJobStatus,
+  runNextScrapingJob,
+  scrapingJobStatusRequestSchema,
+} from './scraping/queue'
 
 dotenv.config()
 
@@ -54,6 +59,8 @@ app.get('/health', (_req: Request, res: Response) => {
     availableRoutes: [
       'GET /health',
       'POST /brand-analytics/status',
+      'POST /scraping/run-next',
+      'POST /scraping/job-status',
     ],
   })
 })
@@ -122,6 +129,44 @@ app.post('/pincode-availability', async (req: Request, res: Response) => {
       ok: false,
       status: 'failed',
       error_message: 'Pincode availability check failed unexpectedly.',
+    })
+  }
+})
+
+app.post('/scraping/run-next', async (_req: Request, res: Response) => {
+  try {
+    const result = await runNextScrapingJob()
+    const statusCode = result.status === 'idle' ? 200 : result.success ? 200 : 500
+    res.status(statusCode).json(result)
+  } catch {
+    res.status(500).json({
+      success: false,
+      status: 'failed',
+      errorCode: 'scraping_run_next_failed',
+      errorMessage: 'Scraping worker failed unexpectedly.',
+    })
+  }
+})
+
+app.post('/scraping/job-status', async (req: Request, res: Response) => {
+  try {
+    const payload = scrapingJobStatusRequestSchema.parse(req.body)
+    const result = await getScrapingJobStatus(payload)
+    res.status(result.success ? 200 : 500).json(result)
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json({
+        success: false,
+        errorCode: 'invalid_payload',
+        errorMessage: 'Invalid request payload for /scraping/job-status.',
+      })
+      return
+    }
+
+    res.status(500).json({
+      success: false,
+      errorCode: 'scraping_job_status_failed',
+      errorMessage: 'Scraping job status failed unexpectedly.',
     })
   }
 })
