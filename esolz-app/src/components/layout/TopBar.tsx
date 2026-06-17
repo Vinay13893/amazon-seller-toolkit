@@ -14,6 +14,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/dashboard/brand-analytics/search-terms': 'Brand Analytics',
   '/dashboard/pincode':   'Pincode Checker (Paused)',
   '/dashboard/pincode-checker': 'Pincode Availability Checker',
+  '/dashboard/buy-box':   'Buy Box Monitor',
   '/dashboard/buybox':    'Buy Box',
   '/dashboard/competitors': 'Competitors',
   '/dashboard/alerts':    'Alerts',

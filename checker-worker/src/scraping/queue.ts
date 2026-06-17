@@ -3,6 +3,7 @@ import { runPincodeAvailabilityCheck } from '../checkers/pincodeAvailability'
 import { createSupabaseAdminClient } from '../brand-analytics/supabase'
 
 const JOB_TYPE_PINCODE_AVAILABILITY = 'PINCODE_AVAILABILITY_CHECK'
+const JOB_TYPE_BUY_BOX_CHECK = 'BUY_BOX_CHECK'
 const WORKER_ID = process.env.RENDER_SERVICE_NAME || 'checker-worker'
 const MAX_ASINS = 10
 const MAX_PINCODES = 20
@@ -20,6 +21,11 @@ const pincodePayloadSchema = z.object({
       path: ['pincodes'],
     })
   }
+})
+
+const buyBoxPayloadSchema = z.object({
+  marketplaceId: z.string().min(1),
+  asins: z.array(z.string().min(1)).min(1).max(MAX_ASINS),
 })
 
 const jobStatusSchema = z.object({
@@ -69,6 +75,22 @@ type PincodeResultPayload = {
   checked_at: string
   error_code: string | null
   error_message: string | null
+}
+
+type BuyBoxResultPayload = {
+  job_id: string
+  workspace_id: string
+  marketplace_id: string
+  asin: string
+  buy_box_detected: boolean
+  price_detected: boolean
+  price_text: string | null
+  seller_name: string | null
+  availability_status: string
+  page_status: string
+  error_code: string | null
+  error_message: string | null
+  checked_at: string
 }
 
 function sanitizeErrorMessage(value: unknown): string | null {
@@ -152,6 +174,204 @@ async function markJobFailed(
     .eq('id', jobId)
 }
 
+async function processBuyBoxJob(job: ScrapingJobRow) {
+  const supabase = createSupabaseAdminClient()
+  const parsedPayload = buyBoxPayloadSchema.safeParse(job.payload)
+  if (!parsedPayload.success) {
+    await markJobFailed(job.id, 'invalid_payload', 'Buy Box job payload is invalid.')
+    return {
+      success: false,
+      status: 'failed',
+      jobId: job.id,
+      errorCode: 'invalid_payload',
+      errorMessage: 'Buy Box job payload is invalid.',
+    }
+  }
+
+  const payload = parsedPayload.data
+  const total = payload.asins.length
+  const lockedAt = new Date().toISOString()
+  const attempts = (job.attempts ?? 0) + 1
+
+  const { data: lockedRows, error: lockError } = await supabase
+    .from('scraping_jobs')
+    .update({
+      status: 'running',
+      locked_at: lockedAt,
+      locked_by: WORKER_ID,
+      started_at: job.started_at ?? lockedAt,
+      attempts,
+      progress_total: total,
+      error_code: null,
+      error_message: null,
+    })
+    .eq('id', job.id)
+    .eq('status', 'queued')
+    .select('*')
+
+  if (lockError || !Array.isArray(lockedRows) || lockedRows.length === 0) {
+    return {
+      success: false,
+      status: 'failed',
+      jobId: job.id,
+      errorCode: 'job_lock_failed',
+      errorMessage: 'Unable to lock queued Buy Box job.',
+    }
+  }
+
+  let progress = 0
+  let buyBoxDetected = 0
+  let notDetected = 0
+  let unknown = 0
+  const results: BuyBoxResultPayload[] = []
+
+  try {
+    for (const asinInput of payload.asins) {
+      const asin = asinInput.trim().toUpperCase()
+      const checkedAt = new Date().toISOString()
+      const result = await runPincodeAvailabilityCheck({
+        workspace_id: job.workspace_id,
+        tracked_asin_id: job.id,
+        asin,
+        marketplace: normalizeMarketplace(payload.marketplaceId),
+        pincode: '110001',
+      })
+
+      const diagnostics = result.diagnostics ?? {
+        buy_box_selector_found: Boolean(result.seller),
+        final_page_type: result.status === 'blocked' ? 'captcha' : 'unknown',
+      }
+      const pageStatus = result.status === 'blocked'
+        ? 'blocked'
+        : diagnostics.final_page_type === 'product'
+          ? 'product'
+          : diagnostics.final_page_type === 'captcha'
+            ? 'blocked'
+            : 'unknown'
+      const detected = Boolean(diagnostics.buy_box_selector_found)
+      if (detected) buyBoxDetected += 1
+      else if (pageStatus === 'product') notDetected += 1
+      else unknown += 1
+
+      results.push({
+        job_id: job.id,
+        workspace_id: job.workspace_id,
+        marketplace_id: payload.marketplaceId,
+        asin,
+        buy_box_detected: detected,
+        price_detected: result.price !== null,
+        price_text: result.price !== null ? String(result.price) : null,
+        seller_name: result.seller,
+        availability_status: toAvailabilityStatus(result.status, result.available),
+        page_status: pageStatus,
+        error_code: result.error_code ?? (result.ok ? null : result.status),
+        error_message: sanitizeErrorMessage(result.error_message),
+        checked_at: checkedAt,
+      })
+
+      progress += 1
+      await supabase
+        .from('scraping_jobs')
+        .update({
+          progress_current: progress,
+          result_summary: {
+            total,
+            buyBoxDetected,
+            notDetected,
+            unknown,
+          },
+        })
+        .eq('id', job.id)
+    }
+
+    if (results.length > 0) {
+      const { error: insertError } = await supabase
+        .from('buy_box_results')
+        .insert(results)
+
+      if (insertError) {
+        await markJobFailed(job.id, 'result_insert_failed', 'Unable to store structured Buy Box results.', {
+          total,
+          buyBoxDetected,
+          notDetected,
+          unknown,
+        })
+        return {
+          success: false,
+          status: 'failed',
+          jobId: job.id,
+          errorCode: 'result_insert_failed',
+          errorMessage: 'Unable to store structured Buy Box results.',
+        }
+      }
+    }
+
+    await supabase
+      .from('scraping_jobs')
+      .update({
+        status: 'done',
+        progress_current: total,
+        progress_total: total,
+        result_summary: {
+          total,
+          buyBoxDetected,
+          notDetected,
+          unknown,
+        },
+        completed_at: new Date().toISOString(),
+        locked_at: null,
+        locked_by: null,
+      })
+      .eq('id', job.id)
+
+    return {
+      success: true,
+      status: 'done',
+      jobId: job.id,
+      progressCurrent: total,
+      progressTotal: total,
+      resultSummary: {
+        total,
+        buyBoxDetected,
+        notDetected,
+        unknown,
+      },
+    }
+  } catch {
+    const canRetry = attempts < (job.max_attempts ?? 2)
+    const nextStatus = canRetry ? 'queued' : 'failed'
+    await supabase
+      .from('scraping_jobs')
+      .update({
+        status: nextStatus,
+        error_code: 'checker_failed',
+        error_message: 'Buy Box checker failed safely.',
+        progress_current: progress,
+        progress_total: total,
+        result_summary: {
+          total,
+          buyBoxDetected,
+          notDetected,
+          unknown,
+        },
+        completed_at: canRetry ? null : new Date().toISOString(),
+        locked_at: null,
+        locked_by: null,
+      })
+      .eq('id', job.id)
+
+    return {
+      success: false,
+      status: nextStatus,
+      jobId: job.id,
+      errorCode: 'checker_failed',
+      errorMessage: 'Buy Box checker failed safely.',
+      progressCurrent: progress,
+      progressTotal: total,
+    }
+  }
+}
+
 export async function runNextScrapingJob(input?: z.infer<typeof runNextSchema>) {
   const supabase = createSupabaseAdminClient()
 
@@ -159,7 +379,7 @@ export async function runNextScrapingJob(input?: z.infer<typeof runNextSchema>) 
     .from('scraping_jobs')
     .select('*')
     .eq('status', 'queued')
-    .eq('job_type', JOB_TYPE_PINCODE_AVAILABILITY)
+    .in('job_type', [JOB_TYPE_PINCODE_AVAILABILITY, JOB_TYPE_BUY_BOX_CHECK])
     .order('created_at', { ascending: true })
     .limit(1)
 
@@ -184,8 +404,12 @@ export async function runNextScrapingJob(input?: z.infer<typeof runNextSchema>) 
     return {
       success: true,
       status: 'idle',
-      message: 'No queued pincode availability jobs found.',
+      message: 'No queued scraping jobs found.',
     }
+  }
+
+  if (job.job_type === JOB_TYPE_BUY_BOX_CHECK) {
+    return processBuyBoxJob(job)
   }
 
   const parsedPayload = pincodePayloadSchema.safeParse(job.payload)
@@ -400,6 +624,29 @@ export async function getScrapingJobStatus(input: z.infer<typeof scrapingJobStat
 
   const job = jobData as ScrapingJobRow | null
   if (!job) return safeJob(null)
+
+  if (job.job_type === JOB_TYPE_BUY_BOX_CHECK) {
+    const { data: resultsData, error: resultsError } = await supabase
+      .from('buy_box_results')
+      .select('asin, buy_box_detected, price_detected, price_text, seller_name, availability_status, page_status, checked_at, error_code, error_message')
+      .eq('job_id', input.jobId)
+      .order('checked_at', { ascending: false })
+      .limit(25)
+
+    if (resultsError) {
+      return {
+        ...safeJob(job, 0),
+        results: [],
+        errorCode: 'results_read_failed',
+        errorMessage: 'Unable to read structured Buy Box results.',
+      }
+    }
+
+    return {
+      ...safeJob(job, Array.isArray(resultsData) ? resultsData.length : 0),
+      results: resultsData ?? [],
+    }
+  }
 
   const { data: resultsData, error: resultsError } = await supabase
     .from('pincode_availability_results')
