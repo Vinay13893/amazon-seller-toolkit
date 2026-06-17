@@ -47,6 +47,12 @@ type ApiResponse = {
   meta: ApiMeta
 }
 
+type ApiErrorResponse = {
+  errorCode?: string
+  stage?: string
+  message?: string
+}
+
 type Filters = {
   searchTerm: string
   clickedAsin: string
@@ -120,9 +126,18 @@ export default function BrandAnalyticsSearchTermsPage() {
       })
 
       if (!res.ok) {
+        let safeDetail = `status_${res.status}`
+        try {
+          const body = await res.json() as ApiErrorResponse
+          if (body?.stage || body?.errorCode) {
+            safeDetail = [body.stage, body.errorCode].filter(Boolean).join(' / ')
+          }
+        } catch {
+          safeDetail = `status_${res.status}`
+        }
         setRows([])
         setRowsReturned(0)
-        setError('Unable to load Brand Analytics rows right now.')
+        setError(`Brand Analytics API failed at ${safeDetail}.`)
         return
       }
 

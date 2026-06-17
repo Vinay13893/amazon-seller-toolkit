@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { createAdminClient } from '@/lib/supabase/admin'
 
 export const runtime = 'nodejs'
 export const maxDuration = 20
@@ -18,6 +17,18 @@ type LatestReportMeta = {
   data_end_time?: string | null
   completed_at?: string | null
   raw_summary?: Record<string, unknown> | null
+}
+
+type SafeErrorStage =
+  | 'auth'
+  | 'workspace_resolution'
+  | 'latest_report_lookup'
+  | 'latest_row_lookup'
+  | 'rows_query'
+  | 'unexpected'
+
+function safeError(stage: SafeErrorStage, status: number, errorCode: string, message: string) {
+  return NextResponse.json({ errorCode, stage, message }, { status })
 }
 
 function toPositiveInt(value: string | null, fallback: number): number {
@@ -58,7 +69,7 @@ export async function GET(req: Request) {
     const supabase = await createClient()
     const { data: { user }, error: authErr } = await supabase.auth.getUser()
     if (authErr || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return safeError('auth', 401, 'unauthorized', 'Unauthorized')
     }
 
     const { data: member, error: memberErr } = await supabase
@@ -69,7 +80,12 @@ export async function GET(req: Request) {
       .maybeSingle()
 
     if (memberErr || !member?.workspace_id) {
-      return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
+      return safeError(
+        'workspace_resolution',
+        404,
+        'workspace_not_found',
+        'No workspace found for authenticated user.',
+      )
     }
 
     const url = new URL(req.url)
@@ -88,10 +104,8 @@ export async function GET(req: Request) {
     const minRank = toNullableInt(url.searchParams.get('minRank'))
     const maxRank = toNullableInt(url.searchParams.get('maxRank'))
 
-    const admin = createAdminClient()
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { data: latestJobData } = await (admin as any)
+    const { data: latestJobData, error: latestJobError } = await (supabase as any)
       .from('amazon_report_jobs')
       .select('report_id, report_document_id, report_type, processing_status, data_start_time, data_end_time, completed_at, raw_summary')
       .eq('workspace_id', member.workspace_id)
@@ -101,6 +115,15 @@ export async function GET(req: Request) {
       .limit(1)
       .maybeSingle()
 
+    if (latestJobError) {
+      return safeError(
+        'latest_report_lookup',
+        500,
+        'latest_report_lookup_failed',
+        'Brand Analytics API failed to read latest report metadata.',
+      )
+    }
+
     const latestJob = (latestJobData ?? null) as LatestReportMeta | null
     const latestSummary = latestJob?.raw_summary && typeof latestJob.raw_summary === 'object'
       ? latestJob.raw_summary
@@ -109,7 +132,7 @@ export async function GET(req: Request) {
     let latestRowMeta: LatestReportMeta | null = null
     if (!latestJob?.report_document_id && !latestJob?.report_id) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data: latestRow } = await (admin as any)
+      const { data: latestRow, error: latestRowError } = await (supabase as any)
         .from('brand_analytics_search_terms_rows')
         .select('report_id, report_document_id, marketplace_id, data_start_time, data_end_time')
         .eq('workspace_id', member.workspace_id)
@@ -117,6 +140,15 @@ export async function GET(req: Request) {
         .order('search_frequency_rank', { ascending: true, nullsFirst: false })
         .limit(1)
         .maybeSingle()
+
+      if (latestRowError) {
+        return safeError(
+          'latest_row_lookup',
+          500,
+          'latest_row_lookup_failed',
+          'Brand Analytics API failed to read latest stored row metadata.',
+        )
+      }
 
       if (latestRow) {
         latestRowMeta = {
@@ -134,7 +166,7 @@ export async function GET(req: Request) {
     const effectiveReportDocumentId = reportDocumentId || latestReport?.report_document_id || ''
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let query = (admin as any)
+    let query = (supabase as any)
       .from('brand_analytics_search_terms_rows')
       .select([
         'department_name',
@@ -171,7 +203,12 @@ export async function GET(req: Request) {
       .range(offset, offset + pageSize)
 
     if (error) {
-      return NextResponse.json({ error: 'Failed to load Brand Analytics rows' }, { status: 500 })
+      return safeError(
+        'rows_query',
+        500,
+        'rows_query_failed',
+        'Brand Analytics API failed to load paginated Search Terms rows.',
+      )
     }
 
     const rows = Array.isArray(data) ? data.slice(0, pageSize) : []
@@ -188,7 +225,7 @@ export async function GET(req: Request) {
       storedRowCount !== null ? 'sync_summary' : 'unavailable'
 
     if (storedRowCount === null && (effectiveReportDocumentId || effectiveReportId)) {
-      let countQuery = admin
+      let countQuery = supabase
         .from('brand_analytics_search_terms_rows')
         .select('id', { count: 'exact', head: true })
         .eq('workspace_id', member.workspace_id)
@@ -239,6 +276,11 @@ export async function GET(req: Request) {
       },
     })
   } catch {
-    return NextResponse.json({ error: 'Brand Analytics search terms failed unexpectedly' }, { status: 500 })
+    return safeError(
+      'unexpected',
+      500,
+      'unexpected_error',
+      'Brand Analytics search terms failed unexpectedly.',
+    )
   }
 }
