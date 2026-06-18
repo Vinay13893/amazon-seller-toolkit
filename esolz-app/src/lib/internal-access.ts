@@ -47,7 +47,7 @@ export async function getInternalAccessContext(): Promise<InternalAccessContext>
     const embeddedPlan = row.subscription_plans
     const plan = Array.isArray(embeddedPlan) ? embeddedPlan[0] : embeddedPlan
     return (
-      (row.status === 'active' || row.status === 'trialing')
+      (row.status === 'active' || row.status === 'trial')
       && plan?.name === 'Internal Tester'
     )
   })

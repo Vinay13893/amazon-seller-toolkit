@@ -29,7 +29,7 @@ CREATE POLICY "internal_sku_daily_sales: internal select"
         FROM public.workspace_subscriptions AS ws
         JOIN public.subscription_plans AS plan ON plan.id = ws.plan_id
         WHERE ws.workspace_id = internal_sku_daily_sales.workspace_id
-          AND ws.status IN ('active', 'trialing')
+          AND ws.status IN ('active', 'trial')
           AND plan.name = 'Internal Tester'
       )
     )
