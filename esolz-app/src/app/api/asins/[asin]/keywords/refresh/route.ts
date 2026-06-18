@@ -74,7 +74,7 @@ export async function POST(
     .eq('tracked_asin_id', trackedAsinId)
 
   if (kwErr) {
-    return NextResponse.json({ error: kwErr.message }, { status: 500 })
+    return NextResponse.json({ error: 'Failed to load tracked keywords' }, { status: 500 })
   }
   if (!keywords || keywords.length === 0) {
     return NextResponse.json({ results: [], message: 'No tracked keywords for this ASIN' })
@@ -85,10 +85,14 @@ export async function POST(
   let runtimeUnavailableDetected = false
   const results: {
     keyword_id:    string
-    keyword:       string
     organic_rank:  number | null
+    organic_page:  number | null
+    organic_slot:  number | null
+    organic_found: boolean
     sponsored_rank: number | null
-    page_status:   string | null
+    sponsored_page: number | null
+    sponsored_slot: number | null
+    sponsored_found: boolean
     scan_status:   string
     checked_at:    string
     error?:        string
@@ -109,7 +113,13 @@ export async function POST(
         tracked_asin_id:    trackedAsinId,
         keyword:            params.keyword,
         organic_rank:       null,
+        organic_page:       null,
+        organic_slot:       null,
+        organic_found:      false,
         sponsored_rank:     null,
+        sponsored_page:     null,
+        sponsored_slot:     null,
+        sponsored_found:    false,
         page:               null,
         position_on_page:   null,
         found:              false,
@@ -133,10 +143,14 @@ export async function POST(
       })
       results.push({
         keyword_id: kw.id,
-        keyword: kw.keyword,
         organic_rank: null,
+        organic_page: null,
+        organic_slot: null,
+        organic_found: false,
         sponsored_rank: null,
-        page_status: null,
+        sponsored_page: null,
+        sponsored_slot: null,
+        sponsored_found: false,
         scan_status: 'checker_unavailable',
         checked_at: checkedAt,
         error: KEYWORD_RUNTIME_UNAVAILABLE_ERROR,
@@ -158,10 +172,13 @@ export async function POST(
         })
         res = {
           organic_rank:   workerRes.organic_rank,
+          organic_page:   workerRes.organic_page,
+          organic_slot:   workerRes.organic_slot,
+          organic_found:  workerRes.organic_found,
           sponsored_rank: workerRes.sponsored_rank,
-          page_number:    workerRes.page,
-          pos_on_page:    workerRes.position_on_page,
-          page_status:    workerRes.found ? (workerRes.page === 1 ? 'page_1' : workerRes.page === 2 ? 'page_2' : 'page_3') : 'not_ranking' as string,
+          sponsored_page: workerRes.sponsored_page,
+          sponsored_slot: workerRes.sponsored_slot,
+          sponsored_found: workerRes.sponsored_found,
           scan_status:    workerRes.status,
           checked_at:     new Date().toISOString(),
         }
@@ -174,8 +191,8 @@ export async function POST(
       }
 
       // Insert snapshot (admin client so INSERT isn't blocked by RLS edge-cases)
-      const found = res.organic_rank !== null || res.sponsored_rank !== null
-      await admin
+      const found = res.organic_found || res.sponsored_found
+      const { error: snapshotError } = await admin
         .from('keyword_rank_snapshots')
         .insert({
           workspace_id:       workspaceId,
@@ -183,22 +200,37 @@ export async function POST(
           tracked_asin_id:    trackedAsinId,
           keyword:            kw.keyword,
           organic_rank:       res.organic_rank,
+          organic_page:       res.organic_page,
+          organic_slot:       res.organic_slot,
+          organic_found:      res.organic_found,
           sponsored_rank:     res.sponsored_rank,
-          page:               res.page_number,
-          position_on_page:   res.pos_on_page,
+          sponsored_page:     res.sponsored_page,
+          sponsored_slot:     res.sponsored_slot,
+          sponsored_found:    res.sponsored_found,
+          page:               res.organic_page ?? res.sponsored_page,
+          position_on_page:   res.organic_slot ?? res.sponsored_slot,
           found,
           scrape_status:      res.scan_status || 'success',
           error_message:      null,
-          page_status:        res.page_status,
+          page_status:        res.organic_found
+            ? (res.organic_page === 1 ? 'page_1' : res.organic_page === 2 ? 'page_2' : res.organic_page === 3 ? 'page_3' : 'not_ranking')
+            : 'not_ranking',
           checked_at:         res.checked_at,
         })
+      if (snapshotError) {
+        throw new Error('snapshot_insert_failed')
+      }
 
       results.push({
         keyword_id:    kw.id,
-        keyword:       kw.keyword,
         organic_rank:  res.organic_rank,
+        organic_page:  res.organic_page,
+        organic_slot:  res.organic_slot,
+        organic_found: res.organic_found,
         sponsored_rank: res.sponsored_rank,
-        page_status:   res.page_status,
+        sponsored_page: res.sponsored_page,
+        sponsored_slot: res.sponsored_slot,
+        sponsored_found: res.sponsored_found,
         scan_status:   res.scan_status,
         checked_at:    res.checked_at,
       })
@@ -207,7 +239,7 @@ export async function POST(
       const runtimeUnavailable = isKeywordRuntimeUnavailableError(err) || err instanceof CheckerWorkerUnavailableError
       const safeError = runtimeUnavailable
         ? KEYWORD_RUNTIME_UNAVAILABLE_ERROR
-        : (err instanceof Error ? err.message : 'Keyword rank check failed')
+        : 'Keyword rank check failed'
       const failedStatus: 'failed' | 'checker_unavailable' = runtimeUnavailable
         ? 'checker_unavailable'
         : 'failed'
@@ -227,10 +259,14 @@ export async function POST(
 
       results.push({
         keyword_id:    kw.id,
-        keyword:       kw.keyword,
         organic_rank:  null,
+        organic_page:  null,
+        organic_slot:  null,
+        organic_found: false,
         sponsored_rank: null,
-        page_status:   null,
+        sponsored_page: null,
+        sponsored_slot: null,
+        sponsored_found: false,
         scan_status:   failedStatus,
         checked_at:    checkedAt,
         error:         safeError,
@@ -243,14 +279,12 @@ export async function POST(
       ok: false,
       status: 'checker_unavailable',
       message: RUNTIME_UNAVAILABLE_RESPONSE_MESSAGE,
-      asin,
       checked: results.length,
       results,
     })
   }
 
   return NextResponse.json({
-    asin,
     checked: results.length,
     results,
   })

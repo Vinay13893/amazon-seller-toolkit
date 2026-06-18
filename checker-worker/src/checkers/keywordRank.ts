@@ -17,9 +17,13 @@ export type KeywordRankResponse = {
   ok: boolean
   found: boolean
   organic_rank: number | null
+  organic_page: number | null
+  organic_slot: number | null
+  organic_found: boolean
   sponsored_rank: number | null
-  page: number | null
-  position_on_page: number | null
+  sponsored_page: number | null
+  sponsored_slot: number | null
+  sponsored_found: boolean
   status: 'success' | 'not_found' | 'blocked' | 'failed'
   error_message: string | null
 }
@@ -40,9 +44,13 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
       ok: false,
       found: false,
       organic_rank: null,
+      organic_page: null,
+      organic_slot: null,
+      organic_found: false,
       sponsored_rank: null,
-      page: null,
-      position_on_page: null,
+      sponsored_page: null,
+      sponsored_slot: null,
+      sponsored_found: false,
       status: 'failed',
       error_message: 'Only Amazon India marketplace is supported in worker v1.',
     }
@@ -55,6 +63,12 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
     return await withBrowserPage(async page => {
       let organicCounter = 0
       let sponsoredCounter = 0
+      let organicRank: number | null = null
+      let organicPage: number | null = null
+      let organicSlot: number | null = null
+      let sponsoredRank: number | null = null
+      let sponsoredPage: number | null = null
+      let sponsoredSlot: number | null = null
 
       for (let pageIndex = 1; pageIndex <= 3; pageIndex += 1) {
         const searchUrl = `https://www.amazon.in/s?k=${encodeURIComponent(keyword)}&page=${pageIndex}`
@@ -66,9 +80,13 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
             ok: false,
             found: false,
             organic_rank: null,
+            organic_page: null,
+            organic_slot: null,
+            organic_found: false,
             sponsored_rank: null,
-            page: null,
-            position_on_page: null,
+            sponsored_page: null,
+            sponsored_slot: null,
+            sponsored_found: false,
             status: 'blocked',
             error_message: 'Amazon blocked the keyword check. Try again later.',
           }
@@ -104,53 +122,52 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
             continue
           }
 
-          if (!row.sponsored) {
-            return {
-              ok: true,
-              found: true,
-              organic_rank: organicCounter,
-              sponsored_rank: null,
-              page: pageIndex,
-              position_on_page: row.positionOnPage,
-              status: 'success',
-              error_message: null,
-            }
+          if (!row.sponsored && organicRank === null) {
+            organicRank = organicCounter
+            organicPage = pageIndex
+            organicSlot = row.positionOnPage
           }
 
-          return {
-            ok: true,
-            found: true,
-            organic_rank: null,
-            sponsored_rank: sponsoredCounter,
-            page: pageIndex,
-            position_on_page: row.positionOnPage,
-            status: 'success',
-            error_message: null,
+          if (row.sponsored && sponsoredRank === null) {
+            sponsoredRank = sponsoredCounter
+            sponsoredPage = pageIndex
+            sponsoredSlot = row.positionOnPage
           }
         }
+
+        if (organicRank !== null && sponsoredRank !== null) break
       }
 
+      const found = organicRank !== null || sponsoredRank !== null
       return {
         ok: true,
-        found: false,
-        organic_rank: null,
-        sponsored_rank: null,
-        page: null,
-        position_on_page: null,
-        status: 'not_found',
+        found,
+        organic_rank: organicRank,
+        organic_page: organicPage,
+        organic_slot: organicSlot,
+        organic_found: organicRank !== null,
+        sponsored_rank: sponsoredRank,
+        sponsored_page: sponsoredPage,
+        sponsored_slot: sponsoredSlot,
+        sponsored_found: sponsoredRank !== null,
+        status: found ? 'success' : 'not_found',
         error_message: null,
       }
     })
-  } catch (error) {
+  } catch {
     return {
       ok: false,
       found: false,
       organic_rank: null,
+      organic_page: null,
+      organic_slot: null,
+      organic_found: false,
       sponsored_rank: null,
-      page: null,
-      position_on_page: null,
+      sponsored_page: null,
+      sponsored_slot: null,
+      sponsored_found: false,
       status: 'failed',
-      error_message: error instanceof Error ? error.message : 'Keyword rank checker failed unexpectedly.',
+      error_message: 'Keyword rank checker failed unexpectedly.',
     }
   }
 }

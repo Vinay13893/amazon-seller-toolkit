@@ -43,7 +43,13 @@ import { toast } from 'sonner'
 interface KeywordSnapshotRow {
   tracked_keyword_id: string
   organic_rank: number | null
+  organic_page: number | null
+  organic_slot: number | null
+  organic_found: boolean | null
   sponsored_rank: number | null
+  sponsored_page: number | null
+  sponsored_slot: number | null
+  sponsored_found: boolean | null
   page_status: string | null
   checked_at: string
   page: number | null
@@ -507,11 +513,27 @@ export default function KeywordsPage() {
       })
     }
 
-    const { data: snaps } = await supabase
+    const snapshotSelect = 'tracked_keyword_id, organic_rank, organic_page, organic_slot, organic_found, sponsored_rank, sponsored_page, sponsored_slot, sponsored_found, page_status, checked_at, page, position_on_page, found, scrape_status, error_message'
+    let { data: snaps, error: snapsError } = await supabase
       .from('keyword_rank_snapshots')
-      .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at, page, position_on_page, found, scrape_status, error_message')
+      .select(snapshotSelect)
       .in('tracked_keyword_id', keywords.map(k => k.id))
       .order('checked_at', { ascending: false })
+
+    if (snapsError) {
+      const legacyResult = await supabase
+        .from('keyword_rank_snapshots')
+        .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at, page, position_on_page, found, scrape_status, error_message')
+        .in('tracked_keyword_id', keywords.map(k => k.id))
+        .order('checked_at', { ascending: false })
+      snaps = legacyResult.data as typeof snaps
+      snapsError = legacyResult.error
+    }
+
+    if (snapsError) {
+      setTrackedData([])
+      return
+    }
 
     const snapsByKw: Record<string, KeywordSnapshotRow[]> = {}
     for (const s of snaps ?? []) {
@@ -524,7 +546,12 @@ export default function KeywordsPage() {
       const latest  = kwSnaps[0]
       const prev    = kwSnaps[1]
       const latestFound = latest
-        ? (latest.found ?? (latest.organic_rank !== null || latest.sponsored_rank !== null))
+        ? (latest.found ?? Boolean(
+            latest.organic_found
+            || latest.sponsored_found
+            || latest.organic_rank !== null
+            || latest.sponsored_rank !== null
+          ))
         : false
       const scrapeStatus = latest
         ? ((latest.scrape_status as 'success' | 'failed' | 'checker_unavailable' | null) ?? 'success')
@@ -542,10 +569,10 @@ export default function KeywordsPage() {
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
         prev_sponsored_rank: prev?.sponsored_rank  ?? null,
-        organic_page:      latest?.organic_rank != null ? latest.page : null,
-        organic_slot:      latest?.organic_rank != null ? latest.position_on_page : null,
-        sponsored_page:    latest?.sponsored_rank != null ? latest.page : null,
-        sponsored_slot:    latest?.sponsored_rank != null ? latest.position_on_page : null,
+        organic_page:      latest?.organic_page ?? (latest?.organic_rank != null ? latest.page : null),
+        organic_slot:      latest?.organic_slot ?? (latest?.organic_rank != null ? latest.position_on_page : null),
+        sponsored_page:    latest?.sponsored_page ?? (latest?.sponsored_rank != null && latest?.organic_rank == null ? latest.page : null),
+        sponsored_slot:    latest?.sponsored_slot ?? (latest?.sponsored_rank != null && latest?.organic_rank == null ? latest.position_on_page : null),
         search_volume:     kw.search_volume        ?? 0,
         last_checked:      latest?.checked_at      ?? null,
         found:             latestFound,

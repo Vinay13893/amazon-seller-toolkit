@@ -56,13 +56,15 @@ export async function POST(req: NextRequest) {
     .eq('workspace_id', member.workspace_id)
     .eq('keyword', body.keyword.trim())
     .eq('marketplace', marketplace)
+    .is('tracked_asin_id', null)
     .maybeSingle()
 
-  // ── 4. Upsert — ignoreDuplicates:true so we never overwrite tracked_asin_id ─
-  const { data, error } = await supabase
-    .from('tracked_keywords')
-    .upsert(
-      {
+  // ── 4. Insert only when this unassigned keyword does not already exist ───
+  const insertResult = existing
+    ? { data: null, error: null }
+    : await supabase
+      .from('tracked_keywords')
+      .insert({
         workspace_id:    member.workspace_id,
         keyword:         body.keyword.trim(),
         marketplace,
@@ -70,11 +72,10 @@ export async function POST(req: NextRequest) {
         cpc_estimate:    body.cpc_estimate   ?? null,
         difficulty:      body.difficulty     ?? null,
         tracked_asin_id: null,
-      },
-      { onConflict: 'workspace_id,keyword,marketplace', ignoreDuplicates: true },
-    )
-    .select()
-    .maybeSingle()
+      })
+      .select()
+      .single()
+  const { data, error } = insertResult
 
   if (error) {
     console.error('[keywords.track.save_failed]')
@@ -84,7 +85,6 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // ignoreDuplicates: true → data is null on conflict. Return the existing row.
   const savedRow = data ?? existing
 
   // ── 5. Increment keyword_count only if this was a new keyword ─────────────

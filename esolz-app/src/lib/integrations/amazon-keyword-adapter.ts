@@ -17,10 +17,16 @@ export interface KeywordRankResult {
   keyword:        string
   asin:           string
   organic_rank:   number | null
+  organic_page:   number | null
+  organic_slot:   number | null
+  organic_found:  boolean
   page_number:    number | null
   pos_on_page:    number | null
   is_sponsored:   boolean
   sponsored_rank: number | null
+  sponsored_page: number | null
+  sponsored_slot: number | null
+  sponsored_found: boolean
   page_status:    'page_1' | 'page_2' | 'page_3' | 'not_ranking'
   scan_status:    string
   checked_at:     string

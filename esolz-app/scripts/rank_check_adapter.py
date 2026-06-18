@@ -20,10 +20,16 @@ Stdout: one JSON line
       "keyword":       "pure desi ghee 500ml",
       "asin":          "B0BN5NZCGH",
       "organic_rank":  5,
+      "organic_page":  1,
+      "organic_slot":  5,
+      "organic_found": true,
       "page_number":   1,
       "pos_on_page":   5,
       "is_sponsored":  false,
       "sponsored_rank": null,
+      "sponsored_page": null,
+      "sponsored_slot": null,
+      "sponsored_found": false,
       "page_status":   "page_1",
       "scan_status":   "ok",
       "checked_at":    "2026-05-26T10:00:00+00:00"
@@ -68,24 +74,14 @@ def build_search_url(domain: str, keyword: str, page_num: int) -> str:
     return f"https://{domain}/s?k={q}&page={page_num}"
 
 
-def extract_asins_from_html(html: str) -> list[str]:
-    """Preserve order of first occurrence of each ASIN on the page."""
-    asins: list[str] = []
+def extract_result_rows(html: str) -> list[tuple[str, bool]]:
+    """Return ordered result occurrences with a best-effort sponsored flag."""
+    rows: list[tuple[str, bool]] = []
     for m in re.finditer(r'data-asin="([A-Z0-9]{10})"', html, flags=re.I):
-        a = m.group(1).upper()
-        if a and a not in asins:
-            asins.append(a)
-    return asins
-
-
-def detect_sponsored_near_asin(html: str, asin: str) -> bool:
-    """Best-effort: checks if 'Sponsored' appears near the ASIN block."""
-    asin = asin.upper()
-    idx = html.upper().find(f'DATA-ASIN="{asin}"')
-    if idx == -1:
-        return False
-    window = html[max(0, idx - 2000): idx + 4000].lower()
-    return 'sponsored' in window
+        asin = m.group(1).upper()
+        window = html[max(0, m.start() - 1000): m.start() + 4000].lower()
+        rows.append((asin, 'sponsored' in window))
+    return rows
 
 
 def page_status(page_num: int, found: bool) -> str:
@@ -119,10 +115,16 @@ def main() -> None:
         'keyword':        keyword,
         'asin':           asin,
         'organic_rank':   None,
+        'organic_page':   None,
+        'organic_slot':   None,
+        'organic_found':  False,
         'page_number':    None,
         'pos_on_page':    None,
         'is_sponsored':   False,
         'sponsored_rank': None,
+        'sponsored_page': None,
+        'sponsored_slot': None,
+        'sponsored_found': False,
         'page_status':    'not_ranking',
         'scan_status':    'ok',
         'checked_at':     datetime.now(timezone.utc).isoformat(),
@@ -148,31 +150,36 @@ def main() -> None:
                     result['scan_status'] = f'page_error:{type(e).__name__}'
                     break
 
-                asins_on_page = extract_asins_from_html(html)
+                result_rows = extract_result_rows(html)
 
-                for pos_idx, found_asin in enumerate(asins_on_page):
-                    is_sp = detect_sponsored_near_asin(html, found_asin)
+                for pos_idx, (found_asin, is_sp) in enumerate(result_rows):
                     if is_sp:
                         sponsored_counter += 1
                         if found_asin == asin and result['sponsored_rank'] is None:
                             result['sponsored_rank'] = sponsored_counter
+                            result['sponsored_page'] = pnum
+                            result['sponsored_slot'] = pos_idx + 1
+                            result['sponsored_found'] = True
                     else:
                         organic_counter += 1
                         if found_asin == asin and result['organic_rank'] is None:
                             result['organic_rank']  = organic_counter
+                            result['organic_page']  = pnum
+                            result['organic_slot']  = pos_idx + 1
+                            result['organic_found'] = True
                             result['page_number']   = pnum
                             result['pos_on_page']   = pos_idx + 1
                             result['is_sponsored']  = False
                             result['page_status']   = page_status(pnum, True)
 
-                # Stop early once organic rank is found (sponsored may still be on earlier pages)
-                if result['organic_rank'] is not None:
+                # Stop once both result types have been captured.
+                if result['organic_found'] and result['sponsored_found']:
                     break
 
             browser.close()
 
     except Exception as e:
-        result['scan_status'] = f'error:{type(e).__name__}:{str(e)[:200]}'
+        result['scan_status'] = f'error:{type(e).__name__}'
 
     try:
         print(json.dumps(result, ensure_ascii=False))

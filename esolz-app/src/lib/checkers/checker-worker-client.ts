@@ -147,9 +147,13 @@ export interface KeywordRankResponse {
   ok:               boolean
   found:            boolean
   organic_rank:     number | null
+  organic_page:     number | null
+  organic_slot:     number | null
+  organic_found:    boolean
   sponsored_rank:   number | null
-  page:             number | null
-  position_on_page: number | null
+  sponsored_page:   number | null
+  sponsored_slot:   number | null
+  sponsored_found:  boolean
   status:           string
   error_message:    string | null
 }

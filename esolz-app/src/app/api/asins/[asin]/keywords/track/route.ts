@@ -9,9 +9,6 @@ export const runtime = 'nodejs'
  *
  * Saves a keyword to tracked_keywords linked to the specified tracked ASIN.
  * Duplicate prevention is scoped to workspace + tracked_asin_id + keyword + marketplace.
- * If a matching workspace+keyword+marketplace exists for a different ASIN,
- * this endpoint returns a conflict instead of silently re-linking it.
- *
  * Body: { keyword, marketplace?, search_volume?, cpc_estimate?, difficulty? }
  */
 export async function POST(
@@ -88,21 +85,6 @@ export async function POST(
       isNew: false,
       message: 'Keyword already tracked for this ASIN.',
     })
-  }
-
-  const { data: existingOtherAsin } = await supabase
-    .from('tracked_keywords')
-    .select('id, tracked_asin_id')
-    .eq('workspace_id', member.workspace_id)
-    .eq('keyword', normalizedKeyword)
-    .eq('marketplace', marketplace)
-    .maybeSingle()
-
-  if (existingOtherAsin?.id && existingOtherAsin.tracked_asin_id !== tracked.id) {
-    return NextResponse.json(
-      { error: 'This keyword is already tracked in your workspace for another ASIN.' },
-      { status: 409 },
-    )
   }
 
   // ── 5. Insert ─────────────────────────────────────────────────────────────
