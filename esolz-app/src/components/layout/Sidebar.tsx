@@ -2,12 +2,13 @@
 
 import Link from 'next/link'
 import Image from 'next/image'
+import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Package, TrendingUp, Tag, MapPin,
   ShoppingCart, Users, Bell, FileText, CreditCard,
-  Settings, BarChart3,
+  Settings, BarChart3, FlaskConical,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { SidebarPlanCard } from '@/components/layout/SidebarPlanCard'
@@ -53,6 +54,39 @@ interface SidebarProps {
 
 export function Sidebar({ className }: SidebarProps) {
   const pathname = usePathname()
+  const [showInternalDashboard, setShowInternalDashboard] = useState(false)
+
+  useEffect(() => {
+    let active = true
+
+    void fetch('/api/entitlements', {
+      cache: 'no-store',
+      credentials: 'same-origin',
+    })
+      .then(response => response.ok ? response.json() : null)
+      .then(data => {
+        if (active) setShowInternalDashboard(data?.internalTest === true)
+      })
+      .catch(() => {
+        if (active) setShowInternalDashboard(false)
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const visibleSections = showInternalDashboard
+    ? [
+        {
+          section: 'Internal',
+          items: [
+            { href: '/dashboard/internal', icon: FlaskConical, label: 'Internal Dashboard' },
+          ],
+        },
+        ...navSections,
+      ]
+    : navSections
 
   return (
     <div className={cn('flex flex-col h-full bg-sidebar border-r border-sidebar-border', className)}>
@@ -71,7 +105,7 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-4">
-        {navSections.map(section => (
+        {visibleSections.map(section => (
           <div key={section.section}>
             <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest px-3 mb-1">
               {section.section}

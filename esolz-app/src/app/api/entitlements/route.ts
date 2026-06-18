@@ -56,10 +56,11 @@ export async function GET(request: Request) {
 
   const embeddedPlan = activeSubscription?.subscription_plans
   const plan = Array.isArray(embeddedPlan) ? embeddedPlan[0] : embeddedPlan
+  const internalTest = plan?.name === 'Internal Tester'
 
   return NextResponse.json({
     planName: plan?.name ?? 'Free',
     asinLimit: plan?.asin_limit ?? 5,
-    internalTest: false,
+    internalTest,
   })
 }
