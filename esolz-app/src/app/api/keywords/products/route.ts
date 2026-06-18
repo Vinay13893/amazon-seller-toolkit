@@ -22,6 +22,8 @@ const PRODUCT_HOSTS: Record<string, string> = {
   US: 'www.amazon.com',
 }
 
+const ENRICHMENT_TIMEOUT_MS = 40_000
+
 type RequestBody = {
   asin?: unknown
   marketplace?: unknown
@@ -38,6 +40,22 @@ function optionalText(value: unknown, maxLength: number): string | null {
 
 function isFakeExternalTitle(value: string | null): boolean {
   return /^external asin [a-z0-9]{10}$/i.test(value?.trim() ?? '')
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('enrichment_timeout')), timeoutMs)
+    promise.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      error => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
 }
 
 export async function POST(request: Request) {
@@ -148,6 +166,7 @@ export async function POST(request: Request) {
       product_url: productUrl,
       source_type: sourceType,
       metadata_status: 'pending',
+      last_enriched_at: null,
       error_code: null,
       error_message: null,
     }, {
@@ -172,19 +191,21 @@ export async function POST(request: Request) {
       throw new Error('catalog_connection_unavailable')
     }
 
-    const token = await refreshAccessToken(decryptToken(connection.refresh_token_encrypted))
-    const catalog = await getCatalogItemForAsin({
-      accessToken: token.access_token,
-      marketplaceId: MARKETPLACE_IDS[marketplace],
-      asin,
-    })
+    const catalog = await withTimeout((async () => {
+      const token = await refreshAccessToken(decryptToken(connection.refresh_token_encrypted))
+      return getCatalogItemForAsin({
+        accessToken: token.access_token,
+        marketplaceId: MARKETPLACE_IDS[marketplace],
+        asin,
+      })
+    })(), ENRICHMENT_TIMEOUT_MS)
     const title = catalog.title ?? pendingTitle
     const brand = catalog.brand ?? pendingBrand
     const imageUrl = catalog.image_url ?? pendingImage
     const metadataStatus = title || brand || imageUrl ? 'found' : 'not_found'
     const checkedAt = new Date().toISOString()
 
-    await Promise.all([
+    const [metadataUpdate, trackedUpdate] = await Promise.all([
       admin
         .from('competitor_asins')
         .update({
@@ -211,6 +232,9 @@ export async function POST(request: Request) {
         .eq('id', trackedId)
         .eq('workspace_id', workspaceId),
     ])
+    if (metadataUpdate.error || trackedUpdate.error) {
+      throw new Error('metadata_finalize_failed')
+    }
 
     return NextResponse.json({
       tracked: true,
@@ -220,7 +244,7 @@ export async function POST(request: Request) {
     })
   } catch {
     const checkedAt = new Date().toISOString()
-    await admin
+    const { error: finalError } = await admin
       .from('competitor_asins')
       .update({
         metadata_status: 'error',
@@ -231,6 +255,19 @@ export async function POST(request: Request) {
       .eq('workspace_id', workspaceId)
       .eq('competitor_asin', asin)
       .eq('marketplace', marketplace)
+
+    if (finalError) {
+      return NextResponse.json(
+        {
+          tracked: true,
+          alreadyTracked: Boolean(existingTracked),
+          metadataStatus: 'error',
+          errorCode: 'metadata_finalize_failed',
+          errorMessage: 'Product details are not available yet.',
+        },
+        { status: 500 },
+      )
+    }
 
     return NextResponse.json({
       tracked: true,

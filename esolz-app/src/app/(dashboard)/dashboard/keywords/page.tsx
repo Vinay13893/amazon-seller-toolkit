@@ -70,6 +70,7 @@ interface TrackedKeywordRow {
   product_source: 'own' | 'competitor' | 'external'
   metadata_status: 'pending' | 'found' | 'not_found' | 'error' | null
   metadata_error_message: string | null
+  metadata_updated_at: string | null
   organic_rank: number | null
   prev_organic_rank: number | null
   sponsored_rank: number | null
@@ -116,6 +117,7 @@ interface ProductOption {
   trackedAsinId: string | null
   metadataStatus: 'pending' | 'found' | 'not_found' | 'error' | null
   metadataErrorMessage: string | null
+  metadataUpdatedAt: string | null
 }
 
 // ─── API research result type ─────────────────────────────────────────────────
@@ -170,12 +172,22 @@ function amazonProductUrl(asin: string, marketplace: Marketplace): string {
 function safeExternalTitle(
   title: string | null | undefined,
   status: ProductOption['metadataStatus'],
+  updatedAt?: string | null,
 ): string {
   const normalized = title?.trim() ?? ''
   const fakeTitle = /^external asin [a-z0-9]{10}$/i.test(normalized)
-  if (status === 'pending') return 'Fetching product details...'
+  if (status === 'pending' && !isStalePending(status, updatedAt)) return 'Fetching product details...'
   if (!normalized || fakeTitle) return 'Details not available yet'
   return normalized
+}
+
+function isStalePending(
+  status: ProductOption['metadataStatus'],
+  updatedAt: string | null | undefined,
+): boolean {
+  if (status !== 'pending') return false
+  const updatedTime = updatedAt ? new Date(updatedAt).getTime() : Number.NaN
+  return !Number.isFinite(updatedTime) || Date.now() - updatedTime > 2 * 60 * 1000
 }
 
 function getKeywordSeedSuggestions(product: ProductOption | null): string[] {
@@ -466,7 +478,7 @@ export default function KeywordsPage() {
           .order('created_at', { ascending: false }),
         supabase
           .from('competitor_asins')
-          .select('tracked_asin_id, competitor_asin, marketplace, product_title, brand, category, image_url, source_type, metadata_status, error_message')
+          .select('tracked_asin_id, competitor_asin, marketplace, product_title, brand, category, image_url, source_type, metadata_status, error_message, updated_at')
           .eq('workspace_id', wsId),
         fetch('/api/asins/listings?offset=0&limit=50', { cache: 'no-store' }),
       ])
@@ -485,6 +497,7 @@ export default function KeywordsPage() {
         const title = safeExternalTitle(
           (externalMeta?.product_title as string | null) ?? (row.product_title as string | null),
           metadataStatus,
+          (externalMeta?.updated_at as string | null) ?? null,
         )
         const source = externalMeta?.source_type === 'competitor'
           ? 'competitor'
@@ -504,6 +517,7 @@ export default function KeywordsPage() {
           trackedAsinId: row.id as string,
           metadataStatus,
           metadataErrorMessage: (externalMeta?.error_message as string | null) ?? null,
+          metadataUpdatedAt: (externalMeta?.updated_at as string | null) ?? null,
         })
       }
 
@@ -541,6 +555,7 @@ export default function KeywordsPage() {
           trackedAsinId: null,
           metadataStatus: null,
           metadataErrorMessage: null,
+          metadataUpdatedAt: null,
         })
       }
 
@@ -598,6 +613,7 @@ export default function KeywordsPage() {
             trackedAsinId: null,
             metadataStatus: null,
             metadataErrorMessage: null,
+            metadataUpdatedAt: null,
           })
         }
         setListingProductOptions(listingOptions)
@@ -658,6 +674,7 @@ export default function KeywordsPage() {
           trackedAsinId: null,
           metadataStatus: null,
           metadataErrorMessage: null,
+          metadataUpdatedAt: null,
         })
       }
 
@@ -700,7 +717,7 @@ export default function KeywordsPage() {
     const { data: externalRows } = trackedAsinIds.length
       ? await supabase
           .from('competitor_asins')
-          .select('tracked_asin_id, product_title, brand, image_url, source_type, metadata_status, error_message')
+          .select('tracked_asin_id, product_title, brand, image_url, source_type, metadata_status, error_message, updated_at')
           .eq('workspace_id', wsId)
           .in('tracked_asin_id', trackedAsinIds)
       : { data: [] }
@@ -775,6 +792,7 @@ export default function KeywordsPage() {
       const productTitle = safeExternalTitle(
         (externalMeta?.product_title as string | null) ?? asinFromTracked?.product_title,
         metadataStatus,
+        (externalMeta?.updated_at as string | null) ?? null,
       )
       const productSource = externalMeta?.source_type === 'competitor'
         ? 'competitor'
@@ -793,6 +811,7 @@ export default function KeywordsPage() {
         product_source:    productSource,
         metadata_status:   metadataStatus,
         metadata_error_message: (externalMeta?.error_message as string | null) ?? null,
+        metadata_updated_at: (externalMeta?.updated_at as string | null) ?? null,
         organic_rank:      latest?.organic_rank    ?? null,
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
@@ -1450,9 +1469,14 @@ export default function KeywordsPage() {
                   const isTracked = Boolean(product.trackedAsinId)
                   const isTracking = trackingAsinKey === product.key
                   const isEnriching = enrichingProductKey === product.key
+                  const stalePending = isStalePending(product.metadataStatus, product.metadataUpdatedAt)
                   const canRetryDetails =
                     product.source !== 'own'
-                    && product.metadataStatus !== 'found'
+                    && (
+                      product.metadataStatus === 'error'
+                      || product.metadataStatus === 'not_found'
+                      || stalePending
+                    )
                   return (
                     <div
                       key={product.key}
@@ -1819,10 +1843,12 @@ export default function KeywordsPage() {
                                 : 'Own ASIN'}
                           </Badge>
                           <Badge variant="outline" className="text-[9px]">{kw.marketplace}</Badge>
-                          {kw.metadata_status === 'pending' && (
+                          {kw.metadata_status === 'pending' && !isStalePending(kw.metadata_status, kw.metadata_updated_at) && (
                             <span className="text-[10px] text-muted-foreground">Fetching product details...</span>
                           )}
-                          {(kw.metadata_status === 'error' || kw.metadata_status === 'not_found') && (
+                          {(kw.metadata_status === 'error'
+                            || kw.metadata_status === 'not_found'
+                            || isStalePending(kw.metadata_status, kw.metadata_updated_at)) && (
                             <button
                               type="button"
                               className="text-[10px] text-primary hover:underline"
