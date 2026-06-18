@@ -20,6 +20,7 @@ type AdsStatusResponse = {
   success: boolean
   errorCode?: string
   message?: string
+  profilesSynced?: number
   configured?: boolean
   envPresence?: {
     configuredEnvNames?: string[]
@@ -66,6 +67,7 @@ function StatusPill({ status }: { status: string }) {
 
 export default function AmazonAdsCard() {
   const [loading, setLoading] = useState(true)
+  const [connecting, setConnecting] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [status, setStatus] = useState<AdsStatusResponse | null>(null)
 
@@ -112,12 +114,27 @@ export default function AmazonAdsCard() {
   }
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const ads = params.get('amazon_ads')
+    const reason = params.get('reason')
+    if (ads === 'connected') {
+      window.history.replaceState({}, '', window.location.pathname)
+    } else if (ads === 'error') {
+      setStatus({
+        success: false,
+        errorCode: reason ?? 'ads_oauth_failed',
+        message: 'Amazon Ads connection failed.',
+        profiles: [],
+      })
+      window.history.replaceState({}, '', window.location.pathname)
+    }
     void fetchStatus()
   }, [])
 
   const profiles = status?.profiles ?? []
   const connectionStatus = status?.connection?.status ?? 'not_configured'
   const notConfigured = status?.errorCode === 'ads_connection_not_configured' || status?.configured === false
+  const connected = connectionStatus === 'active'
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
@@ -126,7 +143,7 @@ export default function AmazonAdsCard() {
         <div>
           <h2 className="text-sm font-semibold text-foreground">Amazon Ads</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Foundation for Ads profiles and reporting. OAuth and report sync are deferred.
+            Connect Amazon Ads to sync advertising profiles. Report sync and automation are not enabled yet.
           </p>
         </div>
       </div>
@@ -158,7 +175,7 @@ export default function AmazonAdsCard() {
 
             {notConfigured && (
               <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground">
-                Amazon Ads OAuth is not configured yet. Add the required Ads OAuth environment names in Vercel when ready, then implement the connect flow.
+                Amazon Ads OAuth is not configured yet. Add the required Ads OAuth environment names in Vercel to enable the connect button.
               </div>
             )}
 
@@ -191,16 +208,31 @@ export default function AmazonAdsCard() {
               </p>
             )}
 
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={syncing}
-                onClick={() => void syncProfiles()}
-              >
-                {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                {syncing ? 'Checking...' : 'Sync Ads Profiles'}
-              </Button>
+            <div className="flex justify-end gap-2">
+              {!connected && (
+                <Button
+                  size="sm"
+                  disabled={connecting || notConfigured}
+                  onClick={() => {
+                    setConnecting(true)
+                    window.location.href = '/api/amazon/ads/connect'
+                  }}
+                >
+                  {connecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <BarChart3 className="h-3.5 w-3.5" />}
+                  {connecting ? 'Connecting...' : 'Connect Amazon Ads'}
+                </Button>
+              )}
+              {connected && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={syncing}
+                  onClick={() => void syncProfiles()}
+                >
+                  {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  {syncing ? 'Syncing...' : 'Sync Ads Profiles'}
+                </Button>
+              )}
             </div>
           </div>
         )}
