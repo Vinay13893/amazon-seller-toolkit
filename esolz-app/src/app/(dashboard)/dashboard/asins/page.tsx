@@ -6,6 +6,7 @@ import { AddAsinDialog } from '@/components/asins/AddAsinDialog'
 import { AsinDashboardTable } from '@/components/asins/AsinDashboardTable'
 import { ProductCard } from '@/components/asins/ProductCard'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Marketplace, ProductSnapshot } from '@/types'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { toast } from 'sonner'
@@ -18,7 +19,6 @@ import {
   incrementAsinUsage,
   type AddAsinInput,
 } from '@/lib/supabase/asins'
-import { createClient } from '@/lib/supabase/client'
 import {
   Package,
   LayoutGrid,
@@ -31,6 +31,7 @@ import {
   Loader2,
   ShoppingBag,
   RefreshCw,
+  Search,
 } from 'lucide-react'
 
 type ViewMode = 'table' | 'cards'
@@ -48,6 +49,15 @@ interface AmazonListingItem {
   last_synced_at: string | null
 }
 
+interface ListingSyncSummary {
+  status: string
+  importedCount: number
+  hasMore: boolean
+  lastSyncAt: string | null
+}
+
+const LISTINGS_PAGE_SIZE = 50
+
 export default function AsinsPage() {
   const [products, setProducts]       = useState<ProductSnapshot[]>([])
   const [viewMode, setViewMode]       = useState<ViewMode>('table')
@@ -59,6 +69,11 @@ export default function AsinsPage() {
   const [amazonListings, setAmazonListings]         = useState<AmazonListingItem[]>([])
   const [amazonConnected, setAmazonConnected]       = useState<boolean | null>(null)
   const [listingsLoading, setListingsLoading]       = useState(true)
+  const [listingsLoadingMore, setListingsLoadingMore] = useState(false)
+  const [listingSearch, setListingSearch]           = useState('')
+  const [listingTotal, setListingTotal]             = useState(0)
+  const [listingsHasMore, setListingsHasMore]       = useState(false)
+  const [listingSync, setListingSync]               = useState<ListingSyncSummary | null>(null)
   const [trackingFromListingAsin, setTrackingFromListingAsin] = useState<string | null>(null)
 
   function marketplaceFromMarketplaceId(marketplaceId: string): Marketplace {
@@ -71,8 +86,11 @@ export default function AsinsPage() {
     return map[marketplaceId] ?? 'IN'
   }
 
-  const loadAmazonListings = useCallback(async (wsId: string) => {
-    setListingsLoading(true)
+  const loadAmazonListings = useCallback(async (options?: { append?: boolean; search?: string; offset?: number }) => {
+    const append = options?.append ?? false
+    const search = options?.search ?? listingSearch
+    if (append) setListingsLoadingMore(true)
+    else setListingsLoading(true)
     try {
       // Check if connected
       const statusRes = await fetch('/api/amazon/connect/status')
@@ -81,24 +99,34 @@ export default function AsinsPage() {
       setAmazonConnected(!!statusData.connected)
       if (!statusData.connected) return
 
-      // Fetch listing items via Supabase (RLS allows select for workspace members)
-      const supabase = createClient()
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data, error } = await (supabase as any)
-        .from('amazon_listing_items')
-        .select('id, sku, asin, item_name, brand, product_type, status, marketplace_id, image_url, last_synced_at')
-        .eq('workspace_id', wsId)
-        .order('item_name', { ascending: true })
-        .limit(200)
-      if (!error && Array.isArray(data)) {
-        setAmazonListings(data as AmazonListingItem[])
+      const offset = append ? (options?.offset ?? 0) : 0
+      const params = new URLSearchParams({
+        offset: String(offset),
+        limit: String(LISTINGS_PAGE_SIZE),
+      })
+      if (search.trim()) params.set('q', search.trim())
+
+      const listingsRes = await fetch(`/api/asins/listings?${params.toString()}`, { cache: 'no-store' })
+      const listingData = await listingsRes.json() as {
+        items?: AmazonListingItem[]
+        total?: number
+        hasMore?: boolean
+        sync?: ListingSyncSummary | null
+      }
+      if (listingsRes.ok) {
+        const nextItems = listingData.items ?? []
+        setAmazonListings(previous => append ? [...previous, ...nextItems] : nextItems)
+        setListingTotal(listingData.total ?? 0)
+        setListingsHasMore(Boolean(listingData.hasMore))
+        setListingSync(listingData.sync ?? null)
       }
     } catch {
       // non-fatal
     } finally {
-      setListingsLoading(false)
+      if (append) setListingsLoadingMore(false)
+      else setListingsLoading(false)
     }
-  }, [])
+  }, [listingSearch])
 
   const loadData = useCallback(async () => {
     setLoading(true)
@@ -112,19 +140,26 @@ export default function AsinsPage() {
     setMaxAsins(limit)
     setProducts(asins)
     setLoading(false)
-    void loadAmazonListings(wsId)
-  }, [loadAmazonListings])
+  }, [])
 
   useEffect(() => { void loadData() }, [loadData])
 
   // Refresh Amazon listings when the background watcher finishes a sync
   useEffect(() => {
     function onSyncDone() {
-      if (workspaceId) void loadAmazonListings(workspaceId)
+      if (workspaceId) void loadAmazonListings({ search: listingSearch })
     }
     window.addEventListener('amazon:listings-synced', onSyncDone)
     return () => window.removeEventListener('amazon:listings-synced', onSyncDone)
-  }, [workspaceId, loadAmazonListings])
+  }, [workspaceId, listingSearch, loadAmazonListings])
+
+  useEffect(() => {
+    if (!workspaceId) return
+    const timer = window.setTimeout(() => {
+      void loadAmazonListings({ search: listingSearch })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [workspaceId, listingSearch, loadAmazonListings])
 
   async function handleAddAsin(data: AddAsinInput): Promise<{ error?: string }> {
     if (!workspaceId) return { error: 'Not signed in' }
@@ -382,17 +417,48 @@ export default function AsinsPage() {
 
       {/* ── Amazon Account Listings ── */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10 text-orange-500">
-            <ShoppingBag className="size-5" />
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-orange-500/10 text-orange-500">
+              <ShoppingBag className="size-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">Amazon Account Listings</h2>
+              <p className="text-sm text-muted-foreground">
+                Products synced from your Seller Central account via SP-API
+              </p>
+            </div>
           </div>
-          <div>
-            <h2 className="text-lg font-semibold text-foreground">Amazon Account Listings</h2>
-            <p className="text-sm text-muted-foreground">
-              Products synced from your Seller Central account via SP-API
-            </p>
-          </div>
+          {listingSync && (
+            <div className="text-right text-xs text-muted-foreground">
+              <p>
+                Sync: {listingSync.status === 'completed'
+                  ? 'Full'
+                  : listingSync.status === 'running'
+                    ? 'In progress'
+                    : 'Partial / failed'}
+              </p>
+              <p>
+                {listingSync.importedCount} imported
+                {listingSync.lastSyncAt
+                  ? ` · ${new Date(listingSync.lastSyncAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`
+                  : ''}
+              </p>
+            </div>
+          )}
         </div>
+
+        {amazonConnected && (
+          <div className="relative max-w-xl">
+            <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={listingSearch}
+              onChange={event => setListingSearch(event.target.value)}
+              placeholder="Search title, ASIN, SKU, brand, or marketplace"
+              className="pl-9"
+            />
+          </div>
+        )}
 
         {listingsLoading ? (
           <div className="flex items-center gap-2 text-muted-foreground text-sm py-4">
@@ -416,6 +482,14 @@ export default function AsinsPage() {
 
         ) : amazonListings.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 flex flex-col items-center text-center gap-3">
+            {listingSearch.trim() ? (
+              <>
+                <Search className="size-10 text-muted-foreground/40" />
+                <p className="text-sm font-medium text-foreground">No products match your search</p>
+                <p className="text-xs text-muted-foreground">Try a title, ASIN, SKU, brand, or marketplace.</p>
+              </>
+            ) : (
+              <>
             <RefreshCw className="size-10 text-muted-foreground/40" />
             <p className="text-sm font-medium text-foreground">No listings synced yet</p>
             <p className="text-xs text-muted-foreground max-w-xs">
@@ -428,6 +502,8 @@ export default function AsinsPage() {
             >
               Go to Settings
             </Link>
+              </>
+            )}
           </div>
 
         ) : (
@@ -439,6 +515,7 @@ export default function AsinsPage() {
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Product</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">SKU</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">ASIN</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Marketplace</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Status</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Last synced</th>
                     <th className="px-4 py-3"></th>
@@ -477,6 +554,9 @@ export default function AsinsPage() {
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
                         {item.asin ?? '—'}
                       </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {marketplaceFromMarketplaceId(item.marketplace_id)}
+                      </td>
                       <td className="px-4 py-3">
                         {item.status ? (
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -513,10 +593,30 @@ export default function AsinsPage() {
                 </tbody>
               </table>
             </div>
-            <div className="px-4 py-2.5 bg-muted/20 border-t border-border">
+            <div className="px-4 py-3 bg-muted/20 border-t border-border flex items-center justify-between gap-3 flex-wrap">
               <p className="text-xs text-muted-foreground">
-                {amazonListings.length} listing{amazonListings.length !== 1 ? 's' : ''} synced from Seller Central
+                Showing {amazonListings.length} of {listingTotal} product{listingTotal !== 1 ? 's' : ''}
+                {listingSearch.trim() ? ' matching your search' : ''}
               </p>
+              {listingsHasMore && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={listingsLoadingMore}
+                  onClick={() => void loadAmazonListings({
+                    append: true,
+                    search: listingSearch,
+                    offset: amazonListings.length,
+                  })}
+                >
+                  {listingsLoadingMore ? (
+                    <><Loader2 className="size-4 animate-spin" /> Loading...</>
+                  ) : (
+                    'Load More'
+                  )}
+                </Button>
+              )}
             </div>
           </div>
         )}

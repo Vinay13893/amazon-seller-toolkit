@@ -54,12 +54,7 @@ export async function getMarketplaceParticipations(
   })
 
   if (!res.ok) {
-    if (process.env.NODE_ENV !== 'production') {
-      const errBody = await res.text().catch(() => '<unreadable>')
-      console.error('[spapi] getMarketplaceParticipations error:', res.status, errBody)
-    } else {
-      console.error('[spapi] getMarketplaceParticipations error:', res.status)
-    }
+    console.error('[spapi] getMarketplaceParticipations error:', res.status)
     throw new Error(`SP-API call failed with HTTP ${res.status}`)
   }
 
@@ -186,12 +181,7 @@ export async function searchListingsItems(
   })
 
   if (!res.ok) {
-    if (process.env.NODE_ENV !== 'production') {
-      const errBody = await res.text().catch(() => '<unreadable>')
-      console.error('[spapi] searchListingsItems error:', res.status, errBody)
-    } else {
-      console.error('[spapi] searchListingsItems error:', res.status)
-    }
+    console.error('[spapi] searchListingsItems error:', res.status)
     throw new Error(`SP-API listings call failed with HTTP ${res.status}`)
   }
 

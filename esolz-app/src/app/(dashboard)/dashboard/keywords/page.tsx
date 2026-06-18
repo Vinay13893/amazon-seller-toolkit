@@ -526,6 +526,58 @@ export default function KeywordsPage() {
     }
   }, [])
 
+  useEffect(() => {
+    const search = productSearch.trim()
+    if (search.length < 2) return
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ q: search, limit: '50', offset: '0' })
+        const response = await fetch(`/api/asins/listings?${params.toString()}`, { cache: 'no-store' })
+        const data = await parseJsonSafe<{ items?: Array<{
+          sku: string
+          asin: string | null
+          marketplace_id: string
+          item_name: string | null
+          brand: string | null
+          product_type: string | null
+          image_url: string | null
+        }> }>(response)
+        if (!response.ok) return
+
+        setProductOptions(previous => {
+          const merged = new Map(previous.map(product => [product.key, product]))
+          for (const row of data?.items ?? []) {
+            const asin = row.asin?.toUpperCase()
+            if (!asin) continue
+            const marketplace = marketplaceFromMarketplaceId(row.marketplace_id)
+            const key = buildProductKey(asin, marketplace)
+            if (merged.has(key)) continue
+            merged.set(key, {
+              key,
+              asin,
+              marketplace,
+              title: row.item_name ?? asin,
+              sku: row.sku,
+              brand: row.brand,
+              productType: row.product_type,
+              imageUrl: row.image_url,
+              source: 'own',
+              trackedAsinId: null,
+              metadataStatus: null,
+              metadataErrorMessage: null,
+            })
+          }
+          return [...merged.values()].sort((a, b) => a.title.localeCompare(b.title))
+        })
+      } catch {
+        // Keep existing product options if search loading fails.
+      }
+    }, 300)
+
+    return () => window.clearTimeout(timer)
+  }, [productSearch])
+
   const loadTrackedKeywords = useCallback(async (wsId: string) => {
     const supabase = createClient()
     const { data: kws } = await supabase

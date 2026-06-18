@@ -36,7 +36,7 @@ interface ListingRow {
   product_type:   string | null
   status:         string | null
   image_url:      string | null
-  raw_data:       Record<string, unknown>
+  raw_data:       Record<string, never>
   last_synced_at: string
   updated_at:     string
 }
@@ -195,7 +195,7 @@ async function handlePost(req: NextRequest) {
       product_type:   productType,
       status:         statusStr,
       image_url:      imageUrl,
-      raw_data:       item as unknown as Record<string, unknown>,
+      raw_data:       {},
       last_synced_at: syncedAt,
       updated_at:     syncedAt,
     }
@@ -206,9 +206,8 @@ async function handlePost(req: NextRequest) {
         .from('amazon_listing_items')
         .upsert(row, { onConflict: 'workspace_id,sku,marketplace_id' })
       pageUpserted++
-    } catch (upsertErr) {
-      console.error('[listings/process] upsert error SKU', sku,
-        upsertErr instanceof Error ? upsertErr.message : upsertErr)
+    } catch {
+      console.error('[listings/process] listing upsert failed')
     }
   }
 
