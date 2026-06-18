@@ -47,6 +47,7 @@ interface KeywordSnapshotRow {
   page_status: string | null
   checked_at: string
   page: number | null
+  position_on_page: number | null
   found: boolean | null
   scrape_status: string | null
   error_message: string | null
@@ -60,13 +61,16 @@ interface TrackedKeywordRow {
   organic_rank: number | null
   prev_organic_rank: number | null
   sponsored_rank: number | null
-  page_status: 'page_1' | 'page_2' | 'page_3' | 'not_ranking'
+  prev_sponsored_rank: number | null
+  organic_page: number | null
+  organic_slot: number | null
+  sponsored_page: number | null
+  sponsored_slot: number | null
   search_volume: number
   last_checked: string | null
   found: boolean
   scrape_status: 'never_checked' | 'success' | 'failed' | 'checker_unavailable'
   error_message: string | null
-  page: number | null
 }
 
 type TrackedKeywordQueryRow = {
@@ -505,7 +509,7 @@ export default function KeywordsPage() {
 
     const { data: snaps } = await supabase
       .from('keyword_rank_snapshots')
-      .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at, page, found, scrape_status, error_message')
+      .select('tracked_keyword_id, organic_rank, sponsored_rank, page_status, checked_at, page, position_on_page, found, scrape_status, error_message')
       .in('tracked_keyword_id', keywords.map(k => k.id))
       .order('checked_at', { ascending: false })
 
@@ -520,7 +524,7 @@ export default function KeywordsPage() {
       const latest  = kwSnaps[0]
       const prev    = kwSnaps[1]
       const latestFound = latest
-        ? (latest.found ?? latest.organic_rank !== null)
+        ? (latest.found ?? (latest.organic_rank !== null || latest.sponsored_rank !== null))
         : false
       const scrapeStatus = latest
         ? ((latest.scrape_status as 'success' | 'failed' | 'checker_unavailable' | null) ?? 'success')
@@ -537,13 +541,16 @@ export default function KeywordsPage() {
         organic_rank:      latest?.organic_rank    ?? null,
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
-        page_status:       (latest?.page_status    ?? 'not_ranking') as TrackedKeywordRow['page_status'],
+        prev_sponsored_rank: prev?.sponsored_rank  ?? null,
+        organic_page:      latest?.organic_rank != null ? latest.page : null,
+        organic_slot:      latest?.organic_rank != null ? latest.position_on_page : null,
+        sponsored_page:    latest?.sponsored_rank != null ? latest.page : null,
+        sponsored_slot:    latest?.sponsored_rank != null ? latest.position_on_page : null,
         search_volume:     kw.search_volume        ?? 0,
         last_checked:      latest?.checked_at      ?? null,
         found:             latestFound,
         scrape_status:     scrapeStatus,
         error_message:     latest?.error_message ?? null,
-        page:              latest?.page ?? null,
       }
     })
 
@@ -565,7 +572,7 @@ export default function KeywordsPage() {
         date: new Date(s.checked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }),
         rank: s.organic_rank,
         checked_at: s.checked_at,
-        page: s.page ?? null,
+        page: s.organic_rank != null ? (s.page ?? null) : null,
         found: s.found ?? s.organic_rank !== null,
         scrape_status: s.scrape_status ?? 'success',
         error_message: s.error_message ?? null,
@@ -863,7 +870,7 @@ export default function KeywordsPage() {
       return
     }
     if (!selectedProduct.trackedAsinId) {
-      toast.warning('Track ASIN first to enable keyword tracking.')
+      toast.warning('Select an ASIN and enable keyword tracking first.')
       return
     }
 
@@ -943,7 +950,8 @@ export default function KeywordsPage() {
   }
 
   // KPI computations
-  const page1Count = visibleTrackedData.filter(k => k.page_status === 'page_1').length
+  const page1Count = visibleTrackedData.filter(k => k.organic_page === 1).length
+  const sponsoredFoundCount = visibleTrackedData.filter(k => k.sponsored_rank !== null).length
   const top10Count = visibleTrackedData.filter(
     k => k.organic_rank !== null && k.organic_rank <= 10,
   ).length
@@ -985,7 +993,7 @@ export default function KeywordsPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">Keyword Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Research keywords and monitor ranking movement for tracked ASINs. Next: add a seed keyword and track it, then refresh ranks. Data source: tracked_keywords and keyword_rank_snapshots.
+            Track where any ASIN ranks organically and in sponsored results for Amazon search keywords.
           </p>
         </div>
         <Button
@@ -998,10 +1006,11 @@ export default function KeywordsPage() {
       </div>
 
       {/* ── 2. KPI cards ──────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-4">
         <KpiCard label="Total Tracked" value={trackedKeywordsLoading ? '—' : visibleTrackedData.length} icon={Tag} />
-        <KpiCard label="Page 1 Keywords" value={trackedKeywordsLoading ? '—' : page1Count} icon={CheckCircle2} sub="rank ≤ 16" />
-        <KpiCard label="Top 10 Keywords" value={trackedKeywordsLoading ? '—' : top10Count} icon={BarChart2} sub="rank ≤ 10" />
+        <KpiCard label="Page 1 Organic" value={trackedKeywordsLoading ? '—' : page1Count} icon={CheckCircle2} sub="organic page 1" />
+        <KpiCard label="Top 10 Organic" value={trackedKeywordsLoading ? '—' : top10Count} icon={BarChart2} sub="organic rank ≤ 10" />
+        <KpiCard label="Sponsored Found" value={trackedKeywordsLoading ? '—' : sponsoredFoundCount} icon={Search} />
         <KpiCard
           label="Improved"
           value={trackedKeywordsLoading ? '—' : improvedCount}
@@ -1015,7 +1024,7 @@ export default function KeywordsPage() {
           sub="vs previous check"
         />
         <KpiCard
-          label="Average Rank"
+          label="Average Organic Rank"
           value={trackedKeywordsLoading ? '—' : (avgRank != null ? `#${avgRank}` : '—')}
           icon={Hash}
           sub="ranked keywords"
@@ -1027,7 +1036,7 @@ export default function KeywordsPage() {
         <div>
           <h2 className="text-sm font-semibold text-foreground">Choose a product to track keywords</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Select one of your tracked ASINs or synced Amazon listings.
+            Track keywords for your own ASINs, competitor ASINs, or any Amazon ASIN.
           </p>
         </div>
 
@@ -1089,7 +1098,7 @@ export default function KeywordsPage() {
 
                 <div className="flex items-center gap-2 flex-wrap">
                   <Button type="button" onClick={handleTrackExternalAsin} disabled={trackingExternalAsin}>
-                    {trackingExternalAsin ? 'Tracking…' : 'Track this ASIN'}
+                    {trackingExternalAsin ? 'Tracking…' : 'Track keywords for this ASIN'}
                   </Button>
                   <Button
                     type="button"
@@ -1172,7 +1181,7 @@ export default function KeywordsPage() {
                           <Badge className={cn('text-[10px]', isTracked
                             ? 'bg-green-500/15 text-green-400 border-green-500/20'
                             : 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20')}>
-                            {isTracked ? 'Ready for keywords' : 'Track ASIN first'}
+                            {isTracked ? 'Ready for keywords' : 'Keyword tracking not enabled'}
                           </Badge>
                         </div>
                       </div>
@@ -1193,7 +1202,7 @@ export default function KeywordsPage() {
                             onClick={() => handleTrackSelectedAsin(product)}
                             disabled={isTracking}
                           >
-                            {isTracking ? 'Tracking…' : 'Track ASIN First'}
+                            {isTracking ? 'Tracking…' : 'Track keywords for this ASIN'}
                           </Button>
                         )}
                       </div>
@@ -1255,20 +1264,20 @@ export default function KeywordsPage() {
 
           {!selectedProduct.trackedAsinId ? (
             <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-3 flex items-center justify-between gap-3 flex-wrap">
-              <p className="text-xs text-yellow-300">Track ASIN first to enable keyword tracking.</p>
+              <p className="text-xs text-yellow-300">Enable keyword tracking for this ASIN.</p>
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => handleTrackSelectedAsin(selectedProduct)}
                 disabled={trackingAsinKey === selectedProduct.key}
               >
-                {trackingAsinKey === selectedProduct.key ? 'Tracking…' : 'Track ASIN First'}
+                {trackingAsinKey === selectedProduct.key ? 'Tracking…' : 'Track keywords for this ASIN'}
               </Button>
             </div>
           ) : (
             <div className="space-y-3">
               {selectedProductKeywordCount === 0 && (
-                <p className="text-sm text-muted-foreground">Add your first keyword for this ASIN.</p>
+                <p className="text-sm text-muted-foreground">Add keywords to start tracking this ASIN.</p>
               )}
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -1369,7 +1378,14 @@ export default function KeywordsPage() {
         ) : visibleTrackedData.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
             <Tag className="size-8 text-muted-foreground/30" />
-            {productOptions.length === 0 ? (
+            {selectedProduct && selectedProductKeywordCount === 0 ? (
+              <>
+                <p className="text-sm font-medium text-foreground">Add keywords to start tracking this ASIN.</p>
+                <p className="text-xs text-muted-foreground max-w-xs">
+                  Use the selected ASIN section above to add one or more search keywords.
+                </p>
+              </>
+            ) : productOptions.length === 0 ? (
               <>
                 <p className="text-sm font-medium text-foreground">Add an ASIN or sync Amazon listings to start keyword tracking.</p>
                 <div className="flex items-center gap-2 flex-wrap justify-center">
@@ -1397,15 +1413,18 @@ export default function KeywordsPage() {
               <tr className="border-b border-border text-[11px] text-muted-foreground font-semibold uppercase tracking-wider">
                 <th className="text-left px-6 py-3">Keyword</th>
                 <th className="text-left px-4 py-3">ASIN</th>
-                <th className="text-right px-4 py-3">Organic</th>
-                <th className="text-right px-4 py-3">Previous</th>
-                <th className="text-center px-4 py-3">Move</th>
-                <th className="text-right px-4 py-3">Sponsored</th>
-                <th className="text-center px-4 py-3">Page</th>
+                <th className="text-left px-4 py-3">Product</th>
+                <th className="text-right px-4 py-3">Organic Rank</th>
+                <th className="text-center px-4 py-3">Organic Page</th>
+                <th className="text-center px-4 py-3">Organic Slot</th>
+                <th className="text-right px-4 py-3">Sponsored Rank</th>
+                <th className="text-center px-4 py-3">Sponsored Page</th>
+                <th className="text-center px-4 py-3">Sponsored Slot</th>
+                <th className="text-center px-4 py-3">Organic Move</th>
+                <th className="text-center px-4 py-3">Sponsored Move</th>
                 <th className="text-center px-4 py-3">Status</th>
                 <th className="text-left px-4 py-3">Checked</th>
                 <th className="text-left px-4 py-3">Freshness</th>
-                <th className="text-center px-4 py-3">Detail</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -1419,51 +1438,80 @@ export default function KeywordsPage() {
                   onClick={() => setSelectedKeywordId(kw.id)}
                 >
                   <td className="px-6 py-3">
-                    <div>
-                      <p className="text-xs font-medium text-foreground">{kw.keyword}</p>
-                      <p className="text-[10px] text-muted-foreground truncate max-w-[160px]">
-                        {kw.product_name}
-                      </p>
-                    </div>
+                    <p className="text-xs font-medium text-foreground">{kw.keyword}</p>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="font-mono text-[11px] text-muted-foreground">{kw.asin}</span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <span
-                      className={cn(
-                        'text-xs font-semibold tabular-nums',
-                        kw.organic_rank === null
-                          ? 'text-muted-foreground'
-                          : kw.organic_rank <= 3
-                          ? 'text-green-400'
-                          : kw.organic_rank <= 10
-                          ? 'text-primary'
-                          : 'text-foreground',
-                      )}
+                    <Link
+                      href={`/dashboard/asins/${kw.asin}`}
+                      onClick={e => e.stopPropagation()}
+                      className="inline-flex items-center gap-1 font-mono text-[11px] text-primary hover:underline"
                     >
-                      {kw.organic_rank != null ? `#${kw.organic_rank}` : '—'}
+                      {kw.asin}
+                      <ExternalLink className="size-3" />
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="block max-w-[180px] truncate text-xs text-muted-foreground" title={kw.product_name}>
+                      {kw.product_name}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {kw.prev_organic_rank != null ? `#${kw.prev_organic_rank}` : '—'}
-                    </span>
+                    <div>
+                      <span
+                        className={cn(
+                          'text-xs font-semibold tabular-nums',
+                          kw.organic_rank === null
+                            ? 'text-muted-foreground'
+                            : kw.organic_rank <= 3
+                            ? 'text-green-400'
+                            : kw.organic_rank <= 10
+                            ? 'text-primary'
+                            : 'text-foreground',
+                        )}
+                      >
+                        {kw.organic_rank != null ? `#${kw.organic_rank}` : '—'}
+                      </span>
+                      {kw.prev_organic_rank != null && (
+                        <span className="block text-[10px] text-muted-foreground">Prev #{kw.prev_organic_rank}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <span className="text-xs text-muted-foreground">{kw.organic_page ?? '—'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <span className="text-xs text-muted-foreground">{kw.organic_slot ?? '—'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <div>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {kw.sponsored_rank != null ? `#${kw.sponsored_rank}` : '—'}
+                      </span>
+                      {kw.prev_sponsored_rank != null && (
+                        <span className="block text-[10px] text-muted-foreground">Prev #{kw.prev_sponsored_rank}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <span className="text-xs text-muted-foreground">{kw.sponsored_page ?? '—'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <span className="text-xs text-muted-foreground">{kw.sponsored_slot ?? '—'}</span>
                   </td>
                   <td className="px-4 py-3 text-center">
                     <MovementChip current={kw.organic_rank} prev={kw.prev_organic_rank} />
                   </td>
-                  <td className="px-4 py-3 text-right">
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {kw.sponsored_rank != null ? `#${kw.sponsored_rank}` : '—'}
-                    </span>
-                  </td>
                   <td className="px-4 py-3 text-center">
-                    <span className="text-xs text-muted-foreground">{kw.page ?? '—'}</span>
+                    <MovementChip current={kw.sponsored_rank} prev={kw.prev_sponsored_rank} />
                   </td>
                   <td className="px-4 py-3 text-center">
                     <div className="inline-flex flex-col items-center gap-1">
                       <FoundStatusBadge kw={kw} />
+                      {kw.scrape_status === 'success' && !kw.found && (
+                        <span className="max-w-[180px] text-[10px] text-muted-foreground">
+                          ASIN was not found within checked search pages.
+                        </span>
+                      )}
                       {kw.scrape_status === 'failed' && sanitizeCheckerError(kw.error_message) && (
                         <span className="text-[10px] text-red-400 max-w-[180px] truncate" title={sanitizeCheckerError(kw.error_message) ?? undefined}>
                           {sanitizeCheckerError(kw.error_message)}
@@ -1478,15 +1526,6 @@ export default function KeywordsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <DataFreshnessBadge checkedAt={kw.last_checked} />
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <Link
-                      href={`/dashboard/asins/${kw.asin}`}
-                      onClick={e => e.stopPropagation()}
-                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-                    >
-                      <ExternalLink className="size-3" />
-                    </Link>
                   </td>
                 </tr>
               ))}
@@ -1521,7 +1560,7 @@ export default function KeywordsPage() {
         <>
         <div className="flex items-start justify-between gap-4 mb-5 flex-wrap">
           <div>
-            <h2 className="text-sm font-semibold text-foreground">Rank Trend</h2>
+            <h2 className="text-sm font-semibold text-foreground">Organic rank trend</h2>
             {selectedKw && (
               <p className="text-xs text-muted-foreground mt-0.5">
                 <span className="font-medium text-foreground">
@@ -1606,7 +1645,9 @@ export default function KeywordsPage() {
                     No ranking data for this keyword yet
                   </p>
                   <p className="text-xs text-muted-foreground/60">
-                    Ranking will appear once the ASIN starts indexing
+                    {latestHistoryRow && !latestHistoryRow.found
+                      ? 'ASIN was not found within checked search pages.'
+                      : 'Organic ranking will appear after a successful rank check.'}
                   </p>
                 </>
               )}
@@ -1627,7 +1668,7 @@ export default function KeywordsPage() {
                   <tr className="border-b border-border text-[11px] text-muted-foreground font-semibold uppercase tracking-wider">
                     <th className="text-left px-3 py-2">Checked At</th>
                     <th className="text-right px-3 py-2">Organic Rank</th>
-                    <th className="text-center px-3 py-2">Page</th>
+                    <th className="text-center px-3 py-2">Organic Page</th>
                     <th className="text-center px-3 py-2">Found</th>
                     <th className="text-left px-3 py-2">Status</th>
                   </tr>

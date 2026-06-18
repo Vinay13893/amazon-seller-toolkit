@@ -188,7 +188,7 @@ export async function POST(_req: NextRequest) {
         )
       }
 
-      const found = res.organic_rank !== null
+      const found = res.organic_rank !== null || res.sponsored_rank !== null
       await admin
         .from('keyword_rank_snapshots')
         .insert({
