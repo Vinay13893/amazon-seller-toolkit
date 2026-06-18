@@ -72,23 +72,11 @@ async function workerPost<T>(path: string, payload: unknown): Promise<T> {
 
   const secret = process.env.CHECKER_WORKER_SECRET ?? ''
   const url    = `${baseUrl}${path}`
-  const workerHost = (() => {
-    try {
-      return new URL(baseUrl).host
-    } catch {
-      return null
-    }
-  })()
-
   const controller = new AbortController()
   const timer      = setTimeout(() => controller.abort(), WORKER_TIMEOUT_MS)
 
   try {
-    console.log('[checker-worker-client] request', {
-      path,
-      worker_configured: true,
-      worker_host: workerHost,
-    })
+    console.info('[checker_worker.request_started]')
 
     const res = await fetch(url, {
       method:  'POST',
@@ -111,11 +99,11 @@ async function workerPost<T>(path: string, payload: unknown): Promise<T> {
       }
     })()
 
-    console.log('[checker-worker-client] response', {
-      path,
-      worker_host: workerHost,
-      worker_http_status: res.status,
-      worker_response_status: bodyStatus,
+    console.info('[checker_worker.request_completed]', {
+      http_code: res.status,
+      result_code: typeof bodyStatus === 'string'
+        ? bodyStatus.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)
+        : null,
     })
 
     if (!res.ok) {
@@ -126,11 +114,10 @@ async function workerPost<T>(path: string, payload: unknown): Promise<T> {
 
     return (body ? JSON.parse(body) : {}) as T
   } catch (err) {
-    console.warn('[checker-worker-client] error', {
-      path,
-      worker_host: workerHost,
-      error_name: err instanceof Error ? err.name : 'UnknownError',
-      error_message: err instanceof Error ? err.message : 'Checker worker request failed',
+    console.warn('[checker_worker.request_failed]', {
+      error_code: err instanceof Error
+        ? err.name.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)
+        : 'UnknownError',
     })
 
     if (err instanceof CheckerWorkerUnavailableError) throw err

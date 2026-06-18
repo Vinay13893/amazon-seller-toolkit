@@ -35,26 +35,24 @@ export async function POST(
   const supabase  = await createClient()
 
   // ── Auth ───────────────────────────────────────────────────────────────────
-  const { data: { user }, error: authErr } = await supabase.auth.getUser()
-  console.log(`[asins/${asin}/keywords/refresh] auth:`, user?.id ?? null, authErr?.message ?? null)
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   // ── Workspace ──────────────────────────────────────────────────────────────
-  const { data: member, error: memberErr } = await supabase
+  const { data: member } = await supabase
     .from('workspace_members')
     .select('workspace_id')
     .eq('user_id', user.id)
     .limit(1)
     .maybeSingle()
 
-  console.log(`[asins/${asin}/keywords/refresh] workspace:`, member?.workspace_id ?? null, memberErr?.message ?? null)
   if (!member?.workspace_id) {
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
   const workspaceId = member.workspace_id
 
   // ── Resolve tracked_asins row ──────────────────────────────────────────────
-  const { data: tracked, error: asinErr } = await supabase
+  const { data: tracked } = await supabase
     .from('tracked_asins')
     .select('id, marketplace')
     .eq('workspace_id', workspaceId)
@@ -62,7 +60,6 @@ export async function POST(
     .neq('status', 'archived')
     .maybeSingle()
 
-  console.log(`[asins/${asin}/keywords/refresh] tracked_asin:`, tracked?.id ?? null, asinErr?.message ?? null)
   if (!tracked) {
     return NextResponse.json({ error: 'ASIN not tracked in this workspace' }, { status: 404 })
   }
@@ -76,7 +73,6 @@ export async function POST(
     .eq('workspace_id', workspaceId)
     .eq('tracked_asin_id', trackedAsinId)
 
-  console.log(`[asins/${asin}/keywords/refresh] keywords to refresh:`, keywords?.length ?? 0, kwErr?.message ?? null)
   if (kwErr) {
     return NextResponse.json({ error: kwErr.message }, { status: 500 })
   }
@@ -126,15 +122,6 @@ export async function POST(
 
   for (const kw of keywords) {
     const workerConfigured = isWorkerConfigured()
-    const workerHost = (() => {
-      try {
-        const rawUrl = process.env.CHECKER_WORKER_URL?.trim()
-        return rawUrl ? new URL(rawUrl).host : null
-      } catch {
-        return null
-      }
-    })()
-
     if (runtimeUnavailableDetected) {
       const checkedAt = new Date().toISOString()
       await insertFailedSnapshot({
@@ -158,15 +145,7 @@ export async function POST(
     }
 
     try {
-      console.log(`[asins/${asin}/keywords/refresh] checking rank for: "${kw.keyword}"`)
       const workerMarket = toWorkerMarketplace(kw.marketplace ?? trackedMarketplace ?? 'IN')
-      console.log(`[asins/${asin}/keywords/refresh] worker trace`, {
-        worker_configured: workerConfigured,
-        worker_host: workerHost,
-        tracked_keyword_id: kw.id,
-        asin: asin.toUpperCase(),
-        marketplace_sent_to_worker: workerMarket,
-      })
 
       let res
       if (workerConfigured) {
@@ -176,11 +155,6 @@ export async function POST(
           asin:               asin.toUpperCase(),
           keyword:            kw.keyword,
           marketplace:        workerMarket,
-        })
-        console.log(`[asins/${asin}/keywords/refresh] worker result`, {
-          tracked_keyword_id: kw.id,
-          asin: asin.toUpperCase(),
-          worker_response_status: workerRes.status,
         })
         res = {
           organic_rank:   workerRes.organic_rank,
@@ -198,8 +172,6 @@ export async function POST(
           kw.marketplace ?? trackedMarketplace ?? 'IN',
         )
       }
-
-      console.log(`[asins/${asin}/keywords/refresh] rank result:`, { keyword: kw.keyword, organic_rank: res.organic_rank, page_status: res.page_status, scan_status: res.scan_status })
 
       // Insert snapshot (admin client so INSERT isn't blocked by RLS edge-cases)
       const found = res.organic_rank !== null
@@ -242,11 +214,7 @@ export async function POST(
 
       if (runtimeUnavailable) {
         runtimeUnavailableDetected = true
-        console.warn(`[asins/${asin}/keywords/refresh] runtime unavailable`, {
-          keyword: kw.keyword,
-          error_name: err instanceof Error ? err.name : 'UnknownError',
-          error_message: err instanceof Error ? err.message : 'Keyword rank check failed',
-        })
+        console.warn('[asin_keywords.refresh.checker_unavailable]')
       }
 
       await insertFailedSnapshot({

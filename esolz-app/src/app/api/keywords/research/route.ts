@@ -34,8 +34,7 @@ export interface KeywordResearchResult {
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
-  const { data: { user }, error: authErr } = await supabase.auth.getUser()
-  console.log('[keywords/research] auth:', user?.id ?? null, authErr?.message ?? null)
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json() as {
@@ -45,8 +44,6 @@ export async function POST(req: NextRequest) {
   }
 
   const { seedKeyword, marketplace = 'amazon.in' } = body
-  console.log('[keywords/research] body:', { seedKeyword, marketplace })
-
   if (!seedKeyword?.trim()) {
     return NextResponse.json({ error: 'seedKeyword is required' }, { status: 400 })
   }
@@ -55,7 +52,6 @@ export async function POST(req: NextRequest) {
   const mid     = MARKETPLACE_IDS[marketplace]    ?? MARKETPLACE_IDS['amazon.in']
   const url     = `${baseUrl}?limit=11&prefix=${encodeURIComponent(seedKeyword.trim())}&suggestion-type=KEYWORD&mid=${mid}`
 
-  console.log('[keywords/research] fetching autocomplete from:', url)
   let suggestions: string[] = []
 
   try {
@@ -71,7 +67,6 @@ export async function POST(req: NextRequest) {
       suggestions = (data.suggestions ?? [])
         .map(s => s.value?.trim())
         .filter(Boolean) as string[]
-      console.log('[keywords/research] autocomplete returned', suggestions.length, 'suggestions')
     }
   } catch {
     // Autocomplete unreachable — fall through to seed-only response

@@ -241,8 +241,8 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
                     variant="ghost"
                     size="icon-sm"
                     className="text-muted-foreground hover:text-primary"
-                    title="Pincode checks paused (beta)"
-                    render={<Link href="/dashboard/pincode" />}
+                    title="Check Pincodes"
+                    render={<Link href="/dashboard/pincode-checker" />}
                   >
                     <MapPin className="size-3.5" />
                     <span className="sr-only">Check Pincodes</span>
@@ -252,7 +252,7 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
                     size="icon-sm"
                     className="text-muted-foreground hover:text-primary"
                     title="Check Buy Box"
-                    render={<Link href={`/dashboard/buybox?asin=${p.asin}`} />}
+                    render={<Link href={`/dashboard/buy-box?asin=${p.asin}`} />}
                   >
                     <ShoppingCart className="size-3.5" />
                     <span className="sr-only">Buy Box</span>

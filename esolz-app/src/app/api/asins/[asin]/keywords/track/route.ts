@@ -22,8 +22,7 @@ export async function POST(
   const supabase = await createClient()
 
   // ── 1. Auth ────────────────────────────────────────────────────────────────
-  const { data: { user }, error: authErr } = await supabase.auth.getUser()
-  console.log(`[asins/${asin}/keywords/track] auth:`, user?.id ?? null, authErr?.message ?? null)
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json() as {
@@ -33,21 +32,18 @@ export async function POST(
     cpc_estimate?:  number | null
     difficulty?:    number | null
   }
-  console.log(`[asins/${asin}/keywords/track] body:`, body)
-
   if (!body.keyword?.trim()) {
     return NextResponse.json({ error: 'keyword is required' }, { status: 400 })
   }
 
   // ── 2. Workspace ───────────────────────────────────────────────────────────
-  const { data: member, error: memberErr } = await supabase
+  const { data: member } = await supabase
     .from('workspace_members')
     .select('workspace_id')
     .eq('user_id', user.id)
     .limit(1)
     .maybeSingle()
 
-  console.log(`[asins/${asin}/keywords/track] workspace:`, member?.workspace_id ?? null, memberErr?.message ?? null)
   if (!member?.workspace_id) {
     return NextResponse.json(
       { error: 'No workspace found' },
@@ -58,15 +54,13 @@ export async function POST(
   // ── 3. Resolve tracked_asin_id ────────────────────────────────────────────
   const marketplace = (body.marketplace ?? 'IN').toUpperCase().replace('AMAZON.', '')
 
-  const { data: tracked, error: asinErr } = await supabase
+  const { data: tracked } = await supabase
     .from('tracked_asins')
     .select('id')
     .eq('workspace_id', member.workspace_id)
     .eq('asin', asin.toUpperCase())
     .neq('status', 'archived')
     .maybeSingle()
-
-  console.log(`[asins/${asin}/keywords/track] tracked_asin:`, tracked?.id ?? null, asinErr?.message ?? null)
 
   // ASIN must be tracked — we cannot link a keyword to an untracked ASIN
   if (!tracked?.id) {
@@ -126,15 +120,8 @@ export async function POST(
     .select()
     .single()
 
-  console.log(`[asins/${asin}/keywords/track] upsert result:`, {
-    rowId:       data?.id ?? null,
-    asinLinked:  data?.tracked_asin_id ?? null,
-    error:       error?.message ?? null,
-    code:        error?.code ?? null,
-    details:     error?.details ?? null,
-  })
-
   if (error) {
+    console.error('[asin_keywords.track.save_failed]')
     return NextResponse.json(
       { error: 'Failed to save keyword' },
       { status: 500 },
@@ -157,10 +144,9 @@ export async function POST(
         .from('usage_counters')
         .update({ keyword_count: counter.keyword_count + 1, updated_at: new Date().toISOString() })
         .eq('id', counter.id)
-      console.log(`[asins/${asin}/keywords/track] keyword_count incremented to`, counter.keyword_count + 1)
     }
-  } catch (counterErr) {
-    console.warn(`[asins/${asin}/keywords/track] keyword_count increment failed (non-fatal):`, counterErr)
+  } catch {
+    console.warn('[asin_keywords.track.usage_increment_failed]')
   }
 
   return NextResponse.json({ keyword: data })

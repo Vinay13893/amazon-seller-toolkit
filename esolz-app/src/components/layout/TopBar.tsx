@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Bell, Search, Menu } from 'lucide-react'
+import { Menu } from 'lucide-react'
 import { useRouter, usePathname } from 'next/navigation'
 import { ThemeToggle } from '@/components/ui/theme-toggle'
 
@@ -12,10 +12,8 @@ const ROUTE_TITLES: Record<string, string> = {
   '/dashboard/bsr':       'BSR Tracker',
   '/dashboard/keywords':  'Keywords',
   '/dashboard/brand-analytics/search-terms': 'Brand Analytics',
-  '/dashboard/pincode':   'Pincode Checker (Paused)',
   '/dashboard/pincode-checker': 'Pincode Availability Checker',
   '/dashboard/buy-box':   'Buy Box Monitor',
-  '/dashboard/buybox':    'Buy Box',
   '/dashboard/competitors': 'Competitors',
   '/dashboard/alerts':    'Alerts',
   '/dashboard/reports':   'Reports',
@@ -81,14 +79,7 @@ export function TopBar({ title, onMenuClick }: TopBarProps) {
       <h1 className="font-bold text-lg flex-1 truncate">{displayTitle}</h1>
 
       <div className="flex items-center gap-1">
-        <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground" aria-label="Search">
-          <Search className="w-4 h-4" />
-        </Button>
         <ThemeToggle />
-        <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground relative" aria-label="Notifications">
-          <Bell className="w-4 h-4" />
-          <span className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-primary rounded-full ring-1 ring-background" />
-        </Button>
 
         <DropdownMenu>
           <DropdownMenuTrigger

@@ -83,11 +83,6 @@ function runCheckerWithBinary(
   attempt: BinaryAttempt,
 ): Promise<KeywordRankResult> {
   return new Promise((resolve, reject) => {
-    console.info('[keyword-adapter] python attempt', {
-      binary: attempt.binary,
-      source: attempt.source,
-    })
-
     const proc = spawn(
       attempt.binary,
       [
@@ -101,22 +96,20 @@ function runCheckerWithBinary(
     )
 
     let stdout = ''
-    let stderr = ''
-
     const timer = setTimeout(() => {
       proc.kill()
       reject(new Error(`rank_check_adapter.py timed out after ${TIMEOUT_MS / 1000}s`))
     }, TIMEOUT_MS)
 
     proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+    proc.stderr.resume()
 
     proc.on('close', (code) => {
       clearTimeout(timer)
       const raw = stdout.trim()
       if (!raw) {
         reject(new Error(
-          `rank_check_adapter.py produced no output. code=${code} stderr=${stderr.slice(0, 400)}`,
+          `Keyword rank checker produced no output (code ${code ?? 'unknown'}).`,
         ))
         return
       }
@@ -124,7 +117,7 @@ function runCheckerWithBinary(
         const parsed = JSON.parse(raw) as KeywordRankResult
         resolve(parsed)
       } catch {
-        reject(new Error(`rank_check_adapter.py: invalid JSON output: ${raw.slice(0, 400)}`))
+        reject(new Error('Keyword rank checker returned an invalid response.'))
       }
     })
 
@@ -161,7 +154,7 @@ export function checkKeywordRank(
     const attempts: BinaryAttempt[] = [initialAttempt]
 
     if (!fs.existsSync(SCRIPT_PATH)) {
-      reject(new Error(`rank_check_adapter.py not found at: ${SCRIPT_PATH}`))
+      reject(new Error('Keyword rank checker runtime is missing.'))
       return
     }
 

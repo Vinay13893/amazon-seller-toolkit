@@ -281,16 +281,16 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
             variant="ghost"
             size="sm"
             className="h-7 text-xs gap-1.5 flex-1 sm:flex-none"
-            render={<Link href="/dashboard/pincode" />}
+            render={<Link href="/dashboard/pincode-checker" />}
           >
             <MapPin className="size-3" />
-            Pincodes (Paused)
+            Pincodes
           </Button>
           <Button
             variant="ghost"
             size="sm"
             className="h-7 text-xs gap-1.5 flex-1 sm:flex-none"
-            render={<Link href={`/dashboard/buybox?asin=${product.asin}`} />}
+            render={<Link href={`/dashboard/buy-box?asin=${product.asin}`} />}
           >
             <ShoppingCart className="size-3" />
             Buy Box

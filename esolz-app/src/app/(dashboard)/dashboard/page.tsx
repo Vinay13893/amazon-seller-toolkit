@@ -231,7 +231,7 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
       id: 'buybox-lost',
       title: `${buyboxLostCount} ASIN${buyboxLostCount === 1 ? '' : 's'} lost Buy Box`,
       description: 'Review pricing and fulfillment to recover Buy Box ownership.',
-      href: '/dashboard/buybox',
+      href: '/dashboard/buy-box',
       ctaLabel: 'Review Buy Box',
     })
   }
@@ -263,7 +263,7 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
       id: 'low-pincode',
       title: `${lowAvailabilityCount} ASIN${lowAvailabilityCount === 1 ? '' : 's'} low pincode availability`,
       description: 'These products are unavailable in many checked pincodes.',
-      href: '/dashboard/pincode',
+      href: '/dashboard/pincode-checker',
       ctaLabel: 'Check Pincodes',
     })
   }
@@ -735,14 +735,14 @@ function OnboardingChecklist({ stats, asinsCount }: { stats: DashboardStats | nu
           done={(stats?.buyboxChecks ?? 0) > 0}
           label="Run Buy Box check"
           hint={`${stats?.buyboxChecks ?? 0} Buy Box check${(stats?.buyboxChecks ?? 0) === 1 ? '' : 's'}`}
-          href="/dashboard/buybox"
+          href="/dashboard/buy-box"
           ctaLabel="Check Buy Box"
         />
         <ChecklistItem
           done={(stats?.pincodeChecks ?? 0) > 0}
           label="Run Pincode check"
           hint={`${stats?.pincodeChecks ?? 0} pincode check${(stats?.pincodeChecks ?? 0) === 1 ? '' : 's'}`}
-          href="/dashboard/pincode"
+          href="/dashboard/pincode-checker"
           ctaLabel="Check Pincodes"
         />
         <ChecklistItem

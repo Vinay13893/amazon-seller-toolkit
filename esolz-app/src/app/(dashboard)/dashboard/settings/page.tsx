@@ -84,15 +84,16 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
 
 // ─── Toggle switch ────────────────────────────────────────────────────────────
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ checked }: { checked: boolean }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
-      onClick={() => onChange(!checked)}
+      aria-disabled="true"
+      disabled
       className={cn(
-        'relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+        'relative inline-flex h-5 w-9 cursor-not-allowed items-center rounded-full opacity-50',
         checked ? 'bg-primary' : 'bg-input'
       )}
     >
@@ -161,7 +162,7 @@ export default function SettingsPage() {
   const [wsType, setWsType] = useState<WorkspaceType>('seller')
 
   // ── Notification prefs (local only — no db table yet) ───────────────────
-  const [notifs, setNotifs] = useState<NotificationPrefs>({
+  const [notifs] = useState<NotificationPrefs>({
     email_alerts: true,
     buybox_alerts: true,
     bsr_alerts: true,
@@ -170,8 +171,8 @@ export default function SettingsPage() {
   })
 
   // ── Amazon tool prefs (local placeholder) ──────────────────────────────
-  const [defaultMarketplace, setDefaultMarketplace] = useState<'IN' | 'US'>('IN')
-  const [defaultPincodes, setDefaultPincodes] = useState('')
+  const [defaultMarketplace] = useState<'IN' | 'US'>('IN')
+  const [defaultPincodes] = useState('')
 
   // ── Save states ─────────────────────────────────────────────────────────
   const [savingProfile, setSavingProfile] = useState(false)
@@ -408,7 +409,7 @@ export default function SettingsPage() {
           </Section>
 
           {/* ── 4. Notification Preferences ──────────────────────────────── */}
-          <Section icon={Bell} title="Notifications" description="Choose which alerts you receive by email">
+          <Section icon={Bell} title="Notifications" description="Coming soon">
             <div className="flex flex-col gap-4">
               {(
                 [
@@ -426,23 +427,23 @@ export default function SettingsPage() {
                   </div>
                   <Toggle
                     checked={notifs[item.key]}
-                    onChange={v => setNotifs(prev => ({ ...prev, [item.key]: v }))}
                   />
                 </div>
               ))}
               <p className="text-xs text-muted-foreground border-t border-border pt-3 mt-1">
-                Notification delivery is not yet connected to a backend. Settings are saved locally for now.
+                Notification preferences are not available yet. These controls are disabled and no changes are saved.
               </p>
             </div>
           </Section>
 
           {/* ── 5. Amazon Tool Settings ──────────────────────────────────── */}
-          <Section icon={ShoppingBag} title="Amazon Tool Settings" description="Default configuration for scraping and tracking tools">
+          <Section icon={ShoppingBag} title="Amazon Tool Settings" description="Coming soon">
             <div className="flex flex-col gap-4">
               <FieldRow label="Default marketplace">
                 <Select<'IN' | 'US'>
                   value={defaultMarketplace}
-                  onChange={setDefaultMarketplace}
+                  onChange={() => undefined}
+                  disabled
                   options={[
                     { value: 'IN', label: 'Amazon India (amazon.in)' },
                     { value: 'US', label: 'Amazon US (amazon.com)' },
@@ -452,10 +453,10 @@ export default function SettingsPage() {
               <FieldRow label="Default pincodes">
                 <Input
                   value={defaultPincodes}
-                  onChange={e => setDefaultPincodes(e.target.value)}
+                  disabled
                   placeholder="e.g. 110001, 400001, 560001"
                 />
-                <p className="text-xs text-muted-foreground mt-1">Comma-separated pincodes used in pincode availability checks.</p>
+                <p className="text-xs text-muted-foreground mt-1">Default tool preferences are not available yet.</p>
               </FieldRow>
               <FieldRow label="Refresh frequency">
                 <div className="flex items-center gap-2 h-8">

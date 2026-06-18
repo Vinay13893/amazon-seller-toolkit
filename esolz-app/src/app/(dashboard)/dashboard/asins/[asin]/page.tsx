@@ -467,7 +467,6 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         }),
       })
       const data = await res.json() as { keyword?: unknown; error?: string; debug?: unknown }
-      console.log('[asin/keywords/track] response:', { status: res.status, data })
       if (!res.ok) {
         toast.error(data.error ?? 'Failed to track keyword')
       } else {
@@ -475,8 +474,8 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         setKwInput('')
         await loadAsinKeywords()
       }
-    } catch (err) {
-      console.error('[asin/keywords/track] network error:', err)
+    } catch {
+      console.error('[asin_keywords.track.request_failed]')
       toast.error('Network error — could not track keyword')
     } finally {
       setTrackingAsinKw(false)
@@ -489,7 +488,6 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
     try {
       const res = await fetch(`/api/asins/${asin}/keywords/refresh`, { method: 'POST' })
       const data = await res.json() as { checked?: number; results?: unknown[]; error?: string; status?: string; message?: string }
-      console.log('[asin/keywords/refresh] response:', { status: res.status, data })
       if (!res.ok) {
         toast.error(data.error ?? 'Rank refresh failed')
       } else if (data.status === 'failed' || data.status === 'checker_unavailable') {
@@ -499,8 +497,8 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
         toast.success(`Refreshed ${data.checked ?? 0} keyword ranks`)
         await loadAsinKeywords()
       }
-    } catch (err) {
-      console.error('[asin/keywords/refresh] network error:', err)
+    } catch {
+      console.error('[asin_keywords.refresh.request_failed]')
       toast.error('Network error — could not refresh ranks')
     } finally {
       setKwRefreshing(false)

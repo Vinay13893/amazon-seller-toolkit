@@ -46,19 +46,17 @@ export async function POST(_req: NextRequest) {
   const supabase = await createClient()
 
   // ── Auth ───────────────────────────────────────────────────────────────────
-  const { data: { user }, error: authErr } = await supabase.auth.getUser()
-  console.log('[keywords/refresh] auth:', user?.id ?? null, authErr?.message ?? null)
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   // ── Workspace ──────────────────────────────────────────────────────────────
-  const { data: member, error: memberErr } = await supabase
+  const { data: member } = await supabase
     .from('workspace_members')
     .select('workspace_id')
     .eq('user_id', user.id)
     .limit(1)
     .maybeSingle()
 
-  console.log('[keywords/refresh] workspace:', member?.workspace_id ?? null, memberErr?.message ?? null)
   if (!member?.workspace_id) {
     return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
   }
@@ -71,7 +69,6 @@ export async function POST(_req: NextRequest) {
     .eq('workspace_id', workspaceId)
     .not('tracked_asin_id', 'is', null)
 
-  console.log('[keywords/refresh] keywords with ASINs:', keywords?.length ?? 0, kwErr?.message ?? null)
   if (kwErr) {
     return NextResponse.json({ error: kwErr.message }, { status: 500 })
   }
@@ -134,15 +131,6 @@ export async function POST(_req: NextRequest) {
     const workerMarket = toWorkerMarketplace(market)
     const trackedAsinId = kw.tracked_asin_id as string
     const workerConfigured = isWorkerConfigured()
-    const workerHost = (() => {
-      try {
-        const rawUrl = process.env.CHECKER_WORKER_URL?.trim()
-        return rawUrl ? new URL(rawUrl).host : null
-      } catch {
-        return null
-      }
-    })()
-
     if (!asin) continue
 
     if (runtimeUnavailableDetected) {
@@ -170,15 +158,6 @@ export async function POST(_req: NextRequest) {
     }
 
     try {
-      console.log(`[keywords/refresh] checking rank for: "${kw.keyword}" / ${asin}`)
-      console.log('[keywords/refresh] worker trace', {
-        worker_configured: workerConfigured,
-        worker_host: workerHost,
-        tracked_keyword_id: kw.id,
-        asin,
-        marketplace_sent_to_worker: workerMarket,
-      })
-
       let res
       if (workerConfigured) {
         const workerRes = await withTimeout(
@@ -192,11 +171,6 @@ export async function POST(_req: NextRequest) {
           KEYWORD_CHECK_TIMEOUT_MS,
           'keyword rank check timed out',
         )
-        console.log('[keywords/refresh] worker result', {
-          tracked_keyword_id: kw.id,
-          asin,
-          worker_response_status: workerRes.status,
-        })
         res = {
           organic_rank:   workerRes.organic_rank,
           sponsored_rank: workerRes.sponsored_rank,
@@ -213,8 +187,6 @@ export async function POST(_req: NextRequest) {
           'keyword rank check timed out',
         )
       }
-
-      console.log(`[keywords/refresh] rank result:`, { keyword: kw.keyword, asin, organic_rank: res.organic_rank, page_status: res.page_status })
 
       const found = res.organic_rank !== null
       await admin
@@ -257,12 +229,7 @@ export async function POST(_req: NextRequest) {
 
       if (runtimeUnavailable) {
         runtimeUnavailableDetected = true
-        console.warn('[keywords/refresh] runtime unavailable while refreshing', {
-          keyword: kw.keyword,
-          asin,
-          error_name: err instanceof Error ? err.name : 'UnknownError',
-          error_message: err instanceof Error ? err.message : 'Keyword rank check failed',
-        })
+        console.warn('[keywords.refresh.checker_unavailable]')
       }
 
       await insertFailedSnapshot({
