@@ -22,7 +22,7 @@ const PRODUCT_HOSTS: Record<string, string> = {
   US: 'www.amazon.com',
 }
 
-const ENRICHMENT_TIMEOUT_MS = 40_000
+const ENRICHMENT_TIMEOUT_MS = 10_000
 
 type RequestBody = {
   asin?: unknown
@@ -40,22 +40,6 @@ function optionalText(value: unknown, maxLength: number): string | null {
 
 function isFakeExternalTitle(value: string | null): boolean {
   return /^external asin [a-z0-9]{10}$/i.test(value?.trim() ?? '')
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('enrichment_timeout')), timeoutMs)
-    promise.then(
-      value => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      error => {
-        clearTimeout(timer)
-        reject(error)
-      },
-    )
-  })
 }
 
 export async function POST(request: Request) {
@@ -153,27 +137,36 @@ export async function POST(request: Request) {
   const pendingBrand = suppliedBrand ?? existingTracked?.brand ?? null
   const pendingImage = existingTracked?.image_url ?? null
 
-  const { error: pendingError } = await admin
-    .from('competitor_asins')
-    .upsert({
-      workspace_id: workspaceId,
-      tracked_asin_id: trackedId,
-      competitor_asin: asin,
-      product_title: pendingTitle,
-      brand: pendingBrand,
-      marketplace,
-      image_url: pendingImage,
-      product_url: productUrl,
-      source_type: sourceType,
-      metadata_status: 'pending',
-      last_enriched_at: null,
-      error_code: null,
-      error_message: null,
-    }, {
-      onConflict: 'workspace_id,competitor_asin,marketplace',
-    })
+  const [pendingMetadata, legacyTitleCleanup] = await Promise.all([
+    admin
+      .from('competitor_asins')
+      .upsert({
+        workspace_id: workspaceId,
+        tracked_asin_id: trackedId,
+        competitor_asin: asin,
+        product_title: pendingTitle,
+        brand: pendingBrand,
+        marketplace,
+        image_url: pendingImage,
+        product_url: productUrl,
+        source_type: sourceType,
+        metadata_status: 'pending',
+        last_enriched_at: null,
+        error_code: null,
+        error_message: null,
+      }, {
+        onConflict: 'workspace_id,competitor_asin,marketplace',
+      }),
+    isFakeExternalTitle(existingTracked?.product_title ?? null)
+      ? admin
+          .from('tracked_asins')
+          .update({ product_title: null })
+          .eq('id', trackedId)
+          .eq('workspace_id', workspaceId)
+      : Promise.resolve({ error: null }),
+  ])
 
-  if (pendingError) {
+  if (pendingMetadata.error || legacyTitleCleanup.error) {
     return NextResponse.json(
       { error: 'Product metadata schema is not ready.', errorCode: 'metadata_schema_unavailable' },
       { status: 503 },
@@ -191,14 +184,20 @@ export async function POST(request: Request) {
       throw new Error('catalog_connection_unavailable')
     }
 
-    const catalog = await withTimeout((async () => {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), ENRICHMENT_TIMEOUT_MS)
+    let catalog
+    try {
       const token = await refreshAccessToken(decryptToken(connection.refresh_token_encrypted))
-      return getCatalogItemForAsin({
+      catalog = await getCatalogItemForAsin({
         accessToken: token.access_token,
         marketplaceId: MARKETPLACE_IDS[marketplace],
         asin,
+        signal: controller.signal,
       })
-    })(), ENRICHMENT_TIMEOUT_MS)
+    } finally {
+      clearTimeout(timeout)
+    }
     const title = catalog.title ?? pendingTitle
     const brand = catalog.brand ?? pendingBrand
     const imageUrl = catalog.image_url ?? pendingImage
@@ -242,14 +241,20 @@ export async function POST(request: Request) {
       metadataStatus,
       product: { title, brand, imageUrl },
     })
-  } catch {
+  } catch (error) {
     const checkedAt = new Date().toISOString()
+    const errorCode = error instanceof Error && error.message === 'catalog_not_found'
+      ? 'catalog_not_found'
+      : error instanceof Error && error.name === 'AbortError'
+        ? 'catalog_timeout'
+        : 'catalog_unavailable'
+    const metadataStatus = errorCode === 'catalog_not_found' ? 'not_found' : 'error'
     const { error: finalError } = await admin
       .from('competitor_asins')
       .update({
-        metadata_status: 'error',
+        metadata_status: metadataStatus,
         last_enriched_at: checkedAt,
-        error_code: 'catalog_unavailable',
+        error_code: errorCode,
         error_message: 'Product details are not available yet.',
       })
       .eq('workspace_id', workspaceId)
@@ -261,7 +266,7 @@ export async function POST(request: Request) {
         {
           tracked: true,
           alreadyTracked: Boolean(existingTracked),
-          metadataStatus: 'error',
+          metadataStatus,
           errorCode: 'metadata_finalize_failed',
           errorMessage: 'Product details are not available yet.',
         },
@@ -272,8 +277,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       tracked: true,
       alreadyTracked: Boolean(existingTracked),
-      metadataStatus: 'error',
-      errorCode: 'catalog_unavailable',
+      metadataStatus,
+      errorCode,
       errorMessage: 'Product details are not available yet.',
     })
   }

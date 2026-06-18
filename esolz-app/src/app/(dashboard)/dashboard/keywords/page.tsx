@@ -1500,7 +1500,15 @@ export default function KeywordsPage() {
                       <div className="flex-1 min-w-0 space-y-1.5">
                         <p className="text-sm font-medium text-foreground line-clamp-2">{product.title}</p>
                         <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
-                          <span className="font-mono">{product.asin}</span>
+                          <Link
+                            href={amazonProductUrl(product.asin, product.marketplace)}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 font-mono text-primary hover:underline"
+                          >
+                            {product.asin}
+                            <ExternalLink className="size-3" />
+                          </Link>
                           {product.sku && <span>SKU: {product.sku}</span>}
                           {product.brand && <span>Brand: {product.brand}</span>}
                         </div>

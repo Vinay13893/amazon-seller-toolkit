@@ -57,8 +57,14 @@ function getMarketplaceEndpoint(marketplaceId: string): string {
   return MARKETPLACE_ENDPOINTS[marketplaceId] ?? SPAPI_EU_ENDPOINT
 }
 
-function extractImageUrl(item: Record<string, unknown>): string | null {
-  const images = asRecordArray(item.images)
+function marketplaceRecords(value: unknown, marketplaceId: string): Record<string, unknown>[] {
+  const records = asRecordArray(value)
+  const matching = records.filter(record => record.marketplaceId === marketplaceId)
+  return matching.length > 0 ? matching : records
+}
+
+function extractImageUrl(item: Record<string, unknown>, marketplaceId: string): string | null {
+  const images = marketplaceRecords(item.images, marketplaceId)
   for (const image of images) {
     const link = firstString(image.link, image.url)
     if (link) return link
@@ -80,8 +86,8 @@ function extractImageUrl(item: Record<string, unknown>): string | null {
   return null
 }
 
-function extractCatalogMeta(item: Record<string, unknown>) {
-  const summaries = asRecordArray(item.summaries)
+function extractCatalogMeta(item: Record<string, unknown>, marketplaceId: string) {
+  const summaries = marketplaceRecords(item.summaries, marketplaceId)
   const attributeSets = asRecordArray(item.attributeSets)
   const attributes = isRecord(item.attributes) ? item.attributes : null
   const productTypes = asRecordArray(item.productTypes)
@@ -138,7 +144,7 @@ function extractCatalogMeta(item: Record<string, unknown>) {
   return {
     title,
     brand,
-    image_url: extractImageUrl(item),
+    image_url: extractImageUrl(item, marketplaceId),
     category,
     bsr,
     bsr_category: bsrCategory,
@@ -149,11 +155,12 @@ export async function getCatalogItemForAsin(params: {
   accessToken: string
   marketplaceId: string
   asin: string
+  signal?: AbortSignal
 }): Promise<CatalogItemNormalized> {
   const endpoint = getMarketplaceEndpoint(params.marketplaceId)
   const url = new URL(`${endpoint}/catalog/2022-04-01/items/${encodeURIComponent(params.asin)}`)
   url.searchParams.set('marketplaceIds', params.marketplaceId)
-  url.searchParams.set('includedData', 'summaries,images,salesRanks,identifiers,productTypes')
+  url.searchParams.set('includedData', 'summaries,images,attributes,salesRanks,identifiers,productTypes')
 
   const res = await fetch(url, {
     method: 'GET',
@@ -161,26 +168,32 @@ export async function getCatalogItemForAsin(params: {
       'x-amz-access-token': params.accessToken,
       accept: 'application/json',
     },
+    signal: params.signal,
   })
 
   if (!res.ok) {
     console.error('[amazon-catalog] getCatalogItemForAsin error:', res.status)
-    throw new Error(`SP-API catalog call failed with HTTP ${res.status}`)
+    throw new Error(res.status === 404 ? 'catalog_not_found' : 'catalog_unavailable')
   }
 
   const data = await res.json() as CatalogItemsResponse & Record<string, unknown>
   const payload = data.payload ?? data
+  const payloadRecord = isRecord(payload) ? payload : null
+  const payloadItems = payloadRecord ? asRecordArray(payloadRecord.items) : []
+  const dataItems = asRecordArray(data.items)
   const item = Array.isArray(payload)
     ? payload.find(isRecord)
-    : isRecord(payload)
-      ? payload
-      : null
+    : payloadItems[0]
+      ?? dataItems[0]
+      ?? (payloadRecord && isRecord(payloadRecord.item) ? payloadRecord.item : null)
+      ?? (isRecord(data.item) ? data.item : null)
+      ?? payloadRecord
 
   if (!item) {
-    throw new Error('SP-API catalog response did not include a product payload')
+    throw new Error('catalog_not_found')
   }
 
-  const normalized = extractCatalogMeta(item)
+  const normalized = extractCatalogMeta(item, params.marketplaceId)
 
   return {
     asin: params.asin.toUpperCase(),
