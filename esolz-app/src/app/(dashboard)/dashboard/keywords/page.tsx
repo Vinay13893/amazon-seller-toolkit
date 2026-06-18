@@ -352,6 +352,7 @@ export default function KeywordsPage() {
   const [trackedKeywordsLoading, setTrackedKeywordsLoading] = useState(true)
   const [keywordAsinFilter, setKeywordAsinFilter] = useState('all')
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshProgress, setRefreshProgress] = useState('')
   const [tracked, setTracked] = useState<Set<string>>(new Set())
   const [trackingKw, setTrackingKw] = useState<string | null>(null)
   const [selectedKeywordId, setSelectedKeywordId] = useState<string>('')
@@ -699,7 +700,7 @@ export default function KeywordsPage() {
   }
 
   async function handleRefresh() {
-    if (trackedData.length === 0) {
+    if (visibleTrackedData.length === 0) {
       toast.warning('Add at least one keyword first.')
       return
     }
@@ -710,57 +711,46 @@ export default function KeywordsPage() {
     }
 
     setIsRefreshing(true)
-    const timeoutMs = 35_000
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs)
-
-    const refreshTrackedKeywordsWithTimeout = async () => {
-      await Promise.race([
-        loadTrackedKeywords(workspaceId),
-        new Promise<void>(resolve => {
-          window.setTimeout(() => resolve(), 12_000)
-        }),
-      ])
-    }
+    setRefreshProgress(`Checking latest ranks 0/${visibleTrackedData.length}`)
+    toast.info('Refresh started. Checking latest ranks.')
 
     try {
-      const fetchPromise = fetch('/api/keywords/refresh', {
-        method: 'POST',
-        signal: controller.signal,
-      })
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        window.setTimeout(() => {
-          reject(new Error('refresh_request_timeout'))
-        }, timeoutMs)
-      })
-      const res = await Promise.race([fetchPromise, timeoutPromise])
-      const data = await parseJsonSafe<{ checked?: number; message?: string; error?: string; ok?: boolean; status?: string }>(res)
+      let completed = 0
+      let partial = 0
 
-      if (!res.ok) {
-        toast.error(data?.error ?? `Refresh failed (HTTP ${res.status})`)
-      } else if (data?.status === 'failed' || data?.status === 'checker_unavailable') {
-        toast.info('Keyword checker is temporarily unavailable. Your keyword was saved and will be checked later.')
-        await refreshTrackedKeywordsWithTimeout()
-      } else if (data?.message) {
-        toast.info(data.message)
-        await refreshTrackedKeywordsWithTimeout()
-      } else {
-        toast.success(`Refreshed ${data?.checked ?? 0} keywords`)
-        await refreshTrackedKeywordsWithTimeout()
+      for (const keyword of visibleTrackedData) {
+        const res = await fetch('/api/keywords/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keywordIds: [keyword.id] }),
+        })
+        const data = await parseJsonSafe<{ checked?: number; status?: string }>(res)
+
+        if (
+          res.ok
+          && data?.status !== 'failed'
+          && data?.status !== 'checker_unavailable'
+          && data?.checked === 1
+        ) {
+          completed += 1
+        } else {
+          partial += 1
+        }
+        setRefreshProgress(`Checking latest ranks ${completed + partial}/${visibleTrackedData.length}`)
       }
-    } catch (error) {
-      const isAbort = error instanceof DOMException && error.name === 'AbortError'
-      const isTimeout = error instanceof Error && error.message === 'refresh_request_timeout'
-      if (isAbort || isTimeout) {
-        controller.abort()
-        toast.error('Refresh took too long and was stopped. Latest completed checks have been loaded.')
+
+      await loadTrackedKeywords(workspaceId)
+      if (partial > 0) {
+        toast.info(`Refresh completed for ${completed} keywords. ${partial} could not be checked right now.`)
       } else {
-        toast.error('Failed to refresh keyword ranks')
+        toast.success(`Refreshed ${completed} keywords`)
       }
-      await refreshTrackedKeywordsWithTimeout()
+    } catch {
+      toast.error('Refresh stopped unexpectedly. Completed rank checks were preserved.')
+      await loadTrackedKeywords(workspaceId)
     } finally {
-      window.clearTimeout(timeoutId)
       setIsRefreshing(false)
+      setRefreshProgress('')
     }
   }
 
@@ -1386,7 +1376,7 @@ export default function KeywordsPage() {
               disabled={isRefreshing}
             >
               {isRefreshing ? (
-                <><RefreshCw className="size-4 animate-spin" /> Refreshing…</>
+                <><RefreshCw className="size-4 animate-spin" /> {refreshProgress || 'Checking latest ranks'}</>
               ) : (
                 <><RefreshCw className="size-4" /> Refresh Ranks</>
               )}

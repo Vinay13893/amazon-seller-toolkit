@@ -350,17 +350,21 @@ export async function getPlanUsage(): Promise<PlanUsage | null> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return null
 
+  const entitlement = await getCurrentEntitlement()
   const workspaceId = await resolveWorkspaceIdForUser(user.id)
-  if (!workspaceId) return null
+  if (!workspaceId) {
+    return {
+      planName: entitlement.planName,
+      asinLimit: entitlement.asinLimit,
+      asinCount: 0,
+    }
+  }
 
-  const [entitlement, countResult] = await Promise.all([
-    getCurrentEntitlement(workspaceId),
-    supabase
-      .from('tracked_asins')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .neq('status', 'archived'),
-  ])
+  const countResult = await supabase
+    .from('tracked_asins')
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .neq('status', 'archived')
 
   return {
     planName:  entitlement.planName,

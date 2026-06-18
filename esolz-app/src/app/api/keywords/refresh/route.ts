@@ -18,6 +18,7 @@ export const maxDuration = 120
 
 const RUNTIME_UNAVAILABLE_RESPONSE_MESSAGE = 'Keyword rank checker runtime is not available. Please try again later.'
 const KEYWORD_CHECK_TIMEOUT_MS = 25_000
+const MAX_KEYWORDS_PER_REQUEST = 5
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -37,12 +38,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 /**
  * POST /api/keywords/refresh
  *
- * Refreshes all tracked_keywords in the workspace that have a tracked_asin_id.
+ * Refreshes a caller-selected small batch of tracked keywords in the workspace.
  * Keywords without an ASIN association are skipped (rank check requires an ASIN).
  *
  * Inserts keyword_rank_snapshots rows for each checked keyword.
  */
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   const supabase = await createClient()
 
   // ── Auth ───────────────────────────────────────────────────────────────────
@@ -62,11 +63,24 @@ export async function POST(_req: NextRequest) {
   }
   const workspaceId = member.workspace_id
 
+  const body = await req.json().catch(() => null) as { keywordIds?: unknown } | null
+  const keywordIds = Array.isArray(body?.keywordIds)
+    ? body.keywordIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
+    : []
+
+  if (keywordIds.length === 0 || keywordIds.length > MAX_KEYWORDS_PER_REQUEST) {
+    return NextResponse.json(
+      { error: `Select between 1 and ${MAX_KEYWORDS_PER_REQUEST} keywords to refresh.` },
+      { status: 400 },
+    )
+  }
+
   // ── Keywords with ASIN association ────────────────────────────────────────
   const { data: keywords, error: kwErr } = await supabase
     .from('tracked_keywords')
     .select('id, keyword, marketplace, tracked_asin_id, tracked_asins(asin, marketplace)')
     .eq('workspace_id', workspaceId)
+    .in('id', keywordIds)
     .not('tracked_asin_id', 'is', null)
 
   if (kwErr) {
