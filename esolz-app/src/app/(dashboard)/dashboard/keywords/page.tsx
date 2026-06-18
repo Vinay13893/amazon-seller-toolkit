@@ -68,6 +68,8 @@ interface TrackedKeywordRow {
   product_image_url: string | null
   marketplace: Marketplace
   product_source: 'own' | 'competitor' | 'external'
+  metadata_status: 'pending' | 'found' | 'not_found' | 'error' | null
+  metadata_error_message: string | null
   organic_rank: number | null
   prev_organic_rank: number | null
   sponsored_rank: number | null
@@ -112,6 +114,8 @@ interface ProductOption {
   imageUrl: string | null
   source: 'own' | 'competitor' | 'external'
   trackedAsinId: string | null
+  metadataStatus: 'pending' | 'found' | 'not_found' | 'error' | null
+  metadataErrorMessage: string | null
 }
 
 // ─── API research result type ─────────────────────────────────────────────────
@@ -161,6 +165,17 @@ function amazonProductUrl(asin: string, marketplace: Marketplace): string {
         ? 'www.amazon.de'
         : 'www.amazon.in'
   return `https://${host}/dp/${asin}`
+}
+
+function safeExternalTitle(
+  title: string | null | undefined,
+  status: ProductOption['metadataStatus'],
+): string {
+  const normalized = title?.trim() ?? ''
+  const fakeTitle = /^external asin [a-z0-9]{10}$/i.test(normalized)
+  if (status === 'pending') return 'Fetching product details...'
+  if (!normalized || fakeTitle) return 'Details not available yet'
+  return normalized
 }
 
 function getKeywordSeedSuggestions(product: ProductOption | null): string[] {
@@ -350,6 +365,7 @@ export default function KeywordsPage() {
   const [selectedProductKey, setSelectedProductKey] = useState('')
   const [trackingAsinKey, setTrackingAsinKey] = useState<string | null>(null)
   const [trackingExternalAsin, setTrackingExternalAsin] = useState(false)
+  const [enrichingProductKey, setEnrichingProductKey] = useState<string | null>(null)
   const [externalMarketplace, setExternalMarketplace] = useState<Marketplace>('IN')
   const [externalSourceType, setExternalSourceType] = useState<'competitor' | 'external'>('external')
   const [externalTitle, setExternalTitle] = useState('')
@@ -440,7 +456,7 @@ export default function KeywordsPage() {
           .limit(300),
         supabase
           .from('competitor_asins')
-          .select('tracked_asin_id, competitor_asin, marketplace, product_title, brand, category, image_url, source_type, metadata_status')
+          .select('tracked_asin_id, competitor_asin, marketplace, product_title, brand, category, image_url, source_type, metadata_status, error_message')
           .eq('workspace_id', wsId),
       ])
 
@@ -454,10 +470,11 @@ export default function KeywordsPage() {
         const key = buildProductKey(row.asin as string, mp)
         const externalMeta = externalByTrackedId.get(row.id as string)
         const category = (externalMeta?.category as string | null) ?? (row.category as string | null) ?? null
-        const title =
-          (externalMeta?.product_title as string | null)
-          ?? (row.product_title as string | null)
-          ?? 'Details not available yet'
+        const metadataStatus = (externalMeta?.metadata_status as ProductOption['metadataStatus']) ?? null
+        const title = safeExternalTitle(
+          (externalMeta?.product_title as string | null) ?? (row.product_title as string | null),
+          metadataStatus,
+        )
         const source = externalMeta?.source_type === 'competitor'
           ? 'competitor'
           : externalMeta?.source_type === 'external'
@@ -474,6 +491,8 @@ export default function KeywordsPage() {
           imageUrl: (externalMeta?.image_url as string | null) ?? (row.image_url as string | null) ?? null,
           source,
           trackedAsinId: row.id as string,
+          metadataStatus,
+          metadataErrorMessage: (externalMeta?.error_message as string | null) ?? null,
         })
       }
 
@@ -494,6 +513,8 @@ export default function KeywordsPage() {
           imageUrl: (row.image_url as string | null) ?? null,
           source: 'own',
           trackedAsinId: null,
+          metadataStatus: null,
+          metadataErrorMessage: null,
         })
       }
 
@@ -531,7 +552,7 @@ export default function KeywordsPage() {
     const { data: externalRows } = trackedAsinIds.length
       ? await supabase
           .from('competitor_asins')
-          .select('tracked_asin_id, product_title, brand, image_url, source_type')
+          .select('tracked_asin_id, product_title, brand, image_url, source_type, metadata_status, error_message')
           .eq('workspace_id', wsId)
           .in('tracked_asin_id', trackedAsinIds)
       : { data: [] }
@@ -602,10 +623,11 @@ export default function KeywordsPage() {
       const asinFromTracked = kw.tracked_asin_id ? asinById.get(kw.tracked_asin_id) : null
       const externalMeta = kw.tracked_asin_id ? externalByTrackedId.get(kw.tracked_asin_id) : null
       const asinValue = (asinFromTracked?.asin ?? '').toUpperCase() || '—'
-      const productTitle =
-        (externalMeta?.product_title as string | null)
-        ?? asinFromTracked?.product_title
-        ?? 'Details not available yet'
+      const metadataStatus = (externalMeta?.metadata_status as TrackedKeywordRow['metadata_status']) ?? null
+      const productTitle = safeExternalTitle(
+        (externalMeta?.product_title as string | null) ?? asinFromTracked?.product_title,
+        metadataStatus,
+      )
       const productSource = externalMeta?.source_type === 'competitor'
         ? 'competitor'
         : externalMeta?.source_type === 'external'
@@ -621,6 +643,8 @@ export default function KeywordsPage() {
         product_image_url: (externalMeta?.image_url as string | null) ?? asinFromTracked?.image_url ?? null,
         marketplace:       toMarketplace(asinFromTracked?.marketplace ?? kw.marketplace ?? 'IN'),
         product_source:    productSource,
+        metadata_status:   metadataStatus,
+        metadata_error_message: (externalMeta?.error_message as string | null) ?? null,
         organic_rank:      latest?.organic_rank    ?? null,
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
@@ -814,6 +838,14 @@ export default function KeywordsPage() {
 
     if (product.trackedAsinId) {
       setSelectedProductKey(product.key)
+      if (product.source !== 'own' && product.metadataStatus !== 'found') {
+        await handleRetryProductDetails({
+          key: product.key,
+          asin: product.asin,
+          marketplace: product.marketplace,
+          sourceType: product.source,
+        })
+      }
       return
     }
 
@@ -870,7 +902,16 @@ export default function KeywordsPage() {
     const existingTracked = productOptions.find(p => p.key === targetKey && p.trackedAsinId)
     if (existingTracked) {
       setSelectedProductKey(existingTracked.key)
-      toast.info('ASIN already tracked. Selected existing product.')
+      if (existingTracked.source !== 'own' && existingTracked.metadataStatus !== 'found') {
+        await handleRetryProductDetails({
+          key: existingTracked.key,
+          asin: existingTracked.asin,
+          marketplace: existingTracked.marketplace,
+          sourceType: existingTracked.source,
+        })
+      } else {
+        toast.info('ASIN already tracked. Selected existing product.')
+      }
       return
     }
 
@@ -914,6 +955,49 @@ export default function KeywordsPage() {
       )
     } finally {
       setTrackingExternalAsin(false)
+    }
+  }
+
+  async function handleRetryProductDetails(params: {
+    key: string
+    asin: string
+    marketplace: Marketplace
+    sourceType: 'competitor' | 'external'
+  }) {
+    if (!workspaceId) return
+    setEnrichingProductKey(params.key)
+    try {
+      const response = await fetch('/api/keywords/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          asin: params.asin,
+          marketplace: params.marketplace,
+          sourceType: params.sourceType,
+        }),
+      })
+      const result = await parseJsonSafe<{
+        tracked?: boolean
+        metadataStatus?: string
+        error?: string
+      }>(response)
+
+      if (!response.ok || !result?.tracked) {
+        toast.error(result?.error ?? 'Unable to fetch product details right now.')
+        return
+      }
+
+      await Promise.all([
+        loadProductOptions(workspaceId),
+        loadTrackedKeywords(workspaceId),
+      ])
+      if (result.metadataStatus === 'found') {
+        toast.success('Product details updated.')
+      } else {
+        toast.info('Product details are not available yet.')
+      }
+    } finally {
+      setEnrichingProductKey(null)
     }
   }
 
@@ -1212,6 +1296,10 @@ export default function KeywordsPage() {
                   const isSelected = selectedProductKey === product.key
                   const isTracked = Boolean(product.trackedAsinId)
                   const isTracking = trackingAsinKey === product.key
+                  const isEnriching = enrichingProductKey === product.key
+                  const canRetryDetails =
+                    product.source !== 'own'
+                    && product.metadataStatus !== 'found'
                   return (
                     <div
                       key={product.key}
@@ -1252,7 +1340,22 @@ export default function KeywordsPage() {
                         </div>
                       </div>
 
-                      <div className="shrink-0">
+                      <div className="shrink-0 flex items-center gap-2 flex-wrap">
+                        {canRetryDetails && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            onClick={() => handleRetryProductDetails({
+                              key: product.key,
+                              asin: product.asin,
+                              marketplace: product.marketplace,
+                              sourceType: product.source === 'competitor' ? 'competitor' : 'external',
+                            })}
+                            disabled={isEnriching}
+                          >
+                            {isEnriching ? 'Fetching details...' : 'Retry details'}
+                          </Button>
+                        )}
                         {isTracked ? (
                           <Button
                             type="button"
@@ -1547,6 +1650,29 @@ export default function KeywordsPage() {
                                 : 'Own ASIN'}
                           </Badge>
                           <Badge variant="outline" className="text-[9px]">{kw.marketplace}</Badge>
+                          {kw.metadata_status === 'pending' && (
+                            <span className="text-[10px] text-muted-foreground">Fetching product details...</span>
+                          )}
+                          {(kw.metadata_status === 'error' || kw.metadata_status === 'not_found') && (
+                            <button
+                              type="button"
+                              className="text-[10px] text-primary hover:underline"
+                              onClick={event => {
+                                event.stopPropagation()
+                                void handleRetryProductDetails({
+                                  key: buildProductKey(kw.asin, kw.marketplace),
+                                  asin: kw.asin,
+                                  marketplace: kw.marketplace,
+                                  sourceType: kw.product_source === 'competitor' ? 'competitor' : 'external',
+                                })
+                              }}
+                              disabled={enrichingProductKey === buildProductKey(kw.asin, kw.marketplace)}
+                            >
+                              {enrichingProductKey === buildProductKey(kw.asin, kw.marketplace)
+                                ? 'Fetching details...'
+                                : 'Retry details'}
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>

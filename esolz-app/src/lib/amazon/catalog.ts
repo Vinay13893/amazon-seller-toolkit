@@ -24,8 +24,6 @@ export interface CatalogItemNormalized {
   category: string | null
   bsr: number | null
   bsr_category: string | null
-  sales_ranks_raw: unknown
-  raw: Record<string, unknown>
 }
 
 interface CatalogItemsResponse {
@@ -67,7 +65,7 @@ function extractImageUrl(item: Record<string, unknown>): string | null {
 
     const imageVariants = asRecordArray(image.images)
     for (const nested of imageVariants) {
-      const nestedLink = firstString(nested.link, nested.url)
+      const nestedLink = firstString(nested.link, nested.url, nested.imageUrl)
       if (nestedLink) return nestedLink
     }
   }
@@ -87,7 +85,6 @@ function extractCatalogMeta(item: Record<string, unknown>) {
   const attributeSets = asRecordArray(item.attributeSets)
   const attributes = isRecord(item.attributes) ? item.attributes : null
   const productTypes = asRecordArray(item.productTypes)
-  const identifiers = isRecord(item.identifiers) ? item.identifiers : null
   const salesRanks = asRecordArray(item.salesRanks)
 
   const title = firstString(
@@ -101,6 +98,8 @@ function extractCatalogMeta(item: Record<string, unknown>) {
 
   const brand = firstString(
     summaries[0]?.brand,
+    isRecord(summaries[0]?.byLineInfo) ? summaries[0].byLineInfo.brandName : null,
+    isRecord(summaries[0]?.byLineInfo) ? summaries[0].byLineInfo.brand : null,
     item.brand,
     attributes?.brand && Array.isArray(attributes.brand) ? (attributes.brand[0] as Record<string, unknown> | undefined)?.value : null,
     attributeSets[0]?.brand && Array.isArray(attributeSets[0].brand) ? (attributeSets[0].brand[0] as Record<string, unknown> | undefined)?.value : null,
@@ -143,9 +142,6 @@ function extractCatalogMeta(item: Record<string, unknown>) {
     category,
     bsr,
     bsr_category: bsrCategory,
-    sales_ranks_raw: salesRanks,
-    identifiers,
-    raw: item,
   }
 }
 
@@ -168,12 +164,7 @@ export async function getCatalogItemForAsin(params: {
   })
 
   if (!res.ok) {
-    if (process.env.NODE_ENV !== 'production') {
-      const errBody = await res.text().catch(() => '<unreadable>')
-      console.error('[amazon-catalog] getCatalogItemForAsin error:', res.status, errBody)
-    } else {
-      console.error('[amazon-catalog] getCatalogItemForAsin error:', res.status)
-    }
+    console.error('[amazon-catalog] getCatalogItemForAsin error:', res.status)
     throw new Error(`SP-API catalog call failed with HTTP ${res.status}`)
   }
 
@@ -199,7 +190,5 @@ export async function getCatalogItemForAsin(params: {
     category: normalized.category,
     bsr: normalized.bsr,
     bsr_category: normalized.bsr_category,
-    sales_ranks_raw: normalized.sales_ranks_raw,
-    raw: item,
   }
 }

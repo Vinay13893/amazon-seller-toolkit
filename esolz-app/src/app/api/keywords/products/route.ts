@@ -36,6 +36,10 @@ function optionalText(value: unknown, maxLength: number): string | null {
   return normalized ? normalized.slice(0, maxLength) : null
 }
 
+function isFakeExternalTitle(value: string | null): boolean {
+  return /^external asin [a-z0-9]{10}$/i.test(value?.trim() ?? '')
+}
+
 export async function POST(request: Request) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -45,7 +49,8 @@ export async function POST(request: Request) {
   const asin = optionalText(body?.asin, 10)?.toUpperCase() ?? ''
   const marketplace = optionalText(body?.marketplace, 2)?.toUpperCase() ?? ''
   const sourceType = body?.sourceType === 'competitor' ? 'competitor' : 'external'
-  const suppliedTitle = optionalText(body?.title, 500)
+  const suppliedTitleRaw = optionalText(body?.title, 500)
+  const suppliedTitle = isFakeExternalTitle(suppliedTitleRaw) ? null : suppliedTitleRaw
   const suppliedBrand = optionalText(body?.brand, 200)
 
   if (!/^[A-Z0-9]{10}$/.test(asin) || !MARKETPLACE_IDS[marketplace]) {
@@ -65,50 +70,96 @@ export async function POST(request: Request) {
 
   const workspaceId = membership.workspace_id
   const admin = createAdminClient()
-  const { data: existing } = await admin
+  const { data: existingTracked } = await admin
     .from('tracked_asins')
-    .select('id')
+    .select('id, product_title, brand, image_url')
     .eq('workspace_id', workspaceId)
     .eq('asin', asin)
     .eq('marketplace', marketplace)
     .neq('status', 'archived')
     .maybeSingle()
 
-  if (existing?.id) {
-    return NextResponse.json({ tracked: true, alreadyTracked: true })
-  }
+  if (!existingTracked) {
+    let asinLimit = 5
+    if (isInternalTestAccount(user.email)) {
+      asinLimit = INTERNAL_TEST_ASIN_LIMIT
+    } else {
+      const { data: subscription } = await admin
+        .from('workspace_subscriptions')
+        .select('subscription_plans(asin_limit)')
+        .eq('workspace_id', workspaceId)
+        .maybeSingle()
+      const embeddedPlan = subscription?.subscription_plans
+      const plan = Array.isArray(embeddedPlan) ? embeddedPlan[0] : embeddedPlan
+      asinLimit = plan?.asin_limit ?? 5
+    }
 
-  let asinLimit = 5
-  if (isInternalTestAccount(user.email)) {
-    asinLimit = INTERNAL_TEST_ASIN_LIMIT
-  } else {
-    const { data: subscription } = await admin
-      .from('workspace_subscriptions')
-      .select('subscription_plans(asin_limit)')
+    const { count } = await admin
+      .from('tracked_asins')
+      .select('id', { count: 'exact', head: true })
       .eq('workspace_id', workspaceId)
-      .maybeSingle()
-    const embeddedPlan = subscription?.subscription_plans
-    const plan = Array.isArray(embeddedPlan) ? embeddedPlan[0] : embeddedPlan
-    asinLimit = plan?.asin_limit ?? 5
+      .neq('status', 'archived')
+
+    if ((count ?? 0) >= asinLimit) {
+      return NextResponse.json({ error: 'You have reached your ASIN limit for this plan.' }, { status: 403 })
+    }
   }
 
-  const { count } = await admin
-    .from('tracked_asins')
-    .select('id', { count: 'exact', head: true })
-    .eq('workspace_id', workspaceId)
-    .neq('status', 'archived')
+  let trackedId = existingTracked?.id as string | undefined
+  if (!trackedId) {
+    const { data: created, error } = await admin
+      .from('tracked_asins')
+      .insert({
+        workspace_id: workspaceId,
+        asin,
+        marketplace,
+        product_title: suppliedTitle,
+        brand: suppliedBrand,
+        category: sourceType === 'competitor' ? 'Competitor ASIN' : 'External ASIN',
+        image_url: null,
+        status: 'active',
+      })
+      .select('id')
+      .single()
 
-  if ((count ?? 0) >= asinLimit) {
-    return NextResponse.json({ error: 'You have reached your ASIN limit for this plan.' }, { status: 403 })
+    if (error || !created) {
+      return NextResponse.json({ error: 'Unable to track this ASIN right now.' }, { status: 500 })
+    }
+    trackedId = created.id
   }
 
-  let title = suppliedTitle
-  let brand = suppliedBrand
-  let imageUrl: string | null = null
-  let category: string | null = null
-  let metadataStatus: 'found' | 'not_found' | 'error' = suppliedTitle || suppliedBrand ? 'found' : 'not_found'
-  let errorCode: string | null = null
-  let errorMessage: string | null = null
+  const productUrl = `https://${PRODUCT_HOSTS[marketplace]}/dp/${asin}`
+  const pendingTitle = suppliedTitle
+    ?? (isFakeExternalTitle(existingTracked?.product_title ?? null) ? null : existingTracked?.product_title)
+    ?? null
+  const pendingBrand = suppliedBrand ?? existingTracked?.brand ?? null
+  const pendingImage = existingTracked?.image_url ?? null
+
+  const { error: pendingError } = await admin
+    .from('competitor_asins')
+    .upsert({
+      workspace_id: workspaceId,
+      tracked_asin_id: trackedId,
+      competitor_asin: asin,
+      product_title: pendingTitle,
+      brand: pendingBrand,
+      marketplace,
+      image_url: pendingImage,
+      product_url: productUrl,
+      source_type: sourceType,
+      metadata_status: 'pending',
+      error_code: null,
+      error_message: null,
+    }, {
+      onConflict: 'workspace_id,competitor_asin,marketplace',
+    })
+
+  if (pendingError) {
+    return NextResponse.json(
+      { error: 'Product metadata schema is not ready.', errorCode: 'metadata_schema_unavailable' },
+      { status: 503 },
+    )
+  }
 
   try {
     const { data: connection } = await admin
@@ -127,67 +178,66 @@ export async function POST(request: Request) {
       marketplaceId: MARKETPLACE_IDS[marketplace],
       asin,
     })
+    const title = catalog.title ?? pendingTitle
+    const brand = catalog.brand ?? pendingBrand
+    const imageUrl = catalog.image_url ?? pendingImage
+    const metadataStatus = title || brand || imageUrl ? 'found' : 'not_found'
+    const checkedAt = new Date().toISOString()
 
-    title = catalog.title ?? title
-    brand = catalog.brand ?? brand
-    imageUrl = catalog.image_url
-    category = catalog.category
-    metadataStatus = title || brand || imageUrl ? 'found' : 'not_found'
+    await Promise.all([
+      admin
+        .from('competitor_asins')
+        .update({
+          product_title: title,
+          brand,
+          category: catalog.category,
+          image_url: imageUrl,
+          metadata_status: metadataStatus,
+          last_enriched_at: checkedAt,
+          error_code: null,
+          error_message: null,
+        })
+        .eq('workspace_id', workspaceId)
+        .eq('competitor_asin', asin)
+        .eq('marketplace', marketplace),
+      admin
+        .from('tracked_asins')
+        .update({
+          product_title: title,
+          brand,
+          image_url: imageUrl,
+          ...(catalog.category ? { category: catalog.category } : {}),
+        })
+        .eq('id', trackedId)
+        .eq('workspace_id', workspaceId),
+    ])
+
+    return NextResponse.json({
+      tracked: true,
+      alreadyTracked: Boolean(existingTracked),
+      metadataStatus,
+      product: { title, brand, imageUrl },
+    })
   } catch {
-    metadataStatus = title || brand ? 'found' : 'error'
-    errorCode = 'catalog_unavailable'
-    errorMessage = 'Product details are not available yet.'
-  }
+    const checkedAt = new Date().toISOString()
+    await admin
+      .from('competitor_asins')
+      .update({
+        metadata_status: 'error',
+        last_enriched_at: checkedAt,
+        error_code: 'catalog_unavailable',
+        error_message: 'Product details are not available yet.',
+      })
+      .eq('workspace_id', workspaceId)
+      .eq('competitor_asin', asin)
+      .eq('marketplace', marketplace)
 
-  const productUrl = `https://${PRODUCT_HOSTS[marketplace]}/dp/${asin}`
-  const { data: tracked, error: trackedError } = await admin
-    .from('tracked_asins')
-    .insert({
-      workspace_id: workspaceId,
-      asin,
-      marketplace,
-      product_title: title,
-      brand,
-      category: category ?? (sourceType === 'competitor' ? 'Competitor ASIN' : 'External ASIN'),
-      image_url: imageUrl,
-      status: 'active',
+    return NextResponse.json({
+      tracked: true,
+      alreadyTracked: Boolean(existingTracked),
+      metadataStatus: 'error',
+      errorCode: 'catalog_unavailable',
+      errorMessage: 'Product details are not available yet.',
     })
-    .select('id')
-    .single()
-
-  if (trackedError || !tracked) {
-    return NextResponse.json({ error: 'Unable to track this ASIN right now.' }, { status: 500 })
   }
-
-  const { error: metadataError } = await admin
-    .from('competitor_asins')
-    .upsert({
-      workspace_id: workspaceId,
-      tracked_asin_id: tracked.id,
-      competitor_asin: asin,
-      product_title: title,
-      brand,
-      marketplace,
-      category,
-      image_url: imageUrl,
-      product_url: productUrl,
-      source_type: sourceType,
-      metadata_status: metadataStatus,
-      last_enriched_at: new Date().toISOString(),
-      error_code: errorCode,
-      error_message: errorMessage,
-    }, {
-      onConflict: 'workspace_id,competitor_asin,marketplace',
-    })
-
-  if (metadataError) {
-    await admin.from('tracked_asins').delete().eq('id', tracked.id).eq('workspace_id', workspaceId)
-    return NextResponse.json({ error: 'Unable to save product details right now.' }, { status: 500 })
-  }
-
-  return NextResponse.json({
-    tracked: true,
-    alreadyTracked: false,
-    metadataStatus,
-  })
 }
