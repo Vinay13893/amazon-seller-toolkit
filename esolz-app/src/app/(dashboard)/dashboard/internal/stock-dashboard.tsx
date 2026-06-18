@@ -1,16 +1,18 @@
 'use client'
 
 import Image from 'next/image'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Boxes,
   CheckCircle2,
   CircleAlert,
+  Download,
   Loader2,
   PackageX,
   RefreshCw,
   Search,
+  Upload,
   Warehouse,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -29,6 +31,12 @@ type StockResponse = {
     salesTableAvailable: boolean
     resultLimitReached: boolean
   }
+}
+
+type UploadResult = {
+  accepted: number
+  rejected: number
+  errors: Array<{ row: number; message: string }>
 }
 
 const statuses: StockStatus[] = ['OOS', 'Low stock', 'Healthy', 'Overstock', 'Missing data']
@@ -67,6 +75,10 @@ export function InternalStockDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'All' | StockStatus>('All')
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -88,6 +100,43 @@ export function InternalStockDashboard() {
 
   useEffect(() => {
     void load()
+  }, [load])
+
+  const downloadTemplate = useCallback(() => {
+    const csv = 'sales_date,asin,ordered_units,sku,marketplace_id,ordered_revenue\r\n'
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'internal-daily-sales-template.csv'
+    link.click()
+    URL.revokeObjectURL(url)
+  }, [])
+
+  const uploadCsv = useCallback(async (file: File) => {
+    setUploading(true)
+    setUploadError(null)
+    setUploadResult(null)
+
+    try {
+      const body = new FormData()
+      body.set('file', file)
+      const response = await fetch('/api/internal/stock-actions/sales-upload', {
+        method: 'POST',
+        body,
+        credentials: 'same-origin',
+      })
+      const result = await response.json() as UploadResult & { error?: string }
+      if (!response.ok) {
+        throw new Error(result.error ?? 'CSV upload failed.')
+      }
+      setUploadResult(result)
+      if (result.accepted > 0) await load()
+    } catch (uploadFailure) {
+      setUploadError(uploadFailure instanceof Error ? uploadFailure.message : 'CSV upload failed.')
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
   }, [load])
 
   const filteredActions = useMemo(() => {
@@ -168,6 +217,66 @@ export function InternalStockDashboard() {
           {warnings.map(warning => <p key={warning}>• {warning}</p>)}
         </div>
       )}
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="font-bold">Upload daily sales CSV</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Aggregated rows only. Required: sales_date, asin, ordered_units. Maximum 2 MB or 5,000 accepted rows.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={downloadTemplate}>
+              <Download className="mr-2 h-4 w-4" /> Download template
+            </Button>
+            <Button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                : <Upload className="mr-2 h-4 w-4" />}
+              {uploading ? 'Uploading…' : 'Choose CSV'}
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={event => {
+                const file = event.target.files?.[0]
+                if (file) void uploadCsv(file)
+              }}
+            />
+          </div>
+        </div>
+
+        {uploadError && (
+          <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            {uploadError}
+          </div>
+        )}
+
+        {uploadResult && (
+          <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+            <p className="font-medium">
+              {uploadResult.accepted.toLocaleString('en-IN')} rows accepted ·{' '}
+              {uploadResult.rejected.toLocaleString('en-IN')} rows rejected
+            </p>
+            {uploadResult.errors.length > 0 && (
+              <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {uploadResult.errors.map(errorItem => (
+                  <li key={`${errorItem.row}-${errorItem.message}`}>
+                    Row {errorItem.row}: {errorItem.message}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {cards.map(card => (
