@@ -64,6 +64,10 @@ interface TrackedKeywordRow {
   keyword: string
   asin: string
   product_name: string
+  product_brand: string | null
+  product_image_url: string | null
+  marketplace: Marketplace
+  product_source: 'own' | 'competitor' | 'external'
   organic_rank: number | null
   prev_organic_rank: number | null
   sponsored_rank: number | null
@@ -106,7 +110,7 @@ interface ProductOption {
   brand: string | null
   productType: string | null
   imageUrl: string | null
-  source: 'tracked' | 'listing' | 'external'
+  source: 'own' | 'competitor' | 'external'
   trackedAsinId: string | null
 }
 
@@ -143,15 +147,20 @@ function toMarketplace(marketplace: string): Marketplace {
 }
 
 function sourceLabel(product: ProductOption): string {
-  const category = (product.productType ?? '').toLowerCase()
-  const title = product.title.toLowerCase()
-  if (product.source === 'external') {
-    if (category.includes('competitor') || category.includes('external') || title.includes('competitor')) {
-      return 'Competitor / External'
-    }
-    return 'External ASIN'
-  }
-  return product.source === 'tracked' ? 'Tracked ASIN' : 'Amazon Listing'
+  if (product.source === 'competitor') return 'Competitor ASIN'
+  if (product.source === 'external') return 'External ASIN'
+  return 'Own ASIN'
+}
+
+function amazonProductUrl(asin: string, marketplace: Marketplace): string {
+  const host = marketplace === 'US'
+    ? 'www.amazon.com'
+    : marketplace === 'UK'
+      ? 'www.amazon.co.uk'
+      : marketplace === 'DE'
+        ? 'www.amazon.de'
+        : 'www.amazon.in'
+  return `https://${host}/dp/${asin}`
 }
 
 function getKeywordSeedSuggestions(product: ProductOption | null): string[] {
@@ -342,6 +351,7 @@ export default function KeywordsPage() {
   const [trackingAsinKey, setTrackingAsinKey] = useState<string | null>(null)
   const [trackingExternalAsin, setTrackingExternalAsin] = useState(false)
   const [externalMarketplace, setExternalMarketplace] = useState<Marketplace>('IN')
+  const [externalSourceType, setExternalSourceType] = useState<'competitor' | 'external'>('external')
   const [externalTitle, setExternalTitle] = useState('')
   const [externalBrand, setExternalBrand] = useState('')
   const [keywordInput, setKeywordInput] = useState('')
@@ -414,7 +424,7 @@ export default function KeywordsPage() {
     setProductsLoading(true)
     const supabase = createClient()
     try {
-      const [trackedAsinsRes, listingItemsRes] = await Promise.all([
+      const [trackedAsinsRes, listingItemsRes, externalProductsRes] = await Promise.all([
         supabase
           .from('tracked_asins')
           .select('id, asin, marketplace, product_title, brand, category, image_url, status')
@@ -428,29 +438,41 @@ export default function KeywordsPage() {
           .not('asin', 'is', null)
           .order('item_name', { ascending: true })
           .limit(300),
+        supabase
+          .from('competitor_asins')
+          .select('tracked_asin_id, competitor_asin, marketplace, product_title, brand, category, image_url, source_type, metadata_status')
+          .eq('workspace_id', wsId),
       ])
 
       const map = new Map<string, ProductOption>()
+      const externalByTrackedId = new Map(
+        (externalProductsRes.data ?? []).map(row => [row.tracked_asin_id as string, row]),
+      )
 
       for (const row of trackedAsinsRes.data ?? []) {
         const mp = toMarketplace(row.marketplace as string)
         const key = buildProductKey(row.asin as string, mp)
-        const category = (row.category as string | null) ?? null
-        const title = (row.product_title as string | null) ?? (row.asin as string)
-        const externalByContent =
-          (category ?? '').toLowerCase().includes('external') ||
-          (category ?? '').toLowerCase().includes('competitor') ||
-          title.toLowerCase().startsWith('external asin ')
+        const externalMeta = externalByTrackedId.get(row.id as string)
+        const category = (externalMeta?.category as string | null) ?? (row.category as string | null) ?? null
+        const title =
+          (externalMeta?.product_title as string | null)
+          ?? (row.product_title as string | null)
+          ?? 'Details not available yet'
+        const source = externalMeta?.source_type === 'competitor'
+          ? 'competitor'
+          : externalMeta?.source_type === 'external'
+            ? 'external'
+            : 'own'
         map.set(key, {
           key,
           asin: (row.asin as string).toUpperCase(),
           marketplace: mp,
           title,
           sku: null,
-          brand: (row.brand as string | null) ?? null,
+          brand: (externalMeta?.brand as string | null) ?? (row.brand as string | null) ?? null,
           productType: category,
-          imageUrl: (row.image_url as string | null) ?? null,
-          source: externalByContent ? 'external' : 'tracked',
+          imageUrl: (externalMeta?.image_url as string | null) ?? (row.image_url as string | null) ?? null,
+          source,
           trackedAsinId: row.id as string,
         })
       }
@@ -470,7 +492,7 @@ export default function KeywordsPage() {
           brand: (row.brand as string | null) ?? null,
           productType: (row.product_type as string | null) ?? null,
           imageUrl: (row.image_url as string | null) ?? null,
-          source: 'listing',
+          source: 'own',
           trackedAsinId: null,
         })
       }
@@ -502,15 +524,35 @@ export default function KeywordsPage() {
     const { data: asinRows } = trackedAsinIds.length
       ? await supabase
           .from('tracked_asins')
-          .select('id, asin, product_title')
+          .select('id, asin, marketplace, product_title, brand, image_url')
           .in('id', trackedAsinIds)
-      : { data: [] as Array<{ id: string; asin: string | null; product_title: string | null }> }
+      : { data: [] as Array<{ id: string; asin: string | null; marketplace: string | null; product_title: string | null; brand: string | null; image_url: string | null }> }
 
-    const asinById = new Map<string, { asin: string | null; product_title: string | null }>()
+    const { data: externalRows } = trackedAsinIds.length
+      ? await supabase
+          .from('competitor_asins')
+          .select('tracked_asin_id, product_title, brand, image_url, source_type')
+          .eq('workspace_id', wsId)
+          .in('tracked_asin_id', trackedAsinIds)
+      : { data: [] }
+
+    const externalByTrackedId = new Map(
+      (externalRows ?? []).map(row => [row.tracked_asin_id as string, row]),
+    )
+    const asinById = new Map<string, {
+      asin: string | null
+      marketplace: string | null
+      product_title: string | null
+      brand: string | null
+      image_url: string | null
+    }>()
     for (const row of asinRows ?? []) {
       asinById.set(row.id as string, {
         asin: (row.asin as string | null) ?? null,
+        marketplace: (row.marketplace as string | null) ?? null,
         product_title: (row.product_title as string | null) ?? null,
+        brand: (row.brand as string | null) ?? null,
+        image_url: (row.image_url as string | null) ?? null,
       })
     }
 
@@ -558,14 +600,27 @@ export default function KeywordsPage() {
         ? ((latest.scrape_status as 'success' | 'failed' | 'checker_unavailable' | null) ?? 'success')
         : 'never_checked'
       const asinFromTracked = kw.tracked_asin_id ? asinById.get(kw.tracked_asin_id) : null
+      const externalMeta = kw.tracked_asin_id ? externalByTrackedId.get(kw.tracked_asin_id) : null
       const asinValue = (asinFromTracked?.asin ?? '').toUpperCase() || '—'
-      const productTitle = asinFromTracked?.product_title ?? asinValue
+      const productTitle =
+        (externalMeta?.product_title as string | null)
+        ?? asinFromTracked?.product_title
+        ?? 'Details not available yet'
+      const productSource = externalMeta?.source_type === 'competitor'
+        ? 'competitor'
+        : externalMeta?.source_type === 'external'
+          ? 'external'
+          : 'own'
 
       return {
         id:                kw.id,
         keyword:           kw.keyword,
         asin:              asinValue,
         product_name:      productTitle,
+        product_brand:     (externalMeta?.brand as string | null) ?? asinFromTracked?.brand ?? null,
+        product_image_url: (externalMeta?.image_url as string | null) ?? asinFromTracked?.image_url ?? null,
+        marketplace:       toMarketplace(asinFromTracked?.marketplace ?? kw.marketplace ?? 'IN'),
+        product_source:    productSource,
         organic_rank:      latest?.organic_rank    ?? null,
         prev_organic_rank: prev?.organic_rank      ?? null,
         sponsored_rank:    latest?.sponsored_rank  ?? null,
@@ -821,52 +876,29 @@ export default function KeywordsPage() {
 
     setTrackingExternalAsin(true)
     try {
-      const supabase = createClient()
-      const [asinLimit, trackedCountRes] = await Promise.all([
-        getAsinLimit(workspaceId),
-        supabase
-          .from('tracked_asins')
-          .select('id', { count: 'exact', head: true })
-          .eq('workspace_id', workspaceId)
-          .neq('status', 'archived'),
-      ])
-      const trackedCount = trackedCountRes.count ?? 0
-      if (trackedCount >= asinLimit) {
-        toast.error('You have reached your ASIN limit for this plan.')
-        return
-      }
-
-      const created = await addTrackedAsin(workspaceId, {
-        asin,
-        marketplace: externalMarketplace,
-        productTitle: externalTitle.trim() || `External ASIN ${asin}`,
-        brand: externalBrand.trim(),
-        category: 'External / Competitor',
-        imageUrl: '',
+      const response = await fetch('/api/keywords/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          asin,
+          marketplace: externalMarketplace,
+          sourceType: externalSourceType,
+          title: externalTitle,
+          brand: externalBrand,
+        }),
       })
+      const result = await parseJsonSafe<{
+        tracked?: boolean
+        alreadyTracked?: boolean
+        metadataStatus?: string
+        error?: string
+      }>(response)
 
-      if (!created) {
-        const { data: existing } = await supabase
-          .from('tracked_asins')
-          .select('id')
-          .eq('workspace_id', workspaceId)
-          .eq('asin', asin)
-          .eq('marketplace', externalMarketplace)
-          .neq('status', 'archived')
-          .maybeSingle()
-
-        await loadProductOptions(workspaceId)
-        const trackedNow = Boolean(existing?.id)
-        if (trackedNow) {
-          setSelectedProductKey(targetKey)
-          toast.info('ASIN already tracked. Selected existing product.')
-          return
-        }
-        toast.error('Unable to track this ASIN right now. Please try again.')
+      if (!response.ok || !result?.tracked) {
+        toast.error(result?.error ?? 'Unable to track this ASIN right now.')
         return
       }
 
-      await incrementAsinUsage(workspaceId)
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('asin:usage-changed'))
       }
@@ -875,7 +907,11 @@ export default function KeywordsPage() {
       setSelectedProductKey(targetKey)
       setExternalTitle('')
       setExternalBrand('')
-      toast.success('ASIN tracked. Add your first keyword now.')
+      toast.success(
+        result.metadataStatus === 'found'
+          ? 'Product details saved. Add your first keyword now.'
+          : 'ASIN tracked. Product details are not available yet.',
+      )
     } finally {
       setTrackingExternalAsin(false)
     }
@@ -1080,7 +1116,7 @@ export default function KeywordsPage() {
                   </p>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="external-marketplace">Marketplace</Label>
                     <select
@@ -1091,6 +1127,18 @@ export default function KeywordsPage() {
                     >
                       <option value="IN">Amazon India</option>
                       <option value="US">Amazon US</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="external-source">Product source</Label>
+                    <select
+                      id="external-source"
+                      value={externalSourceType}
+                      onChange={e => setExternalSourceType(e.target.value as 'competitor' | 'external')}
+                      className="h-9 rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="external">External ASIN</option>
+                      <option value="competitor">Competitor ASIN</option>
                     </select>
                   </div>
                   <div className="space-y-1.5">
@@ -1124,6 +1172,7 @@ export default function KeywordsPage() {
                       setProductSearch('')
                       setExternalTitle('')
                       setExternalBrand('')
+                      setExternalSourceType('external')
                     }}
                     disabled={trackingExternalAsin}
                   >
@@ -1459,7 +1508,9 @@ export default function KeywordsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <Link
-                      href={`/dashboard/asins/${kw.asin}`}
+                      href={amazonProductUrl(kw.asin, kw.marketplace)}
+                      target="_blank"
+                      rel="noreferrer"
                       onClick={e => e.stopPropagation()}
                       className="inline-flex items-center gap-1 font-mono text-[11px] text-primary hover:underline"
                     >
@@ -1468,9 +1519,37 @@ export default function KeywordsPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="block max-w-[180px] truncate text-xs text-muted-foreground" title={kw.product_name}>
-                      {kw.product_name}
-                    </span>
+                    <div className="flex items-center gap-2 min-w-[240px]">
+                      {kw.product_image_url ? (
+                        <img
+                          src={kw.product_image_url}
+                          alt=""
+                          className="h-9 w-9 rounded object-cover border border-border"
+                        />
+                      ) : (
+                        <div className="h-9 w-9 rounded border border-border bg-muted/30" />
+                      )}
+                      <div className="min-w-0">
+                        <span className="block max-w-[220px] truncate text-xs text-foreground" title={kw.product_name}>
+                          {kw.product_name}
+                        </span>
+                        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          {kw.product_brand && (
+                            <span className="max-w-[120px] truncate text-[10px] text-muted-foreground">
+                              {kw.product_brand}
+                            </span>
+                          )}
+                          <Badge variant="outline" className="text-[9px]">
+                            {kw.product_source === 'competitor'
+                              ? 'Competitor ASIN'
+                              : kw.product_source === 'external'
+                                ? 'External ASIN'
+                                : 'Own ASIN'}
+                          </Badge>
+                          <Badge variant="outline" className="text-[9px]">{kw.marketplace}</Badge>
+                        </div>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div>
