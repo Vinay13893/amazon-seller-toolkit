@@ -86,21 +86,31 @@ export async function getWorkspaceId(): Promise<string | null> {
 }
 
 export async function getAsinLimit(workspaceId: string): Promise<number> {
-  const supabase = createClient()
-  const { data } = await supabase
-    .from('workspace_subscriptions')
-    .select('subscription_plans(name, asin_limit)')
-    .eq('workspace_id', workspaceId)
-    .single()
+  const entitlement = await getCurrentEntitlement(workspaceId)
+  return entitlement.asinLimit
+}
 
-  const plan = normalizeEmbed<{ name: string; asin_limit: number }>(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (data as any)?.subscription_plans
-  )
-  if (plan?.name === 'Internal Tester') {
-    return Math.max(plan.asin_limit ?? 0, 1000)
+export interface CurrentEntitlement {
+  planName: string
+  asinLimit: number
+  internalTest: boolean
+}
+
+export async function getCurrentEntitlement(workspaceId?: string): Promise<CurrentEntitlement> {
+  try {
+    const query = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : ''
+    const response = await fetch(`/api/entitlements${query}`, {
+      method: 'GET',
+      cache: 'no-store',
+    })
+    if (response.ok) {
+      return await response.json() as CurrentEntitlement
+    }
+  } catch {
+    // Fall back to the standard Free entitlement.
   }
-  return plan?.asin_limit ?? 5
+
+  return { planName: 'Free', asinLimit: 5, internalTest: false }
 }
 
 export async function getTrackedAsins(workspaceId: string): Promise<ProductSnapshot[]> {
@@ -343,12 +353,8 @@ export async function getPlanUsage(): Promise<PlanUsage | null> {
   const workspaceId = await resolveWorkspaceIdForUser(user.id)
   if (!workspaceId) return null
 
-  const [subResult, countResult] = await Promise.all([
-    supabase
-      .from('workspace_subscriptions')
-      .select('subscription_plans(name, asin_limit)')
-      .eq('workspace_id', workspaceId)
-      .maybeSingle(),
+  const [entitlement, countResult] = await Promise.all([
+    getCurrentEntitlement(workspaceId),
     supabase
       .from('tracked_asins')
       .select('id', { count: 'exact', head: true })
@@ -356,16 +362,9 @@ export async function getPlanUsage(): Promise<PlanUsage | null> {
       .neq('status', 'archived'),
   ])
 
-  const plan = normalizeEmbed<{ name: string; asin_limit: number }>(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (subResult.data as any)?.subscription_plans
-  )
-  const asinLimit = plan?.name === 'Internal Tester'
-    ? Math.max(plan?.asin_limit ?? 0, 1000)
-    : (plan?.asin_limit ?? 5)
   return {
-    planName:  plan?.name       ?? 'Free',
-    asinLimit,
+    planName:  entitlement.planName,
+    asinLimit: entitlement.asinLimit,
     asinCount: countResult.count ?? 0,
   }
 }

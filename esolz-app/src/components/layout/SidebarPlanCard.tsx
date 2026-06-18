@@ -52,7 +52,7 @@ export function SidebarPlanCard() {
             Loading usage…
           </span>
         ) : usage ? (
-          planName === 'Internal Tester'
+          planName === 'Internal Tester' || planName === 'Internal Test'
             ? `${asinCount} ASINs tracked. Internal testing access enabled.`
             : `${asinCount}/${asinLimit} ASINs used. Upgrade for more features.`
         ) : (
@@ -65,7 +65,7 @@ export function SidebarPlanCard() {
         href="/dashboard/billing"
         className="flex items-center justify-center gap-1 w-full bg-primary text-primary-foreground text-[11px] font-bold py-2 px-3 rounded-lg hover:bg-primary/90 transition-colors"
       >
-        {planName === 'Internal Tester' ? 'View Billing' : 'Upgrade Plan'}
+        {planName === 'Internal Tester' || planName === 'Internal Test' ? 'View Billing' : 'Upgrade Plan'}
         <ChevronRight className="w-3 h-3" />
       </Link>
     </div>

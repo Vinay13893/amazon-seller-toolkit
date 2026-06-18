@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { getWorkspaceId, getAsinLimit, getTrackedAsins } from '@/lib/supabase/asins'
+import { getWorkspaceId, getAsinLimit, getCurrentEntitlement, getTrackedAsins } from '@/lib/supabase/asins'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { InsightFeed } from '@/components/dashboard/InsightFeed'
@@ -61,9 +61,10 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
   const supabase = createClient()
 
   // 1. Tracked ASINs with latest snapshot + plan ASIN limit
-  const [asins, asinLimit] = await Promise.all([
+  const [asins, asinLimit, entitlement] = await Promise.all([
     getTrackedAsins(workspaceId),
     getAsinLimit(workspaceId),
+    getCurrentEntitlement(workspaceId),
   ])
 
   // 2. Plan name
@@ -73,7 +74,8 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
     .eq('workspace_id', workspaceId)
     .maybeSingle()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const planName = normalizeEmbed<{ name: string }>((subRaw as any)?.subscription_plans)?.name ?? 'Free'
+  const subscriptionPlanName = normalizeEmbed<{ name: string }>((subRaw as any)?.subscription_plans)?.name ?? 'Free'
+  const planName = entitlement.internalTest ? entitlement.planName : subscriptionPlanName
 
   // Pincode usage this month
   const periodStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
