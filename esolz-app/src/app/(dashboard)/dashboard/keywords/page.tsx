@@ -360,7 +360,13 @@ export default function KeywordsPage() {
   const [isResearching, setIsResearching] = useState(false)
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
   const [productsLoading, setProductsLoading] = useState(false)
-  const [productOptions, setProductOptions] = useState<ProductOption[]>([])
+  const [trackedProductOptions, setTrackedProductOptions] = useState<ProductOption[]>([])
+  const [listingProductOptions, setListingProductOptions] = useState<ProductOption[]>([])
+  const [listingProductTotal, setListingProductTotal] = useState(0)
+  const [listingProductsLoaded, setListingProductsLoaded] = useState(0)
+  const [listingProductsHasMore, setListingProductsHasMore] = useState(false)
+  const [listingProductsLoadingMore, setListingProductsLoadingMore] = useState(false)
+  const [productSearchLoading, setProductSearchLoading] = useState(false)
   const [productSearch, setProductSearch] = useState('')
   const [selectedProductKey, setSelectedProductKey] = useState('')
   const [trackingAsinKey, setTrackingAsinKey] = useState<string | null>(null)
@@ -395,6 +401,11 @@ export default function KeywordsPage() {
     }
   }
 
+  const productOptions = (() => {
+    const merged = new Map(listingProductOptions.map(product => [product.key, product]))
+    for (const product of trackedProductOptions) merged.set(product.key, product)
+    return [...merged.values()].sort((a, b) => a.title.localeCompare(b.title))
+  })()
   const selectedProduct = productOptions.find(p => p.key === selectedProductKey) ?? null
   const suggestedSeeds = getKeywordSeedSuggestions(selectedProduct)
   const visibleTrackedData = keywordAsinFilter === 'all'
@@ -409,7 +420,7 @@ export default function KeywordsPage() {
   const isValidAsinInput = /^[A-Z0-9]{10}$/.test(normalizedSearch)
   const isAsinLikeInput = normalizedSearch.length > 0 && /^[A-Z0-9]+$/.test(normalizedSearch)
   const hasMatchingAsin = isValidAsinInput && productOptions.some(p => p.asin === normalizedSearch)
-  const showExternalAsinCard = isValidAsinInput && !hasMatchingAsin
+  const showExternalAsinCard = isValidAsinInput && !hasMatchingAsin && !productSearchLoading
   const showInvalidAsinHint = productSearch.trim().length > 0 && isAsinLikeInput && !isValidAsinInput
 
   const filteredProducts = productOptions.filter(p => {
@@ -419,10 +430,16 @@ export default function KeywordsPage() {
       p.asin.toLowerCase().includes(q) ||
       p.title.toLowerCase().includes(q) ||
       (p.sku ?? '').toLowerCase().includes(q) ||
-      (p.brand ?? '').toLowerCase().includes(q)
+      (p.brand ?? '').toLowerCase().includes(q) ||
+      p.marketplace.toLowerCase().includes(q)
     )
   })
-  const visibleProducts = filteredProducts.slice(0, 8)
+  const visibleProducts = filteredProducts
+  const listingProductKeys = new Set(listingProductOptions.map(product => product.key))
+  const matchingTrackedOnlyCount = filteredProducts.filter(
+    product => product.trackedAsinId && !listingProductKeys.has(product.key),
+  ).length
+  const selectorProductTotal = listingProductTotal + matchingTrackedOnlyCount
 
   useEffect(() => {
     setIsMounted(true)
@@ -440,7 +457,7 @@ export default function KeywordsPage() {
     setProductsLoading(true)
     const supabase = createClient()
     try {
-      const [trackedAsinsRes, listingItemsRes, externalProductsRes] = await Promise.all([
+      const [trackedAsinsRes, externalProductsRes, listingResponse] = await Promise.all([
         supabase
           .from('tracked_asins')
           .select('id, asin, marketplace, product_title, brand, category, image_url, status')
@@ -448,16 +465,10 @@ export default function KeywordsPage() {
           .neq('status', 'archived')
           .order('created_at', { ascending: false }),
         supabase
-          .from('amazon_listing_items')
-          .select('id, sku, asin, marketplace_id, item_name, brand, product_type, image_url, status')
-          .eq('workspace_id', wsId)
-          .not('asin', 'is', null)
-          .order('item_name', { ascending: true })
-          .limit(300),
-        supabase
           .from('competitor_asins')
           .select('tracked_asin_id, competitor_asin, marketplace, product_title, brand, category, image_url, source_type, metadata_status, error_message')
           .eq('workspace_id', wsId),
+        fetch('/api/asins/listings?offset=0&limit=50', { cache: 'no-store' }),
       ])
 
       const map = new Map<string, ProductOption>()
@@ -496,13 +507,28 @@ export default function KeywordsPage() {
         })
       }
 
-      for (const row of listingItemsRes.data ?? []) {
+      setTrackedProductOptions([...map.values()])
+
+      const listingData = await parseJsonSafe<{
+        items?: Array<{
+          sku: string
+          asin: string | null
+          marketplace_id: string
+          item_name: string | null
+          brand: string | null
+          product_type: string | null
+          image_url: string | null
+        }>
+        total?: number
+        hasMore?: boolean
+      }>(listingResponse)
+      const listingOptions: ProductOption[] = []
+      for (const row of listingData?.items ?? []) {
         const asin = (row.asin as string | null)?.toUpperCase()
         if (!asin) continue
         const mp = marketplaceFromMarketplaceId(row.marketplace_id as string)
         const key = buildProductKey(asin, mp)
-        if (map.has(key)) continue
-        map.set(key, {
+        listingOptions.push({
           key,
           asin,
           marketplace: mp,
@@ -518,9 +544,13 @@ export default function KeywordsPage() {
         })
       }
 
-      const merged = [...map.values()].sort((a, b) => a.title.localeCompare(b.title))
-      setProductOptions(merged)
-      setSelectedProductKey(prev => (merged.find(p => p.key === prev) ? prev : ''))
+      setListingProductOptions(listingOptions)
+      setListingProductTotal(listingData?.total ?? 0)
+      setListingProductsLoaded(listingData?.items?.length ?? 0)
+      setListingProductsHasMore(Boolean(listingData?.hasMore))
+      setSelectedProductKey(prev => (
+        map.has(prev) || listingOptions.some(product => product.key === prev) ? prev : ''
+      ))
     } finally {
       setProductsLoading(false)
     }
@@ -528,13 +558,75 @@ export default function KeywordsPage() {
 
   useEffect(() => {
     const search = productSearch.trim()
-    if (search.length < 2) return
 
     const timer = window.setTimeout(async () => {
+      setProductSearchLoading(true)
       try {
-        const params = new URLSearchParams({ q: search, limit: '50', offset: '0' })
+        const params = new URLSearchParams({ limit: '50', offset: '0' })
+        if (search) params.set('q', search)
         const response = await fetch(`/api/asins/listings?${params.toString()}`, { cache: 'no-store' })
-        const data = await parseJsonSafe<{ items?: Array<{
+        const data = await parseJsonSafe<{
+          items?: Array<{
+            sku: string
+            asin: string | null
+            marketplace_id: string
+            item_name: string | null
+            brand: string | null
+            product_type: string | null
+            image_url: string | null
+          }>
+          total?: number
+          hasMore?: boolean
+        }>(response)
+        if (!response.ok) return
+
+        const listingOptions: ProductOption[] = []
+        for (const row of data?.items ?? []) {
+          const asin = row.asin?.toUpperCase()
+          if (!asin) continue
+          const marketplace = marketplaceFromMarketplaceId(row.marketplace_id)
+          listingOptions.push({
+            key: buildProductKey(asin, marketplace),
+            asin,
+            marketplace,
+            title: row.item_name ?? asin,
+            sku: row.sku,
+            brand: row.brand,
+            productType: row.product_type,
+            imageUrl: row.image_url,
+            source: 'own',
+            trackedAsinId: null,
+            metadataStatus: null,
+            metadataErrorMessage: null,
+          })
+        }
+        setListingProductOptions(listingOptions)
+        setListingProductTotal(data?.total ?? 0)
+        setListingProductsLoaded(data?.items?.length ?? 0)
+        setListingProductsHasMore(Boolean(data?.hasMore))
+      } catch {
+        // Keep existing product options if search loading fails.
+      } finally {
+        setProductSearchLoading(false)
+      }
+    }, 300)
+
+    return () => window.clearTimeout(timer)
+  }, [productSearch])
+
+  async function handleLoadMoreProducts() {
+    setListingProductsLoadingMore(true)
+    try {
+      const params = new URLSearchParams({
+        limit: '50',
+        offset: String(listingProductsLoaded),
+      })
+      const search = productSearch.trim()
+      if (search) params.set('q', search)
+
+      const response = await fetch(`/api/asins/listings?${params.toString()}`, { cache: 'no-store' })
+      const data = await parseJsonSafe<{
+        items?: Array<{
           sku: string
           asin: string | null
           marketplace_id: string
@@ -542,41 +634,45 @@ export default function KeywordsPage() {
           brand: string | null
           product_type: string | null
           image_url: string | null
-        }> }>(response)
-        if (!response.ok) return
+        }>
+        total?: number
+        hasMore?: boolean
+      }>(response)
+      if (!response.ok) return
 
-        setProductOptions(previous => {
-          const merged = new Map(previous.map(product => [product.key, product]))
-          for (const row of data?.items ?? []) {
-            const asin = row.asin?.toUpperCase()
-            if (!asin) continue
-            const marketplace = marketplaceFromMarketplaceId(row.marketplace_id)
-            const key = buildProductKey(asin, marketplace)
-            if (merged.has(key)) continue
-            merged.set(key, {
-              key,
-              asin,
-              marketplace,
-              title: row.item_name ?? asin,
-              sku: row.sku,
-              brand: row.brand,
-              productType: row.product_type,
-              imageUrl: row.image_url,
-              source: 'own',
-              trackedAsinId: null,
-              metadataStatus: null,
-              metadataErrorMessage: null,
-            })
-          }
-          return [...merged.values()].sort((a, b) => a.title.localeCompare(b.title))
+      const nextOptions: ProductOption[] = []
+      for (const row of data?.items ?? []) {
+        const asin = row.asin?.toUpperCase()
+        if (!asin) continue
+        const marketplace = marketplaceFromMarketplaceId(row.marketplace_id)
+        nextOptions.push({
+          key: buildProductKey(asin, marketplace),
+          asin,
+          marketplace,
+          title: row.item_name ?? asin,
+          sku: row.sku,
+          brand: row.brand,
+          productType: row.product_type,
+          imageUrl: row.image_url,
+          source: 'own',
+          trackedAsinId: null,
+          metadataStatus: null,
+          metadataErrorMessage: null,
         })
-      } catch {
-        // Keep existing product options if search loading fails.
       }
-    }, 300)
 
-    return () => window.clearTimeout(timer)
-  }, [productSearch])
+      setListingProductOptions(previous => {
+        const merged = new Map(previous.map(product => [product.key, product]))
+        for (const product of nextOptions) merged.set(product.key, product)
+        return [...merged.values()]
+      })
+      setListingProductTotal(data?.total ?? listingProductTotal)
+      setListingProductsLoaded(previous => previous + (data?.items?.length ?? 0))
+      setListingProductsHasMore(Boolean(data?.hasMore))
+    } finally {
+      setListingProductsLoadingMore(false)
+    }
+  }
 
   const loadTrackedKeywords = useCallback(async (wsId: string) => {
     const supabase = createClient()
@@ -1235,12 +1331,17 @@ export default function KeywordsPage() {
           <>
             <div>
               <Label htmlFor="product-search">Search or paste ASIN</Label>
-              <Input
-                id="product-search"
-                placeholder="Search by product title, ASIN, SKU, brand — or paste any Amazon ASIN"
-                value={productSearch}
-                onChange={e => setProductSearch(e.target.value)}
-              />
+              <div className="relative">
+                <Input
+                  id="product-search"
+                  placeholder="Search by product title, ASIN, SKU, brand, marketplace — or paste any Amazon ASIN"
+                  value={productSearch}
+                  onChange={e => setProductSearch(e.target.value)}
+                />
+                {productSearchLoading && (
+                  <RefreshCw className="absolute right-3 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+                )}
+              </div>
             </div>
 
             {showExternalAsinCard && (
@@ -1433,11 +1534,27 @@ export default function KeywordsPage() {
               </div>
             )}
 
-            {filteredProducts.length > 8 && (
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <p className="text-xs text-muted-foreground">
-                Showing 8 of {filteredProducts.length} products. Use search to narrow results.
+                Showing {visibleProducts.length} of {selectorProductTotal} product{selectorProductTotal !== 1 ? 's' : ''}
+                {productSearch.trim() ? ' matching your search' : ''}
               </p>
-            )}
+              {listingProductsHasMore && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleLoadMoreProducts()}
+                  disabled={listingProductsLoadingMore || productSearchLoading}
+                >
+                  {listingProductsLoadingMore ? (
+                    <><RefreshCw className="size-4 animate-spin" /> Loading...</>
+                  ) : (
+                    'Load More'
+                  )}
+                </Button>
+              )}
+            </div>
 
             {!selectedProduct && filteredProducts.length > 0 && (
               <div className="rounded-lg border border-dashed border-border p-4 text-center">
