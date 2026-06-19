@@ -217,10 +217,6 @@ export interface InboundShipmentProbeResult {
   amazonErrorCode: string | null
 }
 
-function secondPrecisionRfc3339(value: Date): string {
-  return value.toISOString().replace(/\.\d{3}Z$/, 'Z')
-}
-
 function safeAmazonErrorCode(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const sanitized = value.trim().replace(/[^A-Za-z0-9_. -]/g, '').slice(0, 64)
@@ -228,7 +224,7 @@ function safeAmazonErrorCode(value: unknown): string | null {
 }
 
 /**
- * Calls GET /fba/inbound/v0/shipments with a recent date range purely
+ * Calls GET /fba/inbound/v0/shipments with a small status filter purely
  * to test whether the current Amazon authorization includes inbound-shipment
  * access. Never logs or returns the raw response body, shipment IDs, or rows.
  */
@@ -237,17 +233,11 @@ export async function probeInboundShipmentsAccess(
   params: InboundShipmentProbeParams,
 ): Promise<InboundShipmentProbeResult> {
   const endpoint = params.endpoint ?? SPAPI_EU_ENDPOINT
-  const now = new Date()
-  // The legacy v0 endpoint is strict about date parsing and processing lag.
-  // Use whole-second RFC3339 timestamps and end safely behind the current time.
-  const lastUpdatedBefore = new Date(now.getTime() - 15 * 60 * 1000)
-  const lastUpdatedAfter = new Date(lastUpdatedBefore.getTime() - 30 * 24 * 60 * 60 * 1000)
 
   const qs = new URLSearchParams({
-    QueryType:          'DATE_RANGE',
-    MarketplaceId:      params.marketplaceId,
-    LastUpdatedAfter:   secondPrecisionRfc3339(lastUpdatedAfter),
-    LastUpdatedBefore:  secondPrecisionRfc3339(lastUpdatedBefore),
+    QueryType:         'SHIPMENT',
+    MarketplaceId:     params.marketplaceId,
+    ShipmentStatusList: 'WORKING,SHIPPED,RECEIVING,CLOSED',
   })
 
   const res = await fetch(`${endpoint}/fba/inbound/v0/shipments?${qs}`, {
