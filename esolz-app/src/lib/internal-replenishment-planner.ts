@@ -47,6 +47,7 @@ type FulfillmentReportInput = {
   eventType: string | null
   quantity: number | null
   reportDate: string | null
+  runningBalance: number | null
 }
 
 type FulfillmentLocationInput = {
@@ -104,6 +105,9 @@ export type NextStockPlanRow = {
   safetyStock: number
   suggestedFbaReplenishment: number
   suggestedSellerFlexReplenishment: number
+  ledgerBalanceStock: number | null
+  ledgerBalanceSource: 'fulfillment_report' | null
+  ledgerBalanceAmbiguous: boolean
   missingDataWarnings: string[]
   stateZoneInsight: string
   actionMessage: string
@@ -290,6 +294,9 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       safetyStock: 0,
       suggestedFbaReplenishment: 0,
       suggestedSellerFlexReplenishment: 0,
+      ledgerBalanceStock: null,
+      ledgerBalanceSource: null,
+      ledgerBalanceAmbiguous: false,
       missingDataWarnings: [],
       stateZoneInsight: 'State/zone sales not available yet.',
       actionMessage: 'Sales exist but inventory missing; sync fulfillment report.',
@@ -441,7 +448,30 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
     }
   }
 
+  const ledgerBalanceByRowKey = new Map<string, { balance: number; reportDate: string; tieCount: number }>()
+  for (const row of input.fulfillmentRows) {
+    if (row.runningBalance === null || !Number.isFinite(row.runningBalance) || !row.reportDate) continue
+    const planRow = resolvePlanRow(row.marketplaceId, row.asin, row.sku)
+    if (!planRow) continue
+    const key = productKey(planRow.marketplaceId, planRow.asin, planRow.sku)
+    const existing = ledgerBalanceByRowKey.get(key)
+    if (!existing || row.reportDate > existing.reportDate) {
+      ledgerBalanceByRowKey.set(key, { balance: row.runningBalance, reportDate: row.reportDate, tieCount: 1 })
+    } else if (row.reportDate === existing.reportDate) {
+      ledgerBalanceByRowKey.set(key, {
+        balance: row.runningBalance,
+        reportDate: row.reportDate,
+        tieCount: existing.tieCount + 1,
+      })
+    }
+  }
+
   const rows = [...planRows.values()].map(row => {
+    const ledgerEntry = ledgerBalanceByRowKey.get(productKey(row.marketplaceId, row.asin, row.sku))
+    row.ledgerBalanceStock = ledgerEntry ? ledgerEntry.balance : null
+    row.ledgerBalanceSource = ledgerEntry ? 'fulfillment_report' : null
+    row.ledgerBalanceAmbiguous = ledgerEntry ? ledgerEntry.tieCount > 1 : false
+
     const flags = flagsForRow(row)
     row.totalSales30d = row.fbaSales30d
       + row.sellerFlexSales30d

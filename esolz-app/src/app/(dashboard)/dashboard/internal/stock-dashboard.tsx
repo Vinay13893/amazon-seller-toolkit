@@ -62,6 +62,9 @@ type StockResponse = {
       safetyStock: number
       suggestedFbaReplenishment: number
       suggestedSellerFlexReplenishment: number
+      ledgerBalanceStock: number | null
+      ledgerBalanceSource: 'fulfillment_report' | null
+      ledgerBalanceAmbiguous: boolean
       missingDataWarnings: string[]
       stateZoneInsight: string
       actionMessage: string
@@ -743,6 +746,9 @@ export function InternalStockDashboard() {
           <p className="text-xs text-muted-foreground">
             Defaults: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
           </p>
+          <p className="text-xs text-muted-foreground">
+            Ledger balance is diagnostic from FBA Ledger Detail report and is not yet used in suggested replenishment.
+          </p>
         </div>
 
         <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-5">
@@ -781,7 +787,7 @@ export function InternalStockDashboard() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1880px] text-sm">
+          <table className="w-full min-w-[2080px] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="px-4 py-3 text-left">Product</th>
@@ -793,6 +799,7 @@ export function InternalStockDashboard() {
                 <th className="px-3 py-3 text-right">Easy Ship/MFN Sales</th>
                 <th className="px-3 py-3 text-right">Available Stock</th>
                 <th className="px-3 py-3 text-right">Inbound</th>
+                <th className="px-3 py-3 text-right">Ledger Balance Stock (approx.)</th>
                 <th className="px-3 py-3 text-right">Days Cover</th>
                 <th className="px-3 py-3 text-right">Suggested FBA Qty</th>
                 <th className="px-3 py-3 text-right">Suggested Flex Qty</th>
@@ -831,6 +838,12 @@ export function InternalStockDashboard() {
                   <td className="px-3 py-3 text-right">{formatNumber(row.easyShipMfnSales30d)}</td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.availableFbaStock + row.availableSellerFlexStock)}</td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.inboundStock)}</td>
+                  <td className="px-3 py-3 text-right">
+                    {row.ledgerBalanceStock === null ? '—' : formatNumber(row.ledgerBalanceStock)}
+                    {row.ledgerBalanceAmbiguous && (
+                      <span className="ml-1 text-amber-600" title="Multiple same-day ledger entries; balance may be imprecise.">⚠</span>
+                    )}
+                  </td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.daysCover, 1)}</td>
                   <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedFbaReplenishment)}</td>
                   <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedSellerFlexReplenishment)}</td>

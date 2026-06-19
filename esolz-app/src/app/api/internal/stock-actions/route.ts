@@ -69,7 +69,7 @@ export async function GET() {
       .maybeSingle(),
     supabase
       .from('internal_fba_report_rows')
-      .select('asin, sku, marketplace_id, fulfillment_center_id, event_type, quantity, report_date')
+      .select('asin, sku, marketplace_id, fulfillment_center_id, event_type, quantity, report_date, running_balance')
       .eq('workspace_id', access.workspaceId)
       .limit(20000),
     supabase
@@ -281,6 +281,7 @@ export async function GET() {
       eventType: ((row as { event_type?: string | null }).event_type as string | null) ?? null,
       quantity: Number((row as { quantity?: number | null }).quantity ?? 0),
       reportDate: ((row as { report_date?: string | null }).report_date as string | null) ?? null,
+      runningBalance: (row as { running_balance?: number | null }).running_balance ?? null,
     })),
     fulfillmentLocations: (fulfillmentLocationsResult.data ?? []).map(row => ({
       locationCode: row.location_code as string,
