@@ -85,6 +85,44 @@ type StockResponse = {
       latestReportDate: string | null
     }>
   }
+  paymentContext: {
+    stateZoneDemand: Array<{
+      state: string
+      zone: string | null
+      amazonSku: string
+      componentSku: string | null
+      unitsSold: number
+      componentDemandUnits: number
+      transactionCount: number
+      grossSales: number
+      refundUnits: number
+      refundAmount: number
+    }>
+    paymentSignals: Array<{
+      amazonSku: string
+      unitsSold: number
+      grossSales: number
+      refundUnits: number
+      refundAmount: number
+      amazonFees: number
+      costAvailable: boolean
+      estimatedContribution: number | null
+      estimatedMarginPercent: number | null
+      priorityFlag: 'profitable_high_demand' | 'profitable_low_stock' | 'loss_or_review' | 'missing_cost' | 'insufficient_data'
+      note: string
+    }>
+    diagnostics: {
+      transactionRowsRead: number
+      salesTransactionRowsUsed: number
+      refundTransactionRowsUsed: number
+      rowsMissingSku: number
+      rowsMissingState: number
+      mappedComponentRows: number
+      stateZoneMappedRows: number
+      transactionRowLimitReached: boolean
+      exactPnlAvailable: false
+    }
+  }
   diagnostics: {
     products_with_sales: number
     products_missing_sales: number
@@ -173,6 +211,9 @@ const DEFAULT_PLANNING_ASSUMPTIONS: PlanningAssumptions = {
 }
 
 type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
+type StateZoneDemandRow = StockResponse['paymentContext']['stateZoneDemand'][number]
+type PaymentSignalRow = StockResponse['paymentContext']['paymentSignals'][number]
+type PaymentPriority = PaymentSignalRow['priorityFlag']
 type PlanFilterId = 'fba' | 'flex' | 'missingStock' | 'unknownSource' | 'zoneGap'
 
 const NEXT_PLAN_FILTERS: Array<{ id: PlanFilterId; label: string; predicate: (row: NextPlanRow) => boolean }> = [
@@ -376,9 +417,16 @@ export function InternalStockDashboard() {
   const [planPage, setPlanPage] = useState(1)
   const [fcDiagnosticsPage, setFcDiagnosticsPage] = useState(1)
   const [actionsPage, setActionsPage] = useState(1)
+  const [stateDemandPage, setStateDemandPage] = useState(1)
+  const [paymentSignalPage, setPaymentSignalPage] = useState(1)
   const [planSort, setPlanSort] = useState<SortState>(null)
   const [fcDiagnosticsSort, setFcDiagnosticsSort] = useState<SortState>(null)
   const [actionsSort, setActionsSort] = useState<SortState>(null)
+  const [stateDemandSort, setStateDemandSort] = useState<SortState>({ column: 'componentDemandUnits', direction: 'desc' })
+  const [paymentSignalSort, setPaymentSignalSort] = useState<SortState>({ column: 'unitsSold', direction: 'desc' })
+  const [stateDemandQuery, setStateDemandQuery] = useState('')
+  const [paymentSignalQuery, setPaymentSignalQuery] = useState('')
+  const [paymentPriority, setPaymentPriority] = useState<'All' | PaymentPriority>('All')
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
@@ -595,6 +643,27 @@ export function InternalStockDashboard() {
     ))
   }, [data?.nextStockPlan.fcDiagnostics, query])
 
+  const filteredStateDemand = useMemo(() => {
+    const normalizedQuery = stateDemandQuery.trim().toLowerCase()
+    return (data?.paymentContext.stateZoneDemand ?? []).filter(row => (
+      !normalizedQuery || [
+        row.state,
+        row.zone,
+        row.amazonSku,
+        row.componentSku,
+      ].some(value => value?.toLowerCase().includes(normalizedQuery))
+    ))
+  }, [data?.paymentContext.stateZoneDemand, stateDemandQuery])
+
+  const filteredPaymentSignals = useMemo(() => {
+    const normalizedQuery = paymentSignalQuery.trim().toLowerCase()
+    return (data?.paymentContext.paymentSignals ?? []).filter(row => {
+      const matchesPriority = paymentPriority === 'All' || row.priorityFlag === paymentPriority
+      const matchesQuery = !normalizedQuery || row.amazonSku.toLowerCase().includes(normalizedQuery)
+      return matchesPriority && matchesQuery
+    })
+  }, [data?.paymentContext.paymentSignals, paymentPriority, paymentSignalQuery])
+
   const planSortAccessors = useMemo<Record<string, (row: NextPlanRow) => unknown>>(() => ({
     title: row => row.title ?? row.asin,
     asin: row => row.asin,
@@ -637,6 +706,31 @@ export function InternalStockDashboard() {
     status: row => row.status,
   }), [])
 
+  const stateDemandSortAccessors = useMemo<Record<string, (row: StateZoneDemandRow) => unknown>>(() => ({
+    state: row => row.state,
+    zone: row => row.zone,
+    amazonSku: row => row.amazonSku,
+    componentSku: row => row.componentSku,
+    unitsSold: row => row.unitsSold,
+    componentDemandUnits: row => row.componentDemandUnits,
+    transactionCount: row => row.transactionCount,
+    grossSales: row => row.grossSales,
+    refundUnits: row => row.refundUnits,
+    refundAmount: row => row.refundAmount,
+  }), [])
+
+  const paymentSignalSortAccessors = useMemo<Record<string, (row: PaymentSignalRow) => unknown>>(() => ({
+    amazonSku: row => row.amazonSku,
+    unitsSold: row => row.unitsSold,
+    grossSales: row => row.grossSales,
+    refundAmount: row => row.refundAmount,
+    amazonFees: row => row.amazonFees,
+    costAvailable: row => row.costAvailable,
+    estimatedContribution: row => row.estimatedContribution,
+    estimatedMarginPercent: row => row.estimatedMarginPercent,
+    priorityFlag: row => row.priorityFlag,
+  }), [])
+
   const sortedPlanRows = useMemo(
     () => sortRows(filteredPlanRows, planSort, planSortAccessors),
     [filteredPlanRows, planSort, planSortAccessors],
@@ -648,6 +742,14 @@ export function InternalStockDashboard() {
   const sortedActions = useMemo(
     () => sortRows(filteredActions, actionsSort, actionsSortAccessors),
     [filteredActions, actionsSort, actionsSortAccessors],
+  )
+  const sortedStateDemand = useMemo(
+    () => sortRows(filteredStateDemand, stateDemandSort, stateDemandSortAccessors),
+    [filteredStateDemand, stateDemandSort, stateDemandSortAccessors],
+  )
+  const sortedPaymentSignals = useMemo(
+    () => sortRows(filteredPaymentSignals, paymentSignalSort, paymentSignalSortAccessors),
+    [filteredPaymentSignals, paymentSignalSort, paymentSignalSortAccessors],
   )
 
   useEffect(() => {
@@ -662,6 +764,14 @@ export function InternalStockDashboard() {
     setFcDiagnosticsPage(1)
   }, [query, fcDiagnosticsSort])
 
+  useEffect(() => {
+    setStateDemandPage(1)
+  }, [stateDemandQuery, stateDemandSort])
+
+  useEffect(() => {
+    setPaymentSignalPage(1)
+  }, [paymentPriority, paymentSignalQuery, paymentSignalSort])
+
   const planTotalPages = Math.max(1, Math.ceil(sortedPlanRows.length / pageSize))
   const fcDiagnosticsPageSize = 20
   const fcDiagnosticsTotalPages = Math.max(
@@ -669,15 +779,28 @@ export function InternalStockDashboard() {
     Math.ceil(sortedFcDiagnostics.length / fcDiagnosticsPageSize),
   )
   const actionsTotalPages = Math.max(1, Math.ceil(sortedActions.length / pageSize))
+  const supportingSignalPageSize = 20
+  const stateDemandTotalPages = Math.max(1, Math.ceil(sortedStateDemand.length / supportingSignalPageSize))
+  const paymentSignalTotalPages = Math.max(1, Math.ceil(sortedPaymentSignals.length / supportingSignalPageSize))
   const safePlanPage = Math.min(planPage, planTotalPages)
   const safeFcDiagnosticsPage = Math.min(fcDiagnosticsPage, fcDiagnosticsTotalPages)
   const safeActionsPage = Math.min(actionsPage, actionsTotalPages)
+  const safeStateDemandPage = Math.min(stateDemandPage, stateDemandTotalPages)
+  const safePaymentSignalPage = Math.min(paymentSignalPage, paymentSignalTotalPages)
   const paginatedPlanRows = sortedPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
   const paginatedFcDiagnostics = sortedFcDiagnostics.slice(
     (safeFcDiagnosticsPage - 1) * fcDiagnosticsPageSize,
     safeFcDiagnosticsPage * fcDiagnosticsPageSize,
   )
   const paginatedActions = sortedActions.slice((safeActionsPage - 1) * pageSize, safeActionsPage * pageSize)
+  const paginatedStateDemand = sortedStateDemand.slice(
+    (safeStateDemandPage - 1) * supportingSignalPageSize,
+    safeStateDemandPage * supportingSignalPageSize,
+  )
+  const paginatedPaymentSignals = sortedPaymentSignals.slice(
+    (safePaymentSignalPage - 1) * supportingSignalPageSize,
+    safePaymentSignalPage * supportingSignalPageSize,
+  )
   const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
   const tabFilterText = `tab=${activeTab === 'fc' ? 'FC Replenishment' : 'Flex Replenishment'}`
   const planFilterText = [
@@ -693,6 +816,15 @@ export function InternalStockDashboard() {
     tabFilterText,
     status !== 'All' ? `status=${status}` : null,
     query.trim() ? `search=${query.trim()}` : null,
+  ].filter(Boolean).join('; ')
+  const stateDemandFilterText = [
+    tabFilterText,
+    stateDemandQuery.trim() ? `search=${stateDemandQuery.trim()}` : null,
+  ].filter(Boolean).join('; ')
+  const paymentSignalFilterText = [
+    tabFilterText,
+    paymentPriority !== 'All' ? `priority=${paymentPriority}` : null,
+    paymentSignalQuery.trim() ? `search=${paymentSignalQuery.trim()}` : null,
   ].filter(Boolean).join('; ')
 
   const clearAllFilters = useCallback(() => {
@@ -1383,6 +1515,221 @@ export function InternalStockDashboard() {
           pageSize={fcDiagnosticsPageSize}
           totalRows={filteredFcDiagnostics.length}
           onPageChange={setFcDiagnosticsPage}
+        />
+      </div>
+
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-lg font-black">State/Zone Sales Demand</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Supporting signal from aggregated payment transactions. Component demand expands mapped Amazon SKUs; it does not change replenishment quantities.
+            </p>
+            {data.paymentContext.diagnostics.transactionRowLimitReached && (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                Payment signal safety limit reached; narrow the planning lookback for a complete aggregate.
+              </p>
+            )}
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={sortedStateDemand.length === 0}
+            onClick={() => exportFilteredCsv(
+              'State Zone Sales Demand',
+              [
+                { header: 'State', value: row => row.state },
+                { header: 'Zone', value: row => row.zone },
+                { header: 'Amazon SKU', value: row => row.amazonSku },
+                { header: 'Component SKU', value: row => row.componentSku },
+                { header: 'Units Sold', value: row => row.unitsSold },
+                { header: 'Component Demand Units', value: row => row.componentDemandUnits },
+                { header: 'Transaction Count', value: row => row.transactionCount },
+                { header: 'Gross Sales', value: row => row.grossSales },
+                { header: 'Refund Units', value: row => row.refundUnits },
+                { header: 'Refund Amount', value: row => row.refundAmount },
+              ],
+              sortedStateDemand,
+              data.nextStockPlan.assumptions,
+              stateDemandFilterText,
+            )}
+          >
+            <Download className="mr-2 h-4 w-4" /> Export CSV
+          </Button>
+        </div>
+        <div className="border-b border-border p-4">
+          <div className="relative max-w-xl">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={stateDemandQuery}
+              onChange={event => setStateDemandQuery(event.target.value)}
+              placeholder="Search state, zone, Amazon SKU, or component SKU"
+              className="pl-9"
+            />
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1260px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                <SortableTh label="State" column="state" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} className="px-4" />
+                <SortableTh label="Zone" column="zone" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} />
+                <SortableTh label="Amazon SKU" column="amazonSku" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} />
+                <SortableTh label="Component SKU" column="componentSku" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} />
+                <SortableTh label="Units sold" column="unitsSold" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Component demand" column="componentDemandUnits" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Transactions" column="transactionCount" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Gross sales" column="grossSales" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Refund units" column="refundUnits" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Refund amount" column="refundAmount" sort={stateDemandSort} onSort={column => setStateDemandSort(current => toggleSort(current, column))} align="right" className="px-4" />
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedStateDemand.map((row, index) => (
+                <tr
+                  key={`${row.state}-${row.zone}-${row.amazonSku}-${row.componentSku ?? 'unmapped'}`}
+                  className={index < paginatedStateDemand.length - 1 ? 'border-b border-border/50' : ''}
+                >
+                  <td className="px-4 py-3 font-medium">{row.state}</td>
+                  <td className="px-3 py-3">{row.zone ?? 'Unmapped'}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.amazonSku}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.componentSku ?? 'Not mapped'}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.unitsSold)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.componentDemandUnits)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.transactionCount)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.grossSales, 2)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.refundUnits)}</td>
+                  <td className="px-4 py-3 text-right">{formatNumber(row.refundAmount, 2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredStateDemand.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              No aggregated state/zone payment demand matches the current search.
+            </div>
+          )}
+        </div>
+        <PaginationControls
+          page={safeStateDemandPage}
+          totalPages={stateDemandTotalPages}
+          pageSize={supportingSignalPageSize}
+          totalRows={filteredStateDemand.length}
+          onPageChange={setStateDemandPage}
+        />
+      </div>
+
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-lg font-black">Payment Signal for Replenishment</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Supporting signal only. Estimated margin uses available SKU/component costs and Amazon fee fields; exact GST-aware P&amp;L is deferred.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={sortedPaymentSignals.length === 0}
+            onClick={() => exportFilteredCsv(
+              'Payment Signal for Replenishment',
+              [
+                { header: 'Amazon SKU', value: row => row.amazonSku },
+                { header: 'Units Sold', value: row => row.unitsSold },
+                { header: 'Gross Sales', value: row => row.grossSales },
+                { header: 'Refund Units', value: row => row.refundUnits },
+                { header: 'Refund Amount', value: row => row.refundAmount },
+                { header: 'Amazon Fees', value: row => row.amazonFees },
+                { header: 'Cost Available', value: row => row.costAvailable },
+                { header: 'Estimated Contribution', value: row => row.estimatedContribution },
+                { header: 'Estimated Margin Percent', value: row => row.estimatedMarginPercent },
+                { header: 'Priority Flag', value: row => row.priorityFlag },
+                { header: 'Note', value: row => row.note },
+              ],
+              sortedPaymentSignals,
+              data.nextStockPlan.assumptions,
+              paymentSignalFilterText,
+            )}
+          >
+            <Download className="mr-2 h-4 w-4" /> Export CSV
+          </Button>
+        </div>
+        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row">
+          <div className="relative max-w-xl flex-1">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={paymentSignalQuery}
+              onChange={event => setPaymentSignalQuery(event.target.value)}
+              placeholder="Search Amazon SKU"
+              className="pl-9"
+            />
+          </div>
+          <select
+            value={paymentPriority}
+            onChange={event => setPaymentPriority(event.target.value as 'All' | PaymentPriority)}
+            className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+            aria-label="Filter payment priority"
+          >
+            <option value="All">All payment signals</option>
+            <option value="profitable_high_demand">Profitable high demand</option>
+            <option value="profitable_low_stock">Profitable low stock</option>
+            <option value="loss_or_review">Loss or review</option>
+            <option value="missing_cost">Missing cost</option>
+            <option value="insufficient_data">Insufficient data</option>
+          </select>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1220px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                <SortableTh label="Amazon SKU" column="amazonSku" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} className="px-4" />
+                <SortableTh label="Units sold" column="unitsSold" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Gross sales" column="grossSales" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Refund amount" column="refundAmount" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Amazon fees" column="amazonFees" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Cost available" column="costAvailable" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} />
+                <SortableTh label="Est. contribution" column="estimatedContribution" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Est. margin" column="estimatedMarginPercent" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Priority" column="priorityFlag" sort={paymentSignalSort} onSort={column => setPaymentSignalSort(current => toggleSort(current, column))} className="px-4" />
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedPaymentSignals.map((row, index) => (
+                <tr
+                  key={row.amazonSku}
+                  className={index < paginatedPaymentSignals.length - 1 ? 'border-b border-border/50' : ''}
+                >
+                  <td className="px-4 py-3 font-mono text-xs">{row.amazonSku}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.unitsSold)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.grossSales, 2)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.refundAmount, 2)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.amazonFees, 2)}</td>
+                  <td className="px-3 py-3">{row.costAvailable ? 'Yes' : 'No'}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.estimatedContribution, 2)}</td>
+                  <td className="px-3 py-3 text-right">
+                    {row.estimatedMarginPercent === null ? '—' : `${formatNumber(row.estimatedMarginPercent, 1)}%`}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge variant="outline" className="text-[10px]">
+                      {row.priorityFlag.replaceAll('_', ' ')}
+                    </Badge>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredPaymentSignals.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              No payment signals match the current search and priority filter.
+            </div>
+          )}
+        </div>
+        <PaginationControls
+          page={safePaymentSignalPage}
+          totalPages={paymentSignalTotalPages}
+          pageSize={supportingSignalPageSize}
+          totalRows={filteredPaymentSignals.length}
+          onPageChange={setPaymentSignalPage}
         />
       </div>
         </>

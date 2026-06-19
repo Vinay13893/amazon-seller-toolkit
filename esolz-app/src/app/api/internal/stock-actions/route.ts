@@ -10,10 +10,12 @@ import {
   type InventoryInput,
   type StockProductInput,
 } from '@/lib/internal-stock-actions'
+import { buildReplenishmentPaymentSignals } from '@/lib/internal/replenishment-payment-signals'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 const ALLOWED_LOOKBACK_DAYS = [15, 30, 60, 90] as const
 const ALLOWED_PLANNING_CYCLE_DAYS = [15, 30, 45, 60, 90] as const
@@ -62,6 +64,38 @@ export async function GET(request: Request) {
   salesStart.setUTCDate(salesStart.getUTCDate() - (Math.max(30, lookbackDays) - 1))
   const lookbackStart = new Date()
   lookbackStart.setUTCDate(lookbackStart.getUTCDate() - (lookbackDays - 1))
+  const paymentTransactionsPromise = async () => {
+    const pageSize = 1000
+    const maxRows = 50000
+    const rows: Array<{
+      transaction_date: string
+      category: string
+      sku: string | null
+      sku_norm: string | null
+      order_state: string | null
+      quantity: number | null
+      product_sales: number | null
+      selling_fees: number | null
+      fba_fees: number | null
+      other_transaction_fees: number | null
+    }> = []
+
+    for (let offset = 0; offset < maxRows; offset += pageSize) {
+      const result = await supabase
+        .from('internal_payment_transactions')
+        .select('transaction_date, category, sku, sku_norm, order_state, quantity, product_sales, selling_fees, fba_fees, other_transaction_fees')
+        .eq('workspace_id', access.workspaceId)
+        .gte('transaction_date', lookbackStart.toISOString())
+        .order('transaction_date', { ascending: true })
+        .range(offset, offset + pageSize - 1)
+      if (result.error) return { data: rows, error: result.error, limitReached: false }
+      rows.push(...(result.data ?? []))
+      if (!result.data || result.data.length < pageSize) {
+        return { data: rows, error: null, limitReached: false }
+      }
+    }
+    return { data: rows, error: null, limitReached: true }
+  }
 
   const [
     listingsResult,
@@ -74,6 +108,9 @@ export async function GET(request: Request) {
     stateZoneMapResult,
     fulfillmentSalesDailyResult,
     inventoryByLocationResult,
+    paymentTransactionsResult,
+    skuCostsResult,
+    componentMappingsResult,
   ] = await Promise.all([
     supabase
       .from('amazon_listing_items')
@@ -121,7 +158,7 @@ export async function GET(request: Request) {
       .limit(5000),
     supabase
       .from('internal_state_zone_map')
-      .select('state_code, zone_code')
+      .select('state_code, state_name, zone_code, zone_name')
       .eq('workspace_id', access.workspaceId)
       .eq('is_active', true)
       .limit(5000),
@@ -137,6 +174,19 @@ export async function GET(request: Request) {
       .eq('workspace_id', access.workspaceId)
       .order('snapshot_at', { ascending: false })
       .limit(30000),
+    paymentTransactionsPromise(),
+    supabase
+      .from('internal_sku_cost_master')
+      .select('sku_norm, cost_price, packing_transport')
+      .eq('workspace_id', access.workspaceId)
+      .eq('is_active', true)
+      .limit(10000),
+    supabase
+      .from('internal_sku_component_mappings')
+      .select('amazon_sku, amazon_sku_norm, component_sku, component_sku_norm, component_quantity')
+      .eq('workspace_id', access.workspaceId)
+      .eq('is_active', true)
+      .limit(10000),
   ])
 
   if (listingsResult.error) {
@@ -436,6 +486,50 @@ export async function GET(request: Request) {
     transitBufferDays,
     growthMultiplier,
   })
+  const paymentContext = buildReplenishmentPaymentSignals({
+    transactions: paymentTransactionsResult.error
+      ? []
+      : (paymentTransactionsResult.data ?? []).map(row => ({
+          transactionDate: row.transaction_date as string,
+          category: row.category as string,
+          sku: (row.sku as string | null) ?? null,
+          skuNorm: (row.sku_norm as string | null) ?? null,
+          orderState: (row.order_state as string | null) ?? null,
+          quantity: row.quantity === null ? null : Number(row.quantity),
+          productSales: Number(row.product_sales ?? 0),
+          sellingFees: Number(row.selling_fees ?? 0),
+          fbaFees: Number(row.fba_fees ?? 0),
+          otherTransactionFees: Number(row.other_transaction_fees ?? 0),
+        })),
+    stateZoneMap: (stateZoneMapResult.data ?? []).map(row => ({
+      stateCode: row.state_code as string,
+      stateName: (row.state_name as string | null) ?? null,
+      zoneCode: row.zone_code as string,
+      zoneName: (row.zone_name as string | null) ?? null,
+    })),
+    componentMappings: componentMappingsResult.error
+      ? []
+      : (componentMappingsResult.data ?? []).map(row => ({
+          amazonSku: row.amazon_sku as string,
+          amazonSkuNorm: row.amazon_sku_norm as string,
+          componentSku: row.component_sku as string,
+          componentSkuNorm: row.component_sku_norm as string,
+          componentQuantity: Number(row.component_quantity),
+        })),
+    costs: skuCostsResult.error
+      ? []
+      : (skuCostsResult.data ?? []).map(row => ({
+          skuNorm: row.sku_norm as string,
+          costPrice: row.cost_price === null ? null : Number(row.cost_price),
+          packingTransport: row.packing_transport === null ? null : Number(row.packing_transport),
+        })),
+    stockSignals: nextStockPlan.rows.map(row => ({
+      sku: row.sku,
+      suggestedFbaReplenishment: row.suggestedFbaReplenishment,
+      suggestedSellerFlexReplenishment: row.suggestedSellerFlexReplenishment,
+    })),
+    transactionRowLimitReached: paymentTransactionsResult.limitReached,
+  })
   const unattributedDailySalesUnits = nextStockPlan.rows.reduce(
     (sum, row) => sum + row.unknownSourceSales30d,
     0,
@@ -467,6 +561,7 @@ export async function GET(request: Request) {
     summary,
     actions,
     nextStockPlan,
+    paymentContext,
     diagnostics: {
       products_with_sales: productsWithSales,
       products_missing_sales: Math.max(0, products.length - productsWithSales),
