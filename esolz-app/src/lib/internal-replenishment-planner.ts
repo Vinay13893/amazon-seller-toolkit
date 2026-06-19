@@ -129,10 +129,24 @@ export type NextStockPlanAssumptions = {
   maxLookbackDays: number
 }
 
+export type FcDiagnosticRow = {
+  asin: string
+  sku: string | null
+  marketplaceId: string | null
+  title: string | null
+  fulfillmentCenterId: string
+  fulfillmentCenterType: 'seller_flex' | 'fba_fc' | 'unknown'
+  shipments30d: number
+  ledgerBalanceStock: number | null
+  ledgerBalanceAmbiguous: boolean
+  latestReportDate: string | null
+}
+
 export type NextStockPlanResult = {
   assumptions: NextStockPlanAssumptions
   summary: NextStockPlanSummary
   rows: NextStockPlanRow[]
+  fcDiagnostics: FcDiagnosticRow[]
 }
 
 type BuildInput = {
@@ -466,6 +480,87 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
     }
   }
 
+  const fcDiagnosticsByKey = new Map<string, {
+    row: FcDiagnosticRow
+    latestBalances: Set<number>
+  }>()
+  for (const fulfillmentRow of input.fulfillmentRows) {
+    const planRow = resolvePlanRow(
+      fulfillmentRow.marketplaceId,
+      fulfillmentRow.asin,
+      fulfillmentRow.sku,
+    )
+    if (!planRow) continue
+
+    const fulfillmentCenterId = norm(fulfillmentRow.fulfillmentCenterId) || 'UNKNOWN'
+    const diagnosticKey = `${productKey(planRow.marketplaceId, planRow.asin, planRow.sku)}|${fulfillmentCenterId}`
+    let diagnostic = fcDiagnosticsByKey.get(diagnosticKey)
+    if (!diagnostic) {
+      const resolvedType = toLocationType(
+        locationTypeByCode.get(fulfillmentCenterId),
+        fulfillmentRow.fulfillmentCenterId,
+      )
+      diagnostic = {
+        row: {
+          asin: planRow.asin,
+          sku: planRow.sku,
+          marketplaceId: planRow.marketplaceId,
+          title: planRow.title,
+          fulfillmentCenterId,
+          fulfillmentCenterType: resolvedType === 'seller_flex' || resolvedType === 'fba_fc'
+            ? resolvedType
+            : 'unknown',
+          shipments30d: 0,
+          ledgerBalanceStock: null,
+          ledgerBalanceAmbiguous: false,
+          latestReportDate: null,
+        },
+        latestBalances: new Set<number>(),
+      }
+      fcDiagnosticsByKey.set(diagnosticKey, diagnostic)
+    }
+
+    if (fulfillmentRow.reportDate && fulfillmentRow.reportDate >= startDateIso) {
+      diagnostic.row.shipments30d += inferFulfillmentSalesUnits(
+        fulfillmentRow.eventType,
+        fulfillmentRow.quantity,
+      )
+    }
+
+    if (
+      fulfillmentRow.reportDate
+      && fulfillmentRow.runningBalance !== null
+      && Number.isFinite(fulfillmentRow.runningBalance)
+    ) {
+      const balance = Number(fulfillmentRow.runningBalance)
+      if (
+        !diagnostic.row.latestReportDate
+        || fulfillmentRow.reportDate > diagnostic.row.latestReportDate
+      ) {
+        diagnostic.row.latestReportDate = fulfillmentRow.reportDate
+        diagnostic.latestBalances = new Set([balance])
+      } else if (fulfillmentRow.reportDate === diagnostic.row.latestReportDate) {
+        diagnostic.latestBalances.add(balance)
+      }
+    }
+  }
+
+  const fcDiagnostics = [...fcDiagnosticsByKey.values()]
+    .map(diagnostic => {
+      const balances = [...diagnostic.latestBalances].sort((a, b) => a - b)
+      diagnostic.row.ledgerBalanceStock = balances.length > 0
+        ? balances[balances.length - 1]
+        : null
+      diagnostic.row.ledgerBalanceAmbiguous = balances.length > 1
+      return diagnostic.row
+    })
+    .sort((a, b) => {
+      if (b.shipments30d !== a.shipments30d) return b.shipments30d - a.shipments30d
+      const productComparison = (a.title ?? a.asin).localeCompare(b.title ?? b.asin)
+      if (productComparison !== 0) return productComparison
+      return a.fulfillmentCenterId.localeCompare(b.fulfillmentCenterId)
+    })
+
   const rows = [...planRows.values()].map(row => {
     const ledgerEntry = ledgerBalanceByRowKey.get(productKey(row.marketplaceId, row.asin, row.sku))
     row.ledgerBalanceStock = ledgerEntry ? ledgerEntry.balance : null
@@ -606,5 +701,6 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
     },
     summary,
     rows,
+    fcDiagnostics,
   }
 }

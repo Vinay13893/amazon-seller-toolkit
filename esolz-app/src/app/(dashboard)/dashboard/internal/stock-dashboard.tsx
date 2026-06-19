@@ -69,6 +69,18 @@ type StockResponse = {
       stateZoneInsight: string
       actionMessage: string
     }>
+    fcDiagnostics: Array<{
+      asin: string
+      sku: string | null
+      marketplaceId: string | null
+      title: string | null
+      fulfillmentCenterId: string
+      fulfillmentCenterType: 'seller_flex' | 'fba_fc' | 'unknown'
+      shipments30d: number
+      ledgerBalanceStock: number | null
+      ledgerBalanceAmbiguous: boolean
+      latestReportDate: string | null
+    }>
   }
   diagnostics: {
     products_with_sales: number
@@ -228,6 +240,7 @@ export function InternalStockDashboard() {
   const [planFilter, setPlanFilter] = useState<PlanFilterId | null>(null)
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_OPTIONS[0])
   const [planPage, setPlanPage] = useState(1)
+  const [fcDiagnosticsPage, setFcDiagnosticsPage] = useState(1)
   const [actionsPage, setActionsPage] = useState(1)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -435,10 +448,20 @@ export function InternalStockDashboard() {
   }, [status, query, pageSize])
 
   const planTotalPages = Math.max(1, Math.ceil(filteredPlanRows.length / pageSize))
+  const fcDiagnosticsPageSize = 20
+  const fcDiagnosticsTotalPages = Math.max(
+    1,
+    Math.ceil((data?.nextStockPlan.fcDiagnostics.length ?? 0) / fcDiagnosticsPageSize),
+  )
   const actionsTotalPages = Math.max(1, Math.ceil(filteredActions.length / pageSize))
   const safePlanPage = Math.min(planPage, planTotalPages)
+  const safeFcDiagnosticsPage = Math.min(fcDiagnosticsPage, fcDiagnosticsTotalPages)
   const safeActionsPage = Math.min(actionsPage, actionsTotalPages)
   const paginatedPlanRows = filteredPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
+  const paginatedFcDiagnostics = (data?.nextStockPlan.fcDiagnostics ?? []).slice(
+    (safeFcDiagnosticsPage - 1) * fcDiagnosticsPageSize,
+    safeFcDiagnosticsPage * fcDiagnosticsPageSize,
+  )
   const paginatedActions = filteredActions.slice((safeActionsPage - 1) * pageSize, safeActionsPage * pageSize)
   const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
 
@@ -874,6 +897,74 @@ export function InternalStockDashboard() {
           pageSize={pageSize}
           totalRows={filteredPlanRows.length}
           onPageChange={setPlanPage}
+        />
+      </div>
+
+      <div className="rounded-xl border border-border bg-card">
+        <div className="border-b border-border p-4">
+          <h2 className="text-lg font-black">FC-wise Ledger Diagnostics</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Diagnostic only. Ledger balance is approximate and not yet used in replenishment.
+          </p>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1180px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-3 text-left">Product</th>
+                <th className="px-3 py-3 text-left">ASIN/SKU</th>
+                <th className="px-3 py-3 text-left">FC</th>
+                <th className="px-3 py-3 text-left">FC Type</th>
+                <th className="px-3 py-3 text-right">30D Shipments</th>
+                <th className="px-3 py-3 text-right">Ledger Balance Stock (approx.)</th>
+                <th className="px-3 py-3 text-left">Latest Date</th>
+                <th className="px-4 py-3 text-left">Warning</th>
+              </tr>
+            </thead>
+            <tbody>
+              {paginatedFcDiagnostics.map((row, index) => (
+                <tr
+                  key={`fc-diagnostic-${row.marketplaceId}-${row.sku}-${row.asin}-${row.fulfillmentCenterId}`}
+                  className={index < paginatedFcDiagnostics.length - 1 ? 'border-b border-border/50' : ''}
+                >
+                  <td className="max-w-[300px] px-4 py-3">
+                    <p className="truncate font-medium">{row.title ?? 'Product title unavailable'}</p>
+                  </td>
+                  <td className="px-3 py-3">
+                    <p className="font-mono text-xs">{row.asin}</p>
+                    <p className="mt-1 font-mono text-xs text-muted-foreground">{row.sku ?? 'SKU unavailable'}</p>
+                  </td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.fulfillmentCenterId}</td>
+                  <td className="px-3 py-3">
+                    <Badge variant="outline" className="text-[10px]">{row.fulfillmentCenterType}</Badge>
+                  </td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.shipments30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.ledgerBalanceStock)}</td>
+                  <td className="px-3 py-3 text-xs">{formatDate(row.latestReportDate)}</td>
+                  <td className="px-4 py-3 text-xs text-muted-foreground">
+                    {row.ledgerBalanceAmbiguous
+                      ? 'Multiple balances share the latest date; displayed value is approximate.'
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {data.nextStockPlan.fcDiagnostics.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              No FC-wise ledger diagnostics are available yet.
+            </div>
+          )}
+        </div>
+
+        <PaginationControls
+          page={safeFcDiagnosticsPage}
+          totalPages={fcDiagnosticsTotalPages}
+          pageSize={fcDiagnosticsPageSize}
+          totalRows={data.nextStockPlan.fcDiagnostics.length}
+          onPageChange={setFcDiagnosticsPage}
         />
       </div>
 
