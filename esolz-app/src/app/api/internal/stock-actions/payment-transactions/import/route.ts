@@ -111,7 +111,7 @@ function dedupeKey(row: {
     row.order_id ?? '',
     row.sku ?? '',
     row.transaction_type,
-    row.transaction_date,
+    new Date(row.transaction_date).getTime(),
     row.total_amount.toFixed(2),
   ].join('|')
 }
@@ -209,19 +209,27 @@ export async function POST(request: Request) {
 
   const admin = createAdminClient()
   const { dateRangeStart, dateRangeEnd } = result.stats
-  let existingQuery = admin
-    .from(TABLE)
-    .select('id, settlement_id, order_id, sku, transaction_type, transaction_date, total_amount')
-    .eq('workspace_id', workspaceId)
-  if (dateRangeStart) existingQuery = existingQuery.gte('transaction_date', dateRangeStart)
-  if (dateRangeEnd) existingQuery = existingQuery.lte('transaction_date', dateRangeEnd)
 
-  const { data: existingRows, error: existingError } = await existingQuery
-  if (existingError) {
-    return NextResponse.json(
-      { error: 'Existing transactions could not be read. Confirm migration 033 is applied.' },
-      { status: 503 },
-    )
+  const EXISTING_PAGE_SIZE = 1000
+  const existingRows: { id: string; settlement_id: string | null; order_id: string | null; sku: string | null; transaction_type: string; transaction_date: string; total_amount: number }[] = []
+  for (let page = 0; ; page += 1) {
+    let pageQuery = admin
+      .from(TABLE)
+      .select('id, settlement_id, order_id, sku, transaction_type, transaction_date, total_amount')
+      .eq('workspace_id', workspaceId)
+      .range(page * EXISTING_PAGE_SIZE, page * EXISTING_PAGE_SIZE + EXISTING_PAGE_SIZE - 1)
+    if (dateRangeStart) pageQuery = pageQuery.gte('transaction_date', dateRangeStart)
+    if (dateRangeEnd) pageQuery = pageQuery.lte('transaction_date', dateRangeEnd)
+
+    const { data: pageRows, error: pageError } = await pageQuery
+    if (pageError) {
+      return NextResponse.json(
+        { error: 'Existing transactions could not be read. Confirm migration 033 is applied.' },
+        { status: 503 },
+      )
+    }
+    existingRows.push(...(pageRows ?? []))
+    if (!pageRows || pageRows.length < EXISTING_PAGE_SIZE) break
   }
 
   const existingIdByKey = new Map<string, string>()
