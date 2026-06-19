@@ -15,19 +15,53 @@ import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
 
-export async function GET() {
+const ALLOWED_LOOKBACK_DAYS = [15, 30, 60, 90] as const
+const ALLOWED_PLANNING_CYCLE_DAYS = [15, 30, 45, 60, 90] as const
+const ALLOWED_TRANSIT_BUFFER_DAYS = [7, 15, 21, 30] as const
+const ALLOWED_GROWTH_MULTIPLIERS = [1, 1.25, 1.5, 2] as const
+
+function allowedNumber<T extends readonly number[]>(
+  value: string | null,
+  allowed: T,
+  fallback: T[number],
+): T[number] {
+  const parsed = value === null ? Number.NaN : Number(value)
+  return allowed.includes(parsed as T[number]) ? parsed as T[number] : fallback
+}
+
+export async function GET(request: Request) {
   const access = await getInternalAccessContext()
   if (!access.authorized || !access.workspaceId) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
 
-  const supabase = await createClient()
-  const thirtyDaysAgo = new Date()
-  thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29)
-  const lookbackStart = new Date()
-  lookbackStart.setUTCDate(
-    lookbackStart.getUTCDate() - (DEFAULT_REPLENISHMENT_ASSUMPTIONS.salesLookbackDays - 1),
+  const searchParams = new URL(request.url).searchParams
+  const lookbackDays = allowedNumber(
+    searchParams.get('lookbackDays'),
+    ALLOWED_LOOKBACK_DAYS,
+    DEFAULT_REPLENISHMENT_ASSUMPTIONS.salesLookbackDays,
   )
+  const planningCycleDays = allowedNumber(
+    searchParams.get('planningCycleDays'),
+    ALLOWED_PLANNING_CYCLE_DAYS,
+    DEFAULT_REPLENISHMENT_ASSUMPTIONS.planningCycleDays,
+  )
+  const transitBufferDays = allowedNumber(
+    searchParams.get('transitBufferDays'),
+    ALLOWED_TRANSIT_BUFFER_DAYS,
+    DEFAULT_REPLENISHMENT_ASSUMPTIONS.transitBufferDays,
+  )
+  const growthMultiplier = allowedNumber(
+    searchParams.get('growthMultiplier'),
+    ALLOWED_GROWTH_MULTIPLIERS,
+    DEFAULT_REPLENISHMENT_ASSUMPTIONS.growthMultiplier,
+  )
+
+  const supabase = await createClient()
+  const salesStart = new Date()
+  salesStart.setUTCDate(salesStart.getUTCDate() - (Math.max(30, lookbackDays) - 1))
+  const lookbackStart = new Date()
+  lookbackStart.setUTCDate(lookbackStart.getUTCDate() - (lookbackDays - 1))
 
   const [
     listingsResult,
@@ -57,7 +91,7 @@ export async function GET() {
       .from('internal_sku_daily_sales')
       .select('asin, sku, marketplace_id, sales_date, ordered_units, source')
       .eq('workspace_id', access.workspaceId)
-      .gte('sales_date', thirtyDaysAgo.toISOString().slice(0, 10))
+      .gte('sales_date', salesStart.toISOString().slice(0, 10))
       .limit(30000),
     supabase
       .from('amazon_sync_jobs')
@@ -311,7 +345,10 @@ export async function GET() {
       reserved: Number(row.reserved_quantity ?? 0),
       unsellable: Number(row.unsellable_quantity ?? 0),
     })),
-    lookbackDays: DEFAULT_REPLENISHMENT_ASSUMPTIONS.salesLookbackDays,
+    lookbackDays,
+    planningCycleDays,
+    transitBufferDays,
+    growthMultiplier,
   })
 
   const inventoryDates = inventoryRows

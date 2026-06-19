@@ -137,15 +137,33 @@ type FulfillmentReportResult = {
   completedAt?: string | null
 }
 
+type PlanningAssumptions = {
+  lookbackDays: 15 | 30 | 60 | 90
+  planningCycleDays: 15 | 30 | 45 | 60 | 90
+  transitBufferDays: 7 | 15 | 21 | 30
+  growthMultiplier: 1 | 1.25 | 1.5 | 2
+}
+
+type CsvColumn<Row> = {
+  header: string
+  value: (row: Row) => string | number | boolean | null | undefined
+}
+
 const statuses: StockStatus[] = ['OOS', 'Low stock', 'Healthy', 'Overstock', 'Missing data']
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
+const DEFAULT_PLANNING_ASSUMPTIONS: PlanningAssumptions = {
+  lookbackDays: 30,
+  planningCycleDays: 30,
+  transitBufferDays: 15,
+  growthMultiplier: 1.5,
+}
 
 type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
 type PlanFilterId = 'fba' | 'flex' | 'missingStock' | 'unknownSource' | 'zoneGap'
 
 const NEXT_PLAN_FILTERS: Array<{ id: PlanFilterId; label: string; predicate: (row: NextPlanRow) => boolean }> = [
   { id: 'fba', label: 'FBA SKUs needing replenishment', predicate: row => row.suggestedFbaReplenishment > 0 },
-  { id: 'flex', label: 'Seller Flex SKUs needing replenishment', predicate: row => row.suggestedSellerFlexReplenishment > 0 },
+  { id: 'flex', label: 'Seller Flex channel SKUs needing replenishment', predicate: row => row.suggestedSellerFlexReplenishment > 0 },
   {
     id: 'missingStock',
     label: 'Demand but missing stock data',
@@ -158,6 +176,42 @@ const NEXT_PLAN_FILTERS: Array<{ id: PlanFilterId; label: string; predicate: (ro
     predicate: row => row.missingDataWarnings.includes('Zone mapping missing; add state-zone map.'),
   },
 ]
+
+function csvCell(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value)
+  const protectedText = /^[=+\-@]/.test(text) ? `'${text}` : text
+  return `"${protectedText.replaceAll('"', '""')}"`
+}
+
+function exportFilteredCsv<Row>(
+  reportName: string,
+  columns: CsvColumn<Row>[],
+  rows: Row[],
+  assumptions: StockResponse['nextStockPlan']['assumptions'],
+  filters: string,
+) {
+  const generatedAt = new Date().toISOString()
+  const contextColumns: CsvColumn<Row>[] = [
+    { header: 'Report Name', value: () => reportName },
+    { header: 'Generated Date', value: () => generatedAt },
+    { header: 'Lookback Days', value: () => assumptions.salesLookbackDays },
+    { header: 'Planning Cycle Days', value: () => assumptions.planningCycleDays },
+    { header: 'Transit Buffer Days', value: () => assumptions.transitBufferDays },
+    { header: 'Growth Factor', value: () => assumptions.growthMultiplier },
+    { header: 'Active Filters', value: () => filters },
+  ]
+  const exportColumns = [...contextColumns, ...columns]
+  const csv = [
+    exportColumns.map(column => csvCell(column.header)).join(','),
+    ...rows.map(row => exportColumns.map(column => csvCell(column.value(row))).join(',')),
+  ].join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${reportName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${generatedAt.slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
 
 function PaginationControls({
   page,
@@ -238,6 +292,9 @@ export function InternalStockDashboard() {
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'All' | StockStatus>('All')
   const [planFilter, setPlanFilter] = useState<PlanFilterId | null>(null)
+  const [activeTab, setActiveTab] = useState<'fc' | 'flex'>('fc')
+  const [planningDraft, setPlanningDraft] = useState<PlanningAssumptions>(DEFAULT_PLANNING_ASSUMPTIONS)
+  const [planningAssumptions, setPlanningAssumptions] = useState<PlanningAssumptions>(DEFAULT_PLANNING_ASSUMPTIONS)
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_OPTIONS[0])
   const [planPage, setPlanPage] = useState(1)
   const [fcDiagnosticsPage, setFcDiagnosticsPage] = useState(1)
@@ -259,7 +316,13 @@ export function InternalStockDashboard() {
     setError(null)
 
     try {
-      const response = await fetch('/api/internal/stock-actions', {
+      const params = new URLSearchParams({
+        lookbackDays: String(planningAssumptions.lookbackDays),
+        planningCycleDays: String(planningAssumptions.planningCycleDays),
+        transitBufferDays: String(planningAssumptions.transitBufferDays),
+        growthMultiplier: String(planningAssumptions.growthMultiplier),
+      })
+      const response = await fetch(`/api/internal/stock-actions?${params.toString()}`, {
         cache: 'no-store',
         credentials: 'same-origin',
       })
@@ -270,7 +333,7 @@ export function InternalStockDashboard() {
     } finally {
       if (!silent) setLoading(false)
     }
-  }, [])
+  }, [planningAssumptions])
 
   useEffect(() => {
     void load()
@@ -439,6 +502,19 @@ export function InternalStockDashboard() {
     })
   }, [data?.nextStockPlan.rows, planFilter, query])
 
+  const filteredFcDiagnostics = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
+    return (data?.nextStockPlan.fcDiagnostics ?? []).filter(row => (
+      !normalizedQuery || [
+        row.title,
+        row.asin,
+        row.sku,
+        row.fulfillmentCenterId,
+        row.fulfillmentCenterType,
+      ].some(value => value?.toLowerCase().includes(normalizedQuery))
+    ))
+  }, [data?.nextStockPlan.fcDiagnostics, query])
+
   useEffect(() => {
     setPlanPage(1)
   }, [planFilter, query, pageSize])
@@ -447,23 +523,42 @@ export function InternalStockDashboard() {
     setActionsPage(1)
   }, [status, query, pageSize])
 
+  useEffect(() => {
+    setFcDiagnosticsPage(1)
+  }, [query])
+
   const planTotalPages = Math.max(1, Math.ceil(filteredPlanRows.length / pageSize))
   const fcDiagnosticsPageSize = 20
   const fcDiagnosticsTotalPages = Math.max(
     1,
-    Math.ceil((data?.nextStockPlan.fcDiagnostics.length ?? 0) / fcDiagnosticsPageSize),
+    Math.ceil(filteredFcDiagnostics.length / fcDiagnosticsPageSize),
   )
   const actionsTotalPages = Math.max(1, Math.ceil(filteredActions.length / pageSize))
   const safePlanPage = Math.min(planPage, planTotalPages)
   const safeFcDiagnosticsPage = Math.min(fcDiagnosticsPage, fcDiagnosticsTotalPages)
   const safeActionsPage = Math.min(actionsPage, actionsTotalPages)
   const paginatedPlanRows = filteredPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
-  const paginatedFcDiagnostics = (data?.nextStockPlan.fcDiagnostics ?? []).slice(
+  const paginatedFcDiagnostics = filteredFcDiagnostics.slice(
     (safeFcDiagnosticsPage - 1) * fcDiagnosticsPageSize,
     safeFcDiagnosticsPage * fcDiagnosticsPageSize,
   )
   const paginatedActions = filteredActions.slice((safeActionsPage - 1) * pageSize, safeActionsPage * pageSize)
   const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
+  const tabFilterText = `tab=${activeTab === 'fc' ? 'FC Replenishment' : 'Flex Replenishment'}`
+  const planFilterText = [
+    tabFilterText,
+    planFilter ? `plan=${NEXT_PLAN_FILTERS.find(filter => filter.id === planFilter)?.label}` : null,
+    query.trim() ? `search=${query.trim()}` : null,
+  ].filter(Boolean).join('; ')
+  const fcFilterText = [
+    tabFilterText,
+    query.trim() ? `search=${query.trim()}` : null,
+  ].filter(Boolean).join('; ')
+  const actionFilterText = [
+    tabFilterText,
+    status !== 'All' ? `status=${status}` : null,
+    query.trim() ? `search=${query.trim()}` : null,
+  ].filter(Boolean).join('; ')
 
   const clearAllFilters = useCallback(() => {
     setStatus('All')
@@ -724,6 +819,79 @@ export function InternalStockDashboard() {
         </div>
       </details>
 
+      <div className="rounded-xl border border-border bg-card p-4">
+        <div>
+          <h2 className="font-bold">Planning assumptions</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Shared scenario controls for replenishment planning. Settings are temporary and are not saved.
+          </p>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Lookback days
+            <select
+              value={planningDraft.lookbackDays}
+              onChange={event => setPlanningDraft(current => ({
+                ...current,
+                lookbackDays: Number(event.target.value) as PlanningAssumptions['lookbackDays'],
+              }))}
+              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            >
+              {[15, 30, 60, 90].map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-medium text-muted-foreground">
+            Planning cycle days
+            <select
+              value={planningDraft.planningCycleDays}
+              onChange={event => setPlanningDraft(current => ({
+                ...current,
+                planningCycleDays: Number(event.target.value) as PlanningAssumptions['planningCycleDays'],
+              }))}
+              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            >
+              {[15, 30, 45, 60, 90].map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-medium text-muted-foreground">
+            Transit buffer days
+            <select
+              value={planningDraft.transitBufferDays}
+              onChange={event => setPlanningDraft(current => ({
+                ...current,
+                transitBufferDays: Number(event.target.value) as PlanningAssumptions['transitBufferDays'],
+              }))}
+              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            >
+              {[7, 15, 21, 30].map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="text-xs font-medium text-muted-foreground">
+            Growth factor
+            <select
+              value={planningDraft.growthMultiplier}
+              onChange={event => setPlanningDraft(current => ({
+                ...current,
+                growthMultiplier: Number(event.target.value) as PlanningAssumptions['growthMultiplier'],
+              }))}
+              className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
+            >
+              {[1, 1.25, 1.5, 2].map(value => <option key={value} value={value}>{value}x</option>)}
+            </select>
+          </label>
+          <div className="flex items-end">
+            <Button
+              type="button"
+              className="w-full"
+              disabled={JSON.stringify(planningDraft) === JSON.stringify(planningAssumptions)}
+              onClick={() => setPlanningAssumptions(planningDraft)}
+            >
+              Apply assumptions
+            </Button>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {cards.map(card => {
           const isActive = status === card.label
@@ -760,24 +928,78 @@ export function InternalStockDashboard() {
         </div>
       )}
 
+      <div className="flex rounded-xl border border-border bg-card p-1">
+        <button
+          type="button"
+          onClick={() => setActiveTab('fc')}
+          className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+            activeTab === 'fc' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+          }`}
+        >
+          FC Replenishment
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('flex')}
+          className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+            activeTab === 'flex' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+          }`}
+        >
+          Flex Replenishment
+        </button>
+      </div>
+
+      {activeTab === 'fc' ? (
+        <>
       <div className="rounded-xl border border-border bg-card">
-        <div className="flex flex-col gap-2 border-b border-border p-4">
-          <h2 className="text-lg font-black">Next Stock Plan</h2>
-          <p className="text-xs text-muted-foreground">
-            Replenishment model with separate FBA, Seller Flex, Easy Ship/MFN and unknown-source flows.
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Defaults: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Ledger balance is diagnostic from FBA Ledger Detail report and is not yet used in suggested replenishment.
-          </p>
+        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-black">Next Stock Plan</h2>
+            <p className="text-xs text-muted-foreground">
+              Amazon SKU/channel planning for FBA, Seller Flex, Easy Ship/MFN and unknown-source flows.
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Applied: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Ledger balance is diagnostic from FBA Ledger Detail report and is not yet used in suggested replenishment.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={filteredPlanRows.length === 0}
+            onClick={() => exportFilteredCsv(
+              'Next Stock Plan',
+              [
+                { header: 'Product Title', value: row => row.title },
+                { header: 'ASIN', value: row => row.asin },
+                { header: 'SKU', value: row => row.sku },
+                { header: 'Data Source', value: row => row.primarySource },
+                { header: 'Total Sales', value: row => row.totalSales30d },
+                { header: 'FBA Sales', value: row => row.fbaSales30d },
+                { header: 'Seller Flex Sales', value: row => row.sellerFlexSales30d },
+                { header: 'Available Stock', value: row => row.availableFbaStock + row.availableSellerFlexStock },
+                { header: 'Inbound Stock', value: row => row.inboundStock },
+                { header: 'Ledger Balance Approx', value: row => row.ledgerBalanceStock },
+                { header: 'Suggested FBA Quantity', value: row => row.suggestedFbaReplenishment },
+                { header: 'Suggested Seller Flex Channel Quantity', value: row => row.suggestedSellerFlexReplenishment },
+                { header: 'Warnings', value: row => row.missingDataWarnings.join(' | ') },
+                { header: 'Reason', value: row => row.actionMessage },
+              ],
+              filteredPlanRows,
+              data.nextStockPlan.assumptions,
+              planFilterText,
+            )}
+          >
+            <Download className="mr-2 h-4 w-4" /> Export CSV
+          </Button>
         </div>
 
         <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-5">
           {([
             ['fba', 'FBA SKUs needing replenishment', data.nextStockPlan.summary.fbaReplenishmentNeeded],
-            ['flex', 'Seller Flex SKUs needing replenishment', data.nextStockPlan.summary.sellerFlexReplenishmentNeeded],
+            ['flex', 'Seller Flex channel SKUs needing replenishment', data.nextStockPlan.summary.sellerFlexReplenishmentNeeded],
             ['missingStock', 'Demand but missing stock data', data.nextStockPlan.summary.productsMissingStockData],
             ['unknownSource', 'Unknown source sales', data.nextStockPlan.summary.productsUnknownSourceSales],
             ['zoneGap', 'Zone mapping gaps', data.nextStockPlan.summary.zoneMappingGaps],
@@ -816,7 +1038,7 @@ export function InternalStockDashboard() {
                 <th className="px-4 py-3 text-left">Product</th>
                 <th className="px-3 py-3 text-left">ASIN/SKU</th>
                 <th className="px-3 py-3 text-left">Primary source</th>
-                <th className="px-3 py-3 text-right">30d Sales</th>
+                <th className="px-3 py-3 text-right">{data.nextStockPlan.assumptions.salesLookbackDays}d Sales</th>
                 <th className="px-3 py-3 text-right">FBA Sales</th>
                 <th className="px-3 py-3 text-right">Flex Sales</th>
                 <th className="px-3 py-3 text-right">Easy Ship/MFN Sales</th>
@@ -899,13 +1121,50 @@ export function InternalStockDashboard() {
           onPageChange={setPlanPage}
         />
       </div>
-
       <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-black">FC-wise Ledger Diagnostics</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Diagnostic only. Ledger balance is approximate and not yet used in replenishment.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={filteredFcDiagnostics.length === 0}
+            onClick={() => exportFilteredCsv(
+              'FC-wise Ledger Diagnostics',
+              [
+                { header: 'Product Title', value: row => row.title },
+                { header: 'ASIN', value: row => row.asin },
+                { header: 'SKU', value: row => row.sku },
+                { header: 'FC Code', value: row => row.fulfillmentCenterId },
+                { header: 'FC Type', value: row => row.fulfillmentCenterType },
+                { header: 'Shipments Demand', value: row => row.shipments30d },
+                { header: 'Ledger Balance Approx', value: row => row.ledgerBalanceStock },
+                { header: 'Latest Date', value: row => row.latestReportDate },
+                { header: 'Warning', value: row => row.ledgerBalanceAmbiguous ? 'Multiple balances share the latest date; displayed value is approximate.' : '' },
+              ],
+              filteredFcDiagnostics,
+              data.nextStockPlan.assumptions,
+              fcFilterText,
+            )}
+          >
+            <Download className="mr-2 h-4 w-4" /> Export CSV
+          </Button>
+        </div>
+
         <div className="border-b border-border p-4">
-          <h2 className="text-lg font-black">FC-wise Ledger Diagnostics</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Diagnostic only. Ledger balance is approximate and not yet used in replenishment.
-          </p>
+          <div className="relative max-w-xl">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search product, ASIN, SKU, FC code, or FC type"
+              className="pl-9"
+            />
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -916,7 +1175,7 @@ export function InternalStockDashboard() {
                 <th className="px-3 py-3 text-left">ASIN/SKU</th>
                 <th className="px-3 py-3 text-left">FC</th>
                 <th className="px-3 py-3 text-left">FC Type</th>
-                <th className="px-3 py-3 text-right">30D Shipments</th>
+                <th className="px-3 py-3 text-right">{data.nextStockPlan.assumptions.salesLookbackDays}D Shipments</th>
                 <th className="px-3 py-3 text-right">Ledger Balance Stock (approx.)</th>
                 <th className="px-3 py-3 text-left">Latest Date</th>
                 <th className="px-4 py-3 text-left">Warning</th>
@@ -952,9 +1211,11 @@ export function InternalStockDashboard() {
             </tbody>
           </table>
 
-          {data.nextStockPlan.fcDiagnostics.length === 0 && (
+          {filteredFcDiagnostics.length === 0 && (
             <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-              No FC-wise ledger diagnostics are available yet.
+              {data.nextStockPlan.fcDiagnostics.length === 0
+                ? 'No FC-wise ledger diagnostics are available yet.'
+                : 'No FC diagnostics match the current search.'}
             </div>
           )}
         </div>
@@ -963,10 +1224,25 @@ export function InternalStockDashboard() {
           page={safeFcDiagnosticsPage}
           totalPages={fcDiagnosticsTotalPages}
           pageSize={fcDiagnosticsPageSize}
-          totalRows={data.nextStockPlan.fcDiagnostics.length}
+          totalRows={filteredFcDiagnostics.length}
           onPageChange={setFcDiagnosticsPage}
         />
       </div>
+        </>
+      ) : (
+        <div className="rounded-xl border border-border bg-card p-8">
+          <h2 className="text-xl font-black">Flex Replenishment</h2>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+            Vendor-to-XHZU planning will use the SKU component mapping layer. Amazon SKU sales will be
+            exploded into component SKU demand using each component quantity, then aggregated at the
+            warehouse/component SKU level.
+          </p>
+          <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            Component mappings are not persisted yet, so this tab intentionally does not calculate vendor
+            quantities or treat raw combo Seller Flex stock as parent warehouse stock.
+          </div>
+        </div>
+      )}
 
       <div className="rounded-xl border border-border bg-card">
         <div className="flex flex-col gap-3 border-b border-border p-4 lg:flex-row lg:items-center lg:justify-between">
@@ -990,9 +1266,39 @@ export function InternalStockDashboard() {
               {statuses.map(value => <option key={value} value={value}>{value}</option>)}
             </select>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Matching {filteredActions.length.toLocaleString('en-IN')} of {data.actions.length.toLocaleString('en-IN')} products
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-xs text-muted-foreground">
+              Matching {filteredActions.length.toLocaleString('en-IN')} of {data.actions.length.toLocaleString('en-IN')} products
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={filteredActions.length === 0}
+              onClick={() => exportFilteredCsv(
+                'Stock Actions',
+                [
+                  { header: 'Product Title', value: row => row.title },
+                  { header: 'ASIN', value: row => row.asin },
+                  { header: 'SKU', value: row => row.sku },
+                  { header: 'Available Stock', value: row => row.available },
+                  { header: 'Inbound Stock', value: row => row.inbound },
+                  { header: 'Sales', value: row => row.units30d },
+                  { header: 'Velocity Per Day', value: row => row.velocityPerDay },
+                  { header: 'Days Cover', value: row => row.daysCover },
+                  { header: 'Suggested Quantity', value: row => row.suggestedReorder },
+                  { header: 'Status', value: row => row.status },
+                  { header: 'Inventory Source', value: row => row.inventorySource },
+                  { header: 'Sales Source', value: row => row.salesSource },
+                  { header: 'Reason', value: row => row.action },
+                ],
+                filteredActions,
+                data.nextStockPlan.assumptions,
+                actionFilterText,
+              )}
+            >
+              <Download className="mr-2 h-4 w-4" /> Export CSV
+            </Button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
