@@ -228,12 +228,15 @@ export async function probeInboundShipmentsAccess(
   const endpoint = params.endpoint ?? SPAPI_EU_ENDPOINT
   const now = new Date()
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+  // Amazon rejects a LastUpdatedBefore timestamp that is too close to "now"
+  // (processing lag on their end), so back it off by a few minutes.
+  const lastUpdatedBefore = new Date(now.getTime() - 5 * 60 * 1000)
 
   const qs = new URLSearchParams({
     QueryType:          'DATE_RANGE',
     MarketplaceId:      params.marketplaceId,
     LastUpdatedAfter:   sevenDaysAgo.toISOString(),
-    LastUpdatedBefore:  now.toISOString(),
+    LastUpdatedBefore:  lastUpdatedBefore.toISOString(),
   })
 
   const res = await fetch(`${endpoint}/fba/inbound/v0/shipments?${qs}`, {
