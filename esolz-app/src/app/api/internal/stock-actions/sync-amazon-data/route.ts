@@ -54,6 +54,29 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/**
+ * Classifies a thrown SP-API error (which only ever carries a safe
+ * "HTTP <status>" message, never a raw body) into a sanitized warning so the
+ * operator knows whether a failure is a permission/role issue, a transient
+ * rate limit, or something else — instead of one generic "unavailable" string.
+ */
+function describeListingsRefreshFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : ''
+  const statusMatch = message.match(/HTTP (\d{3})/)
+  const status = statusMatch ? Number(statusMatch[1]) : null
+
+  if (status === 401 || status === 403) {
+    return 'Amazon listings refresh requires re-authorizing Listings Items API access; existing stored listings will be used.'
+  }
+  if (status === 429) {
+    return 'Amazon rate-limited the listings refresh; it will retry on the next sync. Existing stored listings will be used.'
+  }
+  if (status && status >= 500) {
+    return 'Amazon listings service was temporarily unavailable; existing stored listings will be used.'
+  }
+  return 'Amazon listings refresh was unavailable; existing stored listings will be used.'
+}
+
 function responseForJob(jobId: string, status: string, metadata: SyncMetadata) {
   const warnings = safeWarnings(metadata.warnings)
   return NextResponse.json({
@@ -223,8 +246,9 @@ export async function POST(request: Request) {
         )
         metadata.listings_page_token = nextToken ?? null
         metadata.phase = nextToken ? 'listings' : 'inventory'
-      } catch {
-        warnings.push('Amazon listings refresh was unavailable; existing stored listings will be used.')
+      } catch (listingsError) {
+        const warning = describeListingsRefreshFailure(listingsError)
+        if (!warnings.includes(warning)) warnings.push(warning)
         metadata.phase = 'inventory'
       }
     } else if (metadata.phase === 'inventory') {

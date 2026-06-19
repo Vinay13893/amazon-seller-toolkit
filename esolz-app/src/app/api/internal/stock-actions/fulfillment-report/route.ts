@@ -252,11 +252,16 @@ export async function POST(request: Request) {
 
   const fcFieldAvailable = structuredRows.some(row => Boolean(row.fulfillment_center_id))
 
+  // Each sync requests a brand-new Amazon report, so it always gets a brand-new
+  // report_document_id — deleting only that id is a no-op and previously stored
+  // rows from earlier syncs would otherwise accumulate forever. internal_fba_report_rows
+  // represents the latest synced snapshot for this report type, so replace it in full.
   await admin
     .from('internal_fba_report_rows')
     .delete()
     .eq('workspace_id', access.workspaceId)
-    .eq('report_document_id', polled.reportDocumentId)
+    .eq('marketplace_id', job.marketplace_id)
+    .eq('report_type', job.report_type)
 
   for (let index = 0; index < structuredRows.length; index += INSERT_CHUNK_SIZE) {
     const { error } = await admin

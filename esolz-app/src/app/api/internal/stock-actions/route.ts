@@ -234,6 +234,71 @@ export async function GET(request: Request) {
     if (row.asin) fulfillmentAsins.add(key(row.marketplace_id, row.asin))
     if (row.sku) fulfillmentSkus.add(key(row.marketplace_id, row.sku))
   }
+
+  // Broader coverage signals: a product can have a usable demand or stock
+  // signal from more than one source. Each set below tracks presence only
+  // (never summed quantities), so union counts below cannot double-count units.
+  const demandAsins = new Set<string>()
+  const demandSkus = new Set<string>()
+  for (const row of salesResult.data ?? []) {
+    if (Number(row.ordered_units ?? 0) === 0) continue
+    if (row.asin) demandAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) demandSkus.add(key(row.marketplace_id, row.sku))
+  }
+  for (const row of fulfillmentRowsResult.data ?? []) {
+    const eventType = ((row as { event_type?: string | null }).event_type ?? '').toString().trim().toLowerCase()
+    const quantity = Number((row as { quantity?: number | null }).quantity ?? 0)
+    if (eventType !== 'shipments' || quantity === 0) continue
+    if (row.asin) demandAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) demandSkus.add(key(row.marketplace_id, row.sku))
+  }
+  for (const row of fulfillmentSalesDailyResult.data ?? []) {
+    if (Number(row.ordered_units ?? 0) === 0) continue
+    if (row.asin) demandAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) demandSkus.add(key(row.marketplace_id, row.sku))
+  }
+
+  const ledgerBalanceAsins = new Set<string>()
+  const ledgerBalanceSkus = new Set<string>()
+  for (const row of fulfillmentRowsResult.data ?? []) {
+    const runningBalance = (row as { running_balance?: number | null }).running_balance
+    if (runningBalance === null || runningBalance === undefined) continue
+    if (row.asin) ledgerBalanceAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) ledgerBalanceSkus.add(key(row.marketplace_id, row.sku))
+  }
+
+  const locationStockAsins = new Set<string>()
+  const locationStockSkus = new Set<string>()
+  for (const row of inventoryByLocationResult.data ?? []) {
+    if (row.asin) locationStockAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) locationStockSkus.add(key(row.marketplace_id, row.sku))
+  }
+
+  const fbaInventoryApiAsins = new Set<string>()
+  const fbaInventoryApiSkus = new Set<string>()
+  for (const row of inventoryResult.data ?? []) {
+    if (row.asin) fbaInventoryApiAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) fbaInventoryApiSkus.add(key(row.marketplace_id, row.sku))
+  }
+
+  let productsWithDemandSignal = 0
+  let productsWithFbaInventoryApi = 0
+  let productsWithLedgerBalance = 0
+  let productsWithLocationStock = 0
+  let productsWithAnyStockContext = 0
+  for (const product of products) {
+    const asinKey = key(product.marketplaceId, product.asin)
+    const skuKey = key(product.marketplaceId, product.sku)
+    const hasDemand = demandAsins.has(asinKey) || demandSkus.has(skuKey)
+    const hasFbaInventoryApi = fbaInventoryApiAsins.has(asinKey) || fbaInventoryApiSkus.has(skuKey)
+    const hasLedgerBalance = ledgerBalanceAsins.has(asinKey) || ledgerBalanceSkus.has(skuKey)
+    const hasLocationStock = locationStockAsins.has(asinKey) || locationStockSkus.has(skuKey)
+    if (hasDemand) productsWithDemandSignal += 1
+    if (hasFbaInventoryApi) productsWithFbaInventoryApi += 1
+    if (hasLedgerBalance) productsWithLedgerBalance += 1
+    if (hasLocationStock) productsWithLocationStock += 1
+    if (hasFbaInventoryApi || hasLedgerBalance || hasLocationStock) productsWithAnyStockContext += 1
+  }
   const salesSourcesByAsin = new Map<string, string>()
   const salesSourcesBySku = new Map<string, string>()
   for (const row of salesResult.data ?? []) {
@@ -382,6 +447,13 @@ export async function GET(request: Request) {
       products_missing_sales: Math.max(0, products.length - productsWithSales),
       products_with_inventory: productsWithInventory,
       products_missing_inventory: Math.max(0, products.length - productsWithInventory),
+      products_with_demand_signal: productsWithDemandSignal,
+      products_missing_demand_signal: Math.max(0, products.length - productsWithDemandSignal),
+      products_with_fba_inventory_api: productsWithFbaInventoryApi,
+      products_with_ledger_balance: productsWithLedgerBalance,
+      products_with_location_stock: productsWithLocationStock,
+      products_with_any_stock_context: productsWithAnyStockContext,
+      products_missing_any_stock_context: Math.max(0, products.length - productsWithAnyStockContext),
       last_sync_status: lastSyncStatus,
       last_sync_warnings: lastSyncWarnings,
       fulfillment_report_type: fulfillmentJobResult.data?.report_type ?? null,

@@ -4,6 +4,9 @@ import Image from 'next/image'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Boxes,
   CheckCircle2,
   CircleAlert,
@@ -87,6 +90,13 @@ type StockResponse = {
     products_missing_sales: number
     products_with_inventory: number
     products_missing_inventory: number
+    products_with_demand_signal: number
+    products_missing_demand_signal: number
+    products_with_fba_inventory_api: number
+    products_with_ledger_balance: number
+    products_with_location_stock: number
+    products_with_any_stock_context: number
+    products_missing_any_stock_context: number
     last_sync_status: string | null
     last_sync_warnings: string[]
     fulfillment_report_type: string | null
@@ -213,6 +223,69 @@ function exportFilteredCsv<Row>(
   URL.revokeObjectURL(url)
 }
 
+type SortDirection = 'asc' | 'desc'
+type SortState = { column: string; direction: SortDirection } | null
+
+function toggleSort(current: SortState, column: string): SortState {
+  if (current?.column === column) {
+    return { column, direction: current.direction === 'asc' ? 'desc' : 'asc' }
+  }
+  return { column, direction: 'asc' }
+}
+
+function compareForSort(a: unknown, b: unknown): number {
+  const aMissing = a === null || a === undefined
+  const bMissing = b === null || b === undefined
+  if (aMissing && bMissing) return 0
+  if (aMissing) return -1
+  if (bMissing) return 1
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b)
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+}
+
+function sortRows<Row>(
+  rows: Row[],
+  sort: SortState,
+  accessors: Record<string, (row: Row) => unknown>,
+): Row[] {
+  const accessor = sort ? accessors[sort.column] : undefined
+  if (!sort || !accessor) return rows
+  const sorted = [...rows].sort((a, b) => compareForSort(accessor(a), accessor(b)))
+  return sort.direction === 'desc' ? sorted.reverse() : sorted
+}
+
+function SortableTh({
+  label,
+  column,
+  sort,
+  onSort,
+  align = 'left',
+  className = '',
+}: {
+  label: string
+  column: string
+  sort: SortState
+  onSort: (column: string) => void
+  align?: 'left' | 'right'
+  className?: string
+}) {
+  const active = sort?.column === column
+  const Icon = active ? (sort.direction === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown
+  return (
+    <th className={`px-3 py-3 ${align === 'right' ? 'text-right' : 'text-left'} ${className}`}>
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        className={`inline-flex items-center gap-1 hover:text-foreground ${active ? 'text-foreground' : ''} ${align === 'right' ? 'flex-row-reverse' : ''}`}
+      >
+        <span>{label}</span>
+        <Icon className="h-3 w-3" />
+      </button>
+    </th>
+  )
+}
+
 function PaginationControls({
   page,
   totalPages,
@@ -299,6 +372,9 @@ export function InternalStockDashboard() {
   const [planPage, setPlanPage] = useState(1)
   const [fcDiagnosticsPage, setFcDiagnosticsPage] = useState(1)
   const [actionsPage, setActionsPage] = useState(1)
+  const [planSort, setPlanSort] = useState<SortState>(null)
+  const [fcDiagnosticsSort, setFcDiagnosticsSort] = useState<SortState>(null)
+  const [actionsSort, setActionsSort] = useState<SortState>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
@@ -515,34 +591,88 @@ export function InternalStockDashboard() {
     ))
   }, [data?.nextStockPlan.fcDiagnostics, query])
 
+  const planSortAccessors = useMemo<Record<string, (row: NextPlanRow) => unknown>>(() => ({
+    title: row => row.title ?? row.asin,
+    asin: row => row.asin,
+    primarySource: row => row.primarySource,
+    totalSales30d: row => row.totalSales30d,
+    fbaSales30d: row => row.fbaSales30d,
+    sellerFlexSales30d: row => row.sellerFlexSales30d,
+    easyShipMfnSales30d: row => row.easyShipMfnSales30d,
+    availableStock: row => row.availableFbaStock + row.availableSellerFlexStock,
+    inboundStock: row => row.inboundStock,
+    ledgerBalanceStock: row => row.ledgerBalanceStock,
+    daysCover: row => row.daysCover,
+    suggestedFbaReplenishment: row => row.suggestedFbaReplenishment,
+    suggestedSellerFlexReplenishment: row => row.suggestedSellerFlexReplenishment,
+    actionMessage: row => row.actionMessage,
+  }), [])
+
+  type FcDiagnosticRow = StockResponse['nextStockPlan']['fcDiagnostics'][number]
+  const fcDiagnosticsSortAccessors = useMemo<Record<string, (row: FcDiagnosticRow) => unknown>>(() => ({
+    title: row => row.title ?? row.asin,
+    asin: row => row.asin,
+    fulfillmentCenterId: row => row.fulfillmentCenterId,
+    fulfillmentCenterType: row => row.fulfillmentCenterType,
+    shipments30d: row => row.shipments30d,
+    ledgerBalanceStock: row => row.ledgerBalanceStock,
+    latestReportDate: row => row.latestReportDate,
+    ledgerBalanceAmbiguous: row => row.ledgerBalanceAmbiguous,
+  }), [])
+
+  const actionsSortAccessors = useMemo<Record<string, (row: StockAction) => unknown>>(() => ({
+    title: row => row.title ?? row.asin,
+    asin: row => row.asin,
+    available: row => row.available,
+    inbound: row => row.inbound,
+    units30d: row => row.units30d,
+    velocityPerDay: row => row.velocityPerDay,
+    daysCover: row => row.daysCover,
+    suggestedReorder: row => row.suggestedReorder,
+    status: row => row.status,
+  }), [])
+
+  const sortedPlanRows = useMemo(
+    () => sortRows(filteredPlanRows, planSort, planSortAccessors),
+    [filteredPlanRows, planSort, planSortAccessors],
+  )
+  const sortedFcDiagnostics = useMemo(
+    () => sortRows(filteredFcDiagnostics, fcDiagnosticsSort, fcDiagnosticsSortAccessors),
+    [filteredFcDiagnostics, fcDiagnosticsSort, fcDiagnosticsSortAccessors],
+  )
+  const sortedActions = useMemo(
+    () => sortRows(filteredActions, actionsSort, actionsSortAccessors),
+    [filteredActions, actionsSort, actionsSortAccessors],
+  )
+
   useEffect(() => {
     setPlanPage(1)
-  }, [planFilter, query, pageSize])
+  }, [planFilter, query, pageSize, planSort])
 
   useEffect(() => {
     setActionsPage(1)
-  }, [status, query, pageSize])
+  }, [status, query, pageSize, actionsSort])
 
   useEffect(() => {
     setFcDiagnosticsPage(1)
-  }, [query])
+  }, [query, fcDiagnosticsSort])
 
-  const planTotalPages = Math.max(1, Math.ceil(filteredPlanRows.length / pageSize))
+  const planTotalPages = Math.max(1, Math.ceil(sortedPlanRows.length / pageSize))
   const fcDiagnosticsPageSize = 20
   const fcDiagnosticsTotalPages = Math.max(
     1,
-    Math.ceil(filteredFcDiagnostics.length / fcDiagnosticsPageSize),
+    Math.ceil(sortedFcDiagnostics.length / fcDiagnosticsPageSize),
   )
-  const actionsTotalPages = Math.max(1, Math.ceil(filteredActions.length / pageSize))
+  const actionsTotalPages = Math.max(1, Math.ceil(sortedActions.length / pageSize))
   const safePlanPage = Math.min(planPage, planTotalPages)
   const safeFcDiagnosticsPage = Math.min(fcDiagnosticsPage, fcDiagnosticsTotalPages)
   const safeActionsPage = Math.min(actionsPage, actionsTotalPages)
-  const paginatedPlanRows = filteredPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
-  const paginatedFcDiagnostics = filteredFcDiagnostics.slice(
+  const paginatedPlanRows = sortedPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
+  const paginatedFcDiagnostics = sortedFcDiagnostics.slice(
     (safeFcDiagnosticsPage - 1) * fcDiagnosticsPageSize,
     safeFcDiagnosticsPage * fcDiagnosticsPageSize,
   )
-  const paginatedActions = filteredActions.slice((safeActionsPage - 1) * pageSize, safeActionsPage * pageSize)
+  const paginatedActions = sortedActions.slice((safeActionsPage - 1) * pageSize, safeActionsPage * pageSize)
   const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
   const tabFilterText = `tab=${activeTab === 'fc' ? 'FC Replenishment' : 'Flex Replenishment'}`
   const planFilterText = [
@@ -590,16 +720,23 @@ export function InternalStockDashboard() {
   const warnings = [
     !data.freshness.salesTableAvailable
       ? 'Daily sales storage is not available yet. Apply migration 025.'
-      : data.diagnostics.products_with_sales === 0
-        ? 'Sales data is missing for all products. Replenishment estimates are intentionally not calculated.'
-        : data.diagnostics.products_missing_sales > 0
-          ? `Sales data available for ${data.diagnostics.products_with_sales} products; missing for ${data.diagnostics.products_missing_sales}.`
+      : data.diagnostics.products_with_demand_signal === 0
+        ? 'No demand signal (sales or shipments) is available for any product. Replenishment estimates are intentionally not calculated.'
+        : data.diagnostics.products_missing_demand_signal > 0
+          ? `Demand signal (sales or fulfillment shipments) available for ${data.diagnostics.products_with_demand_signal} products; missing for ${data.diagnostics.products_missing_demand_signal}.`
           : null,
-    data.diagnostics.products_with_inventory === 0
-      ? 'Inventory data is missing for all products. Stock availability is intentionally not inferred.'
-      : data.diagnostics.products_missing_inventory > 0
-        ? `Inventory data available for ${data.diagnostics.products_with_inventory} products; missing for ${data.diagnostics.products_missing_inventory}.`
-        : null,
+    data.diagnostics.products_with_any_stock_context === 0
+      ? 'No stock context (FBA inventory, ledger balance, or location stock) is available for any product yet.'
+      : `FBA stock context available for ${data.diagnostics.products_with_fba_inventory_api} products (via inventory API).`,
+    data.diagnostics.products_with_ledger_balance > 0
+      ? `Ledger balance diagnostic available for ${data.diagnostics.products_with_ledger_balance} products (approximate; not used in replenishment).`
+      : null,
+    data.diagnostics.products_with_location_stock > 0
+      ? `FC/Seller Flex location-level stock available for ${data.diagnostics.products_with_location_stock} products.`
+      : null,
+    data.diagnostics.products_with_any_stock_context > 0 && data.diagnostics.products_missing_any_stock_context > 0
+      ? `No stock context at all for ${data.diagnostics.products_missing_any_stock_context} products.`
+      : null,
     data.freshness.resultLimitReached
       ? 'The safety result limit was reached. Narrower server-side paging can be added before expanding this dataset.'
       : null,
@@ -987,7 +1124,7 @@ export function InternalStockDashboard() {
                 { header: 'Warnings', value: row => row.missingDataWarnings.join(' | ') },
                 { header: 'Reason', value: row => row.actionMessage },
               ],
-              filteredPlanRows,
+              sortedPlanRows,
               data.nextStockPlan.assumptions,
               planFilterText,
             )}
@@ -1035,21 +1172,21 @@ export function InternalStockDashboard() {
           <table className="w-full min-w-[2080px] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-4 py-3 text-left">Product</th>
-                <th className="px-3 py-3 text-left">ASIN/SKU</th>
-                <th className="px-3 py-3 text-left">Primary source</th>
-                <th className="px-3 py-3 text-right">{data.nextStockPlan.assumptions.salesLookbackDays}d Sales</th>
-                <th className="px-3 py-3 text-right">FBA Sales</th>
-                <th className="px-3 py-3 text-right">Flex Sales</th>
-                <th className="px-3 py-3 text-right">Easy Ship/MFN Sales</th>
-                <th className="px-3 py-3 text-right">Available Stock</th>
-                <th className="px-3 py-3 text-right">Inbound</th>
-                <th className="px-3 py-3 text-right">Ledger Balance Stock (approx.)</th>
-                <th className="px-3 py-3 text-right">Days Cover</th>
-                <th className="px-3 py-3 text-right">Suggested FBA Qty</th>
-                <th className="px-3 py-3 text-right">Suggested Flex Qty</th>
+                <SortableTh label="Product" column="title" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} className="px-4" />
+                <SortableTh label="ASIN/SKU" column="asin" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
+                <SortableTh label="Primary source" column="primarySource" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
+                <SortableTh label={`${data.nextStockPlan.assumptions.salesLookbackDays}d Sales`} column="totalSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="FBA Sales" column="fbaSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Flex Sales" column="sellerFlexSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Easy Ship/MFN Sales" column="easyShipMfnSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Available Stock" column="availableStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Inbound" column="inboundStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Ledger Balance Stock (approx.)" column="ledgerBalanceStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Days Cover" column="daysCover" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Suggested FBA Qty" column="suggestedFbaReplenishment" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Suggested Flex Qty" column="suggestedSellerFlexReplenishment" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <th className="px-3 py-3 text-left">State/Zone insight</th>
-                <th className="px-4 py-3 text-left">Action</th>
+                <SortableTh label="Action" column="actionMessage" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} className="px-4" />
               </tr>
             </thead>
             <tbody>
@@ -1146,7 +1283,7 @@ export function InternalStockDashboard() {
                 { header: 'Latest Date', value: row => row.latestReportDate },
                 { header: 'Warning', value: row => row.ledgerBalanceAmbiguous ? 'Multiple balances share the latest date; displayed value is approximate.' : '' },
               ],
-              filteredFcDiagnostics,
+              sortedFcDiagnostics,
               data.nextStockPlan.assumptions,
               fcFilterText,
             )}
@@ -1171,14 +1308,14 @@ export function InternalStockDashboard() {
           <table className="w-full min-w-[1180px] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-4 py-3 text-left">Product</th>
-                <th className="px-3 py-3 text-left">ASIN/SKU</th>
-                <th className="px-3 py-3 text-left">FC</th>
-                <th className="px-3 py-3 text-left">FC Type</th>
-                <th className="px-3 py-3 text-right">{data.nextStockPlan.assumptions.salesLookbackDays}D Shipments</th>
-                <th className="px-3 py-3 text-right">Ledger Balance Stock (approx.)</th>
-                <th className="px-3 py-3 text-left">Latest Date</th>
-                <th className="px-4 py-3 text-left">Warning</th>
+                <SortableTh label="Product" column="title" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} className="px-4" />
+                <SortableTh label="ASIN/SKU" column="asin" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} />
+                <SortableTh label="FC" column="fulfillmentCenterId" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} />
+                <SortableTh label="FC Type" column="fulfillmentCenterType" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} />
+                <SortableTh label={`${data.nextStockPlan.assumptions.salesLookbackDays}D Shipments`} column="shipments30d" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Ledger Balance Stock (approx.)" column="ledgerBalanceStock" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Latest Date" column="latestReportDate" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} />
+                <SortableTh label="Warning" column="ledgerBalanceAmbiguous" sort={fcDiagnosticsSort} onSort={column => setFcDiagnosticsSort(current => toggleSort(current, column))} className="px-4" />
               </tr>
             </thead>
             <tbody>
@@ -1291,7 +1428,7 @@ export function InternalStockDashboard() {
                   { header: 'Sales Source', value: row => row.salesSource },
                   { header: 'Reason', value: row => row.action },
                 ],
-                filteredActions,
+                sortedActions,
                 data.nextStockPlan.assumptions,
                 actionFilterText,
               )}
@@ -1305,15 +1442,15 @@ export function InternalStockDashboard() {
           <table className="w-full min-w-[1340px] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-4 py-3 text-left">Product</th>
-                <th className="px-3 py-3 text-left">ASIN / SKU</th>
-                <th className="px-3 py-3 text-right">Available</th>
-                <th className="px-3 py-3 text-right">Inbound</th>
-                <th className="px-3 py-3 text-right">30d Sales</th>
-                <th className="px-3 py-3 text-right">Velocity/day</th>
-                <th className="px-3 py-3 text-right">Days Cover</th>
-                <th className="px-3 py-3 text-right">Suggested Reorder</th>
-                <th className="px-3 py-3 text-left">Status</th>
+                <SortableTh label="Product" column="title" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} className="px-4" />
+                <SortableTh label="ASIN / SKU" column="asin" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} />
+                <SortableTh label="Available" column="available" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Inbound" column="inbound" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="30d Sales" column="units30d" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Velocity/day" column="velocityPerDay" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Days Cover" column="daysCover" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Suggested Reorder" column="suggestedReorder" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Status" column="status" sort={actionsSort} onSort={column => setActionsSort(current => toggleSort(current, column))} />
                 <th className="px-3 py-3 text-left">Data source</th>
                 <th className="px-4 py-3 text-left">Action</th>
               </tr>
