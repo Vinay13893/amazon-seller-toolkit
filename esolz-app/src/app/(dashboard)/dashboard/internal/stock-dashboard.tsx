@@ -24,6 +24,14 @@ import type { StockAction, StockStatus } from '@/lib/internal-stock-actions'
 type StockResponse = {
   summary: Record<StockStatus, number>
   actions: StockAction[]
+  diagnostics: {
+    products_with_sales: number
+    products_missing_sales: number
+    products_with_inventory: number
+    products_missing_inventory: number
+    last_sync_status: string | null
+    last_sync_warnings: string[]
+  }
   freshness: {
     inventoryUpdatedAt: string | null
     salesThroughDate: string | null
@@ -43,9 +51,10 @@ type UploadResult = {
 
 type AmazonSyncResult = {
   jobId: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'partial_success' | 'failed'
   phase: 'listings' | 'inventory' | 'sales' | 'completed'
   listingsUpdated: number
+  listingsUsed: number
   inventoryUpdated: number
   salesRowsUpdated: number
   warnings: string[]
@@ -97,8 +106,8 @@ export function InternalStockDashboard() {
   const [amazonSyncResult, setAmazonSyncResult] = useState<AmazonSyncResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true)
     setError(null)
 
     try {
@@ -111,7 +120,7 @@ export function InternalStockDashboard() {
     } catch {
       setError('Unable to load stock actions right now.')
     } finally {
-      setLoading(false)
+      if (!silent) setLoading(false)
     }
   }, [])
 
@@ -185,9 +194,12 @@ export function InternalStockDashboard() {
         if (!response.ok) throw new Error(result.error ?? 'Amazon sync stopped.')
         setAmazonSyncResult(result)
         steps += 1
+        if (result.phase === 'sales' && steps % 10 === 0) {
+          await load(true)
+        }
       }
 
-      if (result.status !== 'completed') {
+      if (result.status !== 'completed' && result.status !== 'partial_success') {
         throw new Error('Amazon sync did not complete in this session.')
       }
       await load()
@@ -237,12 +249,16 @@ export function InternalStockDashboard() {
   const warnings = [
     !data.freshness.salesTableAvailable
       ? 'Daily sales storage is not available yet. Apply migration 025.'
-      : !data.freshness.salesDataAvailable
-        ? 'Missing sales data. Replenishment estimates are intentionally not calculated.'
+      : data.diagnostics.products_with_sales === 0
+        ? 'Sales data is missing for all products. Replenishment estimates are intentionally not calculated.'
+        : data.diagnostics.products_missing_sales > 0
+          ? `Sales data available for ${data.diagnostics.products_with_sales} products; missing for ${data.diagnostics.products_missing_sales}.`
+          : null,
+    data.diagnostics.products_with_inventory === 0
+      ? 'Inventory data is missing for all products. Stock availability is intentionally not inferred.'
+      : data.diagnostics.products_missing_inventory > 0
+        ? `Inventory data available for ${data.diagnostics.products_with_inventory} products; missing for ${data.diagnostics.products_missing_inventory}.`
         : null,
-    !data.freshness.inventoryDataAvailable
-      ? 'Missing inventory data. Stock availability is intentionally not inferred.'
-      : null,
     data.freshness.resultLimitReached
       ? 'The safety result limit was reached. Narrower server-side paging can be added before expanding this dataset.'
       : null,
@@ -285,8 +301,12 @@ export function InternalStockDashboard() {
               Refreshes structured listings, FBA inventory summaries, and daily SKU sales metrics.
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Last completed sync: {formatDate(data.freshness.amazonSyncCompletedAt)}
+              Last sync: {formatDate(data.freshness.amazonSyncCompletedAt)}
+              {data.diagnostics.last_sync_status ? ` · ${data.diagnostics.last_sync_status.replace('_', ' ')}` : ''}
             </p>
+            {data.diagnostics.last_sync_warnings.map(warning => (
+              <p key={warning} className="mt-1 text-xs text-amber-700 dark:text-amber-300">• {warning}</p>
+            ))}
           </div>
           <div className="flex flex-wrap gap-2">
             <select
@@ -315,9 +335,12 @@ export function InternalStockDashboard() {
             <p className="font-medium">
               {amazonSyncResult.status === 'completed'
                 ? 'Amazon sync completed'
-                : `Syncing ${amazonSyncResult.phase}…`}
+                : amazonSyncResult.status === 'partial_success'
+                  ? 'Amazon sync completed with warnings'
+                  : `Syncing ${amazonSyncResult.phase}…`}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
+              Listings used: {amazonSyncResult.listingsUsed.toLocaleString('en-IN')} ·{' '}
               Listings updated: {amazonSyncResult.listingsUpdated.toLocaleString('en-IN')} ·{' '}
               Inventory updated: {amazonSyncResult.inventoryUpdated.toLocaleString('en-IN')} ·{' '}
               Sales rows updated: {amazonSyncResult.salesRowsUpdated.toLocaleString('en-IN')}

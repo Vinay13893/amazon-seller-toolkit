@@ -28,6 +28,7 @@ type SyncMetadata = {
   inventory_next_token?: string | null
   sales_offset?: number
   listings_updated?: number
+  listings_used?: number
   inventory_updated?: number
   sales_rows_updated?: number
   warnings?: string[]
@@ -45,14 +46,16 @@ function safeWarnings(value: unknown): string[] {
 }
 
 function responseForJob(jobId: string, status: string, metadata: SyncMetadata) {
+  const warnings = safeWarnings(metadata.warnings)
   return NextResponse.json({
     jobId,
-    status,
+    status: status === 'completed' && warnings.length > 0 ? 'partial_success' : status,
     phase: metadata.phase ?? 'listings',
     listingsUpdated: metadata.listings_updated ?? 0,
+    listingsUsed: metadata.listings_used ?? 0,
     inventoryUpdated: metadata.inventory_updated ?? 0,
     salesRowsUpdated: metadata.sales_rows_updated ?? 0,
-    warnings: safeWarnings(metadata.warnings),
+    warnings,
     warehouseStockAvailable: false,
   })
 }
@@ -88,6 +91,10 @@ export async function POST(request: Request) {
     const requestedDays = Number(body.days ?? 90)
     const lookbackDays = ALLOWED_LOOKBACK_DAYS.has(requestedDays) ? requestedDays : 90
     const now = new Date().toISOString()
+    const { count: storedListingCount } = await admin
+      .from('amazon_listing_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', access.workspaceId)
 
     await admin
       .from('amazon_sync_jobs')
@@ -103,6 +110,7 @@ export async function POST(request: Request) {
       inventory_next_token: null,
       sales_offset: 0,
       listings_updated: 0,
+      listings_used: storedListingCount ?? 0,
       inventory_updated: 0,
       sales_rows_updated: 0,
       warnings: [],
@@ -200,6 +208,10 @@ export async function POST(request: Request) {
 
         const nextToken = extractNextPageToken(result as typeof result & Record<string, unknown>)
         metadata.listings_updated = (metadata.listings_updated ?? 0) + rows.length
+        metadata.listings_used = Math.max(
+          metadata.listings_used ?? 0,
+          metadata.listings_updated,
+        )
         metadata.listings_page_token = nextToken ?? null
         metadata.phase = nextToken ? 'listings' : 'inventory'
       } catch {

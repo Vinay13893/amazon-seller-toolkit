@@ -51,8 +51,20 @@ export type StockAction = {
   inventoryUpdatedAt: string | null
 }
 
-function productKey(asin: string | null, sku: string | null, marketplaceId: string | null): string {
-  return `${marketplaceId ?? ''}|${sku ?? ''}|${asin ?? ''}`
+function normalized(value: string | null | undefined): string {
+  return value?.trim().toUpperCase() ?? ''
+}
+
+function matchKey(marketplaceId: string | null, value: string | null): string {
+  return `${normalized(marketplaceId)}|${normalized(value)}`
+}
+
+function pushMapValue<T>(map: Map<string, T[]>, key: string, value: T) {
+  if (!key.endsWith('|')) {
+    const current = map.get(key) ?? []
+    current.push(value)
+    map.set(key, current)
+  }
 }
 
 function dateDaysAgo(days: number, now: Date): string {
@@ -67,33 +79,30 @@ export function calculateStockActions(
   salesRows: DailySalesInput[],
   now = new Date(),
 ): StockAction[] {
-  const inventoryByKey = new Map(
-    inventoryRows.map(row => [productKey(row.asin, row.sku, row.marketplaceId), row]),
-  )
-  const salesByKey = new Map<string, DailySalesInput[]>()
+  const inventoryByAsin = new Map<string, InventoryInput>()
+  const inventoryBySku = new Map<string, InventoryInput>()
+  const salesByAsin = new Map<string, DailySalesInput[]>()
+  const salesBySku = new Map<string, DailySalesInput[]>()
 
+  for (const row of inventoryRows) {
+    const asinKey = matchKey(row.marketplaceId, row.asin)
+    const skuKey = matchKey(row.marketplaceId, row.sku)
+    if (!asinKey.endsWith('|') && !inventoryByAsin.has(asinKey)) inventoryByAsin.set(asinKey, row)
+    if (!skuKey.endsWith('|') && !inventoryBySku.has(skuKey)) inventoryBySku.set(skuKey, row)
+  }
   for (const row of salesRows) {
-    const key = productKey(row.asin, row.sku, row.marketplaceId)
-    const current = salesByKey.get(key) ?? []
-    current.push(row)
-    salesByKey.set(key, current)
+    pushMapValue(salesByAsin, matchKey(row.marketplaceId, row.asin), row)
+    pushMapValue(salesBySku, matchKey(row.marketplaceId, row.sku), row)
   }
 
   const start7d = dateDaysAgo(6, now)
   const start30d = dateDaysAgo(29, now)
 
   return products.map(product => {
-    const key = productKey(product.asin, product.sku, product.marketplaceId)
-    const inventory = inventoryByKey.get(key)
-      ?? inventoryRows.find(row =>
-        row.asin === product.asin
-        && row.marketplaceId === product.marketplaceId,
-      )
-    const sales = salesByKey.get(key)
-      ?? salesRows.filter(row =>
-        row.asin === product.asin
-        && row.marketplaceId === product.marketplaceId,
-      )
+    const asinKey = matchKey(product.marketplaceId, product.asin)
+    const skuKey = matchKey(product.marketplaceId, product.sku)
+    const inventory = inventoryByAsin.get(asinKey) ?? inventoryBySku.get(skuKey)
+    const sales = salesByAsin.get(asinKey) ?? salesBySku.get(skuKey) ?? []
 
     const hasSales = sales.length > 0
 
