@@ -69,7 +69,7 @@ export async function GET() {
       .maybeSingle(),
     supabase
       .from('internal_fba_report_rows')
-      .select('asin, sku, marketplace_id, fulfillment_center_id')
+      .select('asin, sku, marketplace_id, fulfillment_center_id, event_type, quantity, report_date')
       .eq('workspace_id', access.workspaceId)
       .limit(20000),
     supabase

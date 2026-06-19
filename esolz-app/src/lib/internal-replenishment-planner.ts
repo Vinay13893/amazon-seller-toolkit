@@ -191,18 +191,14 @@ function channelFromSalesSource(source: string | null | undefined): LocationType
   return 'unknown'
 }
 
+const FULFILLMENT_DEMAND_EVENT_TYPES = new Set(['shipments'])
+
 function inferFulfillmentSalesUnits(eventType: string | null, quantity: number | null): number {
   if (!Number.isFinite(quantity)) return 0
   const qty = Number(quantity ?? 0)
-  const event = (eventType ?? '').toLowerCase()
-  const salesEvent = event.includes('sale')
-    || event.includes('ship')
-    || event.includes('customer')
-    || event.includes('order')
-
-  if (salesEvent) return Math.abs(Math.trunc(qty))
-  if (qty < 0) return Math.abs(Math.trunc(qty))
-  return 0
+  const event = (eventType ?? '').trim().toLowerCase()
+  if (!FULFILLMENT_DEMAND_EVENT_TYPES.has(event)) return 0
+  return Math.abs(Math.trunc(qty))
 }
 
 export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
