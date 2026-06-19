@@ -199,3 +199,59 @@ export async function searchListingsItems(
 
   return data
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fulfillment Inbound Shipment v0 — permission probe only.
+// Intentionally does not parse or return shipment details/IDs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface InboundShipmentProbeParams {
+  marketplaceId: string
+  endpoint?: string
+}
+
+export interface InboundShipmentProbeResult {
+  ok:            boolean
+  statusCode:    number
+  shipmentCount: number | null
+}
+
+/**
+ * Calls GET /fba/inbound/v0/shipments with a narrow recent date range purely
+ * to test whether the current Amazon authorization includes inbound-shipment
+ * access. Never logs or returns the raw response body, shipment IDs, or rows.
+ */
+export async function probeInboundShipmentsAccess(
+  accessToken: string,
+  params: InboundShipmentProbeParams,
+): Promise<InboundShipmentProbeResult> {
+  const endpoint = params.endpoint ?? SPAPI_EU_ENDPOINT
+  const now = new Date()
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+
+  const qs = new URLSearchParams({
+    QueryType:          'DATE_RANGE',
+    MarketplaceId:      params.marketplaceId,
+    LastUpdatedAfter:   sevenDaysAgo.toISOString(),
+    LastUpdatedBefore:  now.toISOString(),
+  })
+
+  const res = await fetch(`${endpoint}/fba/inbound/v0/shipments?${qs}`, {
+    method:  'GET',
+    headers: {
+      'x-amz-access-token': accessToken,
+      'content-type':       'application/json',
+    },
+  })
+
+  if (!res.ok) {
+    return { ok: false, statusCode: res.status, shipmentCount: null }
+  }
+
+  const data = await res.json() as { payload?: { ShipmentData?: unknown[] } }
+  const shipmentCount = Array.isArray(data.payload?.ShipmentData)
+    ? data.payload!.ShipmentData!.length
+    : 0
+
+  return { ok: true, statusCode: res.status, shipmentCount }
+}
