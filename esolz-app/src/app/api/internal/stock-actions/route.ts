@@ -93,7 +93,7 @@ export async function GET() {
       .limit(5000),
     supabase
       .from('internal_fulfillment_sales_daily')
-      .select('asin, sku, marketplace_id, sales_date, ordered_units, state_code, source')
+      .select('asin, sku, marketplace_id, sales_date, ordered_units, state_code, location_code, source')
       .eq('workspace_id', access.workspaceId)
       .gte('sales_date', lookbackStart.toISOString().slice(0, 10))
       .limit(30000),
@@ -297,6 +297,7 @@ export async function GET() {
       salesDate: row.sales_date as string,
       units: Number(row.ordered_units ?? 0),
       stateCode: (row.state_code as string | null) ?? null,
+      locationCode: (row.location_code as string | null) ?? null,
       source: (row.source as string | null) ?? null,
     })),
     inventoryByLocation: (inventoryByLocationResult.data ?? []).map(row => ({

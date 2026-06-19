@@ -66,6 +66,7 @@ type FulfillmentSalesDailyInput = {
   salesDate: string
   units: number
   stateCode: string | null
+  locationCode: string | null
   source: string | null
 }
 
@@ -413,7 +414,10 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       }
     }
 
-    const channel = channelFromSalesSource(row.source)
+    const normalizedLocationCode = norm(row.locationCode)
+    const channel = normalizedLocationCode
+      ? toLocationType(locationTypeByCode.get(normalizedLocationCode), row.locationCode)
+      : channelFromSalesSource(row.source)
     if (channel === 'seller_flex') {
       planRow.sellerFlexSales30d += units
     } else if (channel === 'fba_fc') {
