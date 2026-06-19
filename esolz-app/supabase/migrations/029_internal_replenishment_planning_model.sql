@@ -43,17 +43,7 @@ CREATE TABLE IF NOT EXISTS public.internal_fulfillment_sales_daily (
   source text NOT NULL DEFAULT 'unknown',
   ordered_units integer NOT NULL DEFAULT 0 CHECK (ordered_units >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (
-    workspace_id,
-    marketplace_id,
-    COALESCE(asin, ''),
-    COALESCE(sku, ''),
-    sales_date,
-    COALESCE(state_code, ''),
-    COALESCE(location_code, ''),
-    source
-  )
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS public.internal_inventory_by_location (
@@ -70,15 +60,7 @@ CREATE TABLE IF NOT EXISTS public.internal_inventory_by_location (
   unsellable_quantity integer NOT NULL DEFAULT 0,
   snapshot_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (
-    workspace_id,
-    marketplace_id,
-    COALESCE(asin, ''),
-    COALESCE(sku, ''),
-    COALESCE(location_code, ''),
-    snapshot_at
-  )
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS internal_fulfillment_locations_workspace_idx
@@ -92,6 +74,28 @@ CREATE INDEX IF NOT EXISTS internal_fulfillment_sales_daily_workspace_idx
 
 CREATE INDEX IF NOT EXISTS internal_inventory_by_location_workspace_idx
   ON public.internal_inventory_by_location (workspace_id, snapshot_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS internal_fulfillment_sales_daily_uidx
+  ON public.internal_fulfillment_sales_daily (
+    workspace_id,
+    marketplace_id,
+    COALESCE(asin, ''),
+    COALESCE(sku, ''),
+    sales_date,
+    COALESCE(state_code, ''),
+    COALESCE(location_code, ''),
+    source
+  );
+
+CREATE UNIQUE INDEX IF NOT EXISTS internal_inventory_by_location_uidx
+  ON public.internal_inventory_by_location (
+    workspace_id,
+    marketplace_id,
+    COALESCE(asin, ''),
+    COALESCE(sku, ''),
+    COALESCE(location_code, ''),
+    snapshot_at
+  );
 
 ALTER TABLE public.internal_fulfillment_locations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.internal_state_zone_map ENABLE ROW LEVEL SECURITY;
