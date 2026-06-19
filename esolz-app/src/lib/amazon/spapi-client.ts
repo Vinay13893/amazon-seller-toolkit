@@ -214,10 +214,21 @@ export interface InboundShipmentProbeResult {
   ok:            boolean
   statusCode:    number
   shipmentCount: number | null
+  amazonErrorCode: string | null
+}
+
+function secondPrecisionRfc3339(value: Date): string {
+  return value.toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
+function safeAmazonErrorCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const sanitized = value.trim().replace(/[^A-Za-z0-9_. -]/g, '').slice(0, 64)
+  return sanitized || null
 }
 
 /**
- * Calls GET /fba/inbound/v0/shipments with a narrow recent date range purely
+ * Calls GET /fba/inbound/v0/shipments with a recent date range purely
  * to test whether the current Amazon authorization includes inbound-shipment
  * access. Never logs or returns the raw response body, shipment IDs, or rows.
  */
@@ -227,16 +238,16 @@ export async function probeInboundShipmentsAccess(
 ): Promise<InboundShipmentProbeResult> {
   const endpoint = params.endpoint ?? SPAPI_EU_ENDPOINT
   const now = new Date()
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-  // Amazon rejects a LastUpdatedBefore timestamp that is too close to "now"
-  // (processing lag on their end), so back it off by a few minutes.
-  const lastUpdatedBefore = new Date(now.getTime() - 5 * 60 * 1000)
+  // The legacy v0 endpoint is strict about date parsing and processing lag.
+  // Use whole-second RFC3339 timestamps and end safely behind the current time.
+  const lastUpdatedBefore = new Date(now.getTime() - 15 * 60 * 1000)
+  const lastUpdatedAfter = new Date(lastUpdatedBefore.getTime() - 30 * 24 * 60 * 60 * 1000)
 
   const qs = new URLSearchParams({
     QueryType:          'DATE_RANGE',
     MarketplaceId:      params.marketplaceId,
-    LastUpdatedAfter:   sevenDaysAgo.toISOString(),
-    LastUpdatedBefore:  lastUpdatedBefore.toISOString(),
+    LastUpdatedAfter:   secondPrecisionRfc3339(lastUpdatedAfter),
+    LastUpdatedBefore:  secondPrecisionRfc3339(lastUpdatedBefore),
   })
 
   const res = await fetch(`${endpoint}/fba/inbound/v0/shipments?${qs}`, {
@@ -248,7 +259,21 @@ export async function probeInboundShipmentsAccess(
   })
 
   if (!res.ok) {
-    return { ok: false, statusCode: res.status, shipmentCount: null }
+    let amazonErrorCode: string | null = null
+    try {
+      const errorBody = await res.json() as {
+        errors?: Array<{ code?: unknown }>
+      }
+      amazonErrorCode = safeAmazonErrorCode(errorBody.errors?.[0]?.code)
+    } catch {
+      // Intentionally ignore malformed/non-JSON bodies and never log raw content.
+    }
+    return {
+      ok: false,
+      statusCode: res.status,
+      shipmentCount: null,
+      amazonErrorCode,
+    }
   }
 
   const data = await res.json() as { payload?: { ShipmentData?: unknown[] } }
@@ -256,5 +281,10 @@ export async function probeInboundShipmentsAccess(
     ? data.payload!.ShipmentData!.length
     : 0
 
-  return { ok: true, statusCode: res.status, shipmentCount }
+  return {
+    ok: true,
+    statusCode: res.status,
+    shipmentCount,
+    amazonErrorCode: null,
+  }
 }

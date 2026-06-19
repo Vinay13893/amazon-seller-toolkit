@@ -14,6 +14,7 @@ type ErrorCategory =
   | 'forbidden'
   | 'not_found'
   | 'rate_limited'
+  | 'invalid_request'
   | 'spapi_error'
   | 'network_error'
 
@@ -22,11 +23,13 @@ type ProbeResponse = {
   permissionLikelyAvailable: boolean
   statusCode: number | null
   errorCategory?: ErrorCategory
+  amazonErrorCode?: string
   shipmentCount?: number
   message: string
 }
 
 function categoryForStatus(statusCode: number): ErrorCategory {
+  if (statusCode === 400) return 'invalid_request'
   if (statusCode === 401) return 'unauthorized'
   if (statusCode === 403) return 'forbidden'
   if (statusCode === 404) return 'not_found'
@@ -48,6 +51,8 @@ function messageForCategory(category: ErrorCategory): string {
       return 'Inbound shipment endpoint or resource was not found.'
     case 'rate_limited':
       return 'Amazon rate-limited this call; result is inconclusive.'
+    case 'invalid_request':
+      return 'Amazon rejected the probe request parameters.'
     case 'spapi_error':
       return 'SP-API returned an error for this call.'
     case 'network_error':
@@ -120,6 +125,7 @@ export async function GET() {
       permissionLikelyAvailable: false,
       statusCode: result.statusCode,
       errorCategory: category,
+      ...(result.amazonErrorCode ? { amazonErrorCode: result.amazonErrorCode } : {}),
       message: messageForCategory(category),
     }
     return NextResponse.json(body)
