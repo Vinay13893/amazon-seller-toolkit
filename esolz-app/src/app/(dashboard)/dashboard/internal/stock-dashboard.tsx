@@ -26,10 +26,10 @@ type StockResponse = {
   actions: StockAction[]
   nextStockPlan: {
     assumptions: {
-      targetFbaCoverDays: number
-      targetFlexCoverDays: number
-      safetyStockDays: number
       salesLookbackDays: number
+      planningCycleDays: number
+      transitBufferDays: number
+      growthMultiplier: number
       maxLookbackDays: number
     }
     summary: {
@@ -741,7 +741,7 @@ export function InternalStockDashboard() {
             Replenishment model with separate FBA, Seller Flex, Easy Ship/MFN and unknown-source flows.
           </p>
           <p className="text-xs text-muted-foreground">
-            Defaults: FBA target {data.nextStockPlan.assumptions.targetFbaCoverDays}d · Seller Flex target {data.nextStockPlan.assumptions.targetFlexCoverDays}d · Safety {data.nextStockPlan.assumptions.safetyStockDays}d · Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d
+            Defaults: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
           </p>
         </div>
 

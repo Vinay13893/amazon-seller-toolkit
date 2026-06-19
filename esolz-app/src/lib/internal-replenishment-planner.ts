@@ -1,8 +1,8 @@
 export const DEFAULT_REPLENISHMENT_ASSUMPTIONS = {
-  targetFbaCoverDays: 45,
-  targetFlexCoverDays: 30,
-  safetyStockDays: 7,
   salesLookbackDays: 30,
+  planningCycleDays: 30,
+  transitBufferDays: 15,
+  growthMultiplier: 1.5,
   maxLookbackDays: 365,
 } as const
 
@@ -118,10 +118,10 @@ export type NextStockPlanSummary = {
 }
 
 export type NextStockPlanAssumptions = {
-  targetFbaCoverDays: number
-  targetFlexCoverDays: number
-  safetyStockDays: number
   salesLookbackDays: number
+  planningCycleDays: number
+  transitBufferDays: number
+  growthMultiplier: number
   maxLookbackDays: number
 }
 
@@ -141,6 +141,9 @@ type BuildInput = {
   fulfillmentSalesDaily: FulfillmentSalesDailyInput[]
   inventoryByLocation: InventoryByLocationInput[]
   lookbackDays?: number
+  planningCycleDays?: number
+  transitBufferDays?: number
+  growthMultiplier?: number
   now?: Date
 }
 
@@ -214,6 +217,19 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
   startDate.setUTCDate(startDate.getUTCDate() - (resolvedLookbackDays - 1))
   const startDateIso = startDate.toISOString().slice(0, 10)
 
+  const resolvedPlanningCycleDays = Math.max(
+    1,
+    Math.trunc(input.planningCycleDays ?? DEFAULT_REPLENISHMENT_ASSUMPTIONS.planningCycleDays),
+  )
+  const resolvedTransitBufferDays = Math.max(
+    0,
+    Math.trunc(input.transitBufferDays ?? DEFAULT_REPLENISHMENT_ASSUMPTIONS.transitBufferDays),
+  )
+  const resolvedGrowthMultiplier = Number.isFinite(input.growthMultiplier) && (input.growthMultiplier ?? 0) > 0
+    ? Number(input.growthMultiplier)
+    : DEFAULT_REPLENISHMENT_ASSUMPTIONS.growthMultiplier
+  const targetStockDays = resolvedPlanningCycleDays + resolvedTransitBufferDays
+
   const locationTypeByCode = new Map<string, LocationType>()
   for (const code of SELLER_FLEX_CODES) locationTypeByCode.set(code, 'seller_flex')
   for (const location of input.fulfillmentLocations) {
@@ -270,7 +286,7 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       reservedStock: 0,
       unsellableStock: 0,
       daysCover: null,
-      targetCoverDays: DEFAULT_REPLENISHMENT_ASSUMPTIONS.targetFbaCoverDays,
+      targetCoverDays: targetStockDays,
       safetyStock: 0,
       suggestedFbaReplenishment: 0,
       suggestedSellerFlexReplenishment: 0,
@@ -436,10 +452,12 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
     const avgDailyFlex = row.sellerFlexSales30d / resolvedLookbackDays
     const avgDailyTotal = row.totalSales30d / resolvedLookbackDays
 
-    const expectedFba = avgDailyFba * DEFAULT_REPLENISHMENT_ASSUMPTIONS.targetFbaCoverDays
-    const expectedFlex = avgDailyFlex * DEFAULT_REPLENISHMENT_ASSUMPTIONS.targetFlexCoverDays
-    const safetyFba = avgDailyFba * DEFAULT_REPLENISHMENT_ASSUMPTIONS.safetyStockDays
-    const safetyFlex = avgDailyFlex * DEFAULT_REPLENISHMENT_ASSUMPTIONS.safetyStockDays
+    const adjustedDailyFba = avgDailyFba * resolvedGrowthMultiplier
+    const adjustedDailyFlex = avgDailyFlex * resolvedGrowthMultiplier
+    const adjustedDailyTotal = avgDailyTotal * resolvedGrowthMultiplier
+
+    const requiredFba = adjustedDailyFba * targetStockDays
+    const requiredFlex = adjustedDailyFlex * targetStockDays
 
     const fbaSlice: StockSlice = {
       available: row.availableFbaStock,
@@ -454,21 +472,16 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       unsellable: row.unsellableStock,
     }
 
-    row.safetyStock = Math.ceil(avgDailyTotal * DEFAULT_REPLENISHMENT_ASSUMPTIONS.safetyStockDays)
-    row.targetCoverDays = row.sellerFlexSales30d > 0
-      ? Math.max(
-          DEFAULT_REPLENISHMENT_ASSUMPTIONS.targetFbaCoverDays,
-          DEFAULT_REPLENISHMENT_ASSUMPTIONS.targetFlexCoverDays,
-        )
-      : DEFAULT_REPLENISHMENT_ASSUMPTIONS.targetFbaCoverDays
+    row.safetyStock = Math.ceil(adjustedDailyTotal * resolvedTransitBufferDays)
+    row.targetCoverDays = targetStockDays
 
     row.suggestedFbaReplenishment = Math.max(
       0,
-      Math.ceil(expectedFba + safetyFba - usableStock(fbaSlice) - fbaSlice.inbound),
+      Math.ceil(requiredFba - usableStock(fbaSlice) - fbaSlice.inbound),
     )
     row.suggestedSellerFlexReplenishment = Math.max(
       0,
-      Math.ceil(expectedFlex + safetyFlex - usableStock(flexSlice) - flexSlice.inbound),
+      Math.ceil(requiredFlex - usableStock(flexSlice) - flexSlice.inbound),
     )
 
     const usableTotal = usableStock({
@@ -557,6 +570,9 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
     assumptions: {
       ...DEFAULT_REPLENISHMENT_ASSUMPTIONS,
       salesLookbackDays: resolvedLookbackDays,
+      planningCycleDays: resolvedPlanningCycleDays,
+      transitBufferDays: resolvedTransitBufferDays,
+      growthMultiplier: resolvedGrowthMultiplier,
     },
     summary,
     rows,
