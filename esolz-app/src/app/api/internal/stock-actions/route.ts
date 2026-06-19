@@ -6,6 +6,7 @@ import {
   type InventoryInput,
   type StockProductInput,
 } from '@/lib/internal-stock-actions'
+import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
@@ -41,7 +42,7 @@ export async function GET() {
       .limit(30000),
     supabase
       .from('amazon_sync_jobs')
-      .select('status, started_at, finished_at, metadata')
+      .select('id, status, started_at, finished_at, metadata')
       .eq('workspace_id', access.workspaceId)
       .eq('job_type', 'internal_stock_sales_sync')
       .order('created_at', { ascending: false })
@@ -54,6 +55,55 @@ export async function GET() {
       { error: 'Stock action data is temporarily unavailable.' },
       { status: 503 },
     )
+  }
+
+  if (latestSyncResult.data?.status === 'running') {
+    const metadata = (
+      latestSyncResult.data.metadata
+      && typeof latestSyncResult.data.metadata === 'object'
+      && !Array.isArray(latestSyncResult.data.metadata)
+    )
+      ? latestSyncResult.data.metadata as Record<string, unknown>
+      : {}
+    const progressAt = typeof metadata.last_progress_at === 'string'
+      ? metadata.last_progress_at
+      : latestSyncResult.data.started_at
+    const progressTime = progressAt ? new Date(progressAt).getTime() : Number.NaN
+    const hasSavedData = Number(metadata.inventory_updated ?? 0) > 0
+      || Number(metadata.sales_rows_updated ?? 0) > 0
+
+    if (
+      hasSavedData
+      && Number.isFinite(progressTime)
+      && Date.now() - progressTime > 2 * 60 * 1000
+    ) {
+      const warning = 'Sync session ended after partial Amazon data was saved.'
+      const warnings = Array.isArray(metadata.warnings)
+        ? metadata.warnings.filter((value): value is string => typeof value === 'string')
+        : []
+      if (!warnings.includes(warning)) warnings.push(warning)
+      const finishedAt = new Date().toISOString()
+      const finalizedMetadata = {
+        ...metadata,
+        phase: 'completed',
+        warnings: warnings.slice(0, 8),
+        last_progress_at: finishedAt,
+      }
+
+      await createAdminClient()
+        .from('amazon_sync_jobs')
+        .update({
+          status: 'completed',
+          finished_at: finishedAt,
+          metadata: finalizedMetadata,
+        })
+        .eq('id', latestSyncResult.data.id)
+        .eq('workspace_id', access.workspaceId)
+
+      latestSyncResult.data.status = 'completed'
+      latestSyncResult.data.finished_at = finishedAt
+      latestSyncResult.data.metadata = finalizedMetadata
+    }
   }
 
   const products: StockProductInput[] = (listingsResult.data ?? []).map(row => ({
