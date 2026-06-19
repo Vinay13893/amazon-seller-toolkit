@@ -9,7 +9,7 @@ const REQUIRED_COLUMNS = [
   'Replenish SKU 2',
   'Replenish SKU 3',
 ] as const
-const COMPONENT_COLUMNS = [
+export const COMPONENT_COLUMNS = [
   'Main Replenish Sku',
   'Replenish SKU 2',
   'Replenish SKU 3',
@@ -72,7 +72,7 @@ function cellText(value: ExcelJS.CellValue): string {
   return String(value).trim()
 }
 
-function normalizedKey(value: string): string {
+export function normalizedKey(value: string): string {
   return value.toLocaleUpperCase('en-US')
 }
 
