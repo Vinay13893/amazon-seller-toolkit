@@ -14,7 +14,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const REPORT_TYPE = 'GET_LEDGER_SUMMARY_VIEW_DATA'
+const REPORT_TYPE = 'GET_LEDGER_DETAIL_VIEW_DATA'
 const MAX_LOOKBACK_DAYS = 365
 const DEFAULT_LOOKBACK_DAYS = 30
 const INSERT_CHUNK_SIZE = 500
