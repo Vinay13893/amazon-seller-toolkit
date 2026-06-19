@@ -8,7 +8,9 @@
     "vercel-build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "preview:sku-mappings": "tsx scripts/preview-sku-component-mappings.ts"
+    "preview:sku-mappings": "tsx scripts/preview-sku-component-mappings.ts",
+    "preview:sku-cost-master": "tsx scripts/preview-sku-cost-master.ts",
+    "preview:payment-transactions": "tsx scripts/preview-payment-transactions.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
