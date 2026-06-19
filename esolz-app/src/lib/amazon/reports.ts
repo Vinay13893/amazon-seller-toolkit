@@ -13,7 +13,7 @@ export const BRAND_ANALYTICS_REPORT_TYPES = [
 export type BrandAnalyticsReportType = (typeof BRAND_ANALYTICS_REPORT_TYPES)[number]
 
 export interface CreateAmazonReportInput {
-  reportType: BrandAnalyticsReportType
+  reportType: string
   marketplaceIds: string[]
   dataStartTime?: string
   dataEndTime?: string
@@ -327,8 +327,7 @@ export async function downloadAmazonReportDocument(
   return Buffer.from(bytes).toString('utf8')
 }
 
-export function parseBrandAnalyticsReport(
-  _reportType: BrandAnalyticsReportType,
+export function parseAmazonReportDocument(
   rawDocumentContent: string,
 ): ParsedBrandAnalyticsReport {
   const trimmed = rawDocumentContent.trim()
@@ -362,4 +361,11 @@ export function parseBrandAnalyticsReport(
   }
 
   return { rows: [], fieldNames: [], format: 'unknown' }
+}
+
+export function parseBrandAnalyticsReport(
+  _reportType: BrandAnalyticsReportType,
+  rawDocumentContent: string,
+): ParsedBrandAnalyticsReport {
+  return parseAmazonReportDocument(rawDocumentContent)
 }

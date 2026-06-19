@@ -21,7 +21,14 @@ export async function GET() {
   const thirtyDaysAgo = new Date()
   thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29)
 
-  const [listingsResult, inventoryResult, salesResult, latestSyncResult] = await Promise.all([
+  const [
+    listingsResult,
+    inventoryResult,
+    salesResult,
+    latestSyncResult,
+    fulfillmentRowsResult,
+    fulfillmentJobResult,
+  ] = await Promise.all([
     supabase
       .from('amazon_listing_items')
       .select('asin, sku, marketplace_id, item_name, brand, image_url')
@@ -36,7 +43,7 @@ export async function GET() {
       .limit(1000),
     supabase
       .from('internal_sku_daily_sales')
-      .select('asin, sku, marketplace_id, sales_date, ordered_units')
+      .select('asin, sku, marketplace_id, sales_date, ordered_units, source')
       .eq('workspace_id', access.workspaceId)
       .gte('sales_date', thirtyDaysAgo.toISOString().slice(0, 10))
       .limit(30000),
@@ -46,6 +53,18 @@ export async function GET() {
       .eq('workspace_id', access.workspaceId)
       .eq('job_type', 'internal_stock_sales_sync')
       .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('internal_fba_report_rows')
+      .select('asin, sku, marketplace_id, fulfillment_center_id')
+      .eq('workspace_id', access.workspaceId)
+      .limit(20000),
+    supabase
+      .from('internal_fba_report_jobs')
+      .select('report_type, processing_status, completed_at, stored_row_count, fc_field_available')
+      .eq('workspace_id', access.workspaceId)
+      .order('requested_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
   ])
@@ -134,10 +153,53 @@ export async function GET() {
         sku: (row.sku as string | null) ?? null,
         marketplaceId: row.marketplace_id as string,
         salesDate: row.sales_date as string,
-        orderedUnits: Number(row.ordered_units ?? 0),
-      }))
+      orderedUnits: Number(row.ordered_units ?? 0),
+    }))
 
-  const actions = calculateStockActions(products, inventoryRows, salesRows)
+  const key = (marketplace: string | null, value: string | null) =>
+    `${marketplace?.trim().toUpperCase() ?? ''}|${value?.trim().toUpperCase() ?? ''}`
+  const fulfillmentAsins = new Set<string>()
+  const fulfillmentSkus = new Set<string>()
+  for (const row of fulfillmentRowsResult.data ?? []) {
+    if (row.asin) fulfillmentAsins.add(key(row.marketplace_id, row.asin))
+    if (row.sku) fulfillmentSkus.add(key(row.marketplace_id, row.sku))
+  }
+  const salesSourcesByAsin = new Map<string, string>()
+  const salesSourcesBySku = new Map<string, string>()
+  for (const row of salesResult.data ?? []) {
+    const source = row.source === 'amazon_api' ? 'sales_api' : 'csv_upload'
+    if (row.asin) {
+      const asinKey = key(row.marketplace_id, row.asin)
+      if (source === 'sales_api' || !salesSourcesByAsin.has(asinKey)) {
+        salesSourcesByAsin.set(asinKey, source)
+      }
+    }
+    if (row.sku) {
+      const skuKey = key(row.marketplace_id, row.sku)
+      if (source === 'sales_api' || !salesSourcesBySku.has(skuKey)) {
+        salesSourcesBySku.set(skuKey, source)
+      }
+    }
+  }
+
+  const actions = calculateStockActions(products, inventoryRows, salesRows).map(action => {
+    const hasFulfillment = fulfillmentAsins.has(key(action.marketplaceId, action.asin))
+      || fulfillmentSkus.has(key(action.marketplaceId, action.sku))
+    const salesSource = salesSourcesByAsin.get(key(action.marketplaceId, action.asin))
+      ?? salesSourcesBySku.get(key(action.marketplaceId, action.sku))
+
+    return {
+      ...action,
+      inventorySource: hasFulfillment
+        ? 'fulfillment_report' as const
+        : action.available !== null
+          ? 'inventory_api' as const
+          : 'missing' as const,
+      salesSource: action.units30d !== null
+        ? (salesSource === 'sales_api' ? 'sales_api' as const : 'csv_upload' as const)
+        : 'missing' as const,
+    }
+  })
   const summary = actions.reduce(
     (counts, row) => {
       counts[row.status] += 1
@@ -184,6 +246,11 @@ export async function GET() {
       products_missing_inventory: Math.max(0, products.length - productsWithInventory),
       last_sync_status: lastSyncStatus,
       last_sync_warnings: lastSyncWarnings,
+      fulfillment_report_type: fulfillmentJobResult.data?.report_type ?? null,
+      fulfillment_report_status: fulfillmentJobResult.data?.processing_status ?? null,
+      fulfillment_report_completed_at: fulfillmentJobResult.data?.completed_at ?? null,
+      fulfillment_report_rows: fulfillmentJobResult.data?.stored_row_count ?? 0,
+      fulfillment_fc_available: fulfillmentJobResult.data?.fc_field_available ?? null,
     },
     freshness: {
       inventoryUpdatedAt: inventoryDates.at(-1) ?? null,

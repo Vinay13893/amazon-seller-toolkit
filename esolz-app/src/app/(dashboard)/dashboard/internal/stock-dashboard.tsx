@@ -31,6 +31,11 @@ type StockResponse = {
     products_missing_inventory: number
     last_sync_status: string | null
     last_sync_warnings: string[]
+    fulfillment_report_type: string | null
+    fulfillment_report_status: string | null
+    fulfillment_report_completed_at: string | null
+    fulfillment_report_rows: number
+    fulfillment_fc_available: boolean | null
   }
   freshness: {
     inventoryUpdatedAt: string | null
@@ -59,6 +64,15 @@ type AmazonSyncResult = {
   salesRowsUpdated: number
   warnings: string[]
   warehouseStockAvailable: boolean
+}
+
+type FulfillmentReportResult = {
+  jobId: string
+  reportType: string
+  processingStatus: string
+  storedRows: number
+  fcFieldAvailable: boolean | null
+  completedAt?: string | null
 }
 
 const statuses: StockStatus[] = ['OOS', 'Low stock', 'Healthy', 'Overstock', 'Missing data']
@@ -104,6 +118,9 @@ export function InternalStockDashboard() {
   const [syncingAmazon, setSyncingAmazon] = useState(false)
   const [amazonSyncError, setAmazonSyncError] = useState<string | null>(null)
   const [amazonSyncResult, setAmazonSyncResult] = useState<AmazonSyncResult | null>(null)
+  const [syncingFulfillment, setSyncingFulfillment] = useState(false)
+  const [fulfillmentError, setFulfillmentError] = useState<string | null>(null)
+  const [fulfillmentResult, setFulfillmentResult] = useState<FulfillmentReportResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async (silent = false) => {
@@ -209,6 +226,57 @@ export function InternalStockDashboard() {
       setSyncingAmazon(false)
     }
   }, [load, syncDays])
+
+  const syncFulfillmentReport = useCallback(async () => {
+    setSyncingFulfillment(true)
+    setFulfillmentError(null)
+    setFulfillmentResult(null)
+
+    try {
+      let response = await fetch('/api/internal/stock-actions/fulfillment-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ action: 'start', days: 30 }),
+      })
+      let result = await response.json() as FulfillmentReportResult & { error?: string }
+      if (!response.ok) throw new Error(result.error ?? 'Fulfillment report could not start.')
+      setFulfillmentResult(result)
+
+      let polls = 0
+      while (
+        !['DONE', 'FATAL', 'CANCELLED'].includes(result.processingStatus)
+        && polls < 120
+      ) {
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        response = await fetch('/api/internal/stock-actions/fulfillment-report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ action: 'continue', jobId: result.jobId }),
+        })
+        result = await response.json() as FulfillmentReportResult & { error?: string }
+        if (!response.ok) throw new Error(result.error ?? 'Fulfillment report sync stopped.')
+        setFulfillmentResult(result)
+        polls += 1
+      }
+
+      if (result.processingStatus !== 'DONE') {
+        throw new Error(
+          result.processingStatus === 'FATAL' || result.processingStatus === 'CANCELLED'
+            ? 'Amazon could not generate the fulfillment report.'
+            : 'Fulfillment report is still processing. Retry later.',
+        )
+      }
+      await load()
+    } catch (syncFailure) {
+      setFulfillmentError(
+        syncFailure instanceof Error ? syncFailure.message : 'Fulfillment report sync failed.',
+      )
+    } finally {
+      setSyncingFulfillment(false)
+    }
+  }, [load])
 
   const filteredActions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -358,8 +426,61 @@ export function InternalStockDashboard() {
         )}
 
         <p className="mt-4 text-xs text-muted-foreground">
-          Warehouse/FC-wise stock is not available from the current Amazon data yet.
+          {data.diagnostics.fulfillment_fc_available === true
+            ? 'Warehouse/FC identifiers are available from the latest fulfillment report.'
+            : 'Warehouse/FC-wise stock is not available from the current Amazon data yet.'}
         </p>
+      </div>
+
+      <div className="rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="font-bold">FBA Fulfillment Report</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Structured 30-day ledger summary. Raw report rows are not retained.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Latest: {data.diagnostics.fulfillment_report_status ?? 'Not synced'} ·{' '}
+              {data.diagnostics.fulfillment_report_rows.toLocaleString('en-IN')} rows ·{' '}
+              FC/warehouse: {data.diagnostics.fulfillment_fc_available === true
+                ? 'Available'
+                : data.diagnostics.fulfillment_fc_available === false
+                  ? 'Not provided'
+                  : 'Unknown'}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={syncingFulfillment}
+            onClick={() => void syncFulfillmentReport()}
+          >
+            {syncingFulfillment
+              ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              : <RefreshCcw className="mr-2 h-4 w-4" />}
+            {syncingFulfillment ? 'Syncing fulfillment…' : 'Sync fulfillment report'}
+          </Button>
+        </div>
+
+        {fulfillmentResult && (
+          <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+            <p className="font-medium">Status: {fulfillmentResult.processingStatus}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Structured rows stored: {fulfillmentResult.storedRows.toLocaleString('en-IN')} ·{' '}
+              FC/warehouse field: {fulfillmentResult.fcFieldAvailable === true
+                ? 'available'
+                : fulfillmentResult.fcFieldAvailable === false
+                  ? 'not provided'
+                  : 'unknown'}
+            </p>
+          </div>
+        )}
+
+        {fulfillmentError && (
+          <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            {fulfillmentError}
+          </div>
+        )}
       </div>
 
       <details className="rounded-xl border border-border bg-card p-4">
@@ -465,7 +586,7 @@ export function InternalStockDashboard() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1200px] text-sm">
+          <table className="w-full min-w-[1340px] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="px-4 py-3 text-left">Product</th>
@@ -477,6 +598,7 @@ export function InternalStockDashboard() {
                 <th className="px-3 py-3 text-right">Days Cover</th>
                 <th className="px-3 py-3 text-right">Suggested Reorder</th>
                 <th className="px-3 py-3 text-left">Status</th>
+                <th className="px-3 py-3 text-left">Data source</th>
                 <th className="px-4 py-3 text-left">Action</th>
               </tr>
             </thead>
@@ -511,6 +633,16 @@ export function InternalStockDashboard() {
                   <td className="px-3 py-3 text-right">{formatNumber(row.daysCover, 1)}</td>
                   <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedReorder)}</td>
                   <td className="px-3 py-3">{statusBadge(row.status)}</td>
+                  <td className="px-3 py-3">
+                    <div className="flex max-w-[180px] flex-wrap gap-1">
+                      <Badge variant="outline" className="text-[9px]">
+                        {row.inventorySource ?? 'missing'}
+                      </Badge>
+                      <Badge variant="outline" className="text-[9px]">
+                        {row.salesSource ?? 'missing'}
+                      </Badge>
+                    </div>
+                  </td>
                   <td className="max-w-[300px] px-4 py-3 text-xs text-muted-foreground">{row.action}</td>
                 </tr>
               ))}

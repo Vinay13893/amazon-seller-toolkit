@@ -49,6 +49,8 @@ export type StockAction = {
   status: StockStatus
   action: string
   inventoryUpdatedAt: string | null
+  inventorySource?: 'fulfillment_report' | 'inventory_api' | 'missing'
+  salesSource?: 'sales_api' | 'csv_upload' | 'missing'
 }
 
 function normalized(value: string | null | undefined): string {
