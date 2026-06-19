@@ -12,6 +12,7 @@ import {
   PackageX,
   RefreshCw,
   Search,
+  RefreshCcw,
   Upload,
   Warehouse,
 } from 'lucide-react'
@@ -29,6 +30,7 @@ type StockResponse = {
     inventoryDataAvailable: boolean
     salesDataAvailable: boolean
     salesTableAvailable: boolean
+    amazonSyncCompletedAt: string | null
     resultLimitReached: boolean
   }
 }
@@ -37,6 +39,17 @@ type UploadResult = {
   accepted: number
   rejected: number
   errors: Array<{ row: number; message: string }>
+}
+
+type AmazonSyncResult = {
+  jobId: string
+  status: 'running' | 'completed' | 'failed'
+  phase: 'listings' | 'inventory' | 'sales' | 'completed'
+  listingsUpdated: number
+  inventoryUpdated: number
+  salesRowsUpdated: number
+  warnings: string[]
+  warehouseStockAvailable: boolean
 }
 
 const statuses: StockStatus[] = ['OOS', 'Low stock', 'Healthy', 'Overstock', 'Missing data']
@@ -78,6 +91,10 @@ export function InternalStockDashboard() {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
+  const [syncDays, setSyncDays] = useState(90)
+  const [syncingAmazon, setSyncingAmazon] = useState(false)
+  const [amazonSyncError, setAmazonSyncError] = useState<string | null>(null)
+  const [amazonSyncResult, setAmazonSyncResult] = useState<AmazonSyncResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -138,6 +155,48 @@ export function InternalStockDashboard() {
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }, [load])
+
+  const syncAmazonData = useCallback(async () => {
+    setSyncingAmazon(true)
+    setAmazonSyncError(null)
+    setAmazonSyncResult(null)
+
+    try {
+      let response = await fetch('/api/internal/stock-actions/sync-amazon-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ days: syncDays }),
+      })
+      let result = await response.json() as AmazonSyncResult & { error?: string }
+      if (!response.ok) throw new Error(result.error ?? 'Amazon sync could not start.')
+      setAmazonSyncResult(result)
+
+      let steps = 0
+      while (result.status === 'running' && steps < 2000) {
+        await new Promise(resolve => setTimeout(resolve, 1100))
+        response = await fetch('/api/internal/stock-actions/sync-amazon-data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ jobId: result.jobId }),
+        })
+        result = await response.json() as AmazonSyncResult & { error?: string }
+        if (!response.ok) throw new Error(result.error ?? 'Amazon sync stopped.')
+        setAmazonSyncResult(result)
+        steps += 1
+      }
+
+      if (result.status !== 'completed') {
+        throw new Error('Amazon sync did not complete in this session.')
+      }
+      await load()
+    } catch (syncFailure) {
+      setAmazonSyncError(syncFailure instanceof Error ? syncFailure.message : 'Amazon sync failed.')
+    } finally {
+      setSyncingAmazon(false)
+    }
+  }, [load, syncDays])
 
   const filteredActions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -221,7 +280,71 @@ export function InternalStockDashboard() {
       <div className="rounded-xl border border-border bg-card p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="font-bold">Upload daily sales CSV</h2>
+            <h2 className="font-bold">Sync Amazon Stock &amp; Sales</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Refreshes structured listings, FBA inventory summaries, and daily SKU sales metrics.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Last completed sync: {formatDate(data.freshness.amazonSyncCompletedAt)}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <select
+              value={syncDays}
+              onChange={event => setSyncDays(Number(event.target.value))}
+              disabled={syncingAmazon}
+              className="h-9 rounded-md border border-input bg-background px-3 text-sm"
+              aria-label="Amazon sales lookback"
+            >
+              <option value={30}>Last 30 days</option>
+              <option value={90}>Last 90 days</option>
+              <option value={180}>Last 180 days</option>
+              <option value={365}>Last 365 days</option>
+            </select>
+            <Button type="button" onClick={() => void syncAmazonData()} disabled={syncingAmazon}>
+              {syncingAmazon
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                : <RefreshCcw className="mr-2 h-4 w-4" />}
+              {syncingAmazon ? 'Syncing Amazon…' : 'Sync Amazon Stock & Sales'}
+            </Button>
+          </div>
+        </div>
+
+        {amazonSyncResult && (
+          <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+            <p className="font-medium">
+              {amazonSyncResult.status === 'completed'
+                ? 'Amazon sync completed'
+                : `Syncing ${amazonSyncResult.phase}…`}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Listings updated: {amazonSyncResult.listingsUpdated.toLocaleString('en-IN')} ·{' '}
+              Inventory updated: {amazonSyncResult.inventoryUpdated.toLocaleString('en-IN')} ·{' '}
+              Sales rows updated: {amazonSyncResult.salesRowsUpdated.toLocaleString('en-IN')}
+            </p>
+            {amazonSyncResult.warnings.map(warning => (
+              <p key={warning} className="mt-1 text-xs text-amber-700 dark:text-amber-300">• {warning}</p>
+            ))}
+          </div>
+        )}
+
+        {amazonSyncError && (
+          <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+            {amazonSyncError}
+          </div>
+        )}
+
+        <p className="mt-4 text-xs text-muted-foreground">
+          Warehouse/FC-wise stock is not available from the current Amazon data yet.
+        </p>
+      </div>
+
+      <details className="rounded-xl border border-border bg-card p-4">
+        <summary className="cursor-pointer font-bold">Manual fallback upload</summary>
+        <div className="mt-4">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="font-semibold">Upload daily sales CSV</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               Aggregated rows only. Required: sales_date, asin, ordered_units. Maximum 2 MB or 5,000 accepted rows.
             </p>
@@ -276,7 +399,8 @@ export function InternalStockDashboard() {
             )}
           </div>
         )}
-      </div>
+        </div>
+      </details>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {cards.map(card => (

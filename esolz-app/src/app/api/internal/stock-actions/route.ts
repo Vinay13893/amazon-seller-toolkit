@@ -20,7 +20,7 @@ export async function GET() {
   const thirtyDaysAgo = new Date()
   thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29)
 
-  const [listingsResult, inventoryResult, salesResult] = await Promise.all([
+  const [listingsResult, inventoryResult, salesResult, latestSyncResult] = await Promise.all([
     supabase
       .from('amazon_listing_items')
       .select('asin, sku, marketplace_id, item_name, brand, image_url')
@@ -39,6 +39,15 @@ export async function GET() {
       .eq('workspace_id', access.workspaceId)
       .gte('sales_date', thirtyDaysAgo.toISOString().slice(0, 10))
       .limit(30000),
+    supabase
+      .from('amazon_sync_jobs')
+      .select('finished_at')
+      .eq('workspace_id', access.workspaceId)
+      .eq('job_type', 'internal_stock_sales_sync')
+      .eq('status', 'completed')
+      .order('finished_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
   ])
 
   if (listingsResult.error) {
@@ -111,6 +120,7 @@ export async function GET() {
       inventoryDataAvailable: !inventoryResult.error && inventoryRows.length > 0,
       salesDataAvailable: !salesResult.error && salesRows.length > 0,
       salesTableAvailable: !salesResult.error,
+      amazonSyncCompletedAt: latestSyncResult.data?.finished_at ?? null,
       resultLimitReached: (listingsResult.data?.length ?? 0) === 1000,
     },
   })
