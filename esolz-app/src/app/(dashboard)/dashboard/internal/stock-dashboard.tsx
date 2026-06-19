@@ -123,6 +123,70 @@ type FulfillmentReportResult = {
 }
 
 const statuses: StockStatus[] = ['OOS', 'Low stock', 'Healthy', 'Overstock', 'Missing data']
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
+
+type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
+type PlanFilterId = 'fba' | 'flex' | 'missingStock' | 'unknownSource' | 'zoneGap'
+
+const NEXT_PLAN_FILTERS: Array<{ id: PlanFilterId; label: string; predicate: (row: NextPlanRow) => boolean }> = [
+  { id: 'fba', label: 'FBA SKUs needing replenishment', predicate: row => row.suggestedFbaReplenishment > 0 },
+  { id: 'flex', label: 'Seller Flex SKUs needing replenishment', predicate: row => row.suggestedSellerFlexReplenishment > 0 },
+  {
+    id: 'missingStock',
+    label: 'Demand but missing stock data',
+    predicate: row => row.missingDataWarnings.includes('Sales exist but inventory missing; sync fulfillment report.'),
+  },
+  { id: 'unknownSource', label: 'Unknown source sales', predicate: row => row.unknownSourceSales30d > 0 },
+  {
+    id: 'zoneGap',
+    label: 'Zone mapping gaps',
+    predicate: row => row.missingDataWarnings.includes('Zone mapping missing; add state-zone map.'),
+  },
+]
+
+function PaginationControls({
+  page,
+  totalPages,
+  pageSize,
+  totalRows,
+  onPageChange,
+}: {
+  page: number
+  totalPages: number
+  pageSize: number
+  totalRows: number
+  onPageChange: (page: number) => void
+}) {
+  if (totalRows === 0) return null
+  const start = (page - 1) * pageSize + 1
+  const end = Math.min(totalRows, page * pageSize)
+  return (
+    <div className="flex flex-col gap-2 border-t border-border px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+      <span>Showing {start.toLocaleString('en-IN')}–{end.toLocaleString('en-IN')} of {totalRows.toLocaleString('en-IN')}</span>
+      <div className="flex items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+        >
+          Previous
+        </Button>
+        <span>Page {page} of {totalPages}</span>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+        >
+          Next
+        </Button>
+      </div>
+    </div>
+  )
+}
 
 function formatDate(value: string | null): string {
   if (!value) return 'Not available'
@@ -158,6 +222,10 @@ export function InternalStockDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<'All' | StockStatus>('All')
+  const [planFilter, setPlanFilter] = useState<PlanFilterId | null>(null)
+  const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_OPTIONS[0])
+  const [planPage, setPlanPage] = useState(1)
+  const [actionsPage, setActionsPage] = useState(1)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null)
@@ -340,6 +408,43 @@ export function InternalStockDashboard() {
     })
   }, [data?.actions, query, status])
 
+  const filteredPlanRows = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase()
+    const activePredicate = NEXT_PLAN_FILTERS.find(filter => filter.id === planFilter)?.predicate
+    return (data?.nextStockPlan.rows ?? []).filter(row => {
+      const matchesFilter = !activePredicate || activePredicate(row)
+      const matchesQuery = !normalizedQuery || [
+        row.title,
+        row.asin,
+        row.sku,
+        row.brand,
+      ].some(value => value?.toLowerCase().includes(normalizedQuery))
+      return matchesFilter && matchesQuery
+    })
+  }, [data?.nextStockPlan.rows, planFilter, query])
+
+  useEffect(() => {
+    setPlanPage(1)
+  }, [planFilter, query, pageSize])
+
+  useEffect(() => {
+    setActionsPage(1)
+  }, [status, query, pageSize])
+
+  const planTotalPages = Math.max(1, Math.ceil(filteredPlanRows.length / pageSize))
+  const actionsTotalPages = Math.max(1, Math.ceil(filteredActions.length / pageSize))
+  const safePlanPage = Math.min(planPage, planTotalPages)
+  const safeActionsPage = Math.min(actionsPage, actionsTotalPages)
+  const paginatedPlanRows = filteredPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
+  const paginatedActions = filteredActions.slice((safeActionsPage - 1) * pageSize, safeActionsPage * pageSize)
+  const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
+
+  const clearAllFilters = useCallback(() => {
+    setStatus('All')
+    setPlanFilter(null)
+    setQuery('')
+  }, [])
+
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center gap-2 text-muted-foreground">
@@ -484,7 +589,7 @@ export function InternalStockDashboard() {
           <div>
             <h2 className="font-bold">FBA Fulfillment Report</h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Structured 30-day ledger summary. Raw report rows are not retained.
+              Structured 30-day ledger detail report. Raw report rows are not retained.
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Latest: {data.diagnostics.fulfillment_report_status ?? 'Not synced'} ·{' '}
@@ -594,16 +699,40 @@ export function InternalStockDashboard() {
       </details>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        {cards.map(card => (
-          <div key={card.label} className="rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{card.label}</p>
-              <card.icon className={`h-4 w-4 ${card.tone}`} />
-            </div>
-            <p className="mt-2 text-2xl font-black">{card.value.toLocaleString('en-IN')}</p>
-          </div>
-        ))}
+        {cards.map(card => {
+          const isActive = status === card.label
+          return (
+            <button
+              key={card.label}
+              type="button"
+              onClick={() => setStatus(isActive ? 'All' : card.label as StockStatus)}
+              className={`rounded-xl border bg-card p-4 text-left transition-colors hover:bg-muted/40 ${isActive ? 'border-primary ring-1 ring-primary' : 'border-border'}`}
+            >
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{card.label}</p>
+                <card.icon className={`h-4 w-4 ${card.tone}`} />
+              </div>
+              <p className="mt-2 text-2xl font-black">{card.value.toLocaleString('en-IN')}</p>
+            </button>
+          )
+        })}
       </div>
+
+      {hasActiveFilter && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-primary/5 px-4 py-2 text-sm">
+          <span className="font-medium">Active filter:</span>
+          {status !== 'All' && <Badge variant="outline">Status: {status}</Badge>}
+          {planFilter && (
+            <Badge variant="outline">
+              {NEXT_PLAN_FILTERS.find(filter => filter.id === planFilter)?.label}
+            </Badge>
+          )}
+          {query.trim().length > 0 && <Badge variant="outline">Search: &quot;{query.trim()}&quot;</Badge>}
+          <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={clearAllFilters}>
+            Clear filter
+          </Button>
+        </div>
+      )}
 
       <div className="rounded-xl border border-border bg-card">
         <div className="flex flex-col gap-2 border-b border-border p-4">
@@ -617,26 +746,38 @@ export function InternalStockDashboard() {
         </div>
 
         <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-5">
-          <div className="rounded-xl border border-border bg-card p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">FBA replenishment needed</p>
-            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.fbaReplenishmentNeeded.toLocaleString('en-IN')}</p>
-          </div>
-          <div className="rounded-xl border border-border bg-card p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Seller Flex replenishment needed</p>
-            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.sellerFlexReplenishmentNeeded.toLocaleString('en-IN')}</p>
-          </div>
-          <div className="rounded-xl border border-border bg-card p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Demand but missing stock data</p>
-            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.productsMissingStockData.toLocaleString('en-IN')}</p>
-          </div>
-          <div className="rounded-xl border border-border bg-card p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Unknown source sales</p>
-            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.productsUnknownSourceSales.toLocaleString('en-IN')}</p>
-          </div>
-          <div className="rounded-xl border border-border bg-card p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Zone mapping gaps</p>
-            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.zoneMappingGaps.toLocaleString('en-IN')}</p>
-          </div>
+          {([
+            ['fba', 'FBA SKUs needing replenishment', data.nextStockPlan.summary.fbaReplenishmentNeeded],
+            ['flex', 'Seller Flex SKUs needing replenishment', data.nextStockPlan.summary.sellerFlexReplenishmentNeeded],
+            ['missingStock', 'Demand but missing stock data', data.nextStockPlan.summary.productsMissingStockData],
+            ['unknownSource', 'Unknown source sales', data.nextStockPlan.summary.productsUnknownSourceSales],
+            ['zoneGap', 'Zone mapping gaps', data.nextStockPlan.summary.zoneMappingGaps],
+          ] as Array<[PlanFilterId, string, number]>).map(([id, label, value]) => {
+            const isActive = planFilter === id
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setPlanFilter(isActive ? null : id)}
+                className={`rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/40 ${isActive ? 'border-primary ring-1 ring-primary' : 'border-border'}`}
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+                <p className="mt-2 text-2xl font-black">{value.toLocaleString('en-IN')}</p>
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+          <span>Rows per page</span>
+          <select
+            value={pageSize}
+            onChange={event => setPageSize(Number(event.target.value))}
+            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            aria-label="Rows per page"
+          >
+            {PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
+          </select>
         </div>
 
         <div className="overflow-x-auto">
@@ -660,8 +801,8 @@ export function InternalStockDashboard() {
               </tr>
             </thead>
             <tbody>
-              {data.nextStockPlan.rows.map((row, index) => (
-                <tr key={`next-plan-${row.marketplaceId}-${row.sku}-${row.asin}`} className={index < data.nextStockPlan.rows.length - 1 ? 'border-b border-border/50' : ''}>
+              {paginatedPlanRows.map((row, index) => (
+                <tr key={`next-plan-${row.marketplaceId}-${row.sku}-${row.asin}`} className={index < paginatedPlanRows.length - 1 ? 'border-b border-border/50' : ''}>
                   <td className="px-4 py-3">
                     <div className="flex min-w-[220px] items-center gap-3">
                       <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded-md border border-border bg-muted">
@@ -705,12 +846,22 @@ export function InternalStockDashboard() {
             </tbody>
           </table>
 
-          {data.nextStockPlan.rows.length === 0 && (
+          {filteredPlanRows.length === 0 && (
             <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-              Next Stock Plan requires synced internal stock and sales data.
+              {data.nextStockPlan.rows.length === 0
+                ? 'Next Stock Plan requires synced internal stock and sales data.'
+                : 'No rows match the current filter or search.'}
             </div>
           )}
         </div>
+
+        <PaginationControls
+          page={safePlanPage}
+          totalPages={planTotalPages}
+          pageSize={pageSize}
+          totalRows={filteredPlanRows.length}
+          onPageChange={setPlanPage}
+        />
       </div>
 
       <div className="rounded-xl border border-border bg-card">
@@ -736,7 +887,7 @@ export function InternalStockDashboard() {
             </select>
           </div>
           <p className="text-xs text-muted-foreground">
-            Showing {filteredActions.length.toLocaleString('en-IN')} of {data.actions.length.toLocaleString('en-IN')} products
+            Matching {filteredActions.length.toLocaleString('en-IN')} of {data.actions.length.toLocaleString('en-IN')} products
           </p>
         </div>
 
@@ -758,8 +909,8 @@ export function InternalStockDashboard() {
               </tr>
             </thead>
             <tbody>
-              {filteredActions.map((row, index) => (
-                <tr key={`${row.marketplaceId}-${row.sku}-${row.asin}`} className={index < filteredActions.length - 1 ? 'border-b border-border/50' : ''}>
+              {paginatedActions.map((row, index) => (
+                <tr key={`${row.marketplaceId}-${row.sku}-${row.asin}`} className={index < paginatedActions.length - 1 ? 'border-b border-border/50' : ''}>
                   <td className="px-4 py-3">
                     <div className="flex min-w-[240px] items-center gap-3">
                       <div className="relative h-11 w-11 flex-shrink-0 overflow-hidden rounded-md border border-border bg-muted">
@@ -810,6 +961,14 @@ export function InternalStockDashboard() {
             </div>
           )}
         </div>
+
+        <PaginationControls
+          page={safeActionsPage}
+          totalPages={actionsTotalPages}
+          pageSize={pageSize}
+          totalRows={filteredActions.length}
+          onPageChange={setActionsPage}
+        />
 
         <div className="flex flex-col gap-1 border-t border-border px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:justify-between">
           <span>Inventory updated: {formatDate(data.freshness.inventoryUpdatedAt)}</span>
