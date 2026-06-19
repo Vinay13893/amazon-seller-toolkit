@@ -14,7 +14,8 @@ export const COMPONENT_COLUMNS = [
   'Replenish SKU 2',
   'Replenish SKU 3',
 ] as const
-const TERMINAL_QUANTITY = /&(\d+)$/
+// Terminal quantity suffix: "&<int>" or "^<int>" are both valid quantity markers in this workbook.
+const TERMINAL_QUANTITY = /[&^](\d+)$/
 
 type RequiredColumn = typeof REQUIRED_COLUMNS[number]
 type MappingType = 'single' | 'combo'
