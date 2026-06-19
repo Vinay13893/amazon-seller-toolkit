@@ -60,6 +60,44 @@ type NormalizedTransactionRow = {
   source_row_number: number
 }
 
+/**
+ * Amazon's transaction export can contain a small number of genuinely
+ * distinct rows that collide on our dedupe business-key (e.g. several
+ * same-amount fee lines posted at the identical second). Bulk-insert each
+ * chunk; on a unique_violation, fall back to row-by-row so one colliding row
+ * doesn't block the rest of the batch — duplicates are counted, not stored.
+ */
+async function insertRowsResilient(
+  admin: ReturnType<typeof createAdminClient>,
+  rows: NormalizedTransactionRow[],
+): Promise<{ insertedCount: number; duplicateSkippedCount: number }> {
+  let insertedCount = 0
+  let duplicateSkippedCount = 0
+
+  for (let index = 0; index < rows.length; index += WRITE_CHUNK_SIZE) {
+    const chunk = rows.slice(index, index + WRITE_CHUNK_SIZE)
+    const { error } = await admin.from(TABLE).insert(chunk)
+    if (!error) {
+      insertedCount += chunk.length
+      continue
+    }
+    if (error.code !== '23505') throw new Error(error.message)
+
+    for (const row of chunk) {
+      const { error: rowError } = await admin.from(TABLE).insert([row])
+      if (!rowError) {
+        insertedCount += 1
+      } else if (rowError.code === '23505') {
+        duplicateSkippedCount += 1
+      } else {
+        throw new Error(rowError.message)
+      }
+    }
+  }
+
+  return { insertedCount, duplicateSkippedCount }
+}
+
 function dedupeKey(row: {
   settlement_id: string | null
   order_id: string | null
@@ -212,15 +250,17 @@ export async function POST(request: Request) {
     }
   }
 
-  for (let index = 0; index < insertRows.length; index += WRITE_CHUNK_SIZE) {
-    const chunk = insertRows.slice(index, index + WRITE_CHUNK_SIZE)
-    const { error } = await admin.from(TABLE).insert(chunk)
-    if (error) {
-      return NextResponse.json(
-        { error: 'New transactions could not be saved. Confirm migration 033 is applied.' },
-        { status: 503 },
-      )
-    }
+  let insertedCount = 0
+  let duplicateSkippedCount = 0
+  try {
+    const insertResult = await insertRowsResilient(admin, insertRows)
+    insertedCount = insertResult.insertedCount
+    duplicateSkippedCount = insertResult.duplicateSkippedCount
+  } catch {
+    return NextResponse.json(
+      { error: 'New transactions could not be saved. Confirm migration 033 is applied.' },
+      { status: 503 },
+    )
   }
 
   for (let index = 0; index < updateRows.length; index += WRITE_CHUNK_SIZE) {
@@ -237,7 +277,8 @@ export async function POST(request: Request) {
   return NextResponse.json({
     written: true,
     ...result.stats,
-    insertedCount: insertRows.length,
+    insertedCount,
     updatedCount: updateRows.length,
+    duplicateSkippedCount,
   })
 }
