@@ -599,6 +599,7 @@ export function InternalStockDashboard() {
     fbaSales30d: row => row.fbaSales30d,
     sellerFlexSales30d: row => row.sellerFlexSales30d,
     easyShipMfnSales30d: row => row.easyShipMfnSales30d,
+    unknownSourceSales30d: row => row.unknownSourceSales30d,
     availableStock: row => row.availableFbaStock + row.availableSellerFlexStock,
     inboundStock: row => row.inboundStock,
     ledgerBalanceStock: row => row.ledgerBalanceStock,
@@ -1116,6 +1117,8 @@ export function InternalStockDashboard() {
                 { header: 'Total Sales', value: row => row.totalSales30d },
                 { header: 'FBA Sales', value: row => row.fbaSales30d },
                 { header: 'Seller Flex Sales', value: row => row.sellerFlexSales30d },
+                { header: 'Easy Ship/MFN Sales', value: row => row.easyShipMfnSales30d },
+                { header: 'Unknown Source Sales', value: row => row.unknownSourceSales30d },
                 { header: 'Available Stock', value: row => row.availableFbaStock + row.availableSellerFlexStock },
                 { header: 'Inbound Stock', value: row => row.inboundStock },
                 { header: 'Ledger Balance Approx', value: row => row.ledgerBalanceStock },
@@ -1169,7 +1172,7 @@ export function InternalStockDashboard() {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[2080px] text-sm">
+          <table className="w-full min-w-[2240px] text-sm">
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                 <SortableTh label="Product" column="title" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} className="px-4" />
@@ -1179,6 +1182,7 @@ export function InternalStockDashboard() {
                 <SortableTh label="FBA Sales" column="fbaSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Flex Sales" column="sellerFlexSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Easy Ship/MFN Sales" column="easyShipMfnSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Unknown Source Sales" column="unknownSourceSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Available Stock" column="availableStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Inbound" column="inboundStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Ledger Balance Stock (approx.)" column="ledgerBalanceStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
@@ -1218,6 +1222,7 @@ export function InternalStockDashboard() {
                   <td className="px-3 py-3 text-right">{formatNumber(row.fbaSales30d)}</td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.sellerFlexSales30d)}</td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.easyShipMfnSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.unknownSourceSales30d)}</td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.availableFbaStock + row.availableSellerFlexStock)}</td>
                   <td className="px-3 py-3 text-right">{formatNumber(row.inboundStock)}</td>
                   <td className="px-3 py-3 text-right">
