@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server'
 import { getInternalAccessContext } from '@/lib/internal-access'
 import {
+  buildNextStockPlan,
+  DEFAULT_REPLENISHMENT_ASSUMPTIONS,
+} from '@/lib/internal-replenishment-planner'
+import {
   calculateStockActions,
   type DailySalesInput,
   type InventoryInput,
@@ -20,6 +24,10 @@ export async function GET() {
   const supabase = await createClient()
   const thirtyDaysAgo = new Date()
   thirtyDaysAgo.setUTCDate(thirtyDaysAgo.getUTCDate() - 29)
+  const lookbackStart = new Date()
+  lookbackStart.setUTCDate(
+    lookbackStart.getUTCDate() - (DEFAULT_REPLENISHMENT_ASSUMPTIONS.salesLookbackDays - 1),
+  )
 
   const [
     listingsResult,
@@ -28,6 +36,10 @@ export async function GET() {
     latestSyncResult,
     fulfillmentRowsResult,
     fulfillmentJobResult,
+    fulfillmentLocationsResult,
+    stateZoneMapResult,
+    fulfillmentSalesDailyResult,
+    inventoryByLocationResult,
   ] = await Promise.all([
     supabase
       .from('amazon_listing_items')
@@ -67,6 +79,30 @@ export async function GET() {
       .order('requested_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase
+      .from('internal_fulfillment_locations')
+      .select('location_code, location_type')
+      .eq('workspace_id', access.workspaceId)
+      .eq('is_active', true)
+      .limit(5000),
+    supabase
+      .from('internal_state_zone_map')
+      .select('state_code, zone_code')
+      .eq('workspace_id', access.workspaceId)
+      .eq('is_active', true)
+      .limit(5000),
+    supabase
+      .from('internal_fulfillment_sales_daily')
+      .select('asin, sku, marketplace_id, sales_date, ordered_units, state_code, source')
+      .eq('workspace_id', access.workspaceId)
+      .gte('sales_date', lookbackStart.toISOString().slice(0, 10))
+      .limit(30000),
+    supabase
+      .from('internal_inventory_by_location')
+      .select('asin, sku, marketplace_id, location_code, available_quantity, inbound_quantity, reserved_quantity, unsellable_quantity')
+      .eq('workspace_id', access.workspaceId)
+      .order('snapshot_at', { ascending: false })
+      .limit(30000),
   ])
 
   if (listingsResult.error) {
@@ -214,6 +250,68 @@ export async function GET() {
     },
   )
 
+  const nextStockPlan = buildNextStockPlan({
+    products,
+    salesRows: (salesResult.error
+      ? []
+      : (salesResult.data ?? []).map(row => ({
+          asin: row.asin as string,
+          sku: (row.sku as string | null) ?? null,
+          marketplaceId: row.marketplace_id as string,
+          salesDate: row.sales_date as string,
+          orderedUnits: Number(row.ordered_units ?? 0),
+          source: (row.source as string | null) ?? null,
+        }))),
+    inventoryApiRows: (inventoryResult.error
+      ? []
+      : (inventoryResult.data ?? []).map(row => ({
+          asin: (row.asin as string | null) ?? null,
+          sku: row.sku as string,
+          marketplaceId: (row.marketplace_id as string | null) ?? null,
+          available: Number(row.available_quantity ?? 0),
+          inbound: Number(row.inbound_quantity ?? 0),
+          reserved: Number(row.reserved_quantity ?? 0),
+          unfulfillable: Number((row as { unfulfillable_quantity?: number | null }).unfulfillable_quantity ?? 0),
+        }))),
+    fulfillmentRows: (fulfillmentRowsResult.data ?? []).map(row => ({
+      asin: (row.asin as string | null) ?? null,
+      sku: (row.sku as string | null) ?? null,
+      marketplaceId: (row.marketplace_id as string | null) ?? null,
+      fulfillmentCenterId: (row.fulfillment_center_id as string | null) ?? null,
+      eventType: ((row as { event_type?: string | null }).event_type as string | null) ?? null,
+      quantity: Number((row as { quantity?: number | null }).quantity ?? 0),
+      reportDate: ((row as { report_date?: string | null }).report_date as string | null) ?? null,
+    })),
+    fulfillmentLocations: (fulfillmentLocationsResult.data ?? []).map(row => ({
+      locationCode: row.location_code as string,
+      locationType: row.location_type as string,
+    })),
+    stateZoneMap: (stateZoneMapResult.data ?? []).map(row => ({
+      stateCode: row.state_code as string,
+      zoneCode: row.zone_code as string,
+    })),
+    fulfillmentSalesDaily: (fulfillmentSalesDailyResult.data ?? []).map(row => ({
+      asin: (row.asin as string | null) ?? null,
+      sku: (row.sku as string | null) ?? null,
+      marketplaceId: (row.marketplace_id as string | null) ?? null,
+      salesDate: row.sales_date as string,
+      units: Number(row.ordered_units ?? 0),
+      stateCode: (row.state_code as string | null) ?? null,
+      source: (row.source as string | null) ?? null,
+    })),
+    inventoryByLocation: (inventoryByLocationResult.data ?? []).map(row => ({
+      asin: (row.asin as string | null) ?? null,
+      sku: (row.sku as string | null) ?? null,
+      marketplaceId: (row.marketplace_id as string | null) ?? null,
+      locationCode: (row.location_code as string | null) ?? null,
+      available: Number(row.available_quantity ?? 0),
+      inbound: Number(row.inbound_quantity ?? 0),
+      reserved: Number(row.reserved_quantity ?? 0),
+      unsellable: Number(row.unsellable_quantity ?? 0),
+    })),
+    lookbackDays: DEFAULT_REPLENISHMENT_ASSUMPTIONS.salesLookbackDays,
+  })
+
   const inventoryDates = inventoryRows
     .map(row => row.lastSyncedAt)
     .filter((value): value is string => Boolean(value))
@@ -239,6 +337,7 @@ export async function GET() {
   return NextResponse.json({
     summary,
     actions,
+    nextStockPlan,
     diagnostics: {
       products_with_sales: productsWithSales,
       products_missing_sales: Math.max(0, products.length - productsWithSales),
@@ -251,6 +350,10 @@ export async function GET() {
       fulfillment_report_completed_at: fulfillmentJobResult.data?.completed_at ?? null,
       fulfillment_report_rows: fulfillmentJobResult.data?.stored_row_count ?? 0,
       fulfillment_fc_available: fulfillmentJobResult.data?.fc_field_available ?? null,
+      state_zone_rows: stateZoneMapResult.data?.length ?? 0,
+      fulfillment_location_rows: fulfillmentLocationsResult.data?.length ?? 0,
+      fulfillment_sales_daily_rows: fulfillmentSalesDailyResult.data?.length ?? 0,
+      inventory_by_location_rows: inventoryByLocationResult.data?.length ?? 0,
     },
     freshness: {
       inventoryUpdatedAt: inventoryDates.at(-1) ?? null,

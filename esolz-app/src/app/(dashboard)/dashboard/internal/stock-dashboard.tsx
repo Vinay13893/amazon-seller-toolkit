@@ -24,6 +24,49 @@ import type { StockAction, StockStatus } from '@/lib/internal-stock-actions'
 type StockResponse = {
   summary: Record<StockStatus, number>
   actions: StockAction[]
+  nextStockPlan: {
+    assumptions: {
+      targetFbaCoverDays: number
+      targetFlexCoverDays: number
+      safetyStockDays: number
+      salesLookbackDays: number
+      maxLookbackDays: number
+    }
+    summary: {
+      fbaReplenishmentNeeded: number
+      sellerFlexReplenishmentNeeded: number
+      productsMissingStockData: number
+      productsUnknownSourceSales: number
+      zoneMappingGaps: number
+    }
+    rows: Array<{
+      asin: string
+      sku: string | null
+      marketplaceId: string | null
+      title: string | null
+      brand: string | null
+      imageUrl: string | null
+      primarySource: 'fulfillment_report' | 'inventory_api' | 'sales_api' | 'csv_upload' | 'missing'
+      totalSales30d: number
+      fbaSales30d: number
+      sellerFlexSales30d: number
+      easyShipMfnSales30d: number
+      unknownSourceSales30d: number
+      availableFbaStock: number
+      availableSellerFlexStock: number
+      inboundStock: number
+      reservedStock: number
+      unsellableStock: number
+      daysCover: number | null
+      targetCoverDays: number
+      safetyStock: number
+      suggestedFbaReplenishment: number
+      suggestedSellerFlexReplenishment: number
+      missingDataWarnings: string[]
+      stateZoneInsight: string
+      actionMessage: string
+    }>
+  }
   diagnostics: {
     products_with_sales: number
     products_missing_sales: number
@@ -36,6 +79,10 @@ type StockResponse = {
     fulfillment_report_completed_at: string | null
     fulfillment_report_rows: number
     fulfillment_fc_available: boolean | null
+    state_zone_rows: number
+    fulfillment_location_rows: number
+    fulfillment_sales_daily_rows: number
+    inventory_by_location_rows: number
   }
   freshness: {
     inventoryUpdatedAt: string | null
@@ -556,6 +603,114 @@ export function InternalStockDashboard() {
             <p className="mt-2 text-2xl font-black">{card.value.toLocaleString('en-IN')}</p>
           </div>
         ))}
+      </div>
+
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-col gap-2 border-b border-border p-4">
+          <h2 className="text-lg font-black">Next Stock Plan</h2>
+          <p className="text-xs text-muted-foreground">
+            Replenishment model with separate FBA, Seller Flex, Easy Ship/MFN and unknown-source flows.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Defaults: FBA target {data.nextStockPlan.assumptions.targetFbaCoverDays}d · Seller Flex target {data.nextStockPlan.assumptions.targetFlexCoverDays}d · Safety {data.nextStockPlan.assumptions.safetyStockDays}d · Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-5">
+          <div className="rounded-xl border border-border bg-card p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">FBA replenishment needed</p>
+            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.fbaReplenishmentNeeded.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Seller Flex replenishment needed</p>
+            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.sellerFlexReplenishmentNeeded.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Demand but missing stock data</p>
+            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.productsMissingStockData.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Unknown source sales</p>
+            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.productsUnknownSourceSales.toLocaleString('en-IN')}</p>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Zone mapping gaps</p>
+            <p className="mt-2 text-2xl font-black">{data.nextStockPlan.summary.zoneMappingGaps.toLocaleString('en-IN')}</p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1880px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-3 text-left">Product</th>
+                <th className="px-3 py-3 text-left">ASIN/SKU</th>
+                <th className="px-3 py-3 text-left">Primary source</th>
+                <th className="px-3 py-3 text-right">30d Sales</th>
+                <th className="px-3 py-3 text-right">FBA Sales</th>
+                <th className="px-3 py-3 text-right">Flex Sales</th>
+                <th className="px-3 py-3 text-right">Easy Ship/MFN Sales</th>
+                <th className="px-3 py-3 text-right">Available Stock</th>
+                <th className="px-3 py-3 text-right">Inbound</th>
+                <th className="px-3 py-3 text-right">Days Cover</th>
+                <th className="px-3 py-3 text-right">Suggested FBA Qty</th>
+                <th className="px-3 py-3 text-right">Suggested Flex Qty</th>
+                <th className="px-3 py-3 text-left">State/Zone insight</th>
+                <th className="px-4 py-3 text-left">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.nextStockPlan.rows.map((row, index) => (
+                <tr key={`next-plan-${row.marketplaceId}-${row.sku}-${row.asin}`} className={index < data.nextStockPlan.rows.length - 1 ? 'border-b border-border/50' : ''}>
+                  <td className="px-4 py-3">
+                    <div className="flex min-w-[220px] items-center gap-3">
+                      <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded-md border border-border bg-muted">
+                        {row.imageUrl ? (
+                          <Image src={row.imageUrl} alt="" fill unoptimized className="object-contain" sizes="40px" />
+                        ) : (
+                          <Warehouse className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="max-w-[260px] truncate font-medium">{row.title ?? 'Product title unavailable'}</p>
+                        <p className="text-xs text-muted-foreground">{[row.brand, row.marketplaceId].filter(Boolean).join(' · ') || 'Metadata unavailable'}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3">
+                    <p className="font-mono text-xs">{row.asin}</p>
+                    <p className="mt-1 font-mono text-xs text-muted-foreground">{row.sku ?? 'SKU unavailable'}</p>
+                  </td>
+                  <td className="px-3 py-3">
+                    <Badge variant="outline" className="text-[10px]">{row.primarySource}</Badge>
+                  </td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.totalSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.fbaSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.sellerFlexSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.easyShipMfnSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.availableFbaStock + row.availableSellerFlexStock)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.inboundStock)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.daysCover, 1)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedFbaReplenishment)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedSellerFlexReplenishment)}</td>
+                  <td className="max-w-[260px] px-3 py-3 text-xs text-muted-foreground">{row.stateZoneInsight}</td>
+                  <td className="max-w-[320px] px-4 py-3 text-xs text-muted-foreground">
+                    <p>{row.actionMessage}</p>
+                    {row.missingDataWarnings.length > 0 && (
+                      <p className="mt-1 text-[11px]">{row.missingDataWarnings.join(' | ')}</p>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {data.nextStockPlan.rows.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              Next Stock Plan requires synced internal stock and sales data.
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="rounded-xl border border-border bg-card">
