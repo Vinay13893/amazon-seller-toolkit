@@ -97,6 +97,10 @@ type StockResponse = {
     products_with_location_stock: number
     products_with_any_stock_context: number
     products_missing_any_stock_context: number
+    unattributed_daily_sales_units: number
+    products_with_unattributed_daily_sales: number
+    products_with_blank_fc_shipments: number
+    products_with_generic_source_labels: number
     last_sync_status: string | null
     last_sync_warnings: string[]
     fulfillment_report_type: string | null
@@ -179,7 +183,7 @@ const NEXT_PLAN_FILTERS: Array<{ id: PlanFilterId; label: string; predicate: (ro
     label: 'Demand but missing stock data',
     predicate: row => row.missingDataWarnings.includes('Sales exist but inventory missing; sync fulfillment report.'),
   },
-  { id: 'unknownSource', label: 'Unknown source sales', predicate: row => row.unknownSourceSales30d > 0 },
+  { id: 'unknownSource', label: 'Unattributed daily sales', predicate: row => row.unknownSourceSales30d > 0 },
   {
     id: 'zoneGap',
     label: 'Zone mapping gaps',
@@ -1094,13 +1098,24 @@ export function InternalStockDashboard() {
           <div>
             <h2 className="text-lg font-black">Next Stock Plan</h2>
             <p className="text-xs text-muted-foreground">
-              Amazon SKU/channel planning for FBA, Seller Flex, Easy Ship/MFN and unknown-source flows.
+              Amazon SKU/channel planning for FBA, Seller Flex, Easy Ship/MFN and unattributed daily sales signals.
             </p>
             <p className="text-xs text-muted-foreground">
               Applied: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
             </p>
             <p className="text-xs text-muted-foreground">
               Ledger balance is diagnostic from FBA Ledger Detail report and is not yet used in suggested replenishment.
+            </p>
+            <p className="mt-1 max-w-4xl text-xs text-muted-foreground">
+              Unattributed units come from daily or imported sales where the ingestion source does not identify the
+              fulfillment channel. They remain separate and are not treated as FBA or Seller Flex unless a valid
+              FC/location code exists.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Unattributed units: {data.diagnostics.unattributed_daily_sales_units.toLocaleString('en-IN')} ·
+              {' '}Products affected: {data.diagnostics.products_with_unattributed_daily_sales.toLocaleString('en-IN')} ·
+              {' '}Generic-source products: {data.diagnostics.products_with_generic_source_labels.toLocaleString('en-IN')} ·
+              {' '}Blank-FC shipment products: {data.diagnostics.products_with_blank_fc_shipments.toLocaleString('en-IN')}
             </p>
           </div>
           <Button
@@ -1118,7 +1133,7 @@ export function InternalStockDashboard() {
                 { header: 'FBA Sales', value: row => row.fbaSales30d },
                 { header: 'Seller Flex Sales', value: row => row.sellerFlexSales30d },
                 { header: 'Easy Ship/MFN Sales', value: row => row.easyShipMfnSales30d },
-                { header: 'Unknown Source Sales', value: row => row.unknownSourceSales30d },
+                { header: 'Unattributed Daily Sales', value: row => row.unknownSourceSales30d },
                 { header: 'Available Stock', value: row => row.availableFbaStock + row.availableSellerFlexStock },
                 { header: 'Inbound Stock', value: row => row.inboundStock },
                 { header: 'Ledger Balance Approx', value: row => row.ledgerBalanceStock },
@@ -1141,7 +1156,7 @@ export function InternalStockDashboard() {
             ['fba', 'FBA SKUs needing replenishment', data.nextStockPlan.summary.fbaReplenishmentNeeded],
             ['flex', 'Seller Flex channel SKUs needing replenishment', data.nextStockPlan.summary.sellerFlexReplenishmentNeeded],
             ['missingStock', 'Demand but missing stock data', data.nextStockPlan.summary.productsMissingStockData],
-            ['unknownSource', 'Unknown source sales', data.nextStockPlan.summary.productsUnknownSourceSales],
+            ['unknownSource', 'Unattributed daily sales', data.nextStockPlan.summary.productsUnknownSourceSales],
             ['zoneGap', 'Zone mapping gaps', data.nextStockPlan.summary.zoneMappingGaps],
           ] as Array<[PlanFilterId, string, number]>).map(([id, label, value]) => {
             const isActive = planFilter === id
@@ -1182,7 +1197,7 @@ export function InternalStockDashboard() {
                 <SortableTh label="FBA Sales" column="fbaSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Flex Sales" column="sellerFlexSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Easy Ship/MFN Sales" column="easyShipMfnSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Unknown Source Sales" column="unknownSourceSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Unattributed Daily Sales" column="unknownSourceSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Available Stock" column="availableStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Inbound" column="inboundStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
                 <SortableTh label="Ledger Balance Stock (approx.)" column="ledgerBalanceStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />

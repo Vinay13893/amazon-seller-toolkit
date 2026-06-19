@@ -625,7 +625,7 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       warnings.push('Sales exist but inventory missing; sync fulfillment report.')
     }
     if (row.unknownSourceSales30d > 0) {
-      warnings.push('Unknown source sales found; do not ignore.')
+      warnings.push('Unattributed daily sales found; fulfillment channel is not identified.')
     }
     if (row.easyShipMfnSales30d > 0) {
       warnings.push('Easy Ship sales found; keep separate from FBA replenishment.')
@@ -667,7 +667,7 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
     } else if (row.easyShipMfnSales30d > 0) {
       row.actionMessage = 'Easy Ship sales found; keep separate from FBA replenishment.'
     } else if (row.unknownSourceSales30d > 0) {
-      row.actionMessage = 'Unknown source sales found; do not ignore.'
+      row.actionMessage = 'Unattributed daily sales signal found; review channel attribution.'
     } else if (flags.unmappedStateCount > 0) {
       row.actionMessage = 'Zone mapping missing; add state-zone map.'
     } else if (warnings.length > 0) {

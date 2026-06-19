@@ -240,17 +240,32 @@ export async function GET(request: Request) {
   // (never summed quantities), so union counts below cannot double-count units.
   const demandAsins = new Set<string>()
   const demandSkus = new Set<string>()
+  const genericSourceAsins = new Set<string>()
+  const genericSourceSkus = new Set<string>()
+  const genericSalesSources = new Set(['amazon_api', 'csv_upload', 'manual', 'unknown', ''])
   for (const row of salesResult.data ?? []) {
     if (Number(row.ordered_units ?? 0) === 0) continue
     if (row.asin) demandAsins.add(key(row.marketplace_id, row.asin))
     if (row.sku) demandSkus.add(key(row.marketplace_id, row.sku))
+    const source = ((row.source as string | null) ?? '').trim().toLowerCase()
+    if (genericSalesSources.has(source)) {
+      if (row.asin) genericSourceAsins.add(key(row.marketplace_id, row.asin))
+      if (row.sku) genericSourceSkus.add(key(row.marketplace_id, row.sku))
+    }
   }
+  const blankFcShipmentAsins = new Set<string>()
+  const blankFcShipmentSkus = new Set<string>()
   for (const row of fulfillmentRowsResult.data ?? []) {
     const eventType = ((row as { event_type?: string | null }).event_type ?? '').toString().trim().toLowerCase()
     const quantity = Number((row as { quantity?: number | null }).quantity ?? 0)
     if (eventType !== 'shipments' || quantity === 0) continue
     if (row.asin) demandAsins.add(key(row.marketplace_id, row.asin))
     if (row.sku) demandSkus.add(key(row.marketplace_id, row.sku))
+    const fulfillmentCenterId = ((row as { fulfillment_center_id?: string | null }).fulfillment_center_id ?? '').trim()
+    if (!fulfillmentCenterId) {
+      if (row.asin) blankFcShipmentAsins.add(key(row.marketplace_id, row.asin))
+      if (row.sku) blankFcShipmentSkus.add(key(row.marketplace_id, row.sku))
+    }
   }
   for (const row of fulfillmentSalesDailyResult.data ?? []) {
     if (Number(row.ordered_units ?? 0) === 0) continue
@@ -286,6 +301,8 @@ export async function GET(request: Request) {
   let productsWithLedgerBalance = 0
   let productsWithLocationStock = 0
   let productsWithAnyStockContext = 0
+  let productsWithGenericSourceLabels = 0
+  let productsWithBlankFcShipments = 0
   for (const product of products) {
     const asinKey = key(product.marketplaceId, product.asin)
     const skuKey = key(product.marketplaceId, product.sku)
@@ -293,11 +310,15 @@ export async function GET(request: Request) {
     const hasFbaInventoryApi = fbaInventoryApiAsins.has(asinKey) || fbaInventoryApiSkus.has(skuKey)
     const hasLedgerBalance = ledgerBalanceAsins.has(asinKey) || ledgerBalanceSkus.has(skuKey)
     const hasLocationStock = locationStockAsins.has(asinKey) || locationStockSkus.has(skuKey)
+    const hasGenericSource = genericSourceAsins.has(asinKey) || genericSourceSkus.has(skuKey)
+    const hasBlankFcShipment = blankFcShipmentAsins.has(asinKey) || blankFcShipmentSkus.has(skuKey)
     if (hasDemand) productsWithDemandSignal += 1
     if (hasFbaInventoryApi) productsWithFbaInventoryApi += 1
     if (hasLedgerBalance) productsWithLedgerBalance += 1
     if (hasLocationStock) productsWithLocationStock += 1
     if (hasFbaInventoryApi || hasLedgerBalance || hasLocationStock) productsWithAnyStockContext += 1
+    if (hasGenericSource) productsWithGenericSourceLabels += 1
+    if (hasBlankFcShipment) productsWithBlankFcShipments += 1
   }
   const salesSourcesByAsin = new Map<string, string>()
   const salesSourcesBySku = new Map<string, string>()
@@ -415,6 +436,10 @@ export async function GET(request: Request) {
     transitBufferDays,
     growthMultiplier,
   })
+  const unattributedDailySalesUnits = nextStockPlan.rows.reduce(
+    (sum, row) => sum + row.unknownSourceSales30d,
+    0,
+  )
 
   const inventoryDates = inventoryRows
     .map(row => row.lastSyncedAt)
@@ -454,6 +479,10 @@ export async function GET(request: Request) {
       products_with_location_stock: productsWithLocationStock,
       products_with_any_stock_context: productsWithAnyStockContext,
       products_missing_any_stock_context: Math.max(0, products.length - productsWithAnyStockContext),
+      unattributed_daily_sales_units: unattributedDailySalesUnits,
+      products_with_unattributed_daily_sales: nextStockPlan.summary.productsUnknownSourceSales,
+      products_with_blank_fc_shipments: productsWithBlankFcShipments,
+      products_with_generic_source_labels: productsWithGenericSourceLabels,
       last_sync_status: lastSyncStatus,
       last_sync_warnings: lastSyncWarnings,
       fulfillment_report_type: fulfillmentJobResult.data?.report_type ?? null,
