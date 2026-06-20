@@ -24,6 +24,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { StockAction, StockStatus } from '@/lib/internal-stock-actions'
 
+type ReplenishmentPaymentSignalSummary = {
+  priorityFlag: 'profitable_high_demand' | 'profitable_low_stock' | 'loss_or_review' | 'missing_cost' | 'insufficient_data'
+  estimatedMarginPercent: number | null
+  costAvailable: boolean
+}
+
 type StockResponse = {
   summary: Record<StockStatus, number>
   actions: StockAction[]
@@ -123,6 +129,61 @@ type StockResponse = {
       exactPnlAvailable: false
     }
   }
+  fcReplenishmentRows: Array<{
+    productTitle: string | null
+    asin: string
+    amazonSku: string | null
+    fcCode: string
+    fcType: 'fba_fc'
+    zone: string | null
+    demand30d: number
+    dailyVelocity: number
+    growthFactor: number
+    targetStockDays: number
+    requiredStock: number
+    currentFcStockApprox: number | null
+    inboundToFc: number | null
+    suggestedSendQty: number
+    confidenceStatus: 'high' | 'medium' | 'low'
+    action: 'send_to_fc' | 'monitor' | 'no_action'
+    reason: string
+    stateZoneSignal: string | null
+    paymentSignal: ReplenishmentPaymentSignalSummary | null
+  }>
+  fcReplenishmentSummary: {
+    rows: number
+    skusToSend: number
+    unitsSuggested: number
+    rowsNeedingStockContext: number
+    rowsInboundNotIncluded: number
+    rowsMarginReview: number
+  }
+  flexReplenishmentRows: Array<{
+    componentSku: string
+    wmsParentSkuCount: number
+    linkedAmazonSkuCount: number
+    amazonDemand30d: number
+    componentAdjustedDemand: number
+    dailyComponentVelocity: number
+    growthFactor: number
+    targetStockDays: number
+    requiredComponentStock: number
+    currentXhzuComponentStock: number | null
+    suggestedVendorReplenishQty: number | null
+    confidenceStatus: 'high' | 'medium' | 'low'
+    action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stock_context'
+    reason: string
+    stateZoneSignal: string | null
+    paymentSignal: ReplenishmentPaymentSignalSummary | null
+  }>
+  flexReplenishmentSummary: {
+    rows: number
+    componentSkusToReplenish: number
+    componentUnitsRequired: number
+    rowsNeedingXhzuStockContext: number
+    rowsMissingMapping: number
+    rowsMarginReview: number
+  }
   diagnostics: {
     products_with_sales: number
     products_missing_sales: number
@@ -210,6 +271,8 @@ const DEFAULT_PLANNING_ASSUMPTIONS: PlanningAssumptions = {
   growthMultiplier: 1.5,
 }
 
+type FcReplenishmentRow = StockResponse['fcReplenishmentRows'][number]
+type FlexReplenishmentRow = StockResponse['flexReplenishmentRows'][number]
 type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
 type StateZoneDemandRow = StockResponse['paymentContext']['stateZoneDemand'][number]
 type PaymentSignalRow = StockResponse['paymentContext']['paymentSignals'][number]
@@ -389,6 +452,19 @@ function formatNumber(value: number | null, decimals = 0): string {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   })
+}
+
+function ReportStatCards({ cards }: { cards: Array<[string, number]> }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-6">
+      {cards.map(([label, value]) => (
+        <div key={label} className="rounded-xl border border-border bg-card p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+          <p className="mt-2 text-2xl font-black">{value.toLocaleString('en-IN')}</p>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function statusBadge(status: StockStatus) {
@@ -1226,6 +1302,75 @@ export function InternalStockDashboard() {
       {activeTab === 'fc' ? (
         <>
       <div className="rounded-xl border border-border bg-card">
+        <div className="border-b border-border p-4">
+          <h2 className="text-lg font-black">FC Replenishment Report</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Demand from FBA Ledger Detail shipments at named fulfillment centers, excluding Seller Flex and unattributed rows.
+          </p>
+        </div>
+        <ReportStatCards
+          cards={[
+            ['Rows', data.fcReplenishmentSummary.rows],
+            ['SKUs to send', data.fcReplenishmentSummary.skusToSend],
+            ['Units suggested', data.fcReplenishmentSummary.unitsSuggested],
+            ['Needs stock context', data.fcReplenishmentSummary.rowsNeedingStockContext],
+            ['Inbound not included', data.fcReplenishmentSummary.rowsInboundNotIncluded],
+            ['Margin review', data.fcReplenishmentSummary.rowsMarginReview],
+          ]}
+        />
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1400px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-3 text-left">Product</th>
+                <th className="px-3 py-3 text-left">ASIN</th>
+                <th className="px-3 py-3 text-left">Amazon SKU</th>
+                <th className="px-3 py-3 text-left">FC</th>
+                <th className="px-3 py-3 text-left">Zone</th>
+                <th className="px-3 py-3 text-right">30D Demand</th>
+                <th className="px-3 py-3 text-right">Current FC Stock Approx</th>
+                <th className="px-3 py-3 text-right">Inbound to FC</th>
+                <th className="px-3 py-3 text-right">Suggested Send Qty</th>
+                <th className="px-3 py-3 text-left">Action</th>
+                <th className="px-4 py-3 text-left">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.fcReplenishmentRows.slice(0, 50).map((row: FcReplenishmentRow, index, page) => (
+                <tr
+                  key={`fc-replenish-${row.asin}-${row.fcCode}`}
+                  className={index < page.length - 1 ? 'border-b border-border/50' : ''}
+                >
+                  <td className="max-w-[240px] truncate px-4 py-3">{row.productTitle ?? 'Product title unavailable'}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.asin}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.amazonSku ?? '—'}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.fcCode}</td>
+                  <td className="px-3 py-3 text-xs">{row.zone ?? '—'}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.demand30d)}</td>
+                  <td className="px-3 py-3 text-right">{row.currentFcStockApprox === null ? '—' : formatNumber(row.currentFcStockApprox)}</td>
+                  <td className="px-3 py-3 text-right">{row.inboundToFc === null ? '—' : formatNumber(row.inboundToFc)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedSendQty)}</td>
+                  <td className="px-3 py-3">
+                    <Badge variant="outline" className="text-[10px]">{row.action.replaceAll('_', ' ')}</Badge>
+                  </td>
+                  <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">{row.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.fcReplenishmentRows.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              No FC replenishment rows are available yet.
+            </div>
+          )}
+        </div>
+        {data.fcReplenishmentRows.length > 50 && (
+          <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+            Showing top 50 of {data.fcReplenishmentRows.length.toLocaleString('en-IN')} rows.
+          </div>
+        )}
+      </div>
+      <div className="rounded-xl border border-border bg-card">
         <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h2 className="text-lg font-black">Next Stock Plan</h2>
@@ -1734,17 +1879,75 @@ export function InternalStockDashboard() {
       </div>
         </>
       ) : (
-        <div className="rounded-xl border border-border bg-card p-8">
-          <h2 className="text-xl font-black">Flex Replenishment</h2>
-          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
-            Vendor-to-XHZU planning will use the SKU component mapping layer. Amazon SKU sales will be
-            exploded into component SKU demand using each component quantity, then aggregated at the
-            warehouse/component SKU level.
-          </p>
-          <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
-            Component mappings are not persisted yet, so this tab intentionally does not calculate vendor
-            quantities or treat raw combo Seller Flex stock as parent warehouse stock.
+        <div className="rounded-xl border border-border bg-card">
+          <div className="border-b border-border p-4">
+            <h2 className="text-lg font-black">Flex / Vendor Replenishment Report</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Amazon SKU demand on Seller Flex is exploded by component quantity and aggregated at the component SKU level.
+              Vendor stock at XHZU is only shown when a matching stock record exists; it is never estimated.
+            </p>
           </div>
+          <ReportStatCards
+            cards={[
+              ['Rows', data.flexReplenishmentSummary.rows],
+              ['Component SKUs to replenish', data.flexReplenishmentSummary.componentSkusToReplenish],
+              ['Component units required', data.flexReplenishmentSummary.componentUnitsRequired],
+              ['Needs XHZU stock context', data.flexReplenishmentSummary.rowsNeedingXhzuStockContext],
+              ['Missing mapping', data.flexReplenishmentSummary.rowsMissingMapping],
+              ['Margin review', data.flexReplenishmentSummary.rowsMarginReview],
+            ]}
+          />
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1320px] text-sm">
+              <thead>
+                <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="px-4 py-3 text-left">Component SKU</th>
+                  <th className="px-3 py-3 text-right">WMS Parent SKU Count</th>
+                  <th className="px-3 py-3 text-right">Linked Amazon SKU Count</th>
+                  <th className="px-3 py-3 text-right">30D Amazon Demand</th>
+                  <th className="px-3 py-3 text-right">Component Demand</th>
+                  <th className="px-3 py-3 text-right">Current XHZU Stock</th>
+                  <th className="px-3 py-3 text-right">Suggested Vendor Qty</th>
+                  <th className="px-3 py-3 text-left">Action</th>
+                  <th className="px-4 py-3 text-left">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.flexReplenishmentRows.slice(0, 50).map((row: FlexReplenishmentRow, index, page) => (
+                  <tr
+                    key={`flex-replenish-${row.componentSku}`}
+                    className={index < page.length - 1 ? 'border-b border-border/50' : ''}
+                  >
+                    <td className="px-4 py-3 font-mono text-xs">{row.componentSku}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.wmsParentSkuCount)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.linkedAmazonSkuCount)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.amazonDemand30d)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.componentAdjustedDemand)}</td>
+                    <td className="px-3 py-3 text-right">
+                      {row.currentXhzuComponentStock === null ? '—' : formatNumber(row.currentXhzuComponentStock)}
+                    </td>
+                    <td className="px-3 py-3 text-right font-semibold">
+                      {row.suggestedVendorReplenishQty === null ? '—' : formatNumber(row.suggestedVendorReplenishQty)}
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant="outline" className="text-[10px]">{row.action.replaceAll('_', ' ')}</Badge>
+                    </td>
+                    <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">{row.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {data.flexReplenishmentRows.length === 0 && (
+              <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+                No Flex/vendor replenishment rows are available yet.
+              </div>
+            )}
+          </div>
+          {data.flexReplenishmentRows.length > 50 && (
+            <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+              Showing top 50 of {data.flexReplenishmentRows.length.toLocaleString('en-IN')} rows.
+            </div>
+          )}
         </div>
       )}
 
