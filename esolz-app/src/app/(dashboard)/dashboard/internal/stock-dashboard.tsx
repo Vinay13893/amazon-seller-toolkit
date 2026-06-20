@@ -184,6 +184,27 @@ type StockResponse = {
     rowsMissingMapping: number
     rowsMarginReview: number
   }
+  fcStockMatrixRows: Array<{
+    productTitle: string
+    asin: string | null
+    amazonSku: string | null
+    totalDemand30d: number
+    xhzuOrSellerFlexStock: number | null
+    totalSuggestedSendQty: number
+    action: string
+    reason: string
+    fcCells: Array<{
+      fcCode: string
+      zone: string | null
+      demand30d: number
+      currentFcStockApprox: number | null
+      inboundToFc: number | null
+      suggestedSendQty: number
+      action: string
+      reason: string
+    }>
+  }>
+  fcStockMatrixColumns: string[]
   diagnostics: {
     products_with_sales: number
     products_missing_sales: number
@@ -273,6 +294,8 @@ const DEFAULT_PLANNING_ASSUMPTIONS: PlanningAssumptions = {
 
 type FcReplenishmentRow = StockResponse['fcReplenishmentRows'][number]
 type FlexReplenishmentRow = StockResponse['flexReplenishmentRows'][number]
+type FcStockMatrixRow = StockResponse['fcStockMatrixRows'][number]
+type FcStockMatrixCell = FcStockMatrixRow['fcCells'][number]
 type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
 type StateZoneDemandRow = StockResponse['paymentContext']['stateZoneDemand'][number]
 type PaymentSignalRow = StockResponse['paymentContext']['paymentSignals'][number]
@@ -1302,74 +1325,139 @@ export function InternalStockDashboard() {
       {activeTab === 'fc' ? (
         <>
       <div className="rounded-xl border border-border bg-card">
-        <div className="border-b border-border p-4">
-          <h2 className="text-lg font-black">FC Replenishment Report</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Demand from FBA Ledger Detail shipments at named fulfillment centers, excluding Seller Flex and unattributed rows.
-          </p>
+        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-black">FC Stock Matrix</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              What should I send today? One row per Amazon SKU with FC-wise stock, demand, and send quantity.
+              Inbound shipment quantity is not synced yet, so it is treated as zero.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={data.fcStockMatrixRows.length === 0}
+            onClick={() => exportFilteredCsv(
+              'FC Stock Matrix',
+              [
+                { header: 'Product Title', value: row => row.productTitle },
+                { header: 'ASIN', value: row => row.asin },
+                { header: 'Amazon SKU', value: row => row.amazonSku },
+                { header: 'Total 30D Demand', value: row => row.totalDemand30d },
+                { header: 'XHZU/Flex Stock', value: row => row.xhzuOrSellerFlexStock },
+                { header: 'Total Suggested Send Qty', value: row => row.totalSuggestedSendQty },
+                { header: 'Overall Action', value: row => row.action },
+                { header: 'Overall Reason', value: row => row.reason },
+                { header: 'FC Code', value: row => row.fcCode },
+                { header: 'Zone', value: row => row.zone },
+                { header: 'FC 30D Demand', value: row => row.demand30d },
+                { header: 'FC Stock Approx', value: row => row.currentFcStockApprox },
+                { header: 'Inbound to FC', value: row => row.inboundToFc },
+                { header: 'FC Suggested Send Qty', value: row => row.suggestedSendQty },
+                { header: 'FC Action', value: row => row.action },
+                { header: 'FC Reason', value: row => row.reason },
+              ],
+              data.fcStockMatrixRows.flatMap(row => row.fcCells.map(cell => ({
+                productTitle: row.productTitle,
+                asin: row.asin,
+                amazonSku: row.amazonSku,
+                totalDemand30d: row.totalDemand30d,
+                xhzuOrSellerFlexStock: row.xhzuOrSellerFlexStock,
+                totalSuggestedSendQty: row.totalSuggestedSendQty,
+                action: row.action,
+                reason: row.reason,
+                fcCode: cell.fcCode,
+                zone: cell.zone,
+                demand30d: cell.demand30d,
+                currentFcStockApprox: cell.currentFcStockApprox,
+                inboundToFc: cell.inboundToFc,
+                suggestedSendQty: cell.suggestedSendQty,
+              }))),
+              data.nextStockPlan.assumptions,
+              'report=FC Stock Matrix (one row per SKU/FC cell)',
+            )}
+          >
+            <Download className="mr-2 h-4 w-4" /> Export CSV
+          </Button>
         </div>
         <ReportStatCards
           cards={[
-            ['Rows', data.fcReplenishmentSummary.rows],
-            ['SKUs to send', data.fcReplenishmentSummary.skusToSend],
-            ['Units suggested', data.fcReplenishmentSummary.unitsSuggested],
-            ['Needs stock context', data.fcReplenishmentSummary.rowsNeedingStockContext],
+            ['SKUs needing FC send', data.fcStockMatrixRows.filter(row => row.totalSuggestedSendQty > 0).length],
+            ['Total units to send', data.fcStockMatrixRows.reduce((sum, row) => sum + row.totalSuggestedSendQty, 0)],
+            ['FCs involved', data.fcStockMatrixColumns.length],
             ['Inbound not included', data.fcReplenishmentSummary.rowsInboundNotIncluded],
-            ['Margin review', data.fcReplenishmentSummary.rowsMarginReview],
+            ['Needs stock context', data.fcReplenishmentSummary.rowsNeedingStockContext],
           ]}
         />
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1400px] text-sm">
+          <table className="w-full text-sm" style={{ minWidth: `${760 + data.fcStockMatrixColumns.length * 160}px` }}>
             <thead>
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                 <th className="px-4 py-3 text-left">Product</th>
                 <th className="px-3 py-3 text-left">ASIN</th>
                 <th className="px-3 py-3 text-left">Amazon SKU</th>
-                <th className="px-3 py-3 text-left">FC</th>
-                <th className="px-3 py-3 text-left">Zone</th>
-                <th className="px-3 py-3 text-right">30D Demand</th>
-                <th className="px-3 py-3 text-right">Current FC Stock Approx</th>
-                <th className="px-3 py-3 text-right">Inbound to FC</th>
-                <th className="px-3 py-3 text-right">Suggested Send Qty</th>
-                <th className="px-3 py-3 text-left">Action</th>
-                <th className="px-4 py-3 text-left">Reason</th>
+                <th className="px-3 py-3 text-right">Total 30D Demand</th>
+                <th className="px-3 py-3 text-right">XHZU/Flex Stock</th>
+                <th className="px-3 py-3 text-right">Total Send Qty</th>
+                {data.fcStockMatrixColumns.map(fcCode => (
+                  <th key={fcCode} className="px-3 py-3 text-left font-mono">{fcCode}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {data.fcReplenishmentRows.slice(0, 50).map((row: FcReplenishmentRow, index, page) => (
-                <tr
-                  key={`fc-replenish-${row.asin}-${row.fcCode}`}
-                  className={index < page.length - 1 ? 'border-b border-border/50' : ''}
-                >
-                  <td className="max-w-[240px] truncate px-4 py-3">{row.productTitle ?? 'Product title unavailable'}</td>
-                  <td className="px-3 py-3 font-mono text-xs">{row.asin}</td>
-                  <td className="px-3 py-3 font-mono text-xs">{row.amazonSku ?? '—'}</td>
-                  <td className="px-3 py-3 font-mono text-xs">{row.fcCode}</td>
-                  <td className="px-3 py-3 text-xs">{row.zone ?? '—'}</td>
-                  <td className="px-3 py-3 text-right">{formatNumber(row.demand30d)}</td>
-                  <td className="px-3 py-3 text-right">{row.currentFcStockApprox === null ? '—' : formatNumber(row.currentFcStockApprox)}</td>
-                  <td className="px-3 py-3 text-right">{row.inboundToFc === null ? '—' : formatNumber(row.inboundToFc)}</td>
-                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedSendQty)}</td>
-                  <td className="px-3 py-3">
-                    <Badge variant="outline" className="text-[10px]">{row.action.replaceAll('_', ' ')}</Badge>
-                  </td>
-                  <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">{row.reason}</td>
-                </tr>
-              ))}
+              {data.fcStockMatrixRows.slice(0, 50).map((row: FcStockMatrixRow, index, page) => {
+                const cellsByFc = new Map(row.fcCells.map(cell => [cell.fcCode, cell]))
+                return (
+                  <tr
+                    key={`fc-matrix-${row.asin}-${row.amazonSku}`}
+                    className={index < page.length - 1 ? 'border-b border-border/50' : ''}
+                  >
+                    <td className="max-w-[220px] truncate px-4 py-3">{row.productTitle}</td>
+                    <td className="px-3 py-3 font-mono text-xs">{row.asin ?? '—'}</td>
+                    <td className="px-3 py-3 font-mono text-xs">{row.amazonSku ?? '—'}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.totalDemand30d)}</td>
+                    <td className="px-3 py-3 text-right">
+                      {row.xhzuOrSellerFlexStock === null ? '—' : formatNumber(row.xhzuOrSellerFlexStock)}
+                    </td>
+                    <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.totalSuggestedSendQty)}</td>
+                    {data.fcStockMatrixColumns.map((fcCode: string) => {
+                      const cell: FcStockMatrixCell | undefined = cellsByFc.get(fcCode)
+                      return (
+                        <td key={fcCode} className="px-3 py-3 text-xs">
+                          {cell ? (
+                            <div className="space-y-0.5">
+                              <p>Stock: {cell.currentFcStockApprox === null ? '—' : formatNumber(cell.currentFcStockApprox)}</p>
+                              <p>Demand: {formatNumber(cell.demand30d)}</p>
+                              <p className={cell.suggestedSendQty > 0 ? 'font-semibold text-foreground' : 'text-muted-foreground'}>
+                                Send: {formatNumber(cell.suggestedSendQty)}
+                              </p>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
-          {data.fcReplenishmentRows.length === 0 && (
+          {data.fcStockMatrixRows.length === 0 && (
             <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-              No FC replenishment rows are available yet.
+              No FC stock matrix rows are available yet.
             </div>
           )}
         </div>
-        {data.fcReplenishmentRows.length > 50 && (
+        {data.fcStockMatrixRows.length > 50 && (
           <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-            Showing top 50 of {data.fcReplenishmentRows.length.toLocaleString('en-IN')} rows.
+            Showing top 50 of {data.fcStockMatrixRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
           </div>
         )}
       </div>
+      <p className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Technical detail (channel-wise breakdown, diagnostics, and supporting signals)
+      </p>
       <div className="rounded-xl border border-border bg-card">
         <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -1880,17 +1968,43 @@ export function InternalStockDashboard() {
         </>
       ) : (
         <div className="rounded-xl border border-border bg-card">
-          <div className="border-b border-border p-4">
-            <h2 className="text-lg font-black">Flex / Vendor Replenishment Report</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Amazon SKU demand on Seller Flex is exploded by component quantity and aggregated at the component SKU level.
-              Vendor stock at XHZU is only shown when a matching stock record exists; it is never estimated.
-            </p>
+          <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-lg font-black">Vendor / Component Replenishment</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                What should I buy from the vendor today? XHZU is the mother warehouse feeding both Seller Flex direct
+                fulfilment and FC replenishment shipments, so component demand uses total trusted Amazon demand
+                (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={data.flexReplenishmentRows.length === 0}
+              onClick={() => exportFilteredCsv(
+                'Vendor Component Replenishment',
+                [
+                  { header: 'Component SKU', value: row => row.componentSku },
+                  { header: 'Linked Amazon SKUs', value: row => row.linkedAmazonSkuCount },
+                  { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
+                  { header: '30D Amazon Demand', value: row => row.amazonDemand30d },
+                  { header: 'Component Units Required', value: row => row.componentAdjustedDemand },
+                  { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
+                  { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
+                  { header: 'Action', value: row => row.action },
+                  { header: 'Reason', value: row => row.reason },
+                ],
+                data.flexReplenishmentRows,
+                data.nextStockPlan.assumptions,
+                'report=Vendor/Component Replenishment (full list)',
+              )}
+            >
+              <Download className="mr-2 h-4 w-4" /> Export CSV
+            </Button>
           </div>
           <ReportStatCards
             cards={[
-              ['Rows', data.flexReplenishmentSummary.rows],
-              ['Component SKUs to replenish', data.flexReplenishmentSummary.componentSkusToReplenish],
+              ['Component SKUs required', data.flexReplenishmentSummary.componentSkusToReplenish],
               ['Component units required', data.flexReplenishmentSummary.componentUnitsRequired],
               ['Needs XHZU stock context', data.flexReplenishmentSummary.rowsNeedingXhzuStockContext],
               ['Missing mapping', data.flexReplenishmentSummary.rowsMissingMapping],
@@ -1902,10 +2016,10 @@ export function InternalStockDashboard() {
               <thead>
                 <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="px-4 py-3 text-left">Component SKU</th>
+                  <th className="px-3 py-3 text-right">Linked Amazon SKUs</th>
                   <th className="px-3 py-3 text-right">WMS Parent SKU Count</th>
-                  <th className="px-3 py-3 text-right">Linked Amazon SKU Count</th>
                   <th className="px-3 py-3 text-right">30D Amazon Demand</th>
-                  <th className="px-3 py-3 text-right">Component Demand</th>
+                  <th className="px-3 py-3 text-right">Component Units Required</th>
                   <th className="px-3 py-3 text-right">Current XHZU Stock</th>
                   <th className="px-3 py-3 text-right">Suggested Vendor Qty</th>
                   <th className="px-3 py-3 text-left">Action</th>
@@ -1919,8 +2033,8 @@ export function InternalStockDashboard() {
                     className={index < page.length - 1 ? 'border-b border-border/50' : ''}
                   >
                     <td className="px-4 py-3 font-mono text-xs">{row.componentSku}</td>
-                    <td className="px-3 py-3 text-right">{formatNumber(row.wmsParentSkuCount)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.linkedAmazonSkuCount)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.wmsParentSkuCount)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.amazonDemand30d)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.componentAdjustedDemand)}</td>
                     <td className="px-3 py-3 text-right">
@@ -1939,13 +2053,13 @@ export function InternalStockDashboard() {
             </table>
             {data.flexReplenishmentRows.length === 0 && (
               <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-                No Flex/vendor replenishment rows are available yet.
+                No Vendor/Component replenishment rows are available yet.
               </div>
             )}
           </div>
           {data.flexReplenishmentRows.length > 50 && (
             <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-              Showing top 50 of {data.flexReplenishmentRows.length.toLocaleString('en-IN')} rows.
+              Showing top 50 of {data.flexReplenishmentRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
             </div>
           )}
         </div>

@@ -7,6 +7,7 @@ import {
 } from '@/lib/internal-replenishment-planner'
 import {
   buildFcReplenishmentRows,
+  buildFcStockMatrix,
   buildFlexReplenishmentRows,
 } from '@/lib/internal-replenishment-report'
 import {
@@ -565,6 +566,11 @@ export async function GET(request: Request) {
     stateZoneDemand: paymentContext.stateZoneDemand,
     sellerFlexLocationCodes,
   })
+  const fcStockMatrix = buildFcStockMatrix({
+    fcReplenishmentRows: fcReplenishment.rows,
+    inventoryByLocation: inventoryByLocationRows,
+    sellerFlexLocationCodes,
+  })
 
   const inventoryDates = inventoryRows
     .map(row => row.lastSyncedAt)
@@ -597,6 +603,8 @@ export async function GET(request: Request) {
     fcReplenishmentSummary: fcReplenishment.summary,
     flexReplenishmentRows: flexReplenishment.rows,
     flexReplenishmentSummary: flexReplenishment.summary,
+    fcStockMatrixRows: fcStockMatrix.rows,
+    fcStockMatrixColumns: fcStockMatrix.columns,
     diagnostics: {
       products_with_sales: productsWithSales,
       products_missing_sales: Math.max(0, products.length - productsWithSales),

@@ -87,6 +87,29 @@ export type FlexReplenishmentRow = {
   paymentSignal: PaymentSignalSummary | null
 }
 
+export type FcStockMatrixCell = {
+  fcCode: string
+  zone: string | null
+  demand30d: number
+  currentFcStockApprox: number | null
+  inboundToFc: number | null
+  suggestedSendQty: number
+  action: string
+  reason: string
+}
+
+export type FcStockMatrixRow = {
+  productTitle: string
+  asin: string | null
+  amazonSku: string | null
+  totalDemand30d: number
+  xhzuOrSellerFlexStock: number | null
+  totalSuggestedSendQty: number
+  action: string
+  reason: string
+  fcCells: FcStockMatrixCell[]
+}
+
 export type FlexReplenishmentSummary = {
   rows: number
   componentSkusToReplenish: number
@@ -222,11 +245,16 @@ export function buildFlexReplenishmentRows(input: {
   stateZoneDemand: StateZoneDemandSignal[]
   sellerFlexLocationCodes: Set<string>
 }): { rows: FlexReplenishmentRow[]; summary: FlexReplenishmentSummary } {
+  // Trusted Amazon demand for vendor/component planning combines FBA Ledger Detail
+  // shipments at FCs and Seller Flex shipments/sales, since XHZU feeds both channels.
+  // Easy Ship/MFN and unattributed sales are excluded because they are not backed by
+  // a trusted shipment ledger.
   const demandBySkuNorm = new Map<string, number>()
   for (const row of input.planRows) {
     const skuNorm = norm(row.sku)
     if (!skuNorm) continue
-    demandBySkuNorm.set(skuNorm, (demandBySkuNorm.get(skuNorm) ?? 0) + row.sellerFlexSales30d)
+    const trustedDemand = row.fbaSales30d + row.sellerFlexSales30d
+    demandBySkuNorm.set(skuNorm, (demandBySkuNorm.get(skuNorm) ?? 0) + trustedDemand)
   }
 
   const mappingsByComponent = new Map<string, ComponentMappingRow[]>()
@@ -348,4 +376,80 @@ export function buildFlexReplenishmentRows(input: {
   }
 
   return { rows, summary }
+}
+
+export function buildFcStockMatrix(input: {
+  fcReplenishmentRows: FcReplenishmentRow[]
+  inventoryByLocation: InventoryByLocationRow[]
+  sellerFlexLocationCodes: Set<string>
+}): { rows: FcStockMatrixRow[]; columns: string[] } {
+  const flexStockByAmazonSku = new Map<string, number>()
+  for (const row of input.inventoryByLocation) {
+    if (!row.locationCode || !input.sellerFlexLocationCodes.has(norm(row.locationCode))) continue
+    const skuNorm = norm(row.sku)
+    if (!skuNorm) continue
+    const usable = Math.max(0, Math.trunc(row.available - row.reserved - row.unsellable))
+    flexStockByAmazonSku.set(skuNorm, (flexStockByAmazonSku.get(skuNorm) ?? 0) + usable)
+  }
+
+  const rowsByKey = new Map<string, FcStockMatrixRow>()
+  const demandByFcCode = new Map<string, number>()
+
+  for (const fc of input.fcReplenishmentRows) {
+    const key = `${norm(fc.asin)}|${norm(fc.amazonSku)}`
+    let row = rowsByKey.get(key)
+    if (!row) {
+      const skuNorm = norm(fc.amazonSku)
+      row = {
+        productTitle: fc.productTitle ?? 'Product title unavailable',
+        asin: fc.asin,
+        amazonSku: fc.amazonSku,
+        totalDemand30d: 0,
+        xhzuOrSellerFlexStock: skuNorm && flexStockByAmazonSku.has(skuNorm)
+          ? flexStockByAmazonSku.get(skuNorm)!
+          : null,
+        totalSuggestedSendQty: 0,
+        action: 'no_action',
+        reason: '',
+        fcCells: [],
+      }
+      rowsByKey.set(key, row)
+    }
+    row.totalDemand30d += fc.demand30d
+    row.totalSuggestedSendQty += fc.suggestedSendQty
+    row.fcCells.push({
+      fcCode: fc.fcCode,
+      zone: fc.zone,
+      demand30d: fc.demand30d,
+      currentFcStockApprox: fc.currentFcStockApprox,
+      inboundToFc: fc.inboundToFc,
+      suggestedSendQty: fc.suggestedSendQty,
+      action: fc.action,
+      reason: fc.reason,
+    })
+    demandByFcCode.set(fc.fcCode, (demandByFcCode.get(fc.fcCode) ?? 0) + fc.demand30d)
+  }
+
+  const rows = [...rowsByKey.values()]
+    .map(row => {
+      row.fcCells.sort((a, b) => b.demand30d - a.demand30d)
+      row.action = row.totalSuggestedSendQty > 0
+        ? 'send_to_fc'
+        : row.totalDemand30d > 0
+          ? 'monitor'
+          : 'no_action'
+      row.reason = row.totalSuggestedSendQty > 0
+        ? 'Demand exceeds FC stock cover at one or more fulfillment centers.'
+        : row.totalDemand30d > 0
+          ? 'FC stock cover currently meets demand target.'
+          : 'No FC shipment demand found in the lookback window.'
+      return row
+    })
+    .sort((a, b) => b.totalSuggestedSendQty - a.totalSuggestedSendQty)
+
+  const columns = [...demandByFcCode.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([fcCode]) => fcCode)
+
+  return { rows, columns }
 }
