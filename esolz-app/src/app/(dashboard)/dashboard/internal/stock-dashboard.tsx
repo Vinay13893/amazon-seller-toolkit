@@ -162,44 +162,6 @@ type StockResponse = {
   }
 }
 
-type EnhancedFlexRow = {
-  asin: string
-  sku: string | null
-  marketplaceId: string | null
-  title: string | null
-  brand: string | null
-  imageUrl: string | null
-  primarySource: 'fulfillment_report' | 'inventory_api' | 'sales_api' | 'csv_upload' | 'missing'
-  totalSales30d: number
-  fbaSales30d: number
-  sellerFlexSales30d: number
-  easyShipMfnSales30d: number
-  unknownSourceSales30d: number
-  availableFbaStock: number
-  availableSellerFlexStock: number
-  inboundStock: number
-  reservedStock: number
-  unsellableStock: number
-  daysCover: number | null
-  targetCoverDays: number
-  safetyStock: number
-  suggestedFbaReplenishment: number
-  suggestedSellerFlexReplenishment: number
-  ledgerBalanceStock: number | null
-  ledgerBalanceSource: 'fulfillment_report' | null
-  ledgerBalanceAmbiguous: boolean
-  missingDataWarnings: string[]
-  stateZoneInsight: string
-  actionMessage: string
-  // Flex-specific fields
-  componentSku: string | null
-  wmsParentSkuCount: number
-  linkedAmazonSkuCount: number
-  componentDemandUnits: number
-  dailyComponentVelocity: number
-  requiredComponentStock: number
-}
-
 type UploadResult = {
   accepted: number
   rejected: number
@@ -457,7 +419,6 @@ export function InternalStockDashboard() {
   const [actionsPage, setActionsPage] = useState(1)
   const [stateDemandPage, setStateDemandPage] = useState(1)
   const [paymentSignalPage, setPaymentSignalPage] = useState(1)
-  const [flexPage, setFlexPage] = useState(1)
   const [planSort, setPlanSort] = useState<SortState>(null)
   const [fcDiagnosticsSort, setFcDiagnosticsSort] = useState<SortState>(null)
   const [actionsSort, setActionsSort] = useState<SortState>(null)
@@ -718,284 +679,8 @@ export function InternalStockDashboard() {
     daysCover: row => row.daysCover,
     suggestedFbaReplenishment: row => row.suggestedFbaReplenishment,
     suggestedSellerFlexReplenishment: row => row.suggestedSellerFlexReplenishment,
-    fcCode: row => {
-      const key = `${row.marketplaceId}|${row.asin ?? ''}|${row.sku ?? ''}`;
-      return fcCodeMap.get(key) ?? '—';
-    },
-    zone: row => {
-      // Extract zone from stateZoneInsight or return placeholder
-      const insight = row.stateZoneInsight;
-      if (insight.includes('top zone')) {
-        const match = insight.match(/top zone ([^;]+)/);
-        return match ? match[1] : '—';
-      }
-      return '—';
-    },
-    fcDemand: row => row.fbaSales30d,
-    dailyVelocity: row => {
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      return lookbackDays > 0 ? row.totalSales30d / lookbackDays : 0;
-    },
-    targetDays: row => row.targetCoverDays,
-    requiredStock: row => {
-      // Calculate required stock: (daily velocity * growth multiplier * target days) + safety stock
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-      const targetDays = row.targetCoverDays;
-
-      if (lookbackDays > 0 && targetDays > 0) {
-        const dailyVelocity = row.totalSales30d / lookbackDays;
-        const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-        const requiredStock = adjustedDailyVelocity * targetDays + row.safetyStock;
-        return requiredStock;
-      }
-      return 0;
-    },
-    paymentSignal: row => {
-      const signal = paymentSignalMap.get(row.sku ?? '');
-      return signal ?
-        `₹${signal.grossSales.toFixed(0)} (${signal.estimatedMarginPercent ?? 0}%)` :
-        '—';
-    },
     actionMessage: row => row.actionMessage,
-    // Flex-specific sort fields
-    componentSku: row => row.componentSku ?? '',
-    wmsParentSkuCount: row => row.wmsParentSkuCount ?? 0,
-    linkedAmazonSkuCount: row => row.linkedAmazonSkuCount ?? 0,
-    componentDemandUnits: row => row.componentDemandUnits ?? 0,
-    dailyComponentVelocity: row => {
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      return lookbackDays > 0 ? row.sellerFlexSales30d / lookbackDays : 0;
-    },
-    requiredComponentStock: row => {
-      // Calculate required component stock: (daily velocity * growth multiplier * target days) + safety stock
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-      const targetDays = row.targetCoverDays;
-
-      if (lookbackDays > 0 && targetDays > 0) {
-        const dailyVelocity = row.sellerFlexSales30d / lookbackDays;
-        const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-        const requiredStock = adjustedDailyVelocity * targetDays + row.safetyStock;
-        return requiredStock;
-      }
-      return 0;
-    },
   }), [])
-
-  const flexSortAccessors = useMemo<Record<string, (row: EnhancedFlexRow) => unknown>>(() => ({
-    title: row => row.title ?? row.asin,
-    asin: row => row.asin,
-    primarySource: row => row.primarySource,
-    totalSales30d: row => row.totalSales30d,
-    fbaSales30d: row => row.fbaSales30d,
-    sellerFlexSales30d: row => row.sellerFlexSales30d,
-    easyShipMfnSales30d: row => row.easyShipMfnSales30d,
-    unknownSourceSales30d: row => row.unknownSourceSales30d,
-    availableStock: row => row.availableFbaStock + row.availableSellerFlexStock,
-    inboundStock: row => row.inboundStock,
-    ledgerBalanceStock: row => row.ledgerBalanceStock,
-    daysCover: row => row.daysCover,
-    suggestedFbaReplenishment: row => row.suggestedFbaReplenishment,
-    suggestedSellerFlexReplenishment: row => row.suggestedSellerFlexReplenishment,
-    fcCode: row => {
-      const key = `${row.marketplaceId}|${row.asin ?? ''}|${row.sku ?? ''}`;
-      return fcCodeMap.get(key) ?? '—';
-    },
-    zone: row => {
-      // Extract zone from stateZoneInsight or return placeholder
-      const insight = row.stateZoneInsight;
-      if (insight.includes('top zone')) {
-        const match = insight.match(/top zone ([^;]+)/);
-        return match ? match[1] : '—';
-      }
-      return '—';
-    },
-    fcDemand: row => row.fbaSales30d,
-    dailyVelocity: row => {
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      return lookbackDays > 0 ? row.totalSales30d / lookbackDays : 0;
-    },
-    targetDays: row => row.targetCoverDays,
-    requiredStock: row => {
-      // Calculate required stock: (daily velocity * growth multiplier * target days) + safety stock
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-      const targetDays = row.targetCoverDays;
-
-      if (lookbackDays > 0 && targetDays > 0) {
-        const dailyVelocity = row.totalSales30d / lookbackDays;
-        const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-        const requiredStock = adjustedDailyVelocity * targetDays + row.safetyStock;
-        return requiredStock;
-      }
-      return 0;
-    },
-    paymentSignal: row => {
-      const signal = paymentSignalMap.get(row.sku ?? '');
-      return signal ?
-        `₹${signal.grossSales.toFixed(0)} (${signal.estimatedMarginPercent ?? 0}%)` :
-        '—';
-    },
-    actionMessage: row => row.actionMessage,
-    // Flex-specific sort fields
-    componentSku: row => row.componentSku ?? '',
-    wmsParentSkuCount: row => row.wmsParentSkuCount ?? 0,
-    linkedAmazonSkuCount: row => row.linkedAmazonSkuCount ?? 0,
-    componentDemandUnits: row => row.componentDemandUnits ?? 0,
-    dailyComponentVelocity: row => {
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      return lookbackDays > 0 ? row.sellerFlexSales30d / lookbackDays : 0;
-    },
-    requiredComponentStock: row => {
-      // Calculate required component stock: (daily velocity * growth multiplier * target days) + safety stock
-      const lookbackDays = planningAssumptions?.lookbackDays ?? 30;
-      const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-      const targetDays = row.targetCoverDays;
-
-      if (lookbackDays > 0 && targetDays > 0) {
-        const dailyVelocity = row.sellerFlexSales30d / lookbackDays;
-        const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-        const requiredStock = adjustedDailyVelocity * targetDays + row.safetyStock;
-        return requiredStock;
-      }
-      return 0;
-    },
-  }), [])
-
-  // Mappings for FC code and payment signal
-  const fcCodeMap = useMemo(() => {
-    const map = new Map<string, string>();
-    if (data?.nextStockPlan.fcDiagnostics) {
-      for (const diag of data.nextStockPlan.fcDiagnostics) {
-        const key = `${diag.marketplaceId}|${diag.asin ?? ''}|${diag.sku ?? ''}`;
-        map.set(key, diag.fulfillmentCenterId);
-      }
-    }
-    return map;
-  }, [data?.nextStockPlan.fcDiagnostics]);
-
-  const paymentSignalMap = useMemo(() => {
-    const map = new Map<string, any>();
-    if (data?.paymentContext.paymentSignals) {
-      for (const signal of data.paymentContext.paymentSignals) {
-        map.set(signal.amazonSku, signal);
-      }
-    }
-    return map;
-  }, [data?.paymentContext.paymentSignals])
-
-  // Flex report data processing
-  const flexRowData = useMemo(() => {
-    // Create a map from (marketplaceId, asin, sku) to component data from stateZoneDemand
-    const componentDataMap = new Map<string, {
-      componentSku: string | null;
-      componentDemandUnits: number;
-      linkedAmazonSkuCount: number;
-      wmsParentSkuCount: number;
-    }>();
-
-    if (data?.paymentContext.stateZoneDemand) {
-      // First, group by component SKU to get counts
-      const componentGroups = new Map<string, {
-        amazonSkus: Set<string>;
-        totalDemand: number;
-      }>();
-
-      for (const demand of data.paymentContext.stateZoneDemand) {
-        const componentSku = demand.componentSku;
-        if (!componentSku) continue;
-
-        const group = componentGroups.get(componentSku) ?? {
-          amazonSkus: new Set<string>(),
-          totalDemand: 0
-        };
-
-        group.amazonSkus.add(demand.amazonSku);
-        group.totalDemand += demand.componentDemandUnits;
-        componentGroups.set(componentSku, group);
-      }
-
-      // Now create the flex row data map
-      for (const [componentSku, group] of componentGroups.entries()) {
-        const linkedAmazonSkuCount = group.amazonSkus.size;
-
-        // Count how many products use this component (WMS parent SKU count)
-        let wmsParentSkuCount = 0;
-        if (data?.nextStockPlan.rows) {
-          wmsParentSkuCount = data.nextStockPlan.rows.reduce((count, row) => {
-            // Check if this row's stateZoneInsight indicates it uses this component
-            // This is a simplification - in reality we'd need to map from the row to components
-            // For now, we'll estimate based on whether the row has sellerFlex sales
-            return row.sellerFlexSales30d > 0 ? count + 1 : count;
-          }, 0);
-        }
-
-        // For each product that uses this component, store the component data
-        // We'll need to map from product to component - for simplicity, we'll assign
-        // the component data to all products that have sellerFlex sales
-        // A more accurate approach would require a reverse mapping from products to components
-        componentDataMap.set(`${componentSku}`, {
-          componentSku,
-          componentDemandUnits: group.totalDemand,
-          linkedAmazonSkuCount,
-          wmsParentSkuCount: Math.max(1, wmsParentSkuCount) // At least 1 if there's demand
-        });
-      }
-    }
-
-    return componentDataMap;
-  }, [data?.paymentContext.stateZoneDemand, data?.nextStockPlan.rows]);
-
-  const flexRowsWithData = useMemo(() => {
-    if (!data?.nextStockPlan.rows) return [];
-
-    return data.nextStockPlan.rows.map(row => {
-      // Get component data for this row (simplified - in reality we'd need a proper product->component mapping)
-      const componentKey = row.sku ?? row.asin ?? 'unknown';
-      const componentData = flexRowData.get(componentKey) ?? {
-        componentSku: null,
-        componentDemandUnits: 0,
-        linkedAmazonSkuCount: 0,
-        wmsParentSkuCount: 0
-      };
-
-      // Calculate Flex-specific metrics
-      const lookbackDays = planningAssumptions?.salesLookbackDays ?? 30;
-      const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-      const targetDays = row.targetCoverDays;
-
-      const dailyComponentVelocity = lookbackDays > 0 ? row.sellerFlexSales30d / lookbackDays : 0;
-      const componentAdjustedDemand = dailyComponentVelocity * growthMultiplier;
-      const requiredComponentStock = (componentAdjustedDemand * targetDays) + row.safetyStock;
-
-      return {
-        ...row,
-        componentSku: componentData.componentSku,
-        wmsParentSkuCount: componentData.wmsParentSkuCount,
-        linkedAmazonSkuCount: componentData.linkedAmazonSkuCount,
-        componentDemandUnits: componentData.componentDemandUnits,
-        dailyComponentVelocity: dailyComponentVelocity,
-        requiredComponentStock: requiredComponentStock,
-      };
-    });
-  }, [data?.nextStockPlan.rows, flexRowData, planningAssumptions]);
-
-  const filteredFlexRows = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase()
-    const activePredicate = NEXT_PLAN_FILTERS.find(filter => filter.id === planFilter)?.predicate
-    return (flexRowsWithData ?? []).filter(row => {
-      const matchesFilter = !activePredicate || activePredicate(row)
-      const matchesQuery = !normalizedQuery || [
-        row.title,
-        row.asin,
-        row.sku,
-        row.brand,
-        row.componentSku,
-      ].some(value => value?.toLowerCase().includes(normalizedQuery))
-      return matchesFilter && matchesQuery
-    })
-  }, [flexRowsWithData, planFilter, query])
 
   type FcDiagnosticRow = StockResponse['nextStockPlan']['fcDiagnostics'][number]
   const fcDiagnosticsSortAccessors = useMemo<Record<string, (row: FcDiagnosticRow) => unknown>>(() => ({
@@ -1067,11 +752,6 @@ export function InternalStockDashboard() {
     [filteredPaymentSignals, paymentSignalSort, paymentSignalSortAccessors],
   )
 
-  const sortedFlexRows = useMemo(
-    () => sortRows(flexRowsWithData, planSort, flexSortAccessors),
-    [flexRowsWithData, planSort, flexSortAccessors],
-  )
-
   useEffect(() => {
     setPlanPage(1)
   }, [planFilter, query, pageSize, planSort])
@@ -1092,10 +772,6 @@ export function InternalStockDashboard() {
     setPaymentSignalPage(1)
   }, [paymentPriority, paymentSignalQuery, paymentSignalSort])
 
-  useEffect(() => {
-    setFlexPage(1)
-  }, [planFilter, query, pageSize, planSort])
-
   const planTotalPages = Math.max(1, Math.ceil(sortedPlanRows.length / pageSize))
   const fcDiagnosticsPageSize = 20
   const fcDiagnosticsTotalPages = Math.max(
@@ -1111,7 +787,6 @@ export function InternalStockDashboard() {
   const safeActionsPage = Math.min(actionsPage, actionsTotalPages)
   const safeStateDemandPage = Math.min(stateDemandPage, stateDemandTotalPages)
   const safePaymentSignalPage = Math.min(paymentSignalPage, paymentSignalTotalPages)
-  const safeFlexPage = Math.min(flexPage, flexTotalPages)
   const paginatedPlanRows = sortedPlanRows.slice((safePlanPage - 1) * pageSize, safePlanPage * pageSize)
   const paginatedFcDiagnostics = sortedFcDiagnostics.slice(
     (safeFcDiagnosticsPage - 1) * fcDiagnosticsPageSize,
@@ -1126,7 +801,6 @@ export function InternalStockDashboard() {
     (safePaymentSignalPage - 1) * supportingSignalPageSize,
     safePaymentSignalPage * supportingSignalPageSize,
   )
-  const paginatedFlexRows = sortedFlexRows.slice((safeFlexPage - 1) * pageSize, safeFlexPage * pageSize)
   const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
   const tabFilterText = `tab=${activeTab === 'fc' ? 'FC Replenishment' : 'Flex Replenishment'}`
   const planFilterText = [
@@ -1585,47 +1259,20 @@ export function InternalStockDashboard() {
               [
                 { header: 'Product Title', value: row => row.title },
                 { header: 'ASIN', value: row => row.asin },
-                { header: 'Amazon SKU', value: row => row.asin },
-                { header: 'FC Code', value: row => {
-                    const key = `${row.marketplaceId}|${row.asin ?? ''}|${row.sku ?? ''}`;
-                    const fcCode = fcCodeMap.get(key);
-                    return fcCode ?? '';
-                  }},
-                { header: 'Zone', value: row => {
-                    const insight = row.stateZoneInsight;
-                    if (insight.includes('top zone')) {
-                      const match = insight.match(/top zone ([^;]+)/);
-                      return match ? match[1] : '';
-                    }
-                    return '';
-                  }},
-                { header: '30D FC Demand', value: row => row.fbaSales30d },
-                { header: 'Daily Velocity', value: row => {
-                    const lookbackDays = data?.nextStockPlan.assumptions.salesLookbackDays ?? 30;
-                    return lookbackDays > 0 ? row.totalSales30d / lookbackDays : 0;
-                  }},
-                { header: 'Target Days', value: row => row.targetCoverDays },
-                { header: 'Required Stock', value: row => {
-                    const lookbackDays = data?.nextStockPlan.assumptions.salesLookbackDays ?? 30;
-                    const growthMultiplier = data?.nextStockPlan.assumptions.growthMultiplier ?? 1.5;
-                    const targetDays = row.targetCoverDays;
-                    if (lookbackDays > 0 && targetDays > 0) {
-                      const dailyVelocity = row.totalSales30d / lookbackDays;
-                      const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-                      return adjustedDailyVelocity * targetDays + row.safetyStock;
-                    }
-                    return 0;
-                  }},
-                { header: 'Current FC Stock/Ledger Approx', value: row => row.ledgerBalanceStock ?? 0 },
-                { header: 'Inbound to FC', value: row => row.inboundStock ?? 0 },
-                { header: 'Suggested Send Quantity', value: row => row.suggestedFbaReplenishment ?? 0 },
-                { header: 'State/Zone Demand Signal', value: row => row.stateZoneInsight },
-                { header: 'Payment Signal', value: row => {
-                    const signal = paymentSignalMap.get(row.sku ?? '');
-                    return signal ? `₹${signal.grossSales.toFixed(0)} (${signal.estimatedMarginPercent ?? 0}%)` : '';
-                  }},
-                { header: 'Action', value: row => row.actionMessage },
-                { header: 'Reason/Warning', value: row => row.missingDataWarnings.join(' | ') },
+                { header: 'SKU', value: row => row.sku },
+                { header: 'Data Source', value: row => row.primarySource },
+                { header: 'Total Sales', value: row => row.totalSales30d },
+                { header: 'FBA Sales', value: row => row.fbaSales30d },
+                { header: 'Seller Flex Sales', value: row => row.sellerFlexSales30d },
+                { header: 'Easy Ship/MFN Sales', value: row => row.easyShipMfnSales30d },
+                { header: 'Unattributed Daily Sales', value: row => row.unknownSourceSales30d },
+                { header: 'Available Stock', value: row => row.availableFbaStock + row.availableSellerFlexStock },
+                { header: 'Inbound Stock', value: row => row.inboundStock },
+                { header: 'Ledger Balance Approx', value: row => row.ledgerBalanceStock },
+                { header: 'Suggested FBA Quantity', value: row => row.suggestedFbaReplenishment },
+                { header: 'Suggested Seller Flex Channel Quantity', value: row => row.suggestedSellerFlexReplenishment },
+                { header: 'Warnings', value: row => row.missingDataWarnings.join(' | ') },
+                { header: 'Reason', value: row => row.actionMessage },
               ],
               sortedPlanRows,
               data.nextStockPlan.assumptions,
@@ -1677,19 +1324,20 @@ export function InternalStockDashboard() {
               <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                 <SortableTh label="Product" column="title" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} className="px-4" />
                 <SortableTh label="ASIN/SKU" column="asin" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                <SortableTh label="FC code" column="fcCode" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                <SortableTh label="Zone" column="zone" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                <SortableTh label="30D FC demand" column="fbaSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Daily velocity" column="dailyVelocity" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Target days" column="targetDays" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Required stock" column="requiredStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Current FC stock/ledger approx" column="ledgerBalanceStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Inbound to FC" column="inboundStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="Suggested send quantity" column="suggestedFbaReplenishment" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                <SortableTh label="State/zone demand signal" column="stateZoneInsight" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                <SortableTh label="Payment signal" column="paymentSignal" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
+                <SortableTh label="Primary source" column="primarySource" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
+                <SortableTh label={`${data.nextStockPlan.assumptions.salesLookbackDays}d Sales`} column="totalSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="FBA Sales" column="fbaSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Flex Sales" column="sellerFlexSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Easy Ship/MFN Sales" column="easyShipMfnSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Unattributed Daily Sales" column="unknownSourceSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Available Stock" column="availableStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Inbound" column="inboundStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Ledger Balance Stock (approx.)" column="ledgerBalanceStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Days Cover" column="daysCover" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Suggested FBA Qty" column="suggestedFbaReplenishment" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <SortableTh label="Suggested Flex Qty" column="suggestedSellerFlexReplenishment" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
+                <th className="px-3 py-3 text-left">State/Zone insight</th>
                 <SortableTh label="Action" column="actionMessage" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} className="px-4" />
-                <SortableTh label="Reason/warning" column="missingDataWarnings" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
               </tr>
             </thead>
             <tbody>
@@ -1714,98 +1362,30 @@ export function InternalStockDashboard() {
                     <p className="font-mono text-xs">{row.asin}</p>
                     <p className="mt-1 font-mono text-xs text-muted-foreground">{row.sku ?? 'SKU unavailable'}</p>
                   </td>
-                  <td className="px-3 py-3 text-center">
-                    {/* FC code */}
-                    {(() => {
-                      const key = `${row.marketplaceId}|${row.asin ?? ''}|${row.sku ?? ''}`;
-                      const fcCode = fcCodeMap.get(key);
-                      if (fcCode) {
-                        return <span className="font-mono text-xs">{fcCode}</span>;
-                      }
-                      return <span className="text-xs text-muted-foreground">—</span>;
-                    })()}
+                  <td className="px-3 py-3">
+                    <Badge variant="outline" className="text-[10px]">{row.primarySource}</Badge>
                   </td>
-                  <td className="px-3 py-3 text-center">
-                    {/* Zone */}
-                    {(() => {
-                      const insight = row.stateZoneInsight;
-                      if (insight.includes('top zone')) {
-                        const match = insight.match(/top zone ([^;]+)/);
-                        return <span className="text-xs">{match ? match[1] : '—'}</span>;
-                      }
-                      return <span className="text-xs">—</span>;
-                    })()}
-                  </td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.totalSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.fbaSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.sellerFlexSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.easyShipMfnSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.unknownSourceSales30d)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.availableFbaStock + row.availableSellerFlexStock)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.inboundStock)}</td>
                   <td className="px-3 py-3 text-right">
-                    {/* 30D FC demand */}
-                    {formatNumber(row.fbaSales30d)}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    {/* Daily velocity */}
-                    {(() => {
-                      const lookbackDays = planningAssumptions?.salesLookbackDays ?? 30;
-                      const velocity = lookbackDays > 0 ? row.totalSales30d / lookbackDays : 0;
-                      return formatNumber(velocity, 2);
-                    })()}
-                  </td>
-                  <td className="px-3 py-3 text-center">
-                    {/* Target days */}
-                    {formatNumber(row.targetCoverDays)}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    {/* Required stock */}
-                    {(() => {
-                      const lookbackDays = planningAssumptions?.salesLookbackDays ?? 30;
-                      const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-                      const targetDays = row.targetCoverDays;
-
-                      if (lookbackDays > 0 && targetDays > 0) {
-                        const dailyVelocity = row.totalSales30d / lookbackDays;
-                        const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-                        const requiredStock = adjustedDailyVelocity * targetDays + row.safetyStock;
-                        return formatNumber(requiredStock);
-                      }
-                      return '—';
-                    })()}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    {/* Current FC stock/ledger approx */}
                     {row.ledgerBalanceStock === null ? '—' : formatNumber(row.ledgerBalanceStock)}
                     {row.ledgerBalanceAmbiguous && (
                       <span className="ml-1 text-amber-600" title="Multiple same-day ledger entries; balance may be imprecise.">⚠</span>
                     )}
                   </td>
-                  <td className="px-3 py-3 text-right">
-                    {/* Inbound to FC */}
-                    {formatNumber(row.inboundStock)}
-                  </td>
-                  <td className="px-3 py-3 text-right font-semibold">
-                    {/* Suggested send quantity */}
-                    {formatNumber(row.suggestedFbaReplenishment)}
-                  </td>
-                  <td className="px-3 py-3">
-                    {/* State/zone demand signal */}
-                    {row.stateZoneInsight}
-                  </td>
-                  <td className="px-3 py-3 text-right">
-                    {/* Payment signal */}
-                    {(() => {
-                      const signal = paymentSignalMap.get(row.sku ?? '');
-                      return signal ?
-                        <span className="text-xs">₹{signal.grossSales.toFixed(0)} ({signal.estimatedMarginPercent ?? 0}%)</span> :
-                        <span className="text-xs text-muted-foreground">—</span>;
-                    })()}
-                  </td>
-                  <td className="px-3 py-3">
-                    {/* Action */}
-                    {row.actionMessage}
-                  </td>
-                  <td className="px-3 py-3 text-[11px]">
-                    {/* Reason/warning */}
-                    {row.missingDataWarnings.length > 0 ? (
-                      <p className="mt-0">{row.missingDataWarnings.join(' | ')}</p>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.daysCover, 1)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedFbaReplenishment)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.suggestedSellerFlexReplenishment)}</td>
+                  <td className="max-w-[260px] px-3 py-3 text-xs text-muted-foreground">{row.stateZoneInsight}</td>
+                  <td className="max-w-[320px] px-4 py-3 text-xs text-muted-foreground">
+                    <p>{row.actionMessage}</p>
+                    {row.missingDataWarnings.length > 0 && (
+                      <p className="mt-1 text-[11px]">{row.missingDataWarnings.join(' | ')}</p>
                     )}
                   </td>
                 </tr>
@@ -2154,222 +1734,18 @@ export function InternalStockDashboard() {
       </div>
         </>
       ) : (
-        <>
-          <div className="rounded-xl border border-border bg-card">
-            <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <h2 className="text-lg font-black">Flex Replenishment Report</h2>
-                <p className="text-xs text-muted-foreground">
-                  Component-level planning for vendor replenishment based on Amazon sales demand.
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Applied: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
-                </p>
-                <p className="mt-1 max-w-4xl text-xs text-muted-foreground">
-                  Shows component demand derived from Amazon SKU sales via component mappings.
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={filteredPlanRows.length === 0}
-                onClick={() => exportFilteredCsv(
-                  'Flex Replenishment Report',
-                  [
-                    { header: 'Component SKU', value: row => row.componentSku ?? '—' },
-                    { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount ?? 0 },
-                    { header: 'Linked Amazon SKU Count', value: row => row.linkedAmazonSkuCount ?? 0 },
-                    { header: '30D Amazon Demand Units', value: row => row.totalSales30d },
-                    { header: 'Component-Adjusted Demand', value: row => row.componentDemandUnits },
-                    { header: 'Daily Component Velocity', value: row => row.dailyComponentVelocity },
-                    { header: 'Target Days', value: row => row.targetCoverDays },
-                    { header: 'Required Component Stock', value: row => row.requiredComponentStock },
-                    { header: 'Current XHZU/Component Stock', value: row => row.availableSellerFlexStock },
-                    { header: 'Suggested Vendor Replenish Quantity', value: row => row.suggestedSellerFlexReplenishment },
-                    { header: 'State/Zone Demand Signal', value: row => row.stateZoneInsight },
-                    { header: 'Payment Signal', value: row => {
-                        const signal = paymentSignalMap.get(row.sku ?? '');
-                        return signal ?
-                          `₹${signal.grossSales.toFixed(0)} (${signal.estimatedMarginPercent ?? 0}%)` :
-                          '—';
-                      }},
-                    { header: 'Action', value: row => row.actionMessage },
-                    { header: 'Reason/Warning', value: row => row.missingDataWarnings.join(' | ') },
-                  ],
-                  sortedFlexRows,
-                  data.nextStockPlan.assumptions,
-                  planFilterText,
-                )}
-              >
-                <Download className="mr-2 h-4 w-4" /> Export CSV
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 border-b border-border p-4 lg:grid-cols-5">
-              {([
-                ['flex', 'Component SKUs needing replenishment', data.nextStockPlan.summary.sellerFlexReplenishmentNeeded],
-                ['missingStock', 'Demand but missing stock data', data.nextStockPlan.summary.productsMissingStockData],
-                ['unknownSource', 'Unattributed daily sales', data.nextStockPlan.summary.productsUnknownSourceSales],
-                ['zoneGap', 'Zone mapping gaps', data.nextStockPlan.summary.zoneMappingGaps],
-              ] as Array<[PlanFilterId | 'flex', string, number]>).map(([id, label, value]) => {
-                const isActive = planFilter === id;
-                return (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => setPlanFilter(isActive ? null : id)}
-                    className={`rounded-xl border bg-card p-3 text-left transition-colors hover:bg-muted/40 ${isActive ? 'border-primary ring-1 ring-primary' : 'border-border'}`}
-                  >
-                    <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
-                    <p className="mt-2 text-2xl font-black">{value.toLocaleString('en-IN')}</p>
-                  </button>
-                )
-              })}
-            </div>
-
-            <div className="flex items-center justify-end gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground">
-              <span>Rows per page</span>
-              <select
-                value={pageSize}
-                onChange={event => setPageSize(Number(event.target.value))}
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-                aria-label="Rows per page"
-              >
-                {PAGE_SIZE_OPTIONS.map(size => <option key={size} value={size}>{size}</option>)}
-              </select>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[2240px] text-sm">
-                <thead>
-                  <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                    <SortableTh label="Component SKU" column="componentSku" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                    <SortableTh label="WMS Parent SKU Count" column="wmsParentSkuCount" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                    <SortableTh label="Linked Amazon SKU Count" column="linkedAmazonSkuCount" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                    <SortableTh label="30D Amazon Demand Units" column="totalSales30d" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                    <SortableTh label="Component-Adjusted Demand" column="componentDemandUnits" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                    <SortableTh label="Daily Component Velocity" column="dailyComponentVelocity" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                    <SortableTh label="Target Days" column="targetCoverDays" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                    <SortableTh label="Required Component Stock" column="requiredComponentStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                    <SortableTh label="Current XHZU/Component Stock" column="availableSellerFlexStock" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" />
-                    <SortableTh label="Suggested Vendor Replenish Qty" column="suggestedSellerFlexReplenishment" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} align="right" font-semibold />
-                    <th className="px-3 py-3 text-left">State/Zone insight</th>
-                    <SortableTh label="Payment signal" column="paymentSignal" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                    <SortableTh label="Action" column="actionMessage" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} className="px-4" />
-                    <SortableTh label="Reason/warning" column="missingDataWarnings" sort={planSort} onSort={column => setPlanSort(current => toggleSort(current, column))} />
-                  </tr>
-                </thead>
-                <tbody>
-                  {paginatedFlexRows.map((row, index) => (
-                    <tr key={`flex-plan-${row.marketplaceId}-${row.sku}-${row.asin}`} className={index < pagatedFlexRows.length - 1 ? 'border-b border-border/50' : ''}>
-                      <td className="px-4 py-3">
-                        <div className="flex min-w-[220px] items-center gap-3">
-                          <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded-md border border-border bg-muted">
-                            {row.imageUrl ? (
-                              <Image src={row.imageUrl} alt="" fill unoptimized className="object-contain" sizes="40px" />
-                            ) : (
-                              <Warehouse className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 text-muted-foreground" />
-                            )}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="max-w-[260px] truncate font-medium">{row.title ?? 'Product title unavailable'}</p>
-                            <p className="text-xs text-muted-foreground">{[row.brand, row.marketplaceId].filter(Boolean).join(' · ') || 'Metadata unavailable'}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        {row.componentSku ?? <span className="text-muted-foreground">—</span>}
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        {row.wmsParentSkuCount ?? 0}
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        {row.linkedAmazonSkuCount ?? 0}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        {formatNumber(row.totalSales30d)}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        {formatNumber(row.componentDemandUnits)}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        {(() => {
-                          const lookbackDays = planningAssumptions?.salesLookbackDays ?? 30;
-                          const velocity = lookbackDays > 0 ? row.totalSales30d / lookbackDays : 0;
-                          return formatNumber(velocity, 2);
-                        })()}
-                      </td>
-                      <td className="px-3 py-3 text-center">
-                        {formatNumber(row.targetCoverDays)}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        {(() => {
-                          const lookbackDays = planningAssumptions?.salesLookbackDays ?? 30;
-                          const growthMultiplier = planningAssumptions?.growthMultiplier ?? 1.5;
-                          const targetDays = row.targetCoverDays;
-
-                          if (lookbackDays > 0 && targetDays > 0) {
-                            const dailyVelocity = row.totalSales30d / lookbackDays;
-                            const adjustedDailyVelocity = dailyVelocity * growthMultiplier;
-                            const requiredStock = adjustedDailyVelocity * targetDays + row.safetyStock;
-                            return formatNumber(requiredStock);
-                          }
-                          return '—';
-                        })()}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        {formatNumber(row.availableSellerFlexStock)}
-                        {row.ledgerBalanceAmbiguous && (
-                          <span className="ml-1 text-amber-600" title="Multiple same-day ledger entries; balance may be imprecise.">⚠</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-3 text-right font-semibold">
-                        {formatNumber(row.suggestedSellerFlexReplenishment)}
-                      </td>
-                      <td className="px-3 py-3">
-                        {row.stateZoneInsight}
-                      </td>
-                      <td className="px-3 py-3 text-right">
-                        {(() => {
-                          const signal = paymentSignalMap.get(row.sku ?? '');
-                          return signal ?
-                            <span className="text-xs">₹{signal.grossSales.toFixed(0)} ({signal.estimatedMarginPercent ?? 0}%)</span> :
-                            <span className="text-xs text-muted-foreground">—</span>;
-                        })()}
-                      </td>
-                      <td className="px-3 py-3">
-                        {row.actionMessage}
-                      </td>
-                      <td className="px-3 py-3 text-[11px]">
-                        {row.missingDataWarnings.length > 0 ? (
-                          <p className="mt-0">{row.missingDataWarnings.join(' | ')}</p>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-
-              {filteredFlexRows.length === 0 && (
-                <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-                  {data.nextStockPlan.rows.length === 0
-                    ? 'Flex Replenishment Report requires synced internal stock and sales data.'
-                    : 'No rows match the current filter or search.'}
-                </div>
-              )}
-            </div>
-
-            <PaginationControls
-              page={safeFlexPage}
-              totalPages={flexTotalPages}
-              pageSize={pageSize}
-              totalRows={filteredFlexRows.length}
-              onPageChange={setFlexPage}
-            />
+        <div className="rounded-xl border border-border bg-card p-8">
+          <h2 className="text-xl font-black">Flex Replenishment</h2>
+          <p className="mt-2 max-w-3xl text-sm text-muted-foreground">
+            Vendor-to-XHZU planning will use the SKU component mapping layer. Amazon SKU sales will be
+            exploded into component SKU demand using each component quantity, then aggregated at the
+            warehouse/component SKU level.
+          </p>
+          <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+            Component mappings are not persisted yet, so this tab intentionally does not calculate vendor
+            quantities or treat raw combo Seller Flex stock as parent warehouse stock.
           </div>
-        </>
+        </div>
       )}
 
       <div className="rounded-xl border border-border bg-card">
