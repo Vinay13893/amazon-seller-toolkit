@@ -3,7 +3,12 @@ import { getInternalAccessContext } from '@/lib/internal-access'
 import {
   buildNextStockPlan,
   DEFAULT_REPLENISHMENT_ASSUMPTIONS,
+  SELLER_FLEX_CODES,
 } from '@/lib/internal-replenishment-planner'
+import {
+  buildFcReplenishmentRows,
+  buildFlexReplenishmentRows,
+} from '@/lib/internal-replenishment-report'
 import {
   calculateStockActions,
   type DailySalesInput,
@@ -420,6 +425,32 @@ export async function GET(request: Request) {
     },
   )
 
+  const inventoryByLocationRows = (inventoryByLocationResult.data ?? []).map(row => ({
+    asin: (row.asin as string | null) ?? null,
+    sku: (row.sku as string | null) ?? null,
+    marketplaceId: (row.marketplace_id as string | null) ?? null,
+    locationCode: (row.location_code as string | null) ?? null,
+    available: Number(row.available_quantity ?? 0),
+    inbound: Number(row.inbound_quantity ?? 0),
+    reserved: Number(row.reserved_quantity ?? 0),
+    unsellable: Number(row.unsellable_quantity ?? 0),
+  }))
+  const componentMappingRows = componentMappingsResult.error
+    ? []
+    : (componentMappingsResult.data ?? []).map(row => ({
+        amazonSku: row.amazon_sku as string,
+        amazonSkuNorm: row.amazon_sku_norm as string,
+        componentSku: row.component_sku as string,
+        componentSkuNorm: row.component_sku_norm as string,
+        componentQuantity: Number(row.component_quantity),
+      }))
+  const sellerFlexLocationCodes = new Set<string>(SELLER_FLEX_CODES)
+  for (const row of fulfillmentLocationsResult.data ?? []) {
+    if ((row.location_type as string | null) === 'seller_flex' && row.location_code) {
+      sellerFlexLocationCodes.add(String(row.location_code).trim().toUpperCase())
+    }
+  }
+
   const nextStockPlan = buildNextStockPlan({
     products,
     salesRows: (salesResult.error
@@ -471,16 +502,7 @@ export async function GET(request: Request) {
       locationCode: (row.location_code as string | null) ?? null,
       source: (row.source as string | null) ?? null,
     })),
-    inventoryByLocation: (inventoryByLocationResult.data ?? []).map(row => ({
-      asin: (row.asin as string | null) ?? null,
-      sku: (row.sku as string | null) ?? null,
-      marketplaceId: (row.marketplace_id as string | null) ?? null,
-      locationCode: (row.location_code as string | null) ?? null,
-      available: Number(row.available_quantity ?? 0),
-      inbound: Number(row.inbound_quantity ?? 0),
-      reserved: Number(row.reserved_quantity ?? 0),
-      unsellable: Number(row.unsellable_quantity ?? 0),
-    })),
+    inventoryByLocation: inventoryByLocationRows,
     lookbackDays,
     planningCycleDays,
     transitBufferDays,
@@ -507,15 +529,7 @@ export async function GET(request: Request) {
       zoneCode: row.zone_code as string,
       zoneName: (row.zone_name as string | null) ?? null,
     })),
-    componentMappings: componentMappingsResult.error
-      ? []
-      : (componentMappingsResult.data ?? []).map(row => ({
-          amazonSku: row.amazon_sku as string,
-          amazonSkuNorm: row.amazon_sku_norm as string,
-          componentSku: row.component_sku as string,
-          componentSkuNorm: row.component_sku_norm as string,
-          componentQuantity: Number(row.component_quantity),
-        })),
+    componentMappings: componentMappingRows,
     costs: skuCostsResult.error
       ? []
       : (skuCostsResult.data ?? []).map(row => ({
@@ -534,6 +548,23 @@ export async function GET(request: Request) {
     (sum, row) => sum + row.unknownSourceSales30d,
     0,
   )
+
+  const fcReplenishment = buildFcReplenishmentRows({
+    fcDiagnostics: nextStockPlan.fcDiagnostics,
+    inventoryByLocation: inventoryByLocationRows,
+    assumptions: nextStockPlan.assumptions,
+    planRows: nextStockPlan.rows,
+    paymentSignals: paymentContext.paymentSignals,
+  })
+  const flexReplenishment = buildFlexReplenishmentRows({
+    componentMappings: componentMappingRows,
+    planRows: nextStockPlan.rows,
+    assumptions: nextStockPlan.assumptions,
+    inventoryByLocation: inventoryByLocationRows,
+    paymentSignals: paymentContext.paymentSignals,
+    stateZoneDemand: paymentContext.stateZoneDemand,
+    sellerFlexLocationCodes,
+  })
 
   const inventoryDates = inventoryRows
     .map(row => row.lastSyncedAt)
@@ -562,6 +593,10 @@ export async function GET(request: Request) {
     actions,
     nextStockPlan,
     paymentContext,
+    fcReplenishmentRows: fcReplenishment.rows,
+    fcReplenishmentSummary: fcReplenishment.summary,
+    flexReplenishmentRows: flexReplenishment.rows,
+    flexReplenishmentSummary: flexReplenishment.summary,
     diagnostics: {
       products_with_sales: productsWithSales,
       products_missing_sales: Math.max(0, products.length - productsWithSales),

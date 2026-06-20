@@ -6,7 +6,7 @@ export const DEFAULT_REPLENISHMENT_ASSUMPTIONS = {
   maxLookbackDays: 365,
 } as const
 
-const SELLER_FLEX_CODES = new Set(['XHZU', 'XHZV', 'XHZR', 'TPKR'])
+export const SELLER_FLEX_CODES = new Set(['XHZU', 'XHZV', 'XHZR', 'TPKR'])
 const EASY_SHIP_SOURCES = new Set(['easy_ship', 'easyship', 'mfn', 'merchant_fulfilled'])
 
 type LocationType = 'seller_flex' | 'fba_fc' | 'easy_ship_mfn' | 'unknown'
