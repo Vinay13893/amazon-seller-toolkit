@@ -103,6 +103,41 @@ export async function GET(request: Request) {
     return { data: rows, error: null, limitReached: true }
   }
 
+  // Supabase/PostgREST enforces a server-side max-rows cap (commonly 1000) that silently
+  // truncates a single .limit(N) request even when N is larger. FBA Ledger Detail volume
+  // regularly exceeds that cap, which was silently dropping most "Shipments" rows and
+  // under-counting trusted FBA/Seller Flex demand. Paginate the same way as payment
+  // transactions above to fetch the full set.
+  const fulfillmentReportRowsPromise = async () => {
+    const pageSize = 1000
+    const maxRows = 50000
+    const rows: Array<{
+      asin: string | null
+      sku: string | null
+      marketplace_id: string | null
+      fulfillment_center_id: string | null
+      event_type: string | null
+      quantity: number | null
+      report_date: string | null
+      running_balance: number | null
+    }> = []
+
+    for (let offset = 0; offset < maxRows; offset += pageSize) {
+      const result = await supabase
+        .from('internal_fba_report_rows')
+        .select('asin, sku, marketplace_id, fulfillment_center_id, event_type, quantity, report_date, running_balance')
+        .eq('workspace_id', access.workspaceId)
+        .order('report_date', { ascending: true })
+        .range(offset, offset + pageSize - 1)
+      if (result.error) return { data: rows, error: result.error, limitReached: false }
+      rows.push(...(result.data ?? []))
+      if (!result.data || result.data.length < pageSize) {
+        return { data: rows, error: null, limitReached: false }
+      }
+    }
+    return { data: rows, error: null, limitReached: true }
+  }
+
   const [
     listingsResult,
     inventoryResult,
@@ -144,11 +179,7 @@ export async function GET(request: Request) {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
-    supabase
-      .from('internal_fba_report_rows')
-      .select('asin, sku, marketplace_id, fulfillment_center_id, event_type, quantity, report_date, running_balance')
-      .eq('workspace_id', access.workspaceId)
-      .limit(20000),
+    fulfillmentReportRowsPromise(),
     supabase
       .from('internal_fba_report_jobs')
       .select('report_type, processing_status, completed_at, stored_row_count, fc_field_available')
@@ -628,6 +659,8 @@ export async function GET(request: Request) {
       fulfillment_report_completed_at: fulfillmentJobResult.data?.completed_at ?? null,
       fulfillment_report_rows: fulfillmentJobResult.data?.stored_row_count ?? 0,
       fulfillment_fc_available: fulfillmentJobResult.data?.fc_field_available ?? null,
+      fulfillment_report_rows_fetched: fulfillmentRowsResult.data?.length ?? 0,
+      fulfillment_report_row_limit_reached: fulfillmentRowsResult.limitReached ?? false,
       state_zone_rows: stateZoneMapResult.data?.length ?? 0,
       fulfillment_location_rows: fulfillmentLocationsResult.data?.length ?? 0,
       fulfillment_sales_daily_rows: fulfillmentSalesDailyResult.data?.length ?? 0,

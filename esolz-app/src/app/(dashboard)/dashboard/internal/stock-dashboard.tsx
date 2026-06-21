@@ -2157,6 +2157,9 @@ export function InternalStockDashboard() {
                 fulfilment and FC replenishment shipments, so component demand uses total trusted Amazon demand
                 (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
               </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                30D Amazon Demand is calculated from trusted FBA/Seller Flex demand sources for mapped Amazon SKUs.
+              </p>
             </div>
             <div className="flex flex-wrap items-end gap-2">
               <Button
