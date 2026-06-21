@@ -527,6 +527,42 @@ function flexActionLabel(action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stoc
   }
 }
 
+function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
+  const sortedRows = [...rows].sort((a, b) => {
+    const sentA = a.suggestedVendorReplenishQty ?? 0
+    const sentB = b.suggestedVendorReplenishQty ?? 0
+    if (sentA !== sentB) return sentB - sentA
+    if (a.componentAdjustedDemand !== b.componentAdjustedDemand) {
+      return b.componentAdjustedDemand - a.componentAdjustedDemand
+    }
+    return b.amazonDemand30d - a.amazonDemand30d
+  })
+
+  const columns: CsvColumn<FlexReplenishmentRow>[] = [
+    { header: 'Component SKU', value: row => row.componentSku },
+    { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
+    { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
+    { header: '30D Amazon Demand', value: row => row.amazonDemand30d },
+    { header: 'Component Units Required', value: row => row.componentAdjustedDemand },
+    { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
+    { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
+    { header: 'Action Label', value: row => flexActionLabel(row.action) },
+    { header: 'Reason', value: row => row.reason },
+  ]
+
+  const generatedAt = new Date().toISOString()
+  const csv = [
+    columns.map(column => csvCell(column.header)).join(','),
+    ...sortedRows.map(row => columns.map(column => csvCell(column.value(row))).join(',')),
+  ].join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `flex-vendor-purchase-plan-${generatedAt.slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export function InternalStockDashboard() {
   const [data, setData] = useState<StockResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -2122,13 +2158,20 @@ export function InternalStockDashboard() {
                 (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-end gap-2">
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => setShowZeroDemandFlexRows(current => !current)}
               >
                 {showZeroDemandFlexRows ? 'Hide zero-demand mapped components' : 'Show zero-demand mapped components'}
+              </Button>
+              <Button
+                type="button"
+                disabled={data.flexReplenishmentRows.length === 0}
+                onClick={() => exportFlexPurchasePlanCsv(data.flexReplenishmentRows)}
+              >
+                <Download className="mr-2 h-4 w-4" /> Export Purchase Plan
               </Button>
               <Button
                 type="button"
@@ -2152,10 +2195,13 @@ export function InternalStockDashboard() {
                   'report=Vendor/Component Replenishment (full list)',
                 )}
               >
-                <Download className="mr-2 h-4 w-4" /> Export CSV
+                <Download className="mr-2 h-4 w-4" /> Export Full CSV
               </Button>
             </div>
           </div>
+          <p className="px-4 pt-3 text-xs text-muted-foreground">
+            Use Export Purchase Plan for daily vendor ordering. Full CSV remains available for diagnostics.
+          </p>
           <ReportStatCards
             cards={[
               ['Components with demand', data.flexReplenishmentSummary.componentsWithDemand],
