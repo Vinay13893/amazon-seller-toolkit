@@ -2160,6 +2160,10 @@ export function InternalStockDashboard() {
               <p className="mt-1 text-xs text-muted-foreground">
                 30D Amazon Demand is calculated from trusted FBA/Seller Flex demand sources for mapped Amazon SKUs.
               </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Component Units Required = Amazon demand × component quantity from the SKU mapping (combo SKUs use
+                each linked Amazon SKU's own quantity).
+              </p>
             </div>
             <div className="flex flex-wrap items-end gap-2">
               <Button
