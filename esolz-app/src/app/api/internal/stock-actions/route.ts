@@ -8,6 +8,7 @@ import {
 import {
   buildFcReplenishmentRows,
   buildFcStockMatrix,
+  buildFlexDemandBreakdownRows,
   buildFlexReplenishmentRows,
 } from '@/lib/internal-replenishment-report'
 import {
@@ -220,7 +221,7 @@ export async function GET(request: Request) {
       .limit(10000),
     supabase
       .from('internal_sku_component_mappings')
-      .select('amazon_sku, amazon_sku_norm, component_sku, component_sku_norm, component_quantity')
+      .select('amazon_sku, amazon_sku_norm, wms_parent_sku, component_sku, component_sku_norm, component_quantity')
       .eq('workspace_id', access.workspaceId)
       .eq('is_active', true)
       .limit(10000),
@@ -472,6 +473,7 @@ export async function GET(request: Request) {
     : (componentMappingsResult.data ?? []).map(row => ({
         amazonSku: row.amazon_sku as string,
         amazonSkuNorm: row.amazon_sku_norm as string,
+        wmsParentSku: (row.wms_parent_sku as string | null) ?? null,
         componentSku: row.component_sku as string,
         componentSkuNorm: row.component_sku_norm as string,
         componentQuantity: Number(row.component_quantity),
@@ -602,6 +604,10 @@ export async function GET(request: Request) {
     inventoryByLocation: inventoryByLocationRows,
     sellerFlexLocationCodes,
   })
+  const flexDemandBreakdownRows = buildFlexDemandBreakdownRows({
+    componentMappings: componentMappingRows,
+    planRows: nextStockPlan.rows,
+  })
 
   const inventoryDates = inventoryRows
     .map(row => row.lastSyncedAt)
@@ -636,6 +642,7 @@ export async function GET(request: Request) {
     flexReplenishmentSummary: flexReplenishment.summary,
     fcStockMatrixRows: fcStockMatrix.rows,
     fcStockMatrixColumns: fcStockMatrix.columns,
+    flexDemandBreakdownRows,
     diagnostics: {
       products_with_sales: productsWithSales,
       products_missing_sales: Math.max(0, products.length - productsWithSales),

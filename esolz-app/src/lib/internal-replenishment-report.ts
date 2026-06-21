@@ -18,6 +18,7 @@ export type InventoryByLocationRow = {
 export type ComponentMappingRow = {
   amazonSku: string
   amazonSkuNorm: string
+  wmsParentSku?: string | null
   componentSku: string
   componentSkuNorm: string
   componentQuantity: number
@@ -411,6 +412,86 @@ export function buildFlexReplenishmentRows(input: {
   }
 
   return { rows, summary }
+}
+
+export type FlexDemandBreakdownRow = {
+  componentSku: string
+  amazonSku: string
+  wmsParentSku: string | null
+  amazonDemand30d: number
+  fbaDemand30d: number
+  sellerFlexDemand30d: number
+  componentQuantityPerAmazonUnit: number
+  componentUnitsRequiredContribution: number
+  demandSourceLabel: string
+  matchStatus:
+    | 'Matched with trusted demand'
+    | 'Mapped but no trusted demand'
+    | 'Mapped but only untrusted/non-FBA demand'
+    | 'SKU mismatch / no demand source match'
+}
+
+export function buildFlexDemandBreakdownRows(input: {
+  componentMappings: ComponentMappingRow[]
+  planRows: NextStockPlanRow[]
+}): FlexDemandBreakdownRow[] {
+  const planRowBySkuNorm = new Map<string, NextStockPlanRow>()
+  for (const row of input.planRows) {
+    const skuNorm = norm(row.sku)
+    if (skuNorm) planRowBySkuNorm.set(skuNorm, row)
+  }
+
+  const rows: FlexDemandBreakdownRow[] = input.componentMappings.map(mapping => {
+    const planRow = planRowBySkuNorm.get(norm(mapping.amazonSkuNorm))
+    const fbaDemand30d = planRow?.fbaSales30d ?? 0
+    const sellerFlexDemand30d = planRow?.sellerFlexSales30d ?? 0
+    const amazonDemand30d = fbaDemand30d + sellerFlexDemand30d
+    const untrustedDemand30d = planRow
+      ? planRow.easyShipMfnSales30d + planRow.unknownSourceSales30d
+      : 0
+
+    const demandSourceLabel = fbaDemand30d > 0 && sellerFlexDemand30d > 0
+      ? 'FBA Ledger Detail + Seller Flex'
+      : fbaDemand30d > 0
+        ? 'FBA Ledger Detail'
+        : sellerFlexDemand30d > 0
+          ? 'Seller Flex'
+          : untrustedDemand30d > 0
+            ? 'Untrusted/non-FBA source (excluded)'
+            : 'No demand source found'
+
+    const matchStatus: FlexDemandBreakdownRow['matchStatus'] = !planRow
+      ? 'SKU mismatch / no demand source match'
+      : amazonDemand30d > 0
+        ? 'Matched with trusted demand'
+        : untrustedDemand30d > 0
+          ? 'Mapped but only untrusted/non-FBA demand'
+          : 'Mapped but no trusted demand'
+
+    return {
+      componentSku: mapping.componentSku,
+      amazonSku: mapping.amazonSku,
+      wmsParentSku: mapping.wmsParentSku ?? null,
+      amazonDemand30d,
+      fbaDemand30d,
+      sellerFlexDemand30d,
+      componentQuantityPerAmazonUnit: mapping.componentQuantity,
+      componentUnitsRequiredContribution: amazonDemand30d * mapping.componentQuantity,
+      demandSourceLabel,
+      matchStatus,
+    }
+  })
+
+  rows.sort((a, b) => {
+    const componentCompare = a.componentSku.localeCompare(b.componentSku)
+    if (componentCompare !== 0) return componentCompare
+    if (a.componentUnitsRequiredContribution !== b.componentUnitsRequiredContribution) {
+      return b.componentUnitsRequiredContribution - a.componentUnitsRequiredContribution
+    }
+    return b.amazonDemand30d - a.amazonDemand30d
+  })
+
+  return rows
 }
 
 export function buildFcStockMatrix(input: {

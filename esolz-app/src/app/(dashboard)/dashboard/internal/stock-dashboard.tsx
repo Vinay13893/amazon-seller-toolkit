@@ -207,6 +207,22 @@ type StockResponse = {
     }>
   }>
   fcStockMatrixColumns: string[]
+  flexDemandBreakdownRows: Array<{
+    componentSku: string
+    amazonSku: string
+    wmsParentSku: string | null
+    amazonDemand30d: number
+    fbaDemand30d: number
+    sellerFlexDemand30d: number
+    componentQuantityPerAmazonUnit: number
+    componentUnitsRequiredContribution: number
+    demandSourceLabel: string
+    matchStatus:
+      | 'Matched with trusted demand'
+      | 'Mapped but no trusted demand'
+      | 'Mapped but only untrusted/non-FBA demand'
+      | 'SKU mismatch / no demand source match'
+  }>
   diagnostics: {
     products_with_sales: number
     products_missing_sales: number
@@ -306,6 +322,7 @@ const DEFAULT_PLANNING_ASSUMPTIONS: PlanningAssumptions = {
 
 type FcReplenishmentRow = StockResponse['fcReplenishmentRows'][number]
 type FlexReplenishmentRow = StockResponse['flexReplenishmentRows'][number]
+type FlexDemandBreakdownRow = StockResponse['flexDemandBreakdownRows'][number]
 type FcStockMatrixRow = StockResponse['fcStockMatrixRows'][number]
 type FcStockMatrixCell = FcStockMatrixRow['fcCells'][number]
 type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
@@ -559,6 +576,33 @@ function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
   const link = document.createElement('a')
   link.href = url
   link.download = `flex-vendor-purchase-plan-${generatedAt.slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportFlexDemandBreakdownCsv(rows: FlexDemandBreakdownRow[]) {
+  const columns: CsvColumn<FlexDemandBreakdownRow>[] = [
+    { header: 'Component SKU', value: row => row.componentSku },
+    { header: 'Amazon SKU', value: row => row.amazonSku },
+    { header: 'WMS Parent SKU', value: row => row.wmsParentSku },
+    { header: 'Amazon 30D Demand', value: row => row.amazonDemand30d },
+    { header: 'FBA 30D Demand', value: row => row.fbaDemand30d },
+    { header: 'Seller Flex 30D Demand', value: row => row.sellerFlexDemand30d },
+    { header: 'Component Qty Per Amazon Unit', value: row => row.componentQuantityPerAmazonUnit },
+    { header: 'Component Units Required', value: row => row.componentUnitsRequiredContribution },
+    { header: 'Demand Source Label', value: row => row.demandSourceLabel },
+    { header: 'Match Status', value: row => row.matchStatus },
+  ]
+
+  const generatedAt = new Date().toISOString()
+  const csv = [
+    columns.map(column => csvCell(column.header)).join(','),
+    ...rows.map(row => columns.map(column => csvCell(column.value(row))).join(',')),
+  ].join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `flex-demand-breakdown-${generatedAt.slice(0, 10)}.csv`
   link.click()
   URL.revokeObjectURL(url)
 }
@@ -2204,11 +2248,24 @@ export function InternalStockDashboard() {
               >
                 <Download className="mr-2 h-4 w-4" /> Export Full CSV
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={data.flexDemandBreakdownRows.length === 0}
+                onClick={() => exportFlexDemandBreakdownCsv(data.flexDemandBreakdownRows)}
+              >
+                <Download className="mr-2 h-4 w-4" /> Export Demand Breakdown
+              </Button>
             </div>
           </div>
           <p className="px-4 pt-3 text-xs text-muted-foreground">
             Use Export Purchase Plan for daily vendor ordering. Full CSV remains available for diagnostics.
           </p>
+          {data.flexDemandBreakdownRows.some(row => row.matchStatus !== 'Matched with trusted demand') && (
+            <p className="px-4 pt-1 text-xs text-amber-700 dark:text-amber-300">
+              Some mapped Amazon SKUs have no trusted 30D demand. Use Export Demand Breakdown to verify pack/combo SKUs.
+            </p>
+          )}
           <ReportStatCards
             cards={[
               ['Components with demand', data.flexReplenishmentSummary.componentsWithDemand],
