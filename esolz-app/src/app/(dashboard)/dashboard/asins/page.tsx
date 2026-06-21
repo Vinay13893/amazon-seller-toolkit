@@ -35,6 +35,7 @@ import {
 } from 'lucide-react'
 
 type ViewMode = 'table' | 'cards'
+type AsinTab = 'products' | 'competitors'
 
 interface AmazonListingItem {
   id:             string
@@ -59,6 +60,7 @@ interface ListingSyncSummary {
 const LISTINGS_PAGE_SIZE = 50
 
 export default function AsinsPage() {
+  const [activeAsinTab, setActiveAsinTab] = useState<AsinTab>('products')
   const [products, setProducts]       = useState<ProductSnapshot[]>([])
   const [viewMode, setViewMode]       = useState<ViewMode>('table')
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -286,13 +288,39 @@ export default function AsinsPage() {
           <div>
             <h1 className="text-lg font-semibold text-foreground">ASIN Tracking</h1>
             <p className="text-sm text-muted-foreground">
-              Monitor BSR, pricing, Buy Box, rating, reviews and availability for your Amazon products
+              My Products shows items synced from your connected Amazon account. Competitors is for ASINs you add manually.
             </p>
           </div>
         </div>
-        <AddAsinDialog onAdd={handleAddAsin} currentCount={used} maxCount={max} />
+        {activeAsinTab === 'competitors' && (
+          <AddAsinDialog onAdd={handleAddAsin} currentCount={used} maxCount={max} />
+        )}
       </div>
 
+      {/* ── My Products / Competitors sub-tabs ── */}
+      <div className="flex w-fit rounded-lg border border-border bg-card p-1">
+        <button
+          type="button"
+          onClick={() => setActiveAsinTab('products')}
+          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+            activeAsinTab === 'products' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+          }`}
+        >
+          My Products
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveAsinTab('competitors')}
+          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+            activeAsinTab === 'competitors' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+          }`}
+        >
+          Competitors
+        </button>
+      </div>
+
+      {activeAsinTab === 'competitors' && (
+      <>
       {/* ── Plan quota bar ── */}
       <div className="rounded-lg border border-border bg-card p-4 flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="flex-1 flex flex-col gap-1.5">
@@ -400,9 +428,9 @@ export default function AsinsPage() {
           products.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center gap-3">
               <PackageOpen className="size-12 text-muted-foreground/40" />
-              <p className="text-base font-medium text-muted-foreground">No ASINs tracked yet</p>
+              <p className="text-base font-medium text-muted-foreground">No competitor ASINs tracked yet</p>
               <p className="text-sm text-muted-foreground/60 max-w-xs">
-                Add your first ASIN to start monitoring BSR, pricing, and performance.
+                Add a competitor ASIN to start monitoring their BSR, pricing, and performance.
               </p>
             </div>
           ) : (
@@ -414,8 +442,17 @@ export default function AsinsPage() {
           )
         )}
       </div>
+      </>
+      )}
 
-      {/* ── Amazon Account Listings ── */}
+      {activeAsinTab === 'products' && (
+      <>
+      {/* ── My Products: missing-data explanation ── */}
+      <div className="rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+        Connect Amazon and run product checks to populate price, BSR, Buy Box, availability, and deal tag.
+      </div>
+
+      {/* ── My Products (connected Amazon account listings) ── */}
       <div className="flex flex-col gap-3">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3">
@@ -423,7 +460,7 @@ export default function AsinsPage() {
               <ShoppingBag className="size-5" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-foreground">Amazon Account Listings</h2>
+              <h2 className="text-lg font-semibold text-foreground">My Products</h2>
               <p className="text-sm text-muted-foreground">
                 Products synced from your Seller Central account via SP-API
               </p>
@@ -515,9 +552,15 @@ export default function AsinsPage() {
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Product</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">SKU</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">ASIN</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Category</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Marketplace</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Status</th>
-                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Last synced</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Price</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">BSR</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Buy Box</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Availability</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Deal Tag</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Updated</th>
                     <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
@@ -555,6 +598,9 @@ export default function AsinsPage() {
                         {item.asin ?? '—'}
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {item.product_type ?? '—'}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
                         {marketplaceFromMarketplaceId(item.marketplace_id)}
                       </td>
                       <td className="px-4 py-3">
@@ -570,6 +616,11 @@ export default function AsinsPage() {
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">
                         {item.last_synced_at
                           ? new Date(item.last_synced_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -621,6 +672,8 @@ export default function AsinsPage() {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }
