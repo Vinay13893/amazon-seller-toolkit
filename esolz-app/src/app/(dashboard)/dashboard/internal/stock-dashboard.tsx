@@ -253,6 +253,15 @@ type UploadResult = {
   errors: Array<{ row: number; message: string }>
 }
 
+type XhzuStockImportResult = {
+  written: boolean
+  parsedRows: number
+  acceptedRows: number
+  rejectedRows: number
+  insertedCount: number
+  updatedCount: number
+}
+
 type AmazonSyncResult = {
   jobId: string
   status: 'running' | 'completed' | 'partial_success' | 'failed'
@@ -553,7 +562,11 @@ export function InternalStockDashboard() {
   const [syncingFulfillment, setSyncingFulfillment] = useState(false)
   const [fulfillmentError, setFulfillmentError] = useState<string | null>(null)
   const [fulfillmentResult, setFulfillmentResult] = useState<FulfillmentReportResult | null>(null)
+  const [xhzuUploading, setXhzuUploading] = useState(false)
+  const [xhzuUploadError, setXhzuUploadError] = useState<string | null>(null)
+  const [xhzuUploadResult, setXhzuUploadResult] = useState<XhzuStockImportResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const xhzuFileInputRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -619,6 +632,43 @@ export function InternalStockDashboard() {
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }, [load])
+
+  const uploadXhzuStock = useCallback(async (file: File) => {
+    setXhzuUploading(true)
+    setXhzuUploadError(null)
+    setXhzuUploadResult(null)
+
+    try {
+      const body = new FormData()
+      body.set('file', file)
+      const response = await fetch('/api/internal/stock-actions/xhzu-stock/import', {
+        method: 'POST',
+        body,
+        credentials: 'same-origin',
+      })
+      const result = await response.json() as XhzuStockImportResult & { error?: string }
+      if (!response.ok) {
+        throw new Error(result.error ?? 'XHZU stock upload failed.')
+      }
+      setXhzuUploadResult(result)
+      if (result.acceptedRows > 0) await load()
+    } catch (uploadFailure) {
+      setXhzuUploadError(uploadFailure instanceof Error ? uploadFailure.message : 'XHZU stock upload failed.')
+    } finally {
+      setXhzuUploading(false)
+      if (xhzuFileInputRef.current) xhzuFileInputRef.current.value = ''
+    }
+  }, [load])
+
+  const downloadXhzuStockTemplate = useCallback(() => {
+    const csv = 'component_sku,location_code,available_quantity,reserved_quantity,inbound_quantity\r\n'
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'internal-xhzu-stock-template.csv'
+    link.click()
+    URL.revokeObjectURL(url)
+  }, [])
 
   const syncAmazonData = useCallback(async () => {
     setSyncingAmazon(true)
@@ -1998,6 +2048,70 @@ export function InternalStockDashboard() {
       </div>
         </>
       ) : (
+        <>
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="font-bold">Upload XHZU Component Stock</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Upload current XHZU/component stock so suggested vendor replenishment can be calculated.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                CSV columns: component_sku,location_code,available_quantity,reserved_quantity,inbound_quantity
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={downloadXhzuStockTemplate}>
+                <Download className="mr-2 h-4 w-4" /> Download template
+              </Button>
+              <Button
+                type="button"
+                onClick={() => xhzuFileInputRef.current?.click()}
+                disabled={xhzuUploading}
+              >
+                {xhzuUploading
+                  ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  : <Upload className="mr-2 h-4 w-4" />}
+                {xhzuUploading ? 'Importing…' : 'Import XHZU stock'}
+              </Button>
+              <input
+                ref={xhzuFileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={event => {
+                  const file = event.target.files?.[0]
+                  if (file) void uploadXhzuStock(file)
+                }}
+              />
+            </div>
+          </div>
+
+          {xhzuUploadError && (
+            <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+              {xhzuUploadError}
+            </div>
+          )}
+
+          {xhzuUploadResult && (
+            <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+              <p className="font-medium">
+                Parsed {xhzuUploadResult.parsedRows.toLocaleString('en-IN')} rows ·{' '}
+                Accepted {xhzuUploadResult.acceptedRows.toLocaleString('en-IN')} ·{' '}
+                Rejected {xhzuUploadResult.rejectedRows.toLocaleString('en-IN')}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Inserted {xhzuUploadResult.insertedCount.toLocaleString('en-IN')} ·{' '}
+                Updated {xhzuUploadResult.updatedCount.toLocaleString('en-IN')}
+              </p>
+              {xhzuUploadResult.rejectedRows > 0 && (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+                  {xhzuUploadResult.rejectedRows.toLocaleString('en-IN')} row(s) were rejected. Check the CSV format and try again.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
         <div className="rounded-xl border border-border bg-card">
           <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -2107,6 +2221,7 @@ export function InternalStockDashboard() {
             </div>
           )}
         </div>
+        </>
       )}
 
       <div className="rounded-xl border border-border bg-card">
