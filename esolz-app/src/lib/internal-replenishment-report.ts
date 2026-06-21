@@ -50,6 +50,7 @@ export type FcReplenishmentRow = {
   targetStockDays: number
   requiredStock: number
   currentFcStockApprox: number | null
+  currentFcStockSource: 'location_inventory' | 'ledger_balance_approx' | 'missing'
   inboundToFc: number | null
   suggestedSendQty: number
   confidenceStatus: ConfidenceStatus
@@ -64,6 +65,7 @@ export type FcReplenishmentSummary = {
   skusToSend: number
   unitsSuggested: number
   rowsNeedingStockContext: number
+  rowsUsingLedgerFallback: number
   rowsInboundNotIncluded: number
   rowsMarginReview: number
 }
@@ -173,9 +175,22 @@ export function buildFcReplenishmentRows(input: {
 
     const pKey = productKey(diag.marketplaceId, diag.asin, diag.sku)
     const stockKey = `${pKey}|${diag.fulfillmentCenterId}`
-    const currentFcStockApprox = stockByProductLocation.has(stockKey)
+    const locationStock = stockByProductLocation.has(stockKey)
       ? stockByProductLocation.get(stockKey)!
       : null
+    // Location-level inventory is preferred. When it is not synced yet, fall back to the
+    // most recent FBA Ledger Detail running balance as a clearly-labelled approximation
+    // rather than treating stock as zero.
+    const currentFcStockApprox = locationStock !== null
+      ? locationStock
+      : diag.ledgerBalanceStock !== null
+        ? Math.max(0, Math.trunc(diag.ledgerBalanceStock))
+        : null
+    const currentFcStockSource: FcReplenishmentRow['currentFcStockSource'] = locationStock !== null
+      ? 'location_inventory'
+      : currentFcStockApprox !== null
+        ? 'ledger_balance_approx'
+        : 'missing'
 
     const demand30d = diag.shipments30d
     const dailyVelocity = lookbackDays > 0 ? demand30d / lookbackDays : 0
@@ -185,7 +200,7 @@ export function buildFcReplenishmentRows(input: {
 
     const confidenceStatus: ConfidenceStatus = demand30d <= 0
       ? 'low'
-      : currentFcStockApprox !== null
+      : currentFcStockSource === 'location_inventory'
         ? 'high'
         : 'medium'
 
@@ -196,7 +211,14 @@ export function buildFcReplenishmentRows(input: {
         : 'no_action'
 
     const reasonParts: string[] = []
-    if (currentFcStockApprox === null) reasonParts.push('FC stock level not available; treated as zero for sizing.')
+    if (currentFcStockSource === 'missing') {
+      reasonParts.push('FC stock level not available; treated as zero for sizing.')
+    } else if (currentFcStockSource === 'ledger_balance_approx') {
+      reasonParts.push('FC stock approximated from FBA Ledger Detail running balance; not live location inventory.')
+      if (diag.ledgerBalanceAmbiguous) {
+        reasonParts.push('Latest ledger date has multiple balances; approximation may be imprecise.')
+      }
+    }
     reasonParts.push(INBOUND_NOT_INCLUDED_WARNING)
 
     rows.push({
@@ -212,6 +234,7 @@ export function buildFcReplenishmentRows(input: {
       targetStockDays,
       requiredStock,
       currentFcStockApprox,
+      currentFcStockSource,
       inboundToFc,
       suggestedSendQty,
       confidenceStatus,
@@ -228,7 +251,8 @@ export function buildFcReplenishmentRows(input: {
     rows: rows.length,
     skusToSend: rows.filter(row => row.suggestedSendQty > 0).length,
     unitsSuggested: rows.reduce((sum, row) => sum + row.suggestedSendQty, 0),
-    rowsNeedingStockContext: rows.filter(row => row.currentFcStockApprox === null).length,
+    rowsNeedingStockContext: rows.filter(row => row.currentFcStockSource === 'missing').length,
+    rowsUsingLedgerFallback: rows.filter(row => row.currentFcStockSource === 'ledger_balance_approx').length,
     rowsInboundNotIncluded: rows.length,
     rowsMarginReview: rows.filter(row => row.paymentSignal?.priorityFlag === 'loss_or_review').length,
   }

@@ -632,6 +632,7 @@ export async function GET(request: Request) {
       fulfillment_location_rows: fulfillmentLocationsResult.data?.length ?? 0,
       fulfillment_sales_daily_rows: fulfillmentSalesDailyResult.data?.length ?? 0,
       inventory_by_location_rows: inventoryByLocationResult.data?.length ?? 0,
+      component_mapping_rows: componentMappingRows.length,
     },
     freshness: {
       inventoryUpdatedAt: inventoryDates.at(-1) ?? null,

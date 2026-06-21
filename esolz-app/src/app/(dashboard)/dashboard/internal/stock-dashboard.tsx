@@ -142,6 +142,7 @@ type StockResponse = {
     targetStockDays: number
     requiredStock: number
     currentFcStockApprox: number | null
+    currentFcStockSource: 'location_inventory' | 'ledger_balance_approx' | 'missing'
     inboundToFc: number | null
     suggestedSendQty: number
     confidenceStatus: 'high' | 'medium' | 'low'
@@ -155,6 +156,7 @@ type StockResponse = {
     skusToSend: number
     unitsSuggested: number
     rowsNeedingStockContext: number
+    rowsUsingLedgerFallback: number
     rowsInboundNotIncluded: number
     rowsMarginReview: number
   }
@@ -232,6 +234,7 @@ type StockResponse = {
     fulfillment_location_rows: number
     fulfillment_sales_daily_rows: number
     inventory_by_location_rows: number
+    component_mapping_rows: number
   }
   freshness: {
     inventoryUpdatedAt: string | null
@@ -976,6 +979,9 @@ export function InternalStockDashboard() {
     data.freshness.resultLimitReached
       ? 'The safety result limit was reached. Narrower server-side paging can be added before expanding this dataset.'
       : null,
+    data.diagnostics.component_mapping_rows === 0
+      ? 'No SKU-to-warehouse component mapping data found. Vendor/Component (Flex) replenishment cannot be calculated until mappings are imported.'
+      : null,
   ].filter(Boolean)
 
   const cards = [
@@ -1386,6 +1392,7 @@ export function InternalStockDashboard() {
             ['Total units to send', data.fcStockMatrixRows.reduce((sum, row) => sum + row.totalSuggestedSendQty, 0)],
             ['FCs involved', data.fcStockMatrixColumns.length],
             ['Inbound not included', data.fcReplenishmentSummary.rowsInboundNotIncluded],
+            ['Stock approx. via ledger', data.fcReplenishmentSummary.rowsUsingLedgerFallback],
             ['Needs stock context', data.fcReplenishmentSummary.rowsNeedingStockContext],
           ]}
         />
@@ -1469,7 +1476,9 @@ export function InternalStockDashboard() {
               Applied: Lookback {data.nextStockPlan.assumptions.salesLookbackDays}d · Planning cycle {data.nextStockPlan.assumptions.planningCycleDays}d · Buffer {data.nextStockPlan.assumptions.transitBufferDays}d · Growth {data.nextStockPlan.assumptions.growthMultiplier}x
             </p>
             <p className="text-xs text-muted-foreground">
-              Ledger balance is diagnostic from FBA Ledger Detail report and is not yet used in suggested replenishment.
+              Ledger balance is diagnostic from the FBA Ledger Detail report and is not used in this Next Stock Plan
+              table. It is used as an approximate fallback for FC-level stock only in FC Stock Matrix rows where
+              location-level inventory has not synced yet (see Stock Source/Reason there).
             </p>
             <p className="mt-1 max-w-4xl text-xs text-muted-foreground">
               Unattributed units come from daily or imported sales where the ingestion source does not identify the
@@ -1648,7 +1657,8 @@ export function InternalStockDashboard() {
           <div>
             <h2 className="text-lg font-black">FC-wise Ledger Diagnostics</h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              Diagnostic only. Ledger balance is approximate and not yet used in replenishment.
+              Ledger balance shown here is approximate. It is also used as a fallback for FC Stock Matrix rows above
+              when location-level FC inventory is not available; those rows are labelled in their Reason text.
             </p>
           </div>
           <Button
@@ -2053,7 +2063,9 @@ export function InternalStockDashboard() {
             </table>
             {data.flexReplenishmentRows.length === 0 && (
               <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-                No Vendor/Component replenishment rows are available yet.
+                {data.diagnostics.component_mapping_rows === 0
+                  ? 'No SKU-to-warehouse component mapping data found. Import mappings to calculate vendor replenishment.'
+                  : 'No Vendor/Component replenishment rows are available yet.'}
               </div>
             )}
           </div>
