@@ -173,15 +173,15 @@ type StockResponse = {
     currentXhzuComponentStock: number | null
     suggestedVendorReplenishQty: number | null
     confidenceStatus: 'high' | 'medium' | 'low'
-    action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stock_context'
+    action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stock_context' | 'no_recent_demand'
     reason: string
     stateZoneSignal: string | null
     paymentSignal: ReplenishmentPaymentSignalSummary | null
   }>
   flexReplenishmentSummary: {
     rows: number
-    componentSkusToReplenish: number
-    componentUnitsRequired: number
+    componentsWithDemand: number
+    componentUnitsDemanded: number
     rowsNeedingXhzuStockContext: number
     rowsMissingMapping: number
     rowsMarginReview: number
@@ -505,6 +505,19 @@ function statusBadge(status: StockStatus) {
   return <Badge variant="outline" className={className}>{status}</Badge>
 }
 
+function flexActionLabel(action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stock_context' | 'no_recent_demand'): string {
+  switch (action) {
+    case 'needs_xhzu_stock_context':
+      return 'Demand known · Add XHZU stock'
+    case 'no_recent_demand':
+      return 'No recent demand'
+    case 'send_to_vendor':
+      return 'Send to vendor'
+    case 'monitor':
+      return 'Monitor'
+  }
+}
+
 export function InternalStockDashboard() {
   const [data, setData] = useState<StockResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -513,6 +526,7 @@ export function InternalStockDashboard() {
   const [status, setStatus] = useState<'All' | StockStatus>('All')
   const [planFilter, setPlanFilter] = useState<PlanFilterId | null>(null)
   const [activeTab, setActiveTab] = useState<'fc' | 'flex'>('fc')
+  const [showZeroDemandFlexRows, setShowZeroDemandFlexRows] = useState(false)
   const [planningDraft, setPlanningDraft] = useState<PlanningAssumptions>(DEFAULT_PLANNING_ASSUMPTIONS)
   const [planningAssumptions, setPlanningAssumptions] = useState<PlanningAssumptions>(DEFAULT_PLANNING_ASSUMPTIONS)
   const [pageSize, setPageSize] = useState<number>(PAGE_SIZE_OPTIONS[0])
@@ -716,6 +730,11 @@ export function InternalStockDashboard() {
       return matchesStatus && matchesQuery
     })
   }, [data?.actions, query, status])
+
+  const visibleFlexRows = useMemo(() => {
+    const rows = data?.flexReplenishmentRows ?? []
+    return showZeroDemandFlexRows ? rows : rows.filter(row => row.componentAdjustedDemand > 0)
+  }, [data?.flexReplenishmentRows, showZeroDemandFlexRows])
 
   const filteredPlanRows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase()
@@ -1336,7 +1355,9 @@ export function InternalStockDashboard() {
             <h2 className="text-lg font-black">FC Stock Matrix</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               What should I send today? One row per Amazon SKU with FC-wise stock, demand, and send quantity.
-              Inbound shipment quantity is not synced yet, so it is treated as zero.
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              FC stock is blank where FC stock source is unavailable. Inbound shipment quantity is not included yet.
             </p>
           </div>
           <Button
@@ -1987,36 +2008,45 @@ export function InternalStockDashboard() {
                 (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
               </p>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={data.flexReplenishmentRows.length === 0}
-              onClick={() => exportFilteredCsv(
-                'Vendor Component Replenishment',
-                [
-                  { header: 'Component SKU', value: row => row.componentSku },
-                  { header: 'Linked Amazon SKUs', value: row => row.linkedAmazonSkuCount },
-                  { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-                  { header: '30D Amazon Demand', value: row => row.amazonDemand30d },
-                  { header: 'Component Units Required', value: row => row.componentAdjustedDemand },
-                  { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
-                  { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
-                  { header: 'Action', value: row => row.action },
-                  { header: 'Reason', value: row => row.reason },
-                ],
-                data.flexReplenishmentRows,
-                data.nextStockPlan.assumptions,
-                'report=Vendor/Component Replenishment (full list)',
-              )}
-            >
-              <Download className="mr-2 h-4 w-4" /> Export CSV
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowZeroDemandFlexRows(current => !current)}
+              >
+                {showZeroDemandFlexRows ? 'Hide zero-demand mapped components' : 'Show zero-demand mapped components'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={data.flexReplenishmentRows.length === 0}
+                onClick={() => exportFilteredCsv(
+                  'Vendor Component Replenishment',
+                  [
+                    { header: 'Component SKU', value: row => row.componentSku },
+                    { header: 'Linked Amazon SKUs', value: row => row.linkedAmazonSkuCount },
+                    { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
+                    { header: '30D Amazon Demand', value: row => row.amazonDemand30d },
+                    { header: 'Component Units Required', value: row => row.componentAdjustedDemand },
+                    { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
+                    { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
+                    { header: 'Action', value: row => row.action },
+                    { header: 'Reason', value: row => row.reason },
+                  ],
+                  data.flexReplenishmentRows,
+                  data.nextStockPlan.assumptions,
+                  'report=Vendor/Component Replenishment (full list)',
+                )}
+              >
+                <Download className="mr-2 h-4 w-4" /> Export CSV
+              </Button>
+            </div>
           </div>
           <ReportStatCards
             cards={[
-              ['Component SKUs required', data.flexReplenishmentSummary.componentSkusToReplenish],
-              ['Component units required', data.flexReplenishmentSummary.componentUnitsRequired],
-              ['Needs XHZU stock context', data.flexReplenishmentSummary.rowsNeedingXhzuStockContext],
+              ['Components with demand', data.flexReplenishmentSummary.componentsWithDemand],
+              ['Component units required', data.flexReplenishmentSummary.componentUnitsDemanded],
+              ['Needs XHZU stock', data.flexReplenishmentSummary.rowsNeedingXhzuStockContext],
               ['Missing mapping', data.flexReplenishmentSummary.rowsMissingMapping],
               ['Margin review', data.flexReplenishmentSummary.rowsMarginReview],
             ]}
@@ -2037,7 +2067,7 @@ export function InternalStockDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {data.flexReplenishmentRows.slice(0, 50).map((row: FlexReplenishmentRow, index, page) => (
+                {visibleFlexRows.slice(0, 50).map((row: FlexReplenishmentRow, index, page) => (
                   <tr
                     key={`flex-replenish-${row.componentSku}`}
                     className={index < page.length - 1 ? 'border-b border-border/50' : ''}
@@ -2054,24 +2084,26 @@ export function InternalStockDashboard() {
                       {row.suggestedVendorReplenishQty === null ? '—' : formatNumber(row.suggestedVendorReplenishQty)}
                     </td>
                     <td className="px-3 py-3">
-                      <Badge variant="outline" className="text-[10px]">{row.action.replaceAll('_', ' ')}</Badge>
+                      <Badge variant="outline" className="text-[10px]">{flexActionLabel(row.action)}</Badge>
                     </td>
                     <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">{row.reason}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {data.flexReplenishmentRows.length === 0 && (
+            {visibleFlexRows.length === 0 && (
               <div className="px-4 py-10 text-center text-sm text-muted-foreground">
                 {data.diagnostics.component_mapping_rows === 0
                   ? 'No SKU-to-warehouse component mapping data found. Import mappings to calculate vendor replenishment.'
-                  : 'No Vendor/Component replenishment rows are available yet.'}
+                  : data.flexReplenishmentRows.length === 0
+                    ? 'No Vendor/Component replenishment rows are available yet.'
+                    : 'No components with recent demand. Use "Show zero-demand mapped components" to see all mapped components.'}
               </div>
             )}
           </div>
-          {data.flexReplenishmentRows.length > 50 && (
+          {visibleFlexRows.length > 50 && (
             <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-              Showing top 50 of {data.flexReplenishmentRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
+              Showing top 50 of {visibleFlexRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
             </div>
           )}
         </div>

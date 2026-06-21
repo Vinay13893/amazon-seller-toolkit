@@ -83,7 +83,7 @@ export type FlexReplenishmentRow = {
   currentXhzuComponentStock: number | null
   suggestedVendorReplenishQty: number | null
   confidenceStatus: ConfidenceStatus
-  action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stock_context'
+  action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stock_context' | 'no_recent_demand'
   reason: string
   stateZoneSignal: string | null
   paymentSignal: PaymentSignalSummary | null
@@ -114,8 +114,8 @@ export type FcStockMatrixRow = {
 
 export type FlexReplenishmentSummary = {
   rows: number
-  componentSkusToReplenish: number
-  componentUnitsRequired: number
+  componentsWithDemand: number
+  componentUnitsDemanded: number
   rowsNeedingXhzuStockContext: number
   rowsMissingMapping: number
   rowsMarginReview: number
@@ -336,7 +336,11 @@ export function buildFlexReplenishmentRows(input: {
     let suggestedVendorReplenishQty: number | null
     let action: FlexReplenishmentRow['action']
     let reason: string
-    if (currentXhzuComponentStock !== null) {
+    if (componentAdjustedDemand <= 0) {
+      suggestedVendorReplenishQty = currentXhzuComponentStock !== null ? 0 : null
+      action = 'no_recent_demand'
+      reason = 'No trusted FBA/Seller Flex demand in selected lookback window.'
+    } else if (currentXhzuComponentStock !== null) {
       suggestedVendorReplenishQty = Math.max(0, requiredComponentStock - currentXhzuComponentStock)
       action = suggestedVendorReplenishQty > 0 ? 'send_to_vendor' : 'monitor'
       reason = suggestedVendorReplenishQty > 0
@@ -345,7 +349,7 @@ export function buildFlexReplenishmentRows(input: {
     } else {
       suggestedVendorReplenishQty = null
       action = 'needs_xhzu_stock_context'
-      reason = 'Component stock context is missing.'
+      reason = 'Component demand is calculated, but current XHZU/component stock is missing, so final vendor quantity cannot be confirmed.'
     }
 
     const confidenceStatus: ConfidenceStatus = componentAdjustedDemand <= 0
@@ -383,7 +387,14 @@ export function buildFlexReplenishmentRows(input: {
     })
   }
 
-  rows.sort((a, b) => (b.suggestedVendorReplenishQty ?? 0) - (a.suggestedVendorReplenishQty ?? 0))
+  // Demand-bearing rows first so the report leads with "what needs stock review",
+  // not just rows with a final vendor quantity (which requires XHZU stock context).
+  rows.sort((a, b) => {
+    if (a.componentAdjustedDemand !== b.componentAdjustedDemand) {
+      return b.componentAdjustedDemand - a.componentAdjustedDemand
+    }
+    return (b.suggestedVendorReplenishQty ?? 0) - (a.suggestedVendorReplenishQty ?? 0)
+  })
 
   let rowsMissingMapping = 0
   for (const [skuNorm, demand] of demandBySkuNorm) {
@@ -392,8 +403,8 @@ export function buildFlexReplenishmentRows(input: {
 
   const summary: FlexReplenishmentSummary = {
     rows: rows.length,
-    componentSkusToReplenish: rows.filter(row => (row.suggestedVendorReplenishQty ?? 0) > 0).length,
-    componentUnitsRequired: rows.reduce((sum, row) => sum + (row.suggestedVendorReplenishQty ?? 0), 0),
+    componentsWithDemand: rows.filter(row => row.componentAdjustedDemand > 0).length,
+    componentUnitsDemanded: rows.reduce((sum, row) => sum + row.componentAdjustedDemand, 0),
     rowsNeedingXhzuStockContext: rows.filter(row => row.action === 'needs_xhzu_stock_context').length,
     rowsMissingMapping,
     rowsMarginReview: rows.filter(row => row.paymentSignal?.priorityFlag === 'loss_or_review').length,
