@@ -1,18 +1,20 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { refreshAccessToken } from '@/lib/amazon/lwa'
 import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
 import { getCatalogItemForAsin } from '@/lib/amazon/catalog'
 import { getItemOffersForAsin, type BuyBoxOfferStatus } from '@/lib/amazon/pricing'
+import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
 
 const JOB_TYPE = 'product_page_snapshot'
-const BATCH_SIZE = 5
+const SESSION_BATCH_SIZE = 5
+const SYSTEM_BATCH_SIZE = 10
 const RETRY_DELAY_MINUTES = 30
-const WORKER_ID = 'nextjs-app'
+const WORKER_ID_SESSION = 'nextjs-app-manual'
+const WORKER_ID_SYSTEM = 'nextjs-app-automation'
 
 type BackgroundJobRow = {
   id: string
@@ -23,6 +25,12 @@ type BackgroundJobRow = {
   attempt_count: number
   max_attempts: number
   payload_json: { asin?: string } | null
+}
+
+type WorkspaceConnection = {
+  accessToken: string
+  marketplaceId: string | null
+  sellingPartnerId: string | null
 }
 
 function safeErrorMessage(value: unknown): string {
@@ -37,26 +45,10 @@ function availabilityScoreFor(status: BuyBoxOfferStatus | 'unavailable'): number
   return null
 }
 
-export async function POST() {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  const { data: member, error: memberError } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .maybeSingle()
-
-  if (memberError || !member?.workspace_id) {
-    return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
-  }
-  const workspaceId = member.workspace_id
-  const admin = createAdminClient()
-
+async function loadWorkspaceConnection(
+  admin: ReturnType<typeof createAdminClient>,
+  workspaceId: string,
+): Promise<WorkspaceConnection | null> {
   const connection = await admin
     .from('amazon_connections')
     .select('id, status, marketplace_id, selling_partner_id, refresh_token_encrypted')
@@ -64,20 +56,12 @@ export async function POST() {
     .maybeSingle()
 
   if (connection.error || !connection.data || connection.data.status !== 'active' || !connection.data.refresh_token_encrypted) {
-    return NextResponse.json({
-      claimed: 0,
-      completed: 0,
-      retried: 0,
-      failed: 0,
-      message: 'Amazon connection is not active for this workspace. Connect Amazon to run product checks.',
-    })
+    return null
   }
 
-  let accessToken: string
   try {
     const refreshToken = decryptToken(connection.data.refresh_token_encrypted)
     const tokenResult = await refreshAccessToken(refreshToken)
-    accessToken = tokenResult.access_token
 
     try {
       await admin
@@ -91,44 +75,67 @@ export async function POST() {
     } catch {
       // Non-fatal: token refresh succeeded even if persisting it failed.
     }
+
+    return {
+      accessToken: tokenResult.access_token,
+      marketplaceId: connection.data.marketplace_id,
+      sellingPartnerId: connection.data.selling_partner_id,
+    }
   } catch {
-    return NextResponse.json({
-      claimed: 0,
-      completed: 0,
-      retried: 0,
-      failed: 0,
-      message: 'Amazon access token could not be refreshed. Reconnect Amazon to run product checks.',
-    })
+    return null
+  }
+}
+
+export async function POST(request: Request) {
+  const auth = await resolveJobsAuth(request)
+  if (!auth.ok) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const admin = createAdminClient()
+  const isSystem = auth.mode === 'system'
+  const batchSize = isSystem ? SYSTEM_BATCH_SIZE : SESSION_BATCH_SIZE
+  const workerId = isSystem ? WORKER_ID_SYSTEM : WORKER_ID_SESSION
+
+  const connectionCache = new Map<string, WorkspaceConnection | null>()
+  async function connectionFor(workspaceId: string): Promise<WorkspaceConnection | null> {
+    if (!connectionCache.has(workspaceId)) {
+      connectionCache.set(workspaceId, await loadWorkspaceConnection(admin, workspaceId))
+    }
+    return connectionCache.get(workspaceId) ?? null
   }
 
   let claimed = 0
   let completed = 0
   let retried = 0
   let failed = 0
+  let skippedNoConnection = 0
 
-  for (let i = 0; i < BATCH_SIZE; i += 1) {
-    const { data: dueJob, error: dueError } = await admin
+  for (let i = 0; i < batchSize; i += 1) {
+    let dueQuery = admin
       .from('background_jobs')
       .select('id, workspace_id, target_type, target_id, marketplace_id, attempt_count, max_attempts, payload_json')
-      .eq('workspace_id', workspaceId)
       .eq('job_type', JOB_TYPE)
       .eq('status', 'queued')
       .lte('run_after', new Date().toISOString())
       .order('priority', { ascending: false })
       .order('created_at', { ascending: true })
       .limit(1)
-      .maybeSingle()
 
+    if (auth.mode === 'session') {
+      dueQuery = dueQuery.eq('workspace_id', auth.workspaceId)
+    }
+
+    const { data: dueJob, error: dueError } = await dueQuery.maybeSingle()
     if (dueError || !dueJob) break
 
     const job = dueJob as BackgroundJobRow
-    const lockedAt = new Date().toISOString()
     const { data: lockedRows } = await admin
       .from('background_jobs')
       .update({
         status: 'running',
-        locked_at: lockedAt,
-        locked_by: WORKER_ID,
+        locked_at: new Date().toISOString(),
+        locked_by: workerId,
         attempt_count: job.attempt_count + 1,
       })
       .eq('id', job.id)
@@ -139,7 +146,28 @@ export async function POST() {
     claimed += 1
 
     const asin = job.payload_json?.asin
-    const marketplaceId = connection.data.marketplace_id ?? job.marketplace_id ?? 'A21TJRUUN4KGV'
+    const connection = await connectionFor(job.workspace_id)
+
+    if (!connection) {
+      skippedNoConnection += 1
+      const canRetry = job.attempt_count + 1 < job.max_attempts
+      await admin
+        .from('background_jobs')
+        .update({
+          status: canRetry ? 'queued' : 'failed',
+          last_error_safe: 'Amazon connection is not active for this workspace.',
+          run_after: canRetry
+            ? new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString()
+            : undefined,
+          locked_at: null,
+          locked_by: null,
+          completed_at: canRetry ? null : new Date().toISOString(),
+        })
+        .eq('id', job.id)
+      if (canRetry) retried += 1
+      else failed += 1
+      continue
+    }
 
     if (!asin) {
       await admin
@@ -156,24 +184,26 @@ export async function POST() {
       continue
     }
 
+    const marketplaceId = connection.marketplaceId ?? job.marketplace_id ?? 'A21TJRUUN4KGV'
+
     let catalogResult: Awaited<ReturnType<typeof getCatalogItemForAsin>> | null = null
     let offersResult: Awaited<ReturnType<typeof getItemOffersForAsin>> | null = null
     let catalogError: string | null = null
     let offersError: string | null = null
 
     try {
-      catalogResult = await getCatalogItemForAsin({ accessToken, marketplaceId, asin })
+      catalogResult = await getCatalogItemForAsin({ accessToken: connection.accessToken, marketplaceId, asin })
     } catch (error) {
       catalogError = safeErrorMessage(error)
     }
 
     try {
       offersResult = await getItemOffersForAsin({
-        accessToken,
+        accessToken: connection.accessToken,
         marketplaceId,
         asin,
         itemCondition: 'New',
-        sellingPartnerId: connection.data.selling_partner_id,
+        sellingPartnerId: connection.sellingPartnerId,
       })
     } catch (error) {
       offersError = safeErrorMessage(error)
@@ -210,7 +240,7 @@ export async function POST() {
         : 'failed'
 
     const snapshotPayload = {
-      workspace_id: workspaceId,
+      workspace_id: job.workspace_id,
       tracked_asin_id: job.target_type === 'competitor_asin' ? job.target_id : null,
       amazon_listing_item_id: job.target_type === 'my_product' ? job.target_id : null,
       bsr: catalogResult?.bsr ?? null,
@@ -261,9 +291,11 @@ export async function POST() {
 
   return NextResponse.json({
     jobType: JOB_TYPE,
+    mode: auth.mode,
     claimed,
     completed,
     retried,
     failed,
+    skippedNoConnection,
   })
 }

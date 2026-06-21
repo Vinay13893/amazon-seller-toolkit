@@ -21,6 +21,7 @@ import {
   scrapingJobStatusRequestSchema,
   scrapingRunNextRequestSchema,
 } from './scraping/queue'
+import { startProductPageSnapshotOrchestrator } from './automation/productPageOrchestrator'
 
 dotenv.config()
 
@@ -244,4 +245,5 @@ app.use((_req: Request, res: Response) => {
 app.listen(port, () => {
   console.log(`[checker-worker] listening on port ${port}`)
   console.log('[checker-worker] route enabled: POST /brand-analytics/status')
+  startProductPageSnapshotOrchestrator()
 })

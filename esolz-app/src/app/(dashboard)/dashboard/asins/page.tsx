@@ -391,6 +391,9 @@ export default function AsinsPage() {
           {checkStatus && (
             <p className="text-xs text-muted-foreground max-w-xs text-right">{checkStatus}</p>
           )}
+          <p className="text-xs text-muted-foreground/70 max-w-xs text-right">
+            Product checks run automatically in the background. Manual check queues an immediate refresh.
+          </p>
         </div>
       </div>
 

@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
 
 export const runtime = 'nodejs'
-export const maxDuration = 30
+export const maxDuration = 60
 
 const JOB_TYPE = 'product_page_snapshot'
 const DEFAULT_CADENCE_HOURS = 24
-const MAX_JOBS_PER_RUN = 200
+const MAX_TOTAL_PER_RUN = 200
+const MAX_MY_PRODUCTS_PER_RUN = 100
+const MAX_COMPETITORS_PER_RUN = 100
+const MAX_WORKSPACES_PER_SYSTEM_RUN = 25
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
 
 const MARKETPLACE_ID_BY_MARKETPLACE: Record<string, string> = {
@@ -26,39 +30,34 @@ type NewJobRow = {
   payload_json: { asin: string }
 }
 
-export async function POST() {
-  const supabase = await createClient()
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
+type AdminClient = ReturnType<typeof createAdminClient>
 
-  const { data: member, error: memberError } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .maybeSingle()
+type WorkspaceCandidates = {
+  candidates: NewJobRow[]
+  totalActiveMyProducts: number
+  totalActiveCompetitors: number
+}
 
-  if (memberError || !member?.workspace_id) {
-    return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
-  }
-  const workspaceId = member.workspace_id
-
+async function buildCandidatesForWorkspace(
+  admin: AdminClient,
+  workspaceId: string,
+  remainingMyProducts: number,
+  remainingCompetitors: number,
+): Promise<WorkspaceCandidates | null> {
   const [listingsResult, trackedResult, activeJobsResult] = await Promise.all([
-    supabase
+    admin
       .from('amazon_listing_items')
       .select('id, asin, marketplace_id')
       .eq('workspace_id', workspaceId)
       .not('asin', 'is', null)
       .limit(1000),
-    supabase
+    admin
       .from('tracked_asins')
       .select('id, asin, marketplace')
       .eq('workspace_id', workspaceId)
       .neq('status', 'archived')
       .limit(1000),
-    supabase
+    admin
       .from('background_jobs')
       .select('target_type, target_id, status, completed_at')
       .eq('workspace_id', workspaceId)
@@ -66,9 +65,7 @@ export async function POST() {
       .limit(2000),
   ])
 
-  if (listingsResult.error || trackedResult.error || activeJobsResult.error) {
-    return NextResponse.json({ error: 'Unable to read product/checker data.' }, { status: 503 })
-  }
+  if (listingsResult.error || trackedResult.error || activeJobsResult.error) return null
 
   const cadenceCutoff = Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000
   const skipKeys = new Set<string>()
@@ -88,6 +85,7 @@ export async function POST() {
   for (const listing of listingsResult.data ?? []) {
     if (!listing.asin) continue
     totalActiveMyProducts += 1
+    if (candidates.filter(c => c.target_type === 'my_product').length >= remainingMyProducts) continue
     const key = `my_product:${listing.id}`
     if (skipKeys.has(key)) continue
     candidates.push({
@@ -103,6 +101,7 @@ export async function POST() {
   let totalActiveCompetitors = 0
   for (const tracked of trackedResult.data ?? []) {
     totalActiveCompetitors += 1
+    if (candidates.filter(c => c.target_type === 'competitor_asin').length >= remainingCompetitors) continue
     const key = `competitor_asin:${tracked.id}`
     if (skipKeys.has(key)) continue
     const marketplaceId = MARKETPLACE_ID_BY_MARKETPLACE[String(tracked.marketplace).toUpperCase()] ?? DEFAULT_MARKETPLACE_ID
@@ -116,10 +115,59 @@ export async function POST() {
     })
   }
 
-  const jobsToInsert = candidates.slice(0, MAX_JOBS_PER_RUN)
+  return { candidates, totalActiveMyProducts, totalActiveCompetitors }
+}
+
+export async function POST(request: Request) {
+  const auth = await resolveJobsAuth(request)
+  if (!auth.ok) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const admin = createAdminClient()
+
+  const workspaceIds: string[] = []
+  if (auth.mode === 'session') {
+    workspaceIds.push(auth.workspaceId)
+  } else {
+    const { data: connections, error: connectionsError } = await admin
+      .from('amazon_connections')
+      .select('workspace_id')
+      .eq('status', 'active')
+      .limit(MAX_WORKSPACES_PER_SYSTEM_RUN)
+
+    if (connectionsError) {
+      return NextResponse.json({ error: 'Unable to read eligible workspaces.' }, { status: 503 })
+    }
+    for (const row of connections ?? []) {
+      if (row.workspace_id) workspaceIds.push(row.workspace_id as string)
+    }
+  }
+
+  let totalActiveMyProducts = 0
+  let totalActiveCompetitors = 0
+  const allCandidates: NewJobRow[] = []
+  let remainingMyProducts = MAX_MY_PRODUCTS_PER_RUN
+  let remainingCompetitors = MAX_COMPETITORS_PER_RUN
+
+  for (const workspaceId of workspaceIds) {
+    if (remainingMyProducts <= 0 && remainingCompetitors <= 0) break
+    const result = await buildCandidatesForWorkspace(admin, workspaceId, remainingMyProducts, remainingCompetitors)
+    if (!result) continue
+
+    totalActiveMyProducts += result.totalActiveMyProducts
+    totalActiveCompetitors += result.totalActiveCompetitors
+    for (const candidate of result.candidates) {
+      allCandidates.push(candidate)
+      if (candidate.target_type === 'my_product') remainingMyProducts -= 1
+      else remainingCompetitors -= 1
+    }
+  }
+
+  const jobsToInsert = allCandidates.slice(0, MAX_TOTAL_PER_RUN)
   let insertedCount = 0
   if (jobsToInsert.length > 0) {
-    const { data: inserted, error: insertError } = await supabase
+    const { data: inserted, error: insertError } = await admin
       .from('background_jobs')
       .insert(jobsToInsert)
       .select('id')
@@ -135,12 +183,13 @@ export async function POST() {
 
   return NextResponse.json({
     jobType: JOB_TYPE,
+    mode: auth.mode,
+    workspacesChecked: workspaceIds.length,
     totalActiveMyProducts,
     totalActiveCompetitors,
     enqueuedMyProducts,
     enqueuedCompetitors,
     insertedCount,
-    skippedAlreadyQueuedOrRecentlyChecked: skipKeys.size,
-    candidatesExceedingCap: Math.max(0, candidates.length - jobsToInsert.length),
+    candidatesExceedingCap: Math.max(0, allCandidates.length - jobsToInsert.length),
   })
 }
