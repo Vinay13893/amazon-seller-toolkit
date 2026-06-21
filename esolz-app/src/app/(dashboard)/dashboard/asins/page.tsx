@@ -61,6 +61,8 @@ const LISTINGS_PAGE_SIZE = 50
 
 export default function AsinsPage() {
   const [activeAsinTab, setActiveAsinTab] = useState<AsinTab>('products')
+  const [checkingNow, setCheckingNow] = useState(false)
+  const [checkStatus, setCheckStatus] = useState<string | null>(null)
   const [products, setProducts]       = useState<ProductSnapshot[]>([])
   const [viewMode, setViewMode]       = useState<ViewMode>('table')
   const [workspaceId, setWorkspaceId] = useState<string | null>(null)
@@ -162,6 +164,62 @@ export default function AsinsPage() {
     }, 300)
     return () => window.clearTimeout(timer)
   }, [workspaceId, listingSearch, loadAmazonListings])
+
+  async function handleCheckNow() {
+    setCheckingNow(true)
+    setCheckStatus('Queuing product checks…')
+    try {
+      const enqueueRes = await fetch('/api/asins/jobs/enqueue', { method: 'POST' })
+      const enqueueData = await enqueueRes.json() as {
+        enqueuedMyProducts?: number
+        enqueuedCompetitors?: number
+        error?: string
+      }
+      if (!enqueueRes.ok) {
+        setCheckStatus(enqueueData.error ?? 'Could not queue product checks.')
+        return
+      }
+
+      setCheckStatus('Running queued checks…')
+      const processRes = await fetch('/api/asins/jobs/process-next', { method: 'POST' })
+      const processData = await processRes.json() as {
+        claimed?: number
+        completed?: number
+        retried?: number
+        failed?: number
+        message?: string
+      }
+
+      if (!processRes.ok) {
+        setCheckStatus('Checks were queued, but could not run yet.')
+        return
+      }
+
+      if (processData.message) {
+        setCheckStatus(processData.message)
+        return
+      }
+
+      const claimed = processData.claimed ?? 0
+      if (claimed === 0) {
+        setCheckStatus('No checks were due right now.')
+        return
+      }
+
+      setCheckStatus(
+        `Checked ${processData.completed ?? 0} of ${claimed}` +
+        (processData.retried ? `, ${processData.retried} retrying` : '') +
+        (processData.failed ? `, ${processData.failed} failed` : '') +
+        '.',
+      )
+      await loadAmazonListings({ search: listingSearch })
+      if (workspaceId) setProducts(await getTrackedAsins(workspaceId))
+    } catch {
+      setCheckStatus('Product check failed unexpectedly.')
+    } finally {
+      setCheckingNow(false)
+    }
+  }
 
   async function handleAddAsin(data: AddAsinInput): Promise<{ error?: string }> {
     if (!workspaceId) return { error: 'Not signed in' }
@@ -298,25 +356,42 @@ export default function AsinsPage() {
       </div>
 
       {/* ── My Products / Competitors sub-tabs ── */}
-      <div className="flex w-fit rounded-lg border border-border bg-card p-1">
-        <button
-          type="button"
-          onClick={() => setActiveAsinTab('products')}
-          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
-            activeAsinTab === 'products' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
-          }`}
-        >
-          My Products
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveAsinTab('competitors')}
-          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
-            activeAsinTab === 'competitors' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
-          }`}
-        >
-          Competitors
-        </button>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex w-fit rounded-lg border border-border bg-card p-1">
+          <button
+            type="button"
+            onClick={() => setActiveAsinTab('products')}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+              activeAsinTab === 'products' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            My Products
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveAsinTab('competitors')}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+              activeAsinTab === 'competitors' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            Competitors
+          </button>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={checkingNow}
+            onClick={() => void handleCheckNow()}
+          >
+            {checkingNow ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+            Check now
+          </Button>
+          {checkStatus && (
+            <p className="text-xs text-muted-foreground max-w-xs text-right">{checkStatus}</p>
+          )}
+        </div>
       </div>
 
       {activeAsinTab === 'competitors' && (
