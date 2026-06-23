@@ -165,6 +165,9 @@ type StockResponse = {
     wmsParentSkuCount: number
     linkedAmazonSkuCount: number
     amazonDemand30d: number
+    fbaFc30dUnits: number
+    xhzuFlex30dUnits: number
+    demandSourceUsed: string
     componentAdjustedDemand: number
     dailyComponentVelocity: number
     growthFactor: number
@@ -274,6 +277,7 @@ type StockResponse = {
       | 'Mapped but no trusted demand'
       | 'Mapped but only untrusted/non-FBA demand'
       | 'SKU mismatch / no demand source match'
+    reason: string
   }>
   diagnostics: {
     products_with_sales: number
@@ -670,11 +674,14 @@ function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
     { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-    { header: '30D Finished Units Sold', value: row => row.amazonDemand30d },
-    { header: '30D Component Units Consumed', value: row => row.componentAdjustedDemand },
+    { header: 'FBA/FC 30D Finished Units', value: row => row.fbaFc30dUnits },
+    { header: 'XHZU/Flex 30D Finished Units', value: row => row.xhzuFlex30dUnits },
+    { header: 'Total Trusted 30D Finished Units', value: row => row.amazonDemand30d },
+    { header: '30D Component Units Sold', value: row => row.componentAdjustedDemand },
     { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
     { header: 'Required Component Stock', value: row => row.requiredComponentStock },
     { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
+    { header: 'Demand Source Used', value: row => row.demandSourceUsed },
     { header: 'Action Label', value: row => flexActionLabel(row.action) },
     { header: 'Reason', value: row => row.reason },
   ]
@@ -697,13 +704,13 @@ function exportFlexDemandBreakdownCsv(rows: FlexDemandBreakdownRow[]) {
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Amazon SKU', value: row => row.amazonSku },
     { header: 'WMS Parent SKU', value: row => row.wmsParentSku },
-    { header: 'Amazon SKU 30D Units Sold', value: row => row.amazonDemand30d },
-    { header: 'FBA 30D Units Sold', value: row => row.fbaDemand30d },
-    { header: 'Seller Flex 30D Units Sold', value: row => row.sellerFlexDemand30d },
-    { header: 'Component Qty Per Amazon Unit', value: row => row.componentQuantityPerAmazonUnit },
-    { header: 'Component Units Consumed', value: row => row.componentUnitsRequiredContribution },
-    { header: 'Demand Source Label', value: row => row.demandSourceLabel },
+    { header: 'Component Qty Per Unit', value: row => row.componentQuantityPerAmazonUnit },
+    { header: 'FBA/FC 30D Units', value: row => row.fbaDemand30d },
+    { header: 'XHZU/Flex 30D Units', value: row => row.sellerFlexDemand30d },
+    { header: 'Total Trusted 30D Units', value: row => row.amazonDemand30d },
+    { header: 'Component Units Sold', value: row => row.componentUnitsRequiredContribution },
     { header: 'Match Status', value: row => row.matchStatus },
+    { header: 'Reason', value: row => row.reason },
   ]
 
   const generatedAt = new Date().toISOString()
@@ -2422,6 +2429,10 @@ export function InternalStockDashboard() {
                 (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
+                Component demand includes FBA/FC shipped units plus XHZU/Seller Flex dispatched units where
+                available. Easy Ship/MFN/unattributed sources are excluded unless enabled.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
                 30D Finished Units Sold is calculated from trusted FBA/Seller Flex demand sources for mapped Amazon SKUs.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
@@ -2459,11 +2470,14 @@ export function InternalStockDashboard() {
                     { header: 'Component SKU', value: row => row.componentSku },
                     { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
                     { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-                    { header: '30D Finished Units Sold', value: row => row.amazonDemand30d },
-                    { header: '30D Component Units Consumed', value: row => row.componentAdjustedDemand },
+                    { header: 'FBA/FC 30D Finished Units', value: row => row.fbaFc30dUnits },
+                    { header: 'XHZU/Flex 30D Finished Units', value: row => row.xhzuFlex30dUnits },
+                    { header: 'Total Trusted 30D Finished Units', value: row => row.amazonDemand30d },
+                    { header: '30D Component Units Sold', value: row => row.componentAdjustedDemand },
                     { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
                     { header: 'Required Component Stock', value: row => row.requiredComponentStock },
                     { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
+                    { header: 'Demand Source Used', value: row => row.demandSourceUsed },
                     { header: 'Action', value: row => row.action },
                     { header: 'Reason', value: row => row.reason },
                   ],
@@ -2502,17 +2516,20 @@ export function InternalStockDashboard() {
             ]}
           />
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1320px] text-sm">
+            <table className="w-full min-w-[1680px] text-sm">
               <thead>
                 <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="px-4 py-3 text-left">Component SKU</th>
                   <th className="px-3 py-3 text-right">Linked Amazon SKUs Count</th>
                   <th className="px-3 py-3 text-right">WMS Parent SKU Count</th>
-                  <th className="px-3 py-3 text-right">30D Finished Units Sold</th>
-                  <th className="px-3 py-3 text-right">30D Component Units Consumed</th>
+                  <th className="px-3 py-3 text-right">FBA/FC 30D Finished Units</th>
+                  <th className="px-3 py-3 text-right">XHZU/Flex 30D Finished Units</th>
+                  <th className="px-3 py-3 text-right">Total Trusted 30D Finished Units</th>
+                  <th className="px-3 py-3 text-right">30D Component Units Sold</th>
                   <th className="px-3 py-3 text-right">Current XHZU Stock</th>
                   <th className="px-3 py-3 text-right">Required Component Stock</th>
                   <th className="px-3 py-3 text-right">Suggested Vendor Qty</th>
+                  <th className="px-3 py-3 text-left">Demand Source Used</th>
                   <th className="px-3 py-3 text-left">Action</th>
                   <th className="px-4 py-3 text-left">Reason</th>
                 </tr>
@@ -2526,6 +2543,8 @@ export function InternalStockDashboard() {
                     <td className="px-4 py-3 font-mono text-xs">{row.componentSku}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.linkedAmazonSkuCount)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.wmsParentSkuCount)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.fbaFc30dUnits)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.xhzuFlex30dUnits)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.amazonDemand30d)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.componentAdjustedDemand)}</td>
                     <td className="px-3 py-3 text-right">
@@ -2535,6 +2554,7 @@ export function InternalStockDashboard() {
                     <td className="px-3 py-3 text-right font-semibold">
                       {row.suggestedVendorReplenishQty === null ? '—' : formatNumber(row.suggestedVendorReplenishQty)}
                     </td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">{row.demandSourceUsed}</td>
                     <td className="px-3 py-3">
                       <Badge variant="outline" className="text-[10px]">{flexActionLabel(row.action)}</Badge>
                     </td>

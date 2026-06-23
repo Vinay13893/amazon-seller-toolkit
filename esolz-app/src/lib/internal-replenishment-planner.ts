@@ -420,8 +420,15 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       flags.hasCsvSalesData = true
     }
 
+    // channelFromSalesSource can resolve 'seller_flex'/'fba_fc' just like the
+    // fulfillment-sales-daily loop below; route those into the same trusted
+    // buckets instead of letting them fall through to unattributed demand.
     const channel = channelFromSalesSource(row.source)
-    if (channel === 'easy_ship_mfn') {
+    if (channel === 'seller_flex') {
+      planRow.sellerFlexSales30d += units
+    } else if (channel === 'fba_fc') {
+      planRow.fbaSales30d += units
+    } else if (channel === 'easy_ship_mfn') {
       planRow.easyShipMfnSales30d += units
     } else {
       planRow.unknownSourceSales30d += units

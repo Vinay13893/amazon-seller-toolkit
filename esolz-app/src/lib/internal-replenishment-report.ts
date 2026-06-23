@@ -76,6 +76,9 @@ export type FlexReplenishmentRow = {
   wmsParentSkuCount: number
   linkedAmazonSkuCount: number
   amazonDemand30d: number
+  fbaFc30dUnits: number
+  xhzuFlex30dUnits: number
+  demandSourceUsed: string
   componentAdjustedDemand: number
   dailyComponentVelocity: number
   growthFactor: number
@@ -275,11 +278,15 @@ export function buildFlexReplenishmentRows(input: {
   // Easy Ship/MFN and unattributed sales are excluded because they are not backed by
   // a trusted shipment ledger.
   const demandBySkuNorm = new Map<string, number>()
+  const fbaDemandBySkuNorm = new Map<string, number>()
+  const flexDemandBySkuNorm = new Map<string, number>()
   for (const row of input.planRows) {
     const skuNorm = norm(row.sku)
     if (!skuNorm) continue
     const trustedDemand = row.fbaSales30d + row.sellerFlexSales30d
     demandBySkuNorm.set(skuNorm, (demandBySkuNorm.get(skuNorm) ?? 0) + trustedDemand)
+    fbaDemandBySkuNorm.set(skuNorm, (fbaDemandBySkuNorm.get(skuNorm) ?? 0) + row.fbaSales30d)
+    flexDemandBySkuNorm.set(skuNorm, (flexDemandBySkuNorm.get(skuNorm) ?? 0) + row.sellerFlexSales30d)
   }
 
   const mappingsByComponent = new Map<string, ComponentMappingRow[]>()
@@ -321,12 +328,23 @@ export function buildFlexReplenishmentRows(input: {
     const amazonSkuNorms = new Set(mappings.map(mapping => mapping.amazonSkuNorm))
 
     let amazonDemand30d = 0
+    let fbaFc30dUnits = 0
+    let xhzuFlex30dUnits = 0
     let componentAdjustedDemand = 0
     for (const mapping of mappings) {
       const demand = demandBySkuNorm.get(mapping.amazonSkuNorm) ?? 0
       amazonDemand30d += demand
+      fbaFc30dUnits += fbaDemandBySkuNorm.get(mapping.amazonSkuNorm) ?? 0
+      xhzuFlex30dUnits += flexDemandBySkuNorm.get(mapping.amazonSkuNorm) ?? 0
       componentAdjustedDemand += demand * mapping.componentQuantity
     }
+    const demandSourceUsed = fbaFc30dUnits > 0 && xhzuFlex30dUnits > 0
+      ? 'FBA/FC + XHZU/Seller Flex'
+      : fbaFc30dUnits > 0
+        ? 'FBA/FC only'
+        : xhzuFlex30dUnits > 0
+          ? 'XHZU/Seller Flex only'
+          : 'No trusted demand source found'
 
     const dailyComponentVelocity = lookbackDays > 0 ? componentAdjustedDemand / lookbackDays : 0
     const requiredComponentStock = Math.ceil(dailyComponentVelocity * growthFactor * targetStockDays)
@@ -373,6 +391,9 @@ export function buildFlexReplenishmentRows(input: {
       wmsParentSkuCount: amazonSkuNorms.size,
       linkedAmazonSkuCount: amazonSkuNorms.size,
       amazonDemand30d,
+      fbaFc30dUnits,
+      xhzuFlex30dUnits,
+      demandSourceUsed,
       componentAdjustedDemand,
       dailyComponentVelocity: Math.round(dailyComponentVelocity * 100) / 100,
       growthFactor,
@@ -429,6 +450,7 @@ export type FlexDemandBreakdownRow = {
     | 'Mapped but no trusted demand'
     | 'Mapped but only untrusted/non-FBA demand'
     | 'SKU mismatch / no demand source match'
+  reason: string
 }
 
 export function buildFlexDemandBreakdownRows(input: {
@@ -468,6 +490,18 @@ export function buildFlexDemandBreakdownRows(input: {
           ? 'Mapped but only untrusted/non-FBA demand'
           : 'Mapped but no trusted demand'
 
+    const reason = !planRow
+      ? 'Mapped Amazon SKU was not found in the current product/sales dataset.'
+      : fbaDemand30d > 0 && sellerFlexDemand30d > 0
+        ? 'Counted from FBA Ledger Detail (FC shipments) and XHZU/Seller Flex shipments.'
+        : fbaDemand30d > 0
+          ? 'Counted from FBA Ledger Detail (FC shipments) only; no XHZU/Seller Flex shipments in window.'
+          : sellerFlexDemand30d > 0
+            ? 'Counted from XHZU/Seller Flex shipments only; no FBA/FC shipments in window.'
+            : untrustedDemand30d > 0
+              ? 'Only Easy Ship/MFN or unattributed sales found; excluded from trusted component demand.'
+              : 'No FBA/FC or XHZU/Seller Flex demand found in the selected lookback window.'
+
     return {
       componentSku: mapping.componentSku,
       amazonSku: mapping.amazonSku,
@@ -479,6 +513,7 @@ export function buildFlexDemandBreakdownRows(input: {
       componentUnitsRequiredContribution: amazonDemand30d * mapping.componentQuantity,
       demandSourceLabel,
       matchStatus,
+      reason,
     }
   })
 
