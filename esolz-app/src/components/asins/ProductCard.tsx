@@ -115,9 +115,11 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
       ? 'Check failed'
       : product.scrape_status === 'partial_success'
         ? 'BSR not available'
-        : hasOtherSignals
-          ? 'Product checked'
-          : 'BSR not available'
+        : product.scrape_status === 'partial_catalog_unavailable'
+          ? 'Catalog not found'
+          : hasOtherSignals
+            ? 'Product checked'
+            : 'BSR not available'
 
   return (
     <div className="rounded-xl border border-border bg-card flex flex-col overflow-hidden">

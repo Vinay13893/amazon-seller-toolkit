@@ -36,6 +36,9 @@ export function BsrBadge({
     if (scrapeStatus === 'partial_success') {
       return <span className="text-yellow-400 text-xs">BSR not available</span>
     }
+    if (scrapeStatus === 'partial_catalog_unavailable') {
+      return <span className="text-yellow-400 text-xs">Catalog not found</span>
+    }
     if (hasOtherSignals) {
       return <span className="text-muted-foreground text-xs">Product checked</span>
     }

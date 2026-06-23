@@ -15,6 +15,7 @@ const SYSTEM_BATCH_SIZE = 5
 const RETRY_DELAY_MINUTES = 30
 const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
 const PRICING_UNAVAILABLE_RETRY_MINUTES = 24 * 60
+const CATALOG_NOT_FOUND_RETRY_MINUTES = 24 * 60
 const WORKER_ID_SESSION = 'nextjs-app-manual'
 const WORKER_ID_SYSTEM = 'nextjs-app-automation'
 
@@ -148,6 +149,7 @@ export async function POST(request: Request) {
   let pricingSkippedCooldown = 0
   let pricingRateLimited = 0
   let pricingUnavailable = 0
+  let catalogNotFound = 0
   let retried = 0
   let failed = 0
   let skippedNoConnection = 0
@@ -260,6 +262,8 @@ export async function POST(request: Request) {
     const offersIsRateLimited = !pricingSkippedThisJob && offersErrorClass === 'rate_limited'
     const offersIsUnavailable = !pricingSkippedThisJob && offersErrorClass === 'unavailable'
 
+    const catalogIsNotFound = catalogError === 'catalog_not_found'
+
     if (!catalogResult && !offersResult) {
       const canRetry = job.attempt_count + 1 < job.max_attempts
       const nextStatus = canRetry ? 'queued' : 'failed'
@@ -267,7 +271,9 @@ export async function POST(request: Request) {
         ? PRICING_RATE_LIMITED_RETRY_MINUTES
         : offersIsUnavailable
           ? PRICING_UNAVAILABLE_RETRY_MINUTES
-          : RETRY_DELAY_MINUTES
+          : catalogIsNotFound
+            ? CATALOG_NOT_FOUND_RETRY_MINUTES
+            : RETRY_DELAY_MINUTES
       const reasonSafe = offersIsRateLimited
         ? RATE_LIMIT_REASON
         : offersIsUnavailable
@@ -290,6 +296,7 @@ export async function POST(request: Request) {
 
       if (offersIsRateLimited) pricingRateLimited += 1
       else if (offersIsUnavailable) pricingUnavailable += 1
+      else if (catalogIsNotFound) catalogNotFound += 1
       else if (canRetry) retried += 1
       else failed += 1
       continue
@@ -380,6 +387,7 @@ export async function POST(request: Request) {
     pricingSkippedCooldown,
     pricingRateLimited,
     pricingUnavailable,
+    catalogNotFound,
     retried,
     failed,
     skippedNoConnection,

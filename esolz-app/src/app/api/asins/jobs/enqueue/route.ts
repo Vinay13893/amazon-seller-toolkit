@@ -75,7 +75,7 @@ async function buildCandidatesForWorkspace(
       skipKeys.add(key)
       continue
     }
-    if (job.status === 'completed' && job.completed_at) {
+    if ((job.status === 'completed' || job.status === 'failed') && job.completed_at) {
       if (new Date(job.completed_at).getTime() > cadenceCutoff) skipKeys.add(key)
     }
   }
