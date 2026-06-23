@@ -4,6 +4,7 @@ import { parseXhzuStockCsv } from '@/lib/internal/xhzu-stock-csv'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export const runtime = 'nodejs'
+export const maxDuration = 60
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_ROWS = 5000
