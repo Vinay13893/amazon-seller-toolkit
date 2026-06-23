@@ -12,6 +12,10 @@ import {
   buildFlexReplenishmentRows,
 } from '@/lib/internal-replenishment-report'
 import {
+  buildFcComponentFulfillment,
+  type AmazonRecommendationRow,
+} from '@/lib/internal-fc-allocation'
+import {
   calculateStockActions,
   type DailySalesInput,
   type InventoryInput,
@@ -153,6 +157,8 @@ export async function GET(request: Request) {
     paymentTransactionsResult,
     skuCostsResult,
     componentMappingsResult,
+    amazonRecommendationsResult,
+    amazonConnectionResult,
   ] = await Promise.all([
     supabase
       .from('amazon_listing_items')
@@ -225,6 +231,18 @@ export async function GET(request: Request) {
       .eq('workspace_id', access.workspaceId)
       .eq('is_active', true)
       .limit(10000),
+    supabase
+      .from('amazon_restock_recommendations')
+      .select('amazon_sku_norm, recommended_qty, recommended_ship_date, benefit_eligible_qty, benefit_type, benefit_expiry')
+      .eq('workspace_id', access.workspaceId)
+      .limit(10000),
+    supabase
+      .from('amazon_connections')
+      .select('id')
+      .eq('workspace_id', access.workspaceId)
+      .eq('status', 'active')
+      .limit(1)
+      .maybeSingle(),
   ])
 
   if (listingsResult.error) {
@@ -604,6 +622,28 @@ export async function GET(request: Request) {
     inventoryByLocation: inventoryByLocationRows,
     sellerFlexLocationCodes,
   })
+
+  const amazonRecommendations = new Map<string, AmazonRecommendationRow>(
+    (amazonRecommendationsResult.error ? [] : (amazonRecommendationsResult.data ?? [])).map(row => [
+      row.amazon_sku_norm as string,
+      {
+        amazonSkuNorm: row.amazon_sku_norm as string,
+        recommendedQty: row.recommended_qty === null ? null : Number(row.recommended_qty),
+        recommendedShipDate: (row.recommended_ship_date as string | null) ?? null,
+        benefitEligibleQty: row.benefit_eligible_qty === null ? null : Number(row.benefit_eligible_qty),
+        benefitType: (row.benefit_type as string | null) ?? null,
+        benefitExpiry: (row.benefit_expiry as string | null) ?? null,
+      },
+    ]),
+  )
+  const fcFulfillment = buildFcComponentFulfillment({
+    fcReplenishmentRows: fcReplenishment.rows,
+    componentMappings: componentMappingRows,
+    inventoryByLocation: inventoryByLocationRows,
+    sellerFlexLocationCodes,
+    amazonRecommendations,
+    amazonConnected: Boolean(amazonConnectionResult.data),
+  })
   const flexDemandBreakdownRows = buildFlexDemandBreakdownRows({
     componentMappings: componentMappingRows,
     planRows: nextStockPlan.rows,
@@ -657,6 +697,9 @@ export async function GET(request: Request) {
     fcStockMatrixRows: fcStockMatrix.rows,
     fcStockMatrixColumns: fcStockMatrix.columns,
     flexDemandBreakdownRows,
+    fcFulfillmentRows: fcFulfillment.componentRows,
+    fcAllocationCsvRows: fcFulfillment.csvRows,
+    fcFulfillmentSummary: fcFulfillment.summary,
     activeXhzuBatch: activeXhzuBatch
       ? {
           originalFilename: activeXhzuBatch.original_filename as string,

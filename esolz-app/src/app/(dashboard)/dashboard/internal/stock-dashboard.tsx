@@ -207,6 +207,47 @@ type StockResponse = {
     }>
   }>
   fcStockMatrixColumns: string[]
+  fcFulfillmentRows: Array<{
+    componentSku: string
+    currentXhzuComponentStock: number
+    fcComponentRequirement: number
+    componentShortage: number
+    componentSurplus: number
+    coveragePercent: number
+    linkedAmazonSkuCount: number
+    fastestSellingAmazonSku: string | null
+    allocatableFinishedUnitsNow: number
+    shortFinishedUnits: number
+    amazonRecommendationStatus: 'not_connected' | 'not_available' | 'pending_fetch' | 'available'
+    action: 'fully_covered' | 'partially_covered' | 'no_requirement'
+    reason: string
+  }>
+  fcAllocationCsvRows: Array<{
+    componentSku: string
+    amazonSku: string
+    fcCode: string
+    skuDemand30d: number
+    fcDemand30d: number
+    requiredSendUnits: number
+    componentQtyPerUnit: number
+    componentUnitsRequired: number
+    currentXhzuComponentStock: number
+    allocatedSendUnitsNow: number
+    unfulfilledSendUnits: number
+    amazonRecommendedQty: number | null
+    amazonRecommendationStatus: 'not_connected' | 'not_available' | 'pending_fetch' | 'available'
+    allocationPriority: number
+    reason: string
+  }>
+  fcFulfillmentSummary: {
+    fcUnitsRequested: number
+    fcUnitsAllocatableNow: number
+    finishedUnitsShort: number
+    componentUnitsShort: number
+    componentsConstrained: number
+    amazonRecommendationsSynced: number
+    amazonRecommendationsNotSynced: number
+  }
   activeXhzuBatch: {
     originalFilename: string
     uploadedBy: string | null
@@ -336,6 +377,9 @@ type FlexReplenishmentRow = StockResponse['flexReplenishmentRows'][number]
 type FlexDemandBreakdownRow = StockResponse['flexDemandBreakdownRows'][number]
 type FcStockMatrixRow = StockResponse['fcStockMatrixRows'][number]
 type FcStockMatrixCell = FcStockMatrixRow['fcCells'][number]
+type FcFulfillmentRow = StockResponse['fcFulfillmentRows'][number]
+type FcAllocationCsvRow = StockResponse['fcAllocationCsvRows'][number]
+type AmazonRecommendationStatus = FcAllocationCsvRow['amazonRecommendationStatus']
 type NextPlanRow = StockResponse['nextStockPlan']['rows'][number]
 type StateZoneDemandRow = StockResponse['paymentContext']['stateZoneDemand'][number]
 type PaymentSignalRow = StockResponse['paymentContext']['paymentSignals'][number]
@@ -553,6 +597,62 @@ function flexActionLabel(action: 'send_to_vendor' | 'monitor' | 'needs_xhzu_stoc
     case 'monitor':
       return 'Monitor'
   }
+}
+
+function fcFulfillmentActionLabel(action: FcFulfillmentRow['action']): string {
+  switch (action) {
+    case 'fully_covered':
+      return 'Fully covered'
+    case 'partially_covered':
+      return 'Stock short'
+    case 'no_requirement':
+      return 'No requirement'
+  }
+}
+
+function amazonRecommendationStatusLabel(status: AmazonRecommendationStatus): string {
+  switch (status) {
+    case 'available':
+      return 'Synced'
+    case 'pending_fetch':
+      return 'Amazon recommendation not synced yet'
+    case 'not_connected':
+      return 'Amazon account not connected'
+    case 'not_available':
+      return 'Not available from Amazon'
+  }
+}
+
+function exportFcAllocationPlanCsv(rows: FcAllocationCsvRow[]) {
+  const columns: CsvColumn<FcAllocationCsvRow>[] = [
+    { header: 'Component SKU', value: row => row.componentSku },
+    { header: 'Amazon SKU', value: row => row.amazonSku },
+    { header: 'FC / Warehouse', value: row => row.fcCode },
+    { header: '30D SKU Demand', value: row => row.skuDemand30d },
+    { header: '30D FC Demand', value: row => row.fcDemand30d },
+    { header: 'Required Send Units', value: row => row.requiredSendUnits },
+    { header: 'Component Qty Per Unit', value: row => row.componentQtyPerUnit },
+    { header: 'Component Units Required', value: row => row.componentUnitsRequired },
+    { header: 'Current XHZU Component Stock', value: row => row.currentXhzuComponentStock },
+    { header: 'Allocated Send Units Now', value: row => row.allocatedSendUnitsNow },
+    { header: 'Unfulfilled Send Units', value: row => row.unfulfilledSendUnits },
+    { header: 'Amazon Recommended Qty', value: row => row.amazonRecommendedQty },
+    { header: 'Amazon Recommendation Status', value: row => amazonRecommendationStatusLabel(row.amazonRecommendationStatus) },
+    { header: 'Allocation Priority', value: row => row.allocationPriority },
+    { header: 'Reason', value: row => row.reason },
+  ]
+
+  const generatedAt = new Date().toISOString()
+  const csv = [
+    columns.map(column => csvCell(column.header)).join(','),
+    ...rows.map(row => columns.map(column => csvCell(column.value(row))).join(',')),
+  ].join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `fc-allocation-plan-${generatedAt.slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
@@ -1625,6 +1725,88 @@ export function InternalStockDashboard() {
         {data.fcStockMatrixRows.length > 50 && (
           <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
             Showing top 50 of {data.fcStockMatrixRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
+          </div>
+        )}
+      </div>
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-black">Complete FC Fulfilment &amp; XHZU Allocation</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Shows how much of the FC replenishment plan can be completed from current XHZU stock, what is short,
+              and which SKUs/FCs should be filled first.
+            </p>
+          </div>
+          <Button
+            type="button"
+            disabled={data.fcAllocationCsvRows.length === 0}
+            onClick={() => exportFcAllocationPlanCsv(data.fcAllocationCsvRows)}
+          >
+            <Download className="mr-2 h-4 w-4" /> Export FC Allocation Plan
+          </Button>
+        </div>
+        <ReportStatCards
+          cards={[
+            ['FC units requested', data.fcFulfillmentSummary.fcUnitsRequested],
+            ['FC units allocatable now', data.fcFulfillmentSummary.fcUnitsAllocatableNow],
+            ['Finished units short', data.fcFulfillmentSummary.finishedUnitsShort],
+            ['Component units short', data.fcFulfillmentSummary.componentUnitsShort],
+            ['Components constrained', data.fcFulfillmentSummary.componentsConstrained],
+            ['Amazon recommendations synced', data.fcFulfillmentSummary.amazonRecommendationsSynced],
+            ['Amazon recommendations not synced', data.fcFulfillmentSummary.amazonRecommendationsNotSynced],
+          ]}
+        />
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1380px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                <th className="px-4 py-3 text-left">Component SKU</th>
+                <th className="px-3 py-3 text-right">Current XHZU Stock</th>
+                <th className="px-3 py-3 text-right">FC Component Requirement</th>
+                <th className="px-3 py-3 text-right">Component Shortage</th>
+                <th className="px-3 py-3 text-right">Coverage %</th>
+                <th className="px-3 py-3 text-right">Linked Amazon SKUs</th>
+                <th className="px-3 py-3 text-left">Fastest Selling SKU</th>
+                <th className="px-3 py-3 text-right">Allocatable Finished Units Now</th>
+                <th className="px-3 py-3 text-right">Short Finished Units</th>
+                <th className="px-3 py-3 text-left">Amazon Recommendation Status</th>
+                <th className="px-3 py-3 text-left">Action</th>
+                <th className="px-4 py-3 text-left">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.fcFulfillmentRows.slice(0, 50).map((row: FcFulfillmentRow, index, page) => (
+                <tr
+                  key={`fc-fulfillment-${row.componentSku}`}
+                  className={index < page.length - 1 ? 'border-b border-border/50' : ''}
+                >
+                  <td className="px-4 py-3 font-mono text-xs">{row.componentSku}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.currentXhzuComponentStock)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.fcComponentRequirement)}</td>
+                  <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.componentShortage)}</td>
+                  <td className="px-3 py-3 text-right">{row.coveragePercent}%</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.linkedAmazonSkuCount)}</td>
+                  <td className="px-3 py-3 font-mono text-xs">{row.fastestSellingAmazonSku ?? '—'}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.allocatableFinishedUnitsNow)}</td>
+                  <td className="px-3 py-3 text-right">{formatNumber(row.shortFinishedUnits)}</td>
+                  <td className="px-3 py-3 text-xs">{amazonRecommendationStatusLabel(row.amazonRecommendationStatus)}</td>
+                  <td className="px-3 py-3">
+                    <Badge variant="outline" className="text-[10px]">{fcFulfillmentActionLabel(row.action)}</Badge>
+                  </td>
+                  <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">{row.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.fcFulfillmentRows.length === 0 && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              No component-mapped FC requirement yet. Import SKU-to-component mappings and XHZU stock to see allocation.
+            </div>
+          )}
+        </div>
+        {data.fcFulfillmentRows.length > 50 && (
+          <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
+            Showing top 50 of {data.fcFulfillmentRows.length.toLocaleString('en-IN')} rows. Export FC Allocation Plan for the full list.
           </div>
         )}
       </div>
