@@ -11,8 +11,10 @@ export const maxDuration = 120
 
 const JOB_TYPE = 'product_page_snapshot'
 const SESSION_BATCH_SIZE = 5
-const SYSTEM_BATCH_SIZE = 10
+const SYSTEM_BATCH_SIZE = 5
 const RETRY_DELAY_MINUTES = 30
+const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+const PRICING_UNAVAILABLE_RETRY_MINUTES = 24 * 60
 const WORKER_ID_SESSION = 'nextjs-app-manual'
 const WORKER_ID_SYSTEM = 'nextjs-app-automation'
 
@@ -36,6 +38,21 @@ type WorkspaceConnection = {
 function safeErrorMessage(value: unknown): string {
   const text = value instanceof Error ? value.message : String(value)
   return text.replace(/https?:\/\/\S+/g, '[redacted_url]').slice(0, 180)
+}
+
+type PricingErrorClass = 'rate_limited' | 'unavailable' | 'other'
+
+function classifyPricingError(message: string | null): PricingErrorClass | null {
+  if (!message) return null
+  if (message.includes('429')) return 'rate_limited'
+  if (message.includes('400')) return 'unavailable'
+  return 'other'
+}
+
+function safeReasonFor(errorClass: PricingErrorClass | null, fallback: string | null): string | null {
+  if (errorClass === 'rate_limited') return 'amazon_pricing_rate_limited'
+  if (errorClass === 'unavailable') return 'amazon_pricing_unavailable'
+  return fallback
 }
 
 function availabilityScoreFor(status: BuyBoxOfferStatus | 'unavailable'): number | null {
@@ -107,6 +124,8 @@ export async function POST(request: Request) {
 
   let claimed = 0
   let completed = 0
+  let partial = 0
+  let deferredRateLimited = 0
   let retried = 0
   let failed = 0
   let skippedNoConnection = 0
@@ -210,34 +229,55 @@ export async function POST(request: Request) {
     }
 
     const checkedAt = new Date().toISOString()
+    const catalogErrorClass = classifyPricingError(catalogError)
+    const offersErrorClass = classifyPricingError(offersError)
+    const worstErrorClass: PricingErrorClass | null = offersErrorClass === 'rate_limited' || catalogErrorClass === 'rate_limited'
+      ? 'rate_limited'
+      : offersErrorClass ?? catalogErrorClass
 
     if (!catalogResult && !offersResult) {
+      const isRateLimited = worstErrorClass === 'rate_limited'
+      const isUnavailable = worstErrorClass === 'unavailable'
       const canRetry = job.attempt_count + 1 < job.max_attempts
       const nextStatus = canRetry ? 'queued' : 'failed'
+      const retryDelayMinutes = isRateLimited
+        ? PRICING_RATE_LIMITED_RETRY_MINUTES
+        : isUnavailable
+          ? PRICING_UNAVAILABLE_RETRY_MINUTES
+          : RETRY_DELAY_MINUTES
+
       await admin
         .from('background_jobs')
         .update({
           status: nextStatus,
-          last_error_safe: catalogError ?? offersError ?? 'Product page snapshot failed safely.',
+          last_error_safe: safeReasonFor(worstErrorClass, catalogError ?? offersError ?? 'Product page snapshot failed safely.'),
           run_after: canRetry
-            ? new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString()
+            ? new Date(Date.now() + retryDelayMinutes * 60 * 1000).toISOString()
             : undefined,
           locked_at: null,
           locked_by: null,
           completed_at: canRetry ? null : checkedAt,
         })
         .eq('id', job.id)
-      if (canRetry) retried += 1
+
+      if (isRateLimited) deferredRateLimited += 1
+      else if (canRetry) retried += 1
       else failed += 1
+
+      // A rate-limit hit means the quota is exhausted right now — stop this
+      // batch instead of immediately hammering Amazon Pricing again.
+      if (isRateLimited) break
       continue
     }
 
     const buyBoxStatus = offersResult?.buy_box_status ?? 'unknown'
-    const scrapeStatus: 'success' | 'partial_success' | 'failed' = catalogResult && offersResult
+    const scrapeStatus: 'success' | 'partial_pricing_unavailable' | 'partial_catalog_unavailable' | 'failed' = catalogResult && offersResult
       ? 'success'
-      : catalogResult || offersResult
-        ? 'partial_success'
-        : 'failed'
+      : catalogResult
+        ? 'partial_pricing_unavailable'
+        : offersResult
+          ? 'partial_catalog_unavailable'
+          : 'failed'
 
     const snapshotPayload = {
       workspace_id: job.workspace_id,
@@ -280,22 +320,32 @@ export async function POST(request: Request) {
       .from('background_jobs')
       .update({
         status: 'completed',
-        last_error_safe: catalogError ?? offersError ?? null,
+        last_error_safe: scrapeStatus === 'success' ? null : safeReasonFor(worstErrorClass, catalogError ?? offersError ?? null),
         locked_at: null,
         locked_by: null,
         completed_at: checkedAt,
       })
       .eq('id', job.id)
-    completed += 1
+
+    if (scrapeStatus === 'success') completed += 1
+    else partial += 1
+
+    // A rate-limit hit on pricing (even with a partial catalog-only save)
+    // means the quota is currently exhausted — stop this batch.
+    if (worstErrorClass === 'rate_limited') break
   }
 
-  return NextResponse.json({
+  const summary = {
     jobType: JOB_TYPE,
     mode: auth.mode,
-    claimed,
+    processed: claimed,
     completed,
+    partial,
+    deferredRateLimited,
     retried,
     failed,
     skippedNoConnection,
-  })
+  }
+  console.log(JSON.stringify(summary))
+  return NextResponse.json(summary)
 }
