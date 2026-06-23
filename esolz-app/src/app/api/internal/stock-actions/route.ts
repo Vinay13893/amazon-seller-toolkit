@@ -631,6 +631,20 @@ export async function GET(request: Request) {
       : latestSyncResult.data.status
     : null
 
+  const { data: savedAssumptionsRows } = await supabase
+    .from('replenishment_assumptions')
+    .select('scope')
+    .eq('workspace_id', access.workspaceId)
+    .in('scope', ['flex', 'fc'])
+  const savedAssumptionScopes = new Set((savedAssumptionsRows ?? []).map(row => row.scope as string))
+
+  const { data: activeXhzuBatch } = await supabase
+    .from('xhzu_stock_upload_batches')
+    .select('original_filename, uploaded_by, uploaded_at, accepted_count, rejected_count')
+    .eq('workspace_id', access.workspaceId)
+    .eq('is_active', true)
+    .maybeSingle()
+
   return NextResponse.json({
     summary,
     actions,
@@ -643,6 +657,19 @@ export async function GET(request: Request) {
     fcStockMatrixRows: fcStockMatrix.rows,
     fcStockMatrixColumns: fcStockMatrix.columns,
     flexDemandBreakdownRows,
+    activeXhzuBatch: activeXhzuBatch
+      ? {
+          originalFilename: activeXhzuBatch.original_filename as string,
+          uploadedBy: activeXhzuBatch.uploaded_by as string | null,
+          uploadedAt: activeXhzuBatch.uploaded_at as string,
+          acceptedCount: activeXhzuBatch.accepted_count as number,
+          rejectedCount: activeXhzuBatch.rejected_count as number,
+        }
+      : null,
+    assumptionsSource: {
+      flex: savedAssumptionScopes.has('flex') ? 'saved' : 'default',
+      fc: savedAssumptionScopes.has('fc') ? 'saved' : 'default',
+    },
     diagnostics: {
       products_with_sales: productsWithSales,
       products_missing_sales: Math.max(0, products.length - productsWithSales),

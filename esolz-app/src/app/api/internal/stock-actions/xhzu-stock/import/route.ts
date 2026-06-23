@@ -33,6 +33,8 @@ export async function POST(request: Request) {
   }
   const workspaceId = access.workspaceId
 
+  const uploadedBy = access.userEmail
+
   const formData = await request.formData().catch(() => null)
   const file = formData?.get('file')
   if (!(file instanceof File)) {
@@ -142,6 +144,47 @@ export async function POST(request: Request) {
     const { error } = await admin.from(TABLE).upsert(chunk, { onConflict: 'id' })
     if (error) {
       return NextResponse.json({ error: 'Existing XHZU stock rows could not be updated.' }, { status: 503 })
+    }
+  }
+
+  // Record this upload as history: mark any prior batch inactive, insert this batch + its
+  // rows. internal_inventory_by_location stays the latest-current table used for calculations;
+  // these history tables let the UI show which upload is currently in use and recall past ones.
+  await admin
+    .from('xhzu_stock_upload_batches')
+    .update({ is_active: false })
+    .eq('workspace_id', workspaceId)
+    .eq('marketplace_id', DEFAULT_MARKETPLACE_ID)
+    .eq('is_active', true)
+
+  const { data: batchData, error: batchError } = await admin
+    .from('xhzu_stock_upload_batches')
+    .insert({
+      workspace_id: workspaceId,
+      marketplace_id: DEFAULT_MARKETPLACE_ID,
+      uploaded_by: uploadedBy,
+      original_filename: file.name,
+      row_count: parsedRowCount,
+      accepted_count: rows.length,
+      rejected_count: parsed.rejected,
+      uploaded_at: snapshotAt,
+      is_active: true,
+    })
+    .select('id')
+    .single()
+
+  if (!batchError && batchData) {
+    const historyRows = rows.map(row => ({
+      batch_id: batchData.id as string,
+      component_sku: row.sku,
+      location_code: row.location_code,
+      available_quantity: row.available_quantity,
+      reserved_quantity: row.reserved_quantity,
+      inbound_quantity: row.inbound_quantity,
+    }))
+    for (let index = 0; index < historyRows.length; index += WRITE_CHUNK_SIZE) {
+      const chunk = historyRows.slice(index, index + WRITE_CHUNK_SIZE)
+      await admin.from('xhzu_stock_upload_rows').insert(chunk)
     }
   }
 

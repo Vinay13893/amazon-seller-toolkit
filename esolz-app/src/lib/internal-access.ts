@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 type InternalAccessContext = {
   authorized: boolean
   workspaceId: string | null
+  userEmail: string | null
 }
 
 type MembershipRow = {
@@ -18,7 +19,7 @@ export async function getInternalAccessContext(): Promise<InternalAccessContext>
   const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) {
-    return { authorized: false, workspaceId: null }
+    return { authorized: false, workspaceId: null, userEmail: null }
   }
 
   const { data: membershipData } = await supabase
@@ -31,11 +32,11 @@ export async function getInternalAccessContext(): Promise<InternalAccessContext>
   const workspaceIds = Array.from(new Set(memberships.map(row => row.workspace_id).filter(Boolean)))
 
   if (workspaceIds.length === 0) {
-    return { authorized: false, workspaceId: null }
+    return { authorized: false, workspaceId: null, userEmail: user.email ?? null }
   }
 
   if (isInternalTestAccount(user.email)) {
-    return { authorized: true, workspaceId: workspaceIds[0] }
+    return { authorized: true, workspaceId: workspaceIds[0], userEmail: user.email ?? null }
   }
 
   const { data: subscriptionData } = await supabase
@@ -55,5 +56,6 @@ export async function getInternalAccessContext(): Promise<InternalAccessContext>
   return {
     authorized: Boolean(internalSubscription),
     workspaceId: internalSubscription?.workspace_id ?? null,
+    userEmail: user.email ?? null,
   }
 }

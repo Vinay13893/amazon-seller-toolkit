@@ -207,6 +207,17 @@ type StockResponse = {
     }>
   }>
   fcStockMatrixColumns: string[]
+  activeXhzuBatch: {
+    originalFilename: string
+    uploadedBy: string | null
+    uploadedAt: string
+    acceptedCount: number
+    rejectedCount: number
+  } | null
+  assumptionsSource: {
+    flex: 'default' | 'saved'
+    fc: 'default' | 'saved'
+  }
   flexDemandBreakdownRows: Array<{
     componentSku: string
     amazonSku: string
@@ -559,9 +570,10 @@ function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
     { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-    { header: '30D Amazon Demand', value: row => row.amazonDemand30d },
-    { header: 'Component Units Required', value: row => row.componentAdjustedDemand },
+    { header: '30D Finished Units Sold', value: row => row.amazonDemand30d },
+    { header: '30D Component Units Consumed', value: row => row.componentAdjustedDemand },
     { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
+    { header: 'Required Component Stock', value: row => row.requiredComponentStock },
     { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
     { header: 'Action Label', value: row => flexActionLabel(row.action) },
     { header: 'Reason', value: row => row.reason },
@@ -585,11 +597,11 @@ function exportFlexDemandBreakdownCsv(rows: FlexDemandBreakdownRow[]) {
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Amazon SKU', value: row => row.amazonSku },
     { header: 'WMS Parent SKU', value: row => row.wmsParentSku },
-    { header: 'Amazon 30D Demand', value: row => row.amazonDemand30d },
-    { header: 'FBA 30D Demand', value: row => row.fbaDemand30d },
-    { header: 'Seller Flex 30D Demand', value: row => row.sellerFlexDemand30d },
+    { header: 'Amazon SKU 30D Units Sold', value: row => row.amazonDemand30d },
+    { header: 'FBA 30D Units Sold', value: row => row.fbaDemand30d },
+    { header: 'Seller Flex 30D Units Sold', value: row => row.sellerFlexDemand30d },
     { header: 'Component Qty Per Amazon Unit', value: row => row.componentQuantityPerAmazonUnit },
-    { header: 'Component Units Required', value: row => row.componentUnitsRequiredContribution },
+    { header: 'Component Units Consumed', value: row => row.componentUnitsRequiredContribution },
     { header: 'Demand Source Label', value: row => row.demandSourceLabel },
     { header: 'Match Status', value: row => row.matchStatus },
   ]
@@ -1489,6 +1501,9 @@ export function InternalStockDashboard() {
             <p className="mt-1 text-xs text-muted-foreground">
               FC stock is blank where FC stock source is unavailable. Inbound shipment quantity is not included yet.
             </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Planning assumptions: {data.assumptionsSource.fc === 'saved' ? 'Saved for this workspace' : 'Default (not yet saved)'}.
+            </p>
           </div>
           <Button
             type="button"
@@ -2167,6 +2182,29 @@ export function InternalStockDashboard() {
             </div>
           </div>
 
+          <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+            {data.activeXhzuBatch ? (
+              <>
+                <p className="font-medium">
+                  Last XHZU upload: <span className="font-mono text-xs">{data.activeXhzuBatch.originalFilename}</span>
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Uploaded at {formatDate(data.activeXhzuBatch.uploadedAt)}
+                  {data.activeXhzuBatch.uploadedBy ? ` by ${data.activeXhzuBatch.uploadedBy}` : ''} ·{' '}
+                  Accepted {data.activeXhzuBatch.acceptedCount.toLocaleString('en-IN')} rows
+                  {data.activeXhzuBatch.rejectedCount > 0
+                    ? ` · Rejected ${data.activeXhzuBatch.rejectedCount.toLocaleString('en-IN')}`
+                    : ''}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  This stock file is currently used for suggested vendor quantity.
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">No XHZU stock file has been uploaded yet.</p>
+            )}
+          </div>
+
           {xhzuUploadError && (
             <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
               {xhzuUploadError}
@@ -2202,11 +2240,16 @@ export function InternalStockDashboard() {
                 (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                30D Amazon Demand is calculated from trusted FBA/Seller Flex demand sources for mapped Amazon SKUs.
+                30D Finished Units Sold is calculated from trusted FBA/Seller Flex demand sources for mapped Amazon SKUs.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Component Units Required = Amazon demand × component quantity from the SKU mapping (combo SKUs use
-                each linked Amazon SKU's own quantity).
+                30D Component Units Consumed = sum across linked Amazon SKUs of (that SKU&apos;s 30D units sold ×
+                its component quantity from the SKU mapping). Required Component Stock is the forecasted stock
+                target (consumption rate × planning + transit days × growth), and Suggested Vendor Qty is that
+                target minus Current XHZU Stock.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Planning assumptions: {data.assumptionsSource.flex === 'saved' ? 'Saved for this workspace' : 'Default (not yet saved)'}.
               </p>
             </div>
             <div className="flex flex-wrap items-end gap-2">
@@ -2232,11 +2275,12 @@ export function InternalStockDashboard() {
                   'Vendor Component Replenishment',
                   [
                     { header: 'Component SKU', value: row => row.componentSku },
-                    { header: 'Linked Amazon SKUs', value: row => row.linkedAmazonSkuCount },
+                    { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
                     { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-                    { header: '30D Amazon Demand', value: row => row.amazonDemand30d },
-                    { header: 'Component Units Required', value: row => row.componentAdjustedDemand },
+                    { header: '30D Finished Units Sold', value: row => row.amazonDemand30d },
+                    { header: '30D Component Units Consumed', value: row => row.componentAdjustedDemand },
                     { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
+                    { header: 'Required Component Stock', value: row => row.requiredComponentStock },
                     { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
                     { header: 'Action', value: row => row.action },
                     { header: 'Reason', value: row => row.reason },
@@ -2269,7 +2313,7 @@ export function InternalStockDashboard() {
           <ReportStatCards
             cards={[
               ['Components with demand', data.flexReplenishmentSummary.componentsWithDemand],
-              ['Component units required', data.flexReplenishmentSummary.componentUnitsDemanded],
+              ['Component units consumed (30D)', data.flexReplenishmentSummary.componentUnitsDemanded],
               ['Needs XHZU stock', data.flexReplenishmentSummary.rowsNeedingXhzuStockContext],
               ['Missing mapping', data.flexReplenishmentSummary.rowsMissingMapping],
               ['Margin review', data.flexReplenishmentSummary.rowsMarginReview],
@@ -2280,11 +2324,12 @@ export function InternalStockDashboard() {
               <thead>
                 <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
                   <th className="px-4 py-3 text-left">Component SKU</th>
-                  <th className="px-3 py-3 text-right">Linked Amazon SKUs</th>
+                  <th className="px-3 py-3 text-right">Linked Amazon SKUs Count</th>
                   <th className="px-3 py-3 text-right">WMS Parent SKU Count</th>
-                  <th className="px-3 py-3 text-right">30D Amazon Demand</th>
-                  <th className="px-3 py-3 text-right">Component Units Required</th>
+                  <th className="px-3 py-3 text-right">30D Finished Units Sold</th>
+                  <th className="px-3 py-3 text-right">30D Component Units Consumed</th>
                   <th className="px-3 py-3 text-right">Current XHZU Stock</th>
+                  <th className="px-3 py-3 text-right">Required Component Stock</th>
                   <th className="px-3 py-3 text-right">Suggested Vendor Qty</th>
                   <th className="px-3 py-3 text-left">Action</th>
                   <th className="px-4 py-3 text-left">Reason</th>
@@ -2304,6 +2349,7 @@ export function InternalStockDashboard() {
                     <td className="px-3 py-3 text-right">
                       {row.currentXhzuComponentStock === null ? '—' : formatNumber(row.currentXhzuComponentStock)}
                     </td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.requiredComponentStock)}</td>
                     <td className="px-3 py-3 text-right font-semibold">
                       {row.suggestedVendorReplenishQty === null ? '—' : formatNumber(row.suggestedVendorReplenishQty)}
                     </td>
