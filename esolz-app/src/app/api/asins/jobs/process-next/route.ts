@@ -50,13 +50,17 @@ function classifyPricingError(message: string | null): PricingErrorClass | null 
 }
 
 const RATE_LIMIT_REASON = 'amazon_pricing_rate_limited'
+const COOLDOWN_ACTIVE_REASON = 'amazon_pricing_cooldown_active'
 
 /**
  * Amazon Pricing throttling is account/app-wide, not per-ASIN. Rather than
  * adding a new table, reuse background_jobs as the cooldown signal: if any
- * product_page_snapshot job recently recorded a rate-limit reason, treat
- * Pricing as cooling down for this whole call (and skip further Pricing
- * calls within it) instead of immediately retrying on the next job/ASIN.
+ * product_page_snapshot job recently recorded a REAL 429 (RATE_LIMIT_REASON),
+ * treat Pricing as cooling down for this whole call (and skip further
+ * Pricing calls within it) instead of immediately retrying on the next
+ * job/ASIN. Jobs that merely skipped Pricing because cooldown was already
+ * active are tagged with COOLDOWN_ACTIVE_REASON instead, so they never
+ * count as fresh evidence and the cooldown window can actually expire.
  */
 async function isPricingCoolingDown(admin: ReturnType<typeof createAdminClient>): Promise<boolean> {
   const cutoff = new Date(Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000).toISOString()
@@ -341,7 +345,7 @@ export async function POST(request: Request) {
     const completedReasonSafe = scrapeStatus === 'success'
       ? null
       : scrapeStatus === 'partial_pricing_rate_limited'
-        ? RATE_LIMIT_REASON
+        ? (pricingSkippedThisJob ? COOLDOWN_ACTIVE_REASON : RATE_LIMIT_REASON)
         : scrapeStatus === 'partial_pricing_unavailable'
           ? 'amazon_pricing_unavailable'
           : (catalogError ?? null)

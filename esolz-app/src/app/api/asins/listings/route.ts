@@ -72,6 +72,44 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unable to load Seller Central listings.' }, { status: 500 })
   }
 
+  const listingIds = (data ?? []).map(row => row.id as string)
+  const latestSnapshotByListingId = new Map<string, {
+    price: number | null
+    bsr: number | null
+    buy_box_owner: string | null
+    buy_box_status: string | null
+    availability_score: number | null
+    scrape_status: string | null
+    checked_at: string
+  }>()
+
+  if (listingIds.length > 0) {
+    const { data: snapshots } = await supabase
+      .from('asin_snapshots')
+      .select('amazon_listing_item_id, price, bsr, buy_box_owner, buy_box_status, availability_score, scrape_status, checked_at')
+      .in('amazon_listing_item_id', listingIds)
+      .order('checked_at', { ascending: false })
+
+    for (const snapshot of snapshots ?? []) {
+      const listingId = snapshot.amazon_listing_item_id as string | null
+      if (!listingId || latestSnapshotByListingId.has(listingId)) continue
+      latestSnapshotByListingId.set(listingId, {
+        price: snapshot.price as number | null,
+        bsr: snapshot.bsr as number | null,
+        buy_box_owner: snapshot.buy_box_owner as string | null,
+        buy_box_status: snapshot.buy_box_status as string | null,
+        availability_score: snapshot.availability_score as number | null,
+        scrape_status: snapshot.scrape_status as string | null,
+        checked_at: snapshot.checked_at as string,
+      })
+    }
+  }
+
+  const items = (data ?? []).map(row => ({
+    ...row,
+    snapshot: latestSnapshotByListingId.get(row.id as string) ?? null,
+  }))
+
   const { data: latestJob } = await supabase
     .from('amazon_sync_jobs')
     .select('status, started_at, finished_at, metadata')
@@ -83,7 +121,7 @@ export async function GET(request: NextRequest) {
 
   const metadata = (latestJob?.metadata ?? {}) as Record<string, unknown>
   return NextResponse.json({
-    items: data ?? [],
+    items,
     total: count ?? 0,
     offset,
     limit,

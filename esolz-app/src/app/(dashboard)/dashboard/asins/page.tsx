@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Marketplace, ProductSnapshot } from '@/types'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { formatPrice, pricingUnavailableLabel } from '@/lib/format'
 import { toast } from 'sonner'
 import {
   getWorkspaceId,
@@ -37,6 +38,16 @@ import {
 type ViewMode = 'table' | 'cards'
 type AsinTab = 'products' | 'competitors'
 
+interface AmazonListingSnapshot {
+  price:              number | null
+  bsr:                number | null
+  buy_box_owner:      string | null
+  buy_box_status:     string | null
+  availability_score: number | null
+  scrape_status:      string | null
+  checked_at:         string
+}
+
 interface AmazonListingItem {
   id:             string
   sku:            string
@@ -48,6 +59,7 @@ interface AmazonListingItem {
   marketplace_id: string
   image_url:      string | null
   last_synced_at: string | null
+  snapshot:       AmazonListingSnapshot | null
 }
 
 interface ListingSyncSummary {
@@ -638,6 +650,7 @@ export default function AsinsPage() {
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Buy Box</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Availability</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Deal Tag</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Last Checked</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Updated</th>
                     <th className="px-4 py-3"></th>
                   </tr>
@@ -694,11 +707,58 @@ export default function AsinsPage() {
                           <span className="text-xs text-muted-foreground">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not synced yet</td>
+                      {(() => {
+                        const snapshot = item.snapshot
+                        const pricingLabel = pricingUnavailableLabel(snapshot?.scrape_status)
+                        const notChecked = <span className="text-xs text-muted-foreground/70 italic">Not checked yet</span>
+
+                        return (
+                          <>
+                            {/* Price */}
+                            <td className="px-4 py-3 text-xs">
+                              {!snapshot
+                                ? notChecked
+                                : pricingLabel
+                                  ? <span className="text-xs text-muted-foreground">{pricingLabel}</span>
+                                  : <span className="text-xs text-foreground">{formatPrice(snapshot.price, 'INR')}</span>}
+                            </td>
+                            {/* BSR */}
+                            <td className="px-4 py-3 text-xs">
+                              {!snapshot
+                                ? notChecked
+                                : snapshot.bsr !== null
+                                  ? <span className="text-xs text-foreground">#{snapshot.bsr.toLocaleString('en-IN')}</span>
+                                  : <span className="text-xs text-muted-foreground">Unavailable from Catalog</span>}
+                            </td>
+                            {/* Buy Box */}
+                            <td className="px-4 py-3 text-xs">
+                              {!snapshot
+                                ? notChecked
+                                : pricingLabel
+                                  ? <span className="text-xs text-muted-foreground">{pricingLabel}</span>
+                                  : snapshot.buy_box_owner
+                                    ? <span className="text-xs text-foreground truncate max-w-[110px]" title={snapshot.buy_box_owner}>{snapshot.buy_box_owner}</span>
+                                    : <span className="text-xs text-muted-foreground">Suppressed</span>}
+                            </td>
+                            {/* Availability */}
+                            <td className="px-4 py-3 text-xs">
+                              {!snapshot
+                                ? notChecked
+                                : snapshot.availability_score !== null
+                                  ? <span className="text-xs text-foreground">{snapshot.availability_score}%</span>
+                                  : <span className="text-xs text-muted-foreground">—</span>}
+                            </td>
+                            {/* Deal Tag */}
+                            <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not available yet</td>
+                            {/* Last Checked */}
+                            <td className="px-4 py-3 text-xs text-muted-foreground">
+                              {snapshot
+                                ? new Date(snapshot.checked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                                : 'Not checked yet'}
+                            </td>
+                          </>
+                        )
+                      })()}
                       <td className="px-4 py-3 text-xs text-muted-foreground">
                         {item.last_synced_at
                           ? new Date(item.last_synced_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
