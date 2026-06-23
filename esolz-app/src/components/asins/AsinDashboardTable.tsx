@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { BsrBadge } from './BsrBadge'
-import { formatPrice, timeAgo } from '@/lib/format'
+import { formatPrice, pricingUnavailableLabel, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { ProductSnapshot } from '@/types'
 import {
@@ -121,9 +121,15 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
 
               {/* ── Price ── */}
               <td className="px-4 py-3">
-                <span className="text-sm font-medium text-foreground whitespace-nowrap">
-                  {formatPrice(p.price, p.price_currency)}
-                </span>
+                {pricingUnavailableLabel(p.scrape_status) ? (
+                  <span className="text-xs text-muted-foreground whitespace-nowrap">
+                    {pricingUnavailableLabel(p.scrape_status)}
+                  </span>
+                ) : (
+                  <span className="text-sm font-medium text-foreground whitespace-nowrap">
+                    {formatPrice(p.price, p.price_currency)}
+                  </span>
+                )}
               </td>
 
               {/* ── Rating ── */}
@@ -151,7 +157,12 @@ export function AsinDashboardTable({ products, onDelete }: AsinDashboardTablePro
 
               {/* ── Buy Box ── */}
               <td className="px-4 py-3">
-                {p.buybox_winner === null ? (
+                {p.buybox_winner === null && pricingUnavailableLabel(p.scrape_status) ? (
+                  <div className="flex items-center gap-1.5 text-muted-foreground">
+                    <ShieldOff className="size-3.5 shrink-0" />
+                    <span className="text-xs whitespace-nowrap">{pricingUnavailableLabel(p.scrape_status)}</span>
+                  </div>
+                ) : p.buybox_winner === null ? (
                   <div className="flex items-center gap-1.5 text-muted-foreground">
                     <ShieldOff className="size-3.5 shrink-0" />
                     <span className="text-xs whitespace-nowrap">Suppressed</span>

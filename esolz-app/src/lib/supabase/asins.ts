@@ -164,10 +164,16 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
       if (!trackedAsinId) continue
       if (!snapshotsByAsinId.has(trackedAsinId)) snapshotsByAsinId.set(trackedAsinId, [])
       const scrapeStatusRaw = 'scrape_status' in snapshot ? snapshot.scrape_status : null
+      const knownScrapeStatuses: Array<ProductSnapshot['scrape_status']> = [
+        'success',
+        'partial_success',
+        'partial_pricing_rate_limited',
+        'partial_pricing_unavailable',
+        'partial_catalog_unavailable',
+        'failed',
+      ]
       const scrapeStatus: ProductSnapshot['scrape_status'] =
-        scrapeStatusRaw === 'success' || scrapeStatusRaw === 'partial_success' || scrapeStatusRaw === 'failed'
-          ? scrapeStatusRaw
-          : null
+        knownScrapeStatuses.includes(scrapeStatusRaw) ? scrapeStatusRaw : null
 
       snapshotsByAsinId.get(trackedAsinId)?.push({
         ...snapshot,

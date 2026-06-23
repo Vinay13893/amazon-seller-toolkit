@@ -11,6 +11,13 @@ export function formatPrice(price: number | null, currency: string): string {
   return `${symbol}${price.toLocaleString('en-IN')}`
 }
 
+/** Pricing/Buy Box are unavailable for a known, safe reason rather than truly suppressed. */
+export function pricingUnavailableLabel(scrapeStatus: string | null | undefined): string | null {
+  if (scrapeStatus === 'partial_pricing_rate_limited') return 'Pricing rate-limited'
+  if (scrapeStatus === 'partial_pricing_unavailable') return 'Pricing unavailable'
+  return null
+}
+
 export function timeAgo(iso: string | null): string {
   if (!iso) return '—'
   const diff = Date.now() - new Date(iso).getTime()

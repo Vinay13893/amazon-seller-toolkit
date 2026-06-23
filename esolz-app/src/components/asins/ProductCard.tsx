@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { BsrBadge } from './BsrBadge'
-import { formatPrice, timeAgo } from '@/lib/format'
+import { formatPrice, pricingUnavailableLabel, timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { ProductSnapshot } from '@/types'
 import {
@@ -25,15 +25,18 @@ import {
 function BuyBoxStatus({
   winner,
   isSelf,
+  scrapeStatus,
 }: {
   winner: string | null
   isSelf: boolean | null
+  scrapeStatus?: ProductSnapshot['scrape_status']
 }) {
   if (winner === null) {
+    const pricingLabel = pricingUnavailableLabel(scrapeStatus)
     return (
       <div className="flex items-center gap-1.5 text-muted-foreground">
         <ShieldOff className="size-3.5 shrink-0" />
-        <span className="text-xs">Suppressed</span>
+        <span className="text-xs">{pricingLabel ?? 'Suppressed'}</span>
       </div>
     )
   }
@@ -195,7 +198,7 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
             Price
           </span>
           <span className="text-sm font-semibold text-foreground">
-            {formatPrice(product.price, product.price_currency)}
+            {pricingUnavailableLabel(product.scrape_status) ?? formatPrice(product.price, product.price_currency)}
           </span>
         </div>
 
@@ -226,7 +229,11 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
           <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
             Buy Box
           </span>
-          <BuyBoxStatus winner={product.buybox_winner} isSelf={product.buybox_is_self} />
+          <BuyBoxStatus
+            winner={product.buybox_winner}
+            isSelf={product.buybox_is_self}
+            scrapeStatus={product.scrape_status}
+          />
         </div>
 
         {/* Availability — full width */}

@@ -6,7 +6,7 @@ interface BsrBadgeProps {
   rank: number | null
   prevRank?: number | null
   checkedAt?: string | null
-  scrapeStatus?: 'success' | 'partial_success' | 'failed' | null
+  scrapeStatus?: string | null
   hasOtherSignals?: boolean
   staleAfterHours?: number
   size?: 'sm' | 'md'
