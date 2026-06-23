@@ -17,9 +17,14 @@ export async function resolveJobsAuth(request: Request): Promise<JobsAuthResult>
   const headerSecret = request.headers.get(SECRET_HEADER)
   if (headerSecret !== null) {
     const expectedSecret = process.env.BACKGROUND_WORKER_SECRET
-    if (expectedSecret && headerSecret === expectedSecret) {
+    if (!expectedSecret) {
+      console.warn('[jobs-auth] secret header was sent but BACKGROUND_WORKER_SECRET is not configured on this deployment.')
+      return { ok: false }
+    }
+    if (headerSecret === expectedSecret) {
       return { ok: true, mode: 'system' }
     }
+    console.warn('[jobs-auth] secret header was sent but did not match the configured BACKGROUND_WORKER_SECRET.')
     return { ok: false }
   }
 
