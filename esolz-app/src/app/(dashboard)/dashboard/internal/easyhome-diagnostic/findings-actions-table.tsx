@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { Download, Table2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import type { FindingIssueLabel, FindingRow } from '@/lib/internal/easyhome-findings-table'
+import type { FindingIssueLabel, FindingRow, GoodWorkingRow } from '@/lib/internal/easyhome-findings-table'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function inr(v: number | null): string {
@@ -40,6 +40,27 @@ export function toFindingsCsv(rows: FindingRow[]): string {
       r.recommendedManualAction, r.expectedOutcome, r.riskCaution,
       r.spendA, r.spendB, r.spendChange, r.salesA, r.salesB, r.salesChange,
       r.acosA, r.acosB, r.roasA, r.roasB, r.whatChanged, r.reviewStatus,
+    ].map(esc).join(','))
+  }
+  return lines.join('\n')
+}
+
+export function toGoodWorkingCsv(rows: GoodWorkingRow[]): string {
+  const headers = [
+    'rank', 'portfolio', 'campaign', 'ad_group', 'keyword_target_sku_search_term',
+    'why_it_is_good', 'spend_a', 'spend_b', 'sales_a', 'sales_b',
+    'acos_a', 'acos_b', 'roas_a', 'roas_b', 'suggested_action',
+  ]
+  const esc = (v: unknown) => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [headers.join(',')]
+  for (const r of rows) {
+    lines.push([
+      r.rank, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityName,
+      r.whyGood, r.spendA, r.spendB, r.salesA, r.salesB,
+      r.acosA, r.acosB, r.roasA, r.roasB, r.suggestedAction,
     ].map(esc).join(','))
   }
   return lines.join('\n')
@@ -174,6 +195,75 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
       <p className="text-xs text-muted-foreground mt-3">
         Range A vs Range B, correlated with change-history events where available. Review manually; compare old vs current. Do not revert blindly.
       </p>
+    </div>
+  )
+}
+
+export function GoodWorkingTable({ rows }: { rows: GoodWorkingRow[] }) {
+  const [showAll, setShowAll] = useState(false)
+  const visible = showAll ? rows : rows.slice(0, 20)
+
+  function downloadCsv() {
+    const blob = new Blob([toGoodWorkingCsv(rows)], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `brahmastra_good_working_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+          <Table2 className="w-4 h-4 text-primary" /> Good Working Campaigns / Keywords / Targets
+        </h2>
+        <button type="button" onClick={downloadCsv} className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">
+          <Download className="w-3 h-3" /> Export CSV ({rows.length})
+        </button>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No good-working rows found for the selected range.</p>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground mb-2">
+            Showing {visible.length} of {rows.length} protected/scaling candidates.
+            {!showAll && rows.length > 20 && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(true)}>Show all</button>}
+            {showAll && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(false)}>Show top 20</button>}
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border text-muted-foreground">
+                  {['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword / Target / SKU / Search Term', 'Why it is good', 'Spend A', 'Spend B', 'Sales A', 'Sales B', 'ACOS A -> B', 'ROAS A -> B', 'Suggested action'].map(h => (
+                    <th key={h} className="text-left font-semibold py-2 px-2 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map(r => (
+                  <tr key={`${r.rank}-${r.entityType}-${r.entityName}-${r.campaignName ?? ''}`} className="border-b border-border/50 hover:bg-muted/30">
+                    <td className="py-2 px-2 text-foreground">{r.rank}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(r.portfolio)}</td>
+                    <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={r.campaignName ?? ''}>{r.campaignName ?? '—'}</td>
+                    <td className="py-2 px-2 text-muted-foreground">{r.adGroupName ?? '—'}</td>
+                    <td className="py-2 px-2 max-w-[180px] truncate text-foreground" title={r.entityName}>{r.entityName}</td>
+                    <td className="py-2 px-2 max-w-[220px] text-muted-foreground">{r.whyGood}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendA)}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendB)}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesA)}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesB)}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{pct(r.acosA)} {'->'} {pct(r.acosB)}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{roas(r.roasA)} {'->'} {roas(r.roasB)}</td>
+                    <td className="py-2 px-2 max-w-[240px] text-muted-foreground">{r.suggestedAction}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   )
 }

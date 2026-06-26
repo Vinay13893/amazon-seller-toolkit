@@ -14,7 +14,7 @@ import {
   type AnalysisMode,
   type DateRange,
 } from '@/lib/internal/date-range'
-import { buildFindingsTable } from '@/lib/internal/easyhome-findings-table'
+import { buildFindingsTable, buildGoodWorkingRows } from '@/lib/internal/easyhome-findings-table'
 import {
   buildEasyhomeAdsCampaignDiagnostic,
   type AdsCampaignRowInput,
@@ -59,8 +59,41 @@ export const maxDuration = 60
 const PAGE_SIZE = 1000
 const MAX_ROWS = 100000
 
+type FreshnessTable = {
+  table: string
+  latestDate: string | null
+}
+
+type DataFreshness = {
+  latestAdsDate: string | null
+  latestSalesDate: string | null
+  latestChangeHistoryDate: string | null
+  selectedRangeEnd: string
+  incomplete: boolean
+  tables: FreshnessTable[]
+}
+
 function parseDateParam(value: string | null): string | null {
   return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null
+}
+
+function dateOnly(value: string | null): string | null {
+  return value ? value.slice(0, 10) : null
+}
+
+function minDate(values: Array<string | null>): string | null {
+  const dates = values.filter((v): v is string => Boolean(v)).sort()
+  return dates[0] ?? null
+}
+
+function maxDate(values: Array<string | null>): string | null {
+  const dates = values.filter((v): v is string => Boolean(v)).sort()
+  return dates.at(-1) ?? null
+}
+
+function rangeExceedsLatest(rangeA: DateRange, rangeB: DateRange, latestDate: string | null): boolean {
+  if (!latestDate) return true
+  return rangeA.endDate > latestDate || rangeB.endDate > latestDate
 }
 
 export async function GET(request: Request) {
@@ -432,8 +465,54 @@ export async function GET(request: Request) {
   const manualReviewCases = buildManualReviewCases(manualReviewCandidates, caseReviewStatuses)
 
   // --- Phase 2A: Findings & Actions Table + Brahmastra Control Panel metadata ---
-  const findingsTable = buildFindingsTable(actionQueueWithChanges)
-  const dataIncomplete = diagnostic.accountSummary.before.rowCount === 0 || diagnostic.accountSummary.after.rowCount === 0
+  const [
+    { data: latestPaymentTxn },
+    { data: latestCampaignRow },
+    { data: latestAdvertisedProductRow },
+    { data: latestTargetingRow },
+    { data: latestSearchTermRow },
+    { data: latestChangeEvent },
+  ] = await Promise.all([
+    supabase.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_advertised_product_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_targeting_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_search_term_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_change_history_events').select('changed_at').eq('workspace_id', workspaceId).order('changed_at', { ascending: false }).limit(1).maybeSingle(),
+  ])
+  const latestSalesDate = dateOnly((latestPaymentTxn as { transaction_date?: string } | null)?.transaction_date ?? null)
+  const latestAdsTables: FreshnessTable[] = [
+    { table: 'internal_ads_campaign_daily_rows', latestDate: dateOnly((latestCampaignRow as { report_date?: string } | null)?.report_date ?? null) },
+    { table: 'internal_ads_advertised_product_daily_rows', latestDate: dateOnly((latestAdvertisedProductRow as { report_date?: string } | null)?.report_date ?? null) },
+    { table: 'internal_ads_targeting_daily_rows', latestDate: dateOnly((latestTargetingRow as { report_date?: string } | null)?.report_date ?? null) },
+    { table: 'internal_ads_search_term_daily_rows', latestDate: dateOnly((latestSearchTermRow as { report_date?: string } | null)?.report_date ?? null) },
+  ]
+  const latestChangeHistoryDate = dateOnly((latestChangeEvent as { changed_at?: string } | null)?.changed_at ?? null)
+  const latestAdsDate = minDate(latestAdsTables.map(row => row.latestDate))
+  const selectedRangeEnd = maxDate([rangeA.endDate, rangeB.endDate]) ?? rangeB.endDate
+  const dataFreshness: DataFreshness = {
+    latestAdsDate,
+    latestSalesDate,
+    latestChangeHistoryDate,
+    selectedRangeEnd,
+    incomplete:
+      rangeExceedsLatest(rangeA, rangeB, latestSalesDate)
+      || rangeExceedsLatest(rangeA, rangeB, latestAdsDate)
+      || rangeExceedsLatest(rangeA, rangeB, latestChangeHistoryDate),
+    tables: [
+      { table: 'internal_payment_transactions', latestDate: latestSalesDate },
+      ...latestAdsTables,
+      { table: 'internal_ads_change_history_events', latestDate: latestChangeHistoryDate },
+    ],
+  }
+  const dataIncomplete = diagnostic.accountSummary.before.rowCount === 0 || diagnostic.accountSummary.after.rowCount === 0 || dataFreshness.incomplete
+  const findingsTable = buildFindingsTable(actionQueueWithChanges, { dataIncomplete })
+  const goodWorkingRows = dataIncomplete ? [] : buildGoodWorkingRows({
+    campaignRows: campaignDiagnostic.campaignTable,
+    advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
+    targetingRows: deepDiagnostic.targeting?.table ?? [],
+    searchTermRows: deepDiagnostic.searchTerm?.table ?? [],
+  })
 
   return NextResponse.json({
     controlPanel: {
@@ -447,8 +526,10 @@ export async function GET(request: Request) {
       daysInRangeA: diagnostic.accountSummary.before.dayCount,
       daysInRangeB: diagnostic.accountSummary.after.dayCount,
       dataIncomplete,
+      dataFreshness,
     },
     findingsTable,
+    goodWorkingRows,
     diagnostic,
     campaignDiagnostic,
     latestCampaignUploadBatch,

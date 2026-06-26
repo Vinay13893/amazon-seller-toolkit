@@ -247,7 +247,7 @@ export function ActionQueue({
       </div>
 
       <p className="text-xs text-muted-foreground mt-3">
-        All items are suggestions for manual review, not automated changes. &quot;Correlated with&quot; the post-15-June window — not a causal claim.
+        All items are suggestions for manual review, not automated changes. &quot;Correlated with&quot; selected Range B — not a causal claim.
       </p>
     </div>
   )

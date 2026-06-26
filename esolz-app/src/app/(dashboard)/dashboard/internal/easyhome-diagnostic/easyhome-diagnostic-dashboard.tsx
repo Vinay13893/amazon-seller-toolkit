@@ -30,7 +30,7 @@ import type { ActionItemWithChanges, ChangeHistorySummary, ChangeEventInput } fr
 import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary } from '@/lib/internal/easyhome-change-history-archive'
 import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
-import type { FindingRow } from '@/lib/internal/easyhome-findings-table'
+import type { FindingRow, GoodWorkingRow } from '@/lib/internal/easyhome-findings-table'
 import { DEFAULT_RANGE_B, autoBaselineFor, usesJune15, type DateRange } from '@/lib/internal/date-range'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import { ActionQueue } from './action-queue'
@@ -40,7 +40,7 @@ import { ManualReviewCandidates } from './manual-review-candidates'
 import { ManualReviewCases } from './manual-review-cases'
 import { ManualReviewExecutionSheet, type ExecutionSheetUpdate } from './manual-review-execution-sheet'
 import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
-import { FindingsActionsTable, toFindingsCsv } from './findings-actions-table'
+import { FindingsActionsTable, GoodWorkingTable, toFindingsCsv, toGoodWorkingCsv } from './findings-actions-table'
 
 type LatestCampaignUploadBatch = {
   original_filename: string
@@ -111,11 +111,19 @@ type ControlPanelMeta = {
   daysInRangeA: number
   daysInRangeB: number
   dataIncomplete: boolean
+  dataFreshness?: {
+    latestAdsDate: string | null
+    latestSalesDate: string | null
+    latestChangeHistoryDate: string | null
+    selectedRangeEnd: string
+    tables: Array<{ table: string; latestDate: string | null }>
+  }
 }
 
 type ApiResponse = {
   controlPanel: ControlPanelMeta
   findingsTable: FindingRow[]
+  goodWorkingRows: GoodWorkingRow[]
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic
   latestCampaignUploadBatch: LatestCampaignUploadBatch
@@ -232,7 +240,7 @@ export function EasyhomeDiagnosticDashboard() {
   }
 
   const {
-    controlPanel, findingsTable,
+    controlPanel, findingsTable, goodWorkingRows,
     diagnostic, campaignDiagnostic, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
     changeHistoryImportStatus, changeHistoryBatches, changeHistorySummary, changeHistoryEvents,
     changeHistoryDayByDay, changeHistoryArchiveCoverage, changeHistoryChunkCoverage, changeHistoryCorrelationSummary,
@@ -245,7 +253,14 @@ export function EasyhomeDiagnosticDashboard() {
   const showJune15Label = usesJune15(controlPanel.rangeA, controlPanel.rangeB)
 
   function handleExportAll() {
-    const blob = new Blob([toFindingsCsv(findingsTable)], { type: 'text/csv;charset=utf-8;' })
+    const csv = [
+      'FINDINGS_AND_ACTIONS',
+      toFindingsCsv(findingsTable),
+      '',
+      'GOOD_WORKING_CAMPAIGNS_KEYWORDS_TARGETS',
+      toGoodWorkingCsv(goodWorkingRows),
+    ].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
@@ -304,7 +319,9 @@ export function EasyhomeDiagnosticDashboard() {
           {' '}Read-only. Data through {diagnostic.windows.afterEnd} ({meta.transactionRowsFetched.toLocaleString('en-IN')} transaction rows).
         </p>
         {controlPanel.dataIncomplete && (
-          <p className="text-sm text-amber-400 mt-1">Data incomplete for selected range.</p>
+          <p className="text-sm text-amber-400 mt-1">
+            Data incomplete for selected range. Latest Ads data: {controlPanel.dataFreshness?.latestAdsDate ?? 'unknown'}. Latest sales data: {controlPanel.dataFreshness?.latestSalesDate ?? 'unknown'}.
+          </p>
         )}
         {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
       </div>
@@ -318,6 +335,7 @@ export function EasyhomeDiagnosticDashboard() {
       />
 
       {/* Findings & Actions Table — the main, easier-to-scan view above the raw sections */}
+      <GoodWorkingTable rows={goodWorkingRows} />
       <FindingsActionsTable rows={findingsTable} />
 
       {/* Account summary */}
