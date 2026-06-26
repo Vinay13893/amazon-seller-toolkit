@@ -88,7 +88,8 @@ export type PresetId =
   | 'yesterday_vs_last_week'
   | 'last3_vs_previous3'
   | 'last7_vs_previous7'
-  | 'june15_default'
+  | 'june15_single_default'
+  | 'legacy_june15_compare'
   | 'custom'
 
 export const PRESET_LABELS: Record<PresetId, string> = {
@@ -96,13 +97,26 @@ export const PRESET_LABELS: Record<PresetId, string> = {
   yesterday_vs_last_week: 'Yesterday vs same day last week',
   last3_vs_previous3: 'Last 3 days vs previous 3 days',
   last7_vs_previous7: 'Last 7 days vs previous 7 days',
-  june15_default: 'June 15 drop (default)',
+  june15_single_default: 'June 15 Investigation (default)',
+  legacy_june15_compare: 'Legacy June 15 Diagnostic (14d vs 9d)',
   custom: 'Custom',
 }
 
+export type PresetResolution = {
+  rangeA: DateRange
+  rangeB: DateRange
+  mode?: AnalysisMode
+  allowUnequalLengths?: boolean
+}
+
 /** All presets except 'custom' resolve to a concrete {rangeA, rangeB} pair. */
-export function buildPreset(presetId: PresetId, today: Date = new Date()): { rangeA: DateRange; rangeB: DateRange } | null {
-  if (presetId === 'june15_default') return { rangeA: DEFAULT_RANGE_A, rangeB: DEFAULT_RANGE_B }
+export function buildPreset(presetId: PresetId, today: Date = new Date()): PresetResolution | null {
+  if (presetId === 'june15_single_default') {
+    return { rangeA: DEFAULT_RANGE_B, rangeB: autoBaselineFor(DEFAULT_RANGE_B), mode: 'single' }
+  }
+  if (presetId === 'legacy_june15_compare') {
+    return { rangeA: DEFAULT_RANGE_A, rangeB: DEFAULT_RANGE_B, mode: 'compare', allowUnequalLengths: true }
+  }
   if (presetId === 'custom') return null
 
   const todayStr = toDateOnly(today)

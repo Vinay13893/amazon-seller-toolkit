@@ -348,7 +348,7 @@ export function ManualReviewExecutionSheet({
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-muted-foreground">
-                  {['Rank', 'Case', 'Portfolio', 'Issue', 'Why it matters', 'What to check first', 'Suggested manual action', 'Status'].map(h => (
+                  {['Rank', 'Case', 'Portfolio', 'Campaign', 'Keyword/Target/SKU', 'Issue', 'Why it matters', 'What to check first', 'Suggested manual action', 'Status'].map(h => (
                     <th key={h} className="text-left font-semibold py-1.5 pr-3 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -357,8 +357,10 @@ export function ManualReviewExecutionSheet({
                 {focusCases.map(c => (
                   <tr key={c.caseKey} className="border-t border-border/40 align-top">
                     <td className="py-1.5 pr-3 text-foreground font-medium">#{c.rank}</td>
-                    <td className="py-1.5 pr-3 max-w-[160px] text-foreground" title={`${c.mainEntity} — ${c.campaignName ?? '—'}`}>{c.mainEntity}</td>
+                    <td className="py-1.5 pr-3 max-w-[140px] text-foreground" title={`${c.mainEntity} — ${c.campaignName ?? '—'}`}>{c.mainEntity}</td>
                     <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{c.portfolio}</td>
+                    <td className="py-1.5 pr-3 max-w-[140px] truncate text-muted-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
+                    <td className="py-1.5 pr-3 max-w-[140px] truncate text-foreground" title={c.mainEntity}>{c.mainEntity}</td>
                     <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{c.issueSummary}</td>
                     <td className="py-1.5 pr-3 max-w-[200px] text-muted-foreground">{whyItMattersFor(c)}</td>
                     <td className="py-1.5 pr-3 max-w-[200px] text-muted-foreground">{whatToCheckFirstFor(c)}</td>

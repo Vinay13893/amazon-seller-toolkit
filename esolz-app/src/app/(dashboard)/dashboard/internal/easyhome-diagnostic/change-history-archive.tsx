@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { CalendarDays, AlertTriangle } from 'lucide-react'
+import { CalendarDays, AlertTriangle, Download } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary, ChunkCoverageStatus } from '@/lib/internal/easyhome-change-history-archive'
 import type { ChangeEventInput } from '@/lib/internal/easyhome-change-history-diagnostic'
@@ -76,13 +76,39 @@ export function ChangeHistoryArchiveSection({
     return events.filter(e => e.changedAtIso.slice(0, 10) === selectedDate)
   }, [selectedDate, events])
 
+  function downloadArchiveCsv() {
+    const headers = ['changed_at', 'change_type', 'old_value', 'new_value', 'campaign_name', 'ad_group_name', 'entity_name', 'match_type', 'portfolio', 'is_system_event']
+    const esc = (v: unknown) => {
+      const s = v === null || v === undefined ? '' : String(v)
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const lines = [headers.join(',')]
+    for (const e of events) {
+      lines.push([
+        e.changedAtIso, e.changeType, e.oldValue, e.newValue, e.campaignName, e.adGroupName, e.entityName, e.matchType, e.portfolio, e.isSystemEvent,
+      ].map(esc).join(','))
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `brahmastra_change_history_archive_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <>
       {/* Archive coverage summary */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
-          <CalendarDays className="w-4 h-4 text-primary" /> 30-day Change History archive coverage
-        </h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-primary" /> 30-day Change History archive coverage
+          </h2>
+          <button type="button" onClick={downloadArchiveCsv} className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">
+            <Download className="w-3 h-3" /> Export CSV ({events.length})
+          </button>
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <KpiCard label="Total stored events" value={coverage.totalStoredEvents.toLocaleString('en-IN')} />
           <KpiCard label="Earliest event" value={coverage.earliestChangedAt ? new Date(coverage.earliestChangedAt).toLocaleDateString('en-IN') : '—'} />

@@ -7,7 +7,6 @@ import {
 } from '@/lib/internal/easyhome-drop-diagnostic'
 import {
   autoBaselineFor,
-  DEFAULT_RANGE_A,
   DEFAULT_RANGE_B,
   minStartDate,
   validateCompareRanges,
@@ -73,13 +72,16 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url)
   const params = url.searchParams
-  const mode: AnalysisMode = params.get('mode') === 'single' ? 'single' : 'compare'
+  // Default to Single Range mode on the (now equal-length-safe) June-15 window
+  // when no query params are supplied at all — never the legacy 14d/9d pair.
+  const mode: AnalysisMode = params.get('mode') === 'compare' ? 'compare' : 'single'
   const portfolioFilter = params.get('portfolio')
   const campaignFilter = params.get('campaign')
+  const allowUnequalLengths = params.get('allowUnequalLengths') === '1'
 
   const requestedRangeA: DateRange = {
-    startDate: parseDateParam(params.get('aStart')) ?? DEFAULT_RANGE_A.startDate,
-    endDate: parseDateParam(params.get('aEnd')) ?? DEFAULT_RANGE_A.endDate,
+    startDate: parseDateParam(params.get('aStart')) ?? DEFAULT_RANGE_B.startDate,
+    endDate: parseDateParam(params.get('aEnd')) ?? DEFAULT_RANGE_B.endDate,
   }
   const requestedRangeB: DateRange | null = mode === 'compare'
     ? {
@@ -95,7 +97,11 @@ export async function GET(request: Request) {
   const rangeA: DateRange = mode === 'single' ? autoBaselineFor(requestedRangeA) : requestedRangeA
   const rangeB: DateRange = mode === 'single' ? requestedRangeA : (requestedRangeB as DateRange)
 
-  const rangeValidation = mode === 'compare' ? validateCompareRanges(rangeA, rangeB) : validateRange(rangeA)
+  const rangeValidation = mode === 'single'
+    ? validateRange(rangeA)
+    : allowUnequalLengths
+      ? (validateRange(rangeA).valid ? validateRange(rangeB) : validateRange(rangeA))
+      : validateCompareRanges(rangeA, rangeB)
   if (!rangeValidation.valid) {
     return NextResponse.json({ error: rangeValidation.error }, { status: 400 })
   }
@@ -437,6 +443,7 @@ export async function GET(request: Request) {
       requestedRangeA,
       portfolioFilter,
       campaignFilter,
+      allowUnequalLengths,
       daysInRangeA: diagnostic.accountSummary.before.dayCount,
       daysInRangeB: diagnostic.accountSummary.after.dayCount,
       dataIncomplete,

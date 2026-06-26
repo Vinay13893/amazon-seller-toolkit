@@ -6,8 +6,8 @@ import {
   daysInRange,
   validateCompareRanges,
   validateRange,
-  DEFAULT_RANGE_A,
   DEFAULT_RANGE_B,
+  autoBaselineFor,
   PRESET_LABELS,
   buildPreset,
   type AnalysisMode,
@@ -21,16 +21,20 @@ export type ControlPanelQuery = {
   rangeB: DateRange
   portfolio: string | null
   campaign: string | null
+  allowUnequalLengths?: boolean
 }
 
 const PRESET_OPTIONS: PresetId[] = [
-  'june15_default',
+  'june15_single_default',
   'yesterday_vs_previous_day',
   'yesterday_vs_last_week',
   'last3_vs_previous3',
   'last7_vs_previous7',
+  'legacy_june15_compare',
   'custom',
 ]
+
+const DEFAULT_INVESTIGATED_RANGE: DateRange = DEFAULT_RANGE_B // 2026-06-15 -> 2026-06-23
 
 function DateInput({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
@@ -59,12 +63,13 @@ export function BrahmastraControlPanel({
   onExportAll: () => void
   loading: boolean
 }) {
-  const [mode, setMode] = useState<AnalysisMode>('compare')
-  const [preset, setPreset] = useState<PresetId>('june15_default')
-  const [rangeA, setRangeA] = useState<DateRange>(DEFAULT_RANGE_A)
-  const [rangeB, setRangeB] = useState<DateRange>(DEFAULT_RANGE_B)
+  const [mode, setMode] = useState<AnalysisMode>('single')
+  const [preset, setPreset] = useState<PresetId>('june15_single_default')
+  const [rangeA, setRangeA] = useState<DateRange>(DEFAULT_INVESTIGATED_RANGE)
+  const [rangeB, setRangeB] = useState<DateRange>(autoBaselineFor(DEFAULT_INVESTIGATED_RANGE))
   const [portfolio, setPortfolio] = useState<string>('All')
   const [campaign, setCampaign] = useState<string>('All')
+  const [allowUnequalLengths, setAllowUnequalLengths] = useState(false)
 
   useEffect(() => {
     if (preset === 'custom') return
@@ -72,6 +77,8 @@ export function BrahmastraControlPanel({
     if (resolved) {
       setRangeA(resolved.rangeA)
       setRangeB(resolved.rangeB)
+      if (resolved.mode) setMode(resolved.mode)
+      setAllowUnequalLengths(Boolean(resolved.allowUnequalLengths))
     }
   }, [preset])
 
@@ -80,11 +87,20 @@ export function BrahmastraControlPanel({
 
   const validation = useMemo(() => {
     if (mode === 'single') return validateRange(rangeA)
+    if (allowUnequalLengths) {
+      const a = validateRange(rangeA)
+      return a.valid ? validateRange(rangeB) : a
+    }
     return validateCompareRanges(rangeA, rangeB)
-  }, [mode, rangeA, rangeB])
+  }, [mode, rangeA, rangeB, allowUnequalLengths])
 
   function handleRangeBStartChange(start: string) {
-    // Auto-set Range B end date so the duration always matches Range A.
+    // Auto-set Range B end date so the duration always matches Range A (unless
+    // the legacy unequal-length preset is active).
+    if (allowUnequalLengths) {
+      setRangeB(r => ({ ...r, startDate: start }))
+      return
+    }
     const days = daysInRange(rangeA)
     const startDate = new Date(`${start}T00:00:00Z`)
     startDate.setUTCDate(startDate.getUTCDate() + (days - 1))
@@ -100,6 +116,7 @@ export function BrahmastraControlPanel({
       rangeB,
       portfolio: portfolio === 'All' ? null : portfolio,
       campaign: campaign === 'All' ? null : campaign,
+      allowUnequalLengths,
     })
   }
 
@@ -134,7 +151,7 @@ export function BrahmastraControlPanel({
           <select
             className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground"
             value={mode}
-            onChange={e => setMode(e.target.value as AnalysisMode)}
+            onChange={e => { setMode(e.target.value as AnalysisMode); setPreset('custom'); setAllowUnequalLengths(false) }}
           >
             <option value="single">Single Date Range Analysis</option>
             <option value="compare">Compare Two Equal Date Ranges</option>
@@ -192,6 +209,11 @@ export function BrahmastraControlPanel({
 
       {!validation.valid && (
         <p className="text-xs text-red-400 mt-2">{validation.error}</p>
+      )}
+      {allowUnequalLengths && (
+        <p className="text-xs text-amber-300 mt-2">
+          Legacy preset: Range A and Range B are intentionally different lengths (the original 14-day vs 9-day June 15 diagnostic). Equal-length validation is skipped for this preset only.
+        </p>
       )}
       {mode === 'single' && (
         <p className="text-xs text-muted-foreground mt-2">

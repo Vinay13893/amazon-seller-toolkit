@@ -31,7 +31,7 @@ import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary }
 import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import type { FindingRow } from '@/lib/internal/easyhome-findings-table'
-import { DEFAULT_RANGE_A, DEFAULT_RANGE_B, usesJune15, type DateRange } from '@/lib/internal/date-range'
+import { DEFAULT_RANGE_B, autoBaselineFor, usesJune15, type DateRange } from '@/lib/internal/date-range'
 import { ActionQueue } from './action-queue'
 import { ChangeHistorySection } from './change-history'
 import { ChangeHistoryArchiveSection } from './change-history-archive'
@@ -106,6 +106,7 @@ type ControlPanelMeta = {
   requestedRangeA: DateRange
   portfolioFilter: string | null
   campaignFilter: string | null
+  allowUnequalLengths: boolean
   daysInRangeA: number
   daysInRangeB: number
   dataIncomplete: boolean
@@ -152,12 +153,16 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
   )
 }
 
+// Default: Single Range Analysis on the June 15+ window, auto-baselined
+// against the immediately preceding equal-length period. The old 14d-vs-9d
+// pairing is only reachable via the explicit "Legacy June 15 Diagnostic" preset.
 const DEFAULT_QUERY: ControlPanelQuery = {
-  mode: 'compare',
-  rangeA: DEFAULT_RANGE_A,
-  rangeB: DEFAULT_RANGE_B,
+  mode: 'single',
+  rangeA: DEFAULT_RANGE_B,
+  rangeB: autoBaselineFor(DEFAULT_RANGE_B),
   portfolio: null,
   campaign: null,
+  allowUnequalLengths: false,
 }
 
 function buildQueryString(query: ControlPanelQuery): string {
@@ -168,6 +173,7 @@ function buildQueryString(query: ControlPanelQuery): string {
   if (query.mode === 'compare') {
     params.set('bStart', query.rangeB.startDate)
     params.set('bEnd', query.rangeB.endDate)
+    if (query.allowUnequalLengths) params.set('allowUnequalLengths', '1')
   }
   if (query.portfolio) params.set('portfolio', query.portfolio)
   if (query.campaign) params.set('campaign', query.campaign)
@@ -195,23 +201,32 @@ export function EasyhomeDiagnosticDashboard() {
     return () => { cancelled = true }
   }, [query])
 
-  if (loading && !data) {
-    return (
-      <div className="flex items-center justify-center h-64 text-muted-foreground gap-2">
-        <Loader2 className="w-5 h-5 animate-spin" /> Loading EasyHOME diagnostic…
-      </div>
-    )
-  }
-
-  if (error && !data) {
-    return (
-      <div className="p-6 text-sm text-red-400">{error}</div>
-    )
-  }
-
+  // The Control Panel must always be visible — even on the very first load,
+  // a failed fetch, or an invalid range — so the user can always adjust the
+  // range and re-run instead of staring at a blank/error-only page.
   if (!data) {
     return (
-      <div className="p-6 text-sm text-red-400">No data available.</div>
+      <div className="p-6 space-y-6 max-w-7xl mx-auto">
+        <div>
+          <h1 className="text-2xl font-black text-foreground">EasyHOME — Brahmastra Ads Intelligence</h1>
+          <p className="text-sm text-muted-foreground mt-1">Read-only Amazon Ads investigation tool.</p>
+        </div>
+        <BrahmastraControlPanel
+          portfolios={[]}
+          campaigns={[]}
+          onRun={q => setQuery(q)}
+          onExportAll={() => {}}
+          loading={loading}
+        />
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="w-4 h-4 animate-spin" /> Loading EasyHOME diagnostic…
+          </div>
+        )}
+        {error && !loading && (
+          <p className="text-sm text-red-400">{error}</p>
+        )}
+      </div>
     )
   }
 

@@ -36,7 +36,8 @@ export type FindingRow = {
   acosB: number | null
   roasA: number | null
   roasB: number | null
-  changeHistorySignal: string
+  whatChanged: string
+  comment: string
   recommendedManualAction: string
   reviewStatus: ActionStatus
 }
@@ -70,39 +71,61 @@ function findingIssueLabelOf(item: ActionItemWithChanges): FindingIssueLabel {
   return 'Spend cut'
 }
 
-function changeHistorySignalOf(item: ActionItemWithChanges): string {
-  if (item.relatedChanges.length === 0) return 'No correlated change-history events found.'
+/** Factual "what changed" summary — which change types happened, and when, near this range. */
+function whatChangedOf(item: ActionItemWithChanges): string {
+  if (item.relatedChanges.length === 0) return 'No change-history activity found near this period.'
   const before = item.relatedChanges.filter(c => c.timing === 'Changed before decline').length
   const during = item.relatedChanges.filter(c => c.timing === 'Changed during decline window').length
+  const types = [...new Set(item.relatedChanges.map(c => c.changeType))]
   const parts: string[] = []
   if (before > 0) parts.push(`${before} changed before`)
   if (during > 0) parts.push(`${during} changed during`)
-  return `${item.relatedChanges.length} correlated with this range (${parts.join(', ')}) — review manually, compare old vs current.`
+  return `${item.relatedChanges.length} change(s) (${types.join(', ')}) — ${parts.join(', ')}. Compare old vs current.`
+}
+
+/** Plain-language business comment — one sentence, from the approved vocabulary only. */
+function commentOf(item: ActionItemWithChanges, label: FindingIssueLabel): string {
+  const base: Record<FindingIssueLabel, string> = {
+    'Spend cut': 'Spend was cut and sales fell.',
+    'Efficiency collapse': 'ACOS worsened sharply.',
+    'Waste spend': 'High spend with zero orders.',
+    'High spend zero orders': 'High spend with zero orders.',
+    'Conversion/listing issue suspected': 'Conversion/listing issue suspected.',
+    'Search term negative review': 'Search term needs negative review.',
+    'Budget/campaign review': 'Spend was cut and sales fell.',
+    'Mapping cleanup': 'No portfolio/category mapping found for this entity.',
+  }
+  const sentence = base[label]
+  return item.relatedChanges.length > 0 ? `${sentence} Change-history activity found near this period.` : sentence
 }
 
 export function buildFindingsTable(actionQueue: ActionItemWithChanges[]): FindingRow[] {
-  return actionQueue.map(item => ({
-    actionKey: item.actionKey,
-    priority: item.priority,
-    portfolio: item.portfolio,
-    campaignName: item.campaignName,
-    adGroupName: item.relatedChanges.find(c => c.adGroupName)?.adGroupName ?? null,
-    entityName: item.entityName,
-    issueType: findingIssueLabelOf(item),
-    spendA: item.beforeMetrics.spend,
-    spendB: item.afterMetrics.spend,
-    spendChange: delta(item.beforeMetrics.spend, item.afterMetrics.spend),
-    salesA: item.beforeMetrics.sales,
-    salesB: item.afterMetrics.sales,
-    salesChange: delta(item.beforeMetrics.sales, item.afterMetrics.sales),
-    acosA: item.beforeMetrics.acos,
-    acosB: item.afterMetrics.acos,
-    roasA: roasOf(item.beforeMetrics.spend, item.beforeMetrics.sales),
-    roasB: roasOf(item.afterMetrics.spend, item.afterMetrics.sales),
-    changeHistorySignal: changeHistorySignalOf(item),
-    recommendedManualAction: item.suggestedReview,
-    reviewStatus: item.status,
-  }))
+  return actionQueue.map(item => {
+    const issueType = findingIssueLabelOf(item)
+    return {
+      actionKey: item.actionKey,
+      priority: item.priority,
+      portfolio: item.portfolio,
+      campaignName: item.campaignName,
+      adGroupName: item.relatedChanges.find(c => c.adGroupName)?.adGroupName ?? null,
+      entityName: item.entityName,
+      issueType,
+      spendA: item.beforeMetrics.spend,
+      spendB: item.afterMetrics.spend,
+      spendChange: delta(item.beforeMetrics.spend, item.afterMetrics.spend),
+      salesA: item.beforeMetrics.sales,
+      salesB: item.afterMetrics.sales,
+      salesChange: delta(item.beforeMetrics.sales, item.afterMetrics.sales),
+      acosA: item.beforeMetrics.acos,
+      acosB: item.afterMetrics.acos,
+      roasA: roasOf(item.beforeMetrics.spend, item.beforeMetrics.sales),
+      roasB: roasOf(item.afterMetrics.spend, item.afterMetrics.sales),
+      whatChanged: whatChangedOf(item),
+      comment: commentOf(item, issueType),
+      recommendedManualAction: item.suggestedReview,
+      reviewStatus: item.status,
+    }
+  })
 }
 
 export type { ActionIssueType }

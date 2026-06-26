@@ -23,7 +23,7 @@ export function toFindingsCsv(rows: FindingRow[]): string {
   const headers = [
     'priority', 'portfolio', 'campaign', 'ad_group', 'entity', 'issue_type',
     'spend_a', 'spend_b', 'spend_change', 'sales_a', 'sales_b', 'sales_change',
-    'acos_a', 'acos_b', 'roas_a', 'roas_b', 'change_history_signal',
+    'acos_a', 'acos_b', 'roas_a', 'roas_b', 'what_changed', 'comment',
     'recommended_manual_action', 'review_status',
   ]
   const esc = (v: unknown) => {
@@ -35,7 +35,7 @@ export function toFindingsCsv(rows: FindingRow[]): string {
     lines.push([
       r.priority, r.portfolio, r.campaignName, r.adGroupName, r.entityName, r.issueType,
       r.spendA, r.spendB, r.spendChange, r.salesA, r.salesB, r.salesChange,
-      r.acosA, r.acosB, r.roasA, r.roasB, r.changeHistorySignal, r.recommendedManualAction, r.reviewStatus,
+      r.acosA, r.acosB, r.roasA, r.roasB, r.whatChanged, r.comment, r.recommendedManualAction, r.reviewStatus,
     ].map(esc).join(','))
   }
   return lines.join('\n')
@@ -107,7 +107,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border text-muted-foreground">
-              {['Priority', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword/Target/SKU/Term', 'Issue Type', 'Spend A', 'Spend B', 'Spend Δ', 'Sales A', 'Sales B', 'Sales Δ', 'ACOS A', 'ACOS B', 'ROAS A', 'ROAS B', 'Change History Signal', 'Recommended Manual Action', 'Review Status'].map(h => (
+              {['Priority', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword/Target/SKU/Term', 'Issue Type', 'Spend A', 'Spend B', 'Spend Δ', 'Sales A', 'Sales B', 'Sales Δ', 'ACOS A', 'ACOS B', 'ROAS A', 'ROAS B', 'What Changed', 'Comment / Reason', 'Recommended Manual Action', 'Review Status'].map(h => (
                 <th key={h} className="text-left font-semibold py-2 px-2 whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -131,7 +131,8 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
                 <td className="py-2 px-2 whitespace-nowrap text-foreground">{pct(r.acosB)}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-foreground">{roas(r.roasA)}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-foreground">{roas(r.roasB)}</td>
-                <td className="py-2 px-2 max-w-[220px] text-muted-foreground">{r.changeHistorySignal}</td>
+                <td className="py-2 px-2 max-w-[200px] text-muted-foreground">{r.whatChanged}</td>
+                <td className="py-2 px-2 max-w-[200px] text-foreground">{r.comment}</td>
                 <td className="py-2 px-2 max-w-[240px] text-muted-foreground">{r.recommendedManualAction}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-foreground">{r.reviewStatus}</td>
               </tr>
