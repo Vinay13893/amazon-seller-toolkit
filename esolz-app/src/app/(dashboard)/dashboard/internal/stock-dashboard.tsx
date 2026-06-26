@@ -397,6 +397,54 @@ type PlanningAssumptions = {
   demandEndDate?: string
 }
 
+type GeoRow = {
+  state: string | null
+  city: string | null
+  pincode: string | null
+  fulfillment_bucket: 'fba_fc' | 'direct_flex_easyship' | 'unknown'
+  units_sold: number
+  orders_count: number
+  returns_count: number
+  refunded_units: number
+  gross_sales_amount: number
+  refunds_amount: number
+}
+type GeoSkuRow = {
+  amazon_sku_norm: string
+  fulfillment_bucket: 'fba_fc' | 'direct_flex_easyship' | 'unknown'
+  units_sold: number
+  orders_count: number
+  refunded_units: number
+}
+type GeoFcRow = {
+  fulfillment_center_id: string
+  units_shipped: number
+  distinct_skus: number
+}
+type GeoDemandData = {
+  demandStartDate: string
+  demandEndDate: string
+  demandDays: number
+  totalTransactionUnits: number
+  fbaFcTransactionUnits: number
+  directFlexEasyshipUnits: number
+  unknownFulfillmentUnits: number
+  totalOrdersCount: number
+  totalReturnsCount: number
+  totalRefundedUnits: number
+  ledgerFbaShipmentUnits: number
+  ledgerFcBreakdown: GeoFcRow[]
+  transactionVsLedgerDiff: number
+  transactionVsLedgerDiffPct: number | null
+  topStates: GeoRow[]
+  topCities: GeoRow[]
+  topPincodes: GeoRow[]
+  topSkus: GeoSkuRow[]
+  lastTransactionDate: string | null
+  lastLedgerDate: string | null
+  transactionRowsInRange: number
+}
+
 type CsvColumn<Row> = {
   header: string
   value: (row: Row) => string | number | boolean | null | undefined
@@ -781,6 +829,66 @@ function exportFlexDemandBreakdownCsv(rows: FlexDemandBreakdownRow[], periodLabe
   URL.revokeObjectURL(url)
 }
 
+function exportGeoDemandSummaryCsv(geo: GeoDemandData) {
+  const generatedAt = new Date().toISOString()
+  const header = [
+    'Date Range Start', 'Date Range End', 'State', 'City', 'Pincode',
+    'Fulfillment Bucket', 'Units Sold', 'Orders Count',
+    'Returns Count', 'Refunded Units', 'Gross Sales Amount', 'Refunds Amount', 'Return Rate %',
+  ].map(csvCell).join(',')
+  const allRows: GeoRow[] = [...geo.topStates, ...geo.topCities, ...geo.topPincodes]
+  const seen = new Set<string>()
+  const dedupedRows = allRows.filter(r => {
+    const k = `${r.state}|${r.city}|${r.pincode}|${r.fulfillment_bucket}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+  const rows = dedupedRows.map(r => [
+    geo.demandStartDate, geo.demandEndDate,
+    r.state ?? '', r.city ?? '', r.pincode ?? '',
+    r.fulfillment_bucket,
+    r.units_sold, r.orders_count,
+    r.returns_count, r.refunded_units,
+    r.gross_sales_amount.toFixed(2), r.refunds_amount.toFixed(2),
+    r.units_sold > 0 ? ((r.refunded_units / r.units_sold) * 100).toFixed(1) : '0.0',
+  ].map(csvCell).join(','))
+  const csv = [header, ...rows].join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `geo-demand-summary-${generatedAt.slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function exportFcMovementEstimateCsv(geo: GeoDemandData) {
+  const generatedAt = new Date().toISOString()
+  const header = [
+    'Date Range Start', 'Date Range End',
+    'Fulfillment Center', 'Ledger FC Shipment Units',
+    'Transaction FBA Units (Period)', 'Transaction vs Ledger Diff',
+    'Diff %', 'Confidence / Match Status', 'Reason',
+  ].map(csvCell).join(',')
+  const rows = geo.ledgerFcBreakdown.map(fc => [
+    geo.demandStartDate, geo.demandEndDate,
+    fc.fulfillment_center_id,
+    fc.units_shipped,
+    geo.fbaFcTransactionUnits,
+    geo.transactionVsLedgerDiff,
+    geo.transactionVsLedgerDiffPct ?? 'N/A',
+    Math.abs(geo.transactionVsLedgerDiffPct ?? 0) < 10 ? 'Good match' : 'Mismatch — review',
+    'Estimated. FC ledger gives shipment units by FC; transaction report gives ordered units by state/city. Exact FC-to-order mapping not available from these sources.',
+  ].map(csvCell).join(','))
+  const csv = [header, ...rows].join('\r\n')
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `fc-movement-estimate-${generatedAt.slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export function InternalStockDashboard() {
   const [data, setData] = useState<StockResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -830,6 +938,12 @@ export function InternalStockDashboard() {
   const [scUploadResult, setScUploadResult] = useState<SellerCentralSalesUploadResult | null>(null)
   const [scReportStartDate, setScReportStartDate] = useState('')
   const [scReportEndDate, setScReportEndDate] = useState('')
+
+  // Geo demand section
+  const [geoData, setGeoData] = useState<GeoDemandData | null>(null)
+  const [geoLoading, setGeoLoading] = useState(false)
+  const [geoError, setGeoError] = useState<string | null>(null)
+  const [geoExpanded, setGeoExpanded] = useState(false)
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -980,6 +1094,33 @@ export function InternalStockDashboard() {
       if (scFileInputRef.current) scFileInputRef.current.value = ''
     }
   }, [load, scReportStartDate, scReportEndDate])
+
+  const loadGeo = useCallback(async () => {
+    setGeoLoading(true)
+    setGeoError(null)
+    try {
+      const params = new URLSearchParams()
+      if (
+        planningAssumptions.demandPreset === 'custom'
+        && planningAssumptions.demandStartDate
+        && planningAssumptions.demandEndDate
+      ) {
+        params.set('demandStartDate', planningAssumptions.demandStartDate)
+        params.set('demandEndDate', planningAssumptions.demandEndDate)
+      } else {
+        params.set('lookbackDays', String(planningAssumptions.lookbackDays))
+      }
+      const response = await fetch(`/api/internal/stock-actions/geo-demand?${params.toString()}`, {
+        credentials: 'same-origin',
+      })
+      if (!response.ok) throw new Error('Unable to load geo demand data.')
+      setGeoData(await response.json() as GeoDemandData)
+    } catch {
+      setGeoError('Unable to load geo demand data right now.')
+    } finally {
+      setGeoLoading(false)
+    }
+  }, [planningAssumptions])
 
   const syncAmazonData = useCallback(async () => {
     setSyncingAmazon(true)
@@ -3042,6 +3183,213 @@ export function InternalStockDashboard() {
           <span>Inventory updated: {formatDate(data.freshness.inventoryUpdatedAt)}</span>
           <span>Sales through: {formatDate(data.freshness.salesThroughDate)}</span>
         </div>
+      </div>
+
+      {/* ── Sales & FC Movement Reconciliation ──────────────────────────── */}
+      <div className="rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div>
+            <h3 className="font-semibold text-sm">Sales &amp; FC Movement Reconciliation</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Transaction report demand × FBA ledger FC shipments. Exact FC-to-order mapping is not
+              available — FC-to-region allocation is estimated. Flex / EasyShip / MFN treated as one
+              direct fulfilment bucket.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (!geoExpanded) {
+                setGeoExpanded(true)
+                void loadGeo()
+              } else {
+                setGeoExpanded(false)
+              }
+            }}
+          >
+            {geoExpanded ? 'Hide' : 'Load geo demand'}
+          </Button>
+        </div>
+
+        {geoExpanded && (
+          <div className="border-t border-border px-4 pb-4 pt-3">
+            {geoLoading && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading geo demand…
+              </div>
+            )}
+            {geoError && (
+              <p className="text-sm text-destructive py-4">{geoError}</p>
+            )}
+            {geoData && !geoLoading && (
+              <>
+                <div className="flex flex-wrap gap-2 mb-4">
+                  <span className="text-xs text-muted-foreground">
+                    Period: <strong>{geoData.demandStartDate}</strong> to <strong>{geoData.demandEndDate}</strong> ({geoData.demandDays}D)
+                  </span>
+                  <span className="text-xs text-muted-foreground">·</span>
+                  <span className="text-xs text-muted-foreground">
+                    Transaction rows in range: {geoData.transactionRowsInRange.toLocaleString('en-IN')}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadGeo()}
+                    className="ml-auto"
+                  >
+                    <RefreshCw className="mr-1 h-3 w-3" />
+                    Refresh
+                  </Button>
+                </div>
+
+                {/* Summary stats */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-4">
+                  {[
+                    ['Total Transaction Units', geoData.totalTransactionUnits],
+                    ['FBA/FC Transaction Units', geoData.fbaFcTransactionUnits],
+                    ['Direct/Flex/EasyShip Units', geoData.directFlexEasyshipUnits],
+                    ['FBA Ledger Shipment Units', geoData.ledgerFbaShipmentUnits],
+                  ].map(([label, value]) => (
+                    <div key={label as string} className="rounded-lg border border-border bg-muted/30 p-3">
+                      <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</p>
+                      <p className="mt-1 text-xl font-bold">{Number(value).toLocaleString('en-IN')}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Reconciliation */}
+                <div className="mb-4 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+                  <span className="font-medium">Transaction FBA vs Ledger FC diff: </span>
+                  <span className={Math.abs(geoData.transactionVsLedgerDiff) > 0 ? 'text-amber-600 dark:text-amber-400' : 'text-green-700 dark:text-green-400'}>
+                    {geoData.transactionVsLedgerDiff > 0 ? '+' : ''}{geoData.transactionVsLedgerDiff.toLocaleString('en-IN')} units
+                    {geoData.transactionVsLedgerDiffPct !== null ? ` (${geoData.transactionVsLedgerDiffPct > 0 ? '+' : ''}${geoData.transactionVsLedgerDiffPct}%)` : ''}
+                  </span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    · Returns: {geoData.totalReturnsCount.toLocaleString('en-IN')} orders, {geoData.totalRefundedUnits.toLocaleString('en-IN')} units
+                  </span>
+                  <p className="mt-1 text-xs text-muted-foreground italic">
+                    Note: Transaction report is ordered units; ledger is shipped/dispatched units. Timing and return differences are expected.
+                  </p>
+                </div>
+
+                {/* Top states */}
+                {geoData.topStates.length > 0 && (
+                  <div className="mb-4">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Top States by Units Sold</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-border">
+                            <th className="py-1.5 text-left font-medium">State</th>
+                            <th className="py-1.5 text-left font-medium">Fulfilment</th>
+                            <th className="py-1.5 text-right font-medium">Units Sold</th>
+                            <th className="py-1.5 text-right font-medium">Orders</th>
+                            <th className="py-1.5 text-right font-medium">Returns</th>
+                            <th className="py-1.5 text-right font-medium">Return Rate</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {geoData.topStates.slice(0, 10).map((row, i) => (
+                            <tr key={i} className="border-b border-border/50">
+                              <td className="py-1.5">{row.state ?? '—'}</td>
+                              <td className="py-1.5 text-muted-foreground">{row.fulfillment_bucket === 'fba_fc' ? 'FBA/FC' : row.fulfillment_bucket === 'direct_flex_easyship' ? 'Flex/EasyShip' : 'Unknown'}</td>
+                              <td className="py-1.5 text-right font-mono">{row.units_sold.toLocaleString('en-IN')}</td>
+                              <td className="py-1.5 text-right font-mono">{row.orders_count.toLocaleString('en-IN')}</td>
+                              <td className="py-1.5 text-right font-mono">{row.returns_count.toLocaleString('en-IN')}</td>
+                              <td className="py-1.5 text-right font-mono">{row.units_sold > 0 ? ((row.refunded_units / row.units_sold) * 100).toFixed(1) : '0.0'}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Top cities */}
+                {geoData.topCities.length > 0 && (
+                  <div className="mb-4">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Top Cities by Units Sold</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-border">
+                            <th className="py-1.5 text-left font-medium">City</th>
+                            <th className="py-1.5 text-left font-medium">State</th>
+                            <th className="py-1.5 text-right font-medium">Units Sold</th>
+                            <th className="py-1.5 text-right font-medium">Orders</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {geoData.topCities.slice(0, 10).map((row, i) => (
+                            <tr key={i} className="border-b border-border/50">
+                              <td className="py-1.5">{row.city ?? '—'}</td>
+                              <td className="py-1.5 text-muted-foreground">{row.state ?? '—'}</td>
+                              <td className="py-1.5 text-right font-mono">{row.units_sold.toLocaleString('en-IN')}</td>
+                              <td className="py-1.5 text-right font-mono">{row.orders_count.toLocaleString('en-IN')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* FC ledger breakdown */}
+                {geoData.ledgerFcBreakdown.length > 0 && (
+                  <div className="mb-4">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">FBA Ledger — Shipments by FC (estimated allocation)</p>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="border-b border-border">
+                            <th className="py-1.5 text-left font-medium">Fulfillment Center</th>
+                            <th className="py-1.5 text-right font-medium">Units Shipped</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {geoData.ledgerFcBreakdown.slice(0, 10).map((fc, i) => (
+                            <tr key={i} className="border-b border-border/50">
+                              <td className="py-1.5 font-mono">{fc.fulfillment_center_id}</td>
+                              <td className="py-1.5 text-right font-mono">{fc.units_shipped.toLocaleString('en-IN')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground italic">
+                      Allocation is estimated: exact FC-to-order mapping is not available in these reports. FBA Ledger provides shipment units by FC; transaction report provides ordered units by state/city.
+                    </p>
+                  </div>
+                )}
+
+                {/* Exports */}
+                <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => exportGeoDemandSummaryCsv(geoData)}
+                  >
+                    <Download className="mr-1 h-3 w-3" />
+                    Export Geo Demand Summary
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => exportFcMovementEstimateCsv(geoData)}
+                  >
+                    <Download className="mr-1 h-3 w-3" />
+                    Export FC Movement Estimate
+                  </Button>
+                  <p className="ml-2 self-center text-xs text-muted-foreground italic">
+                    Transaction geo demand can later become a planning source or cross-check source after validation.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

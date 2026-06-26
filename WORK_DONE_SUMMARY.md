@@ -2,7 +2,41 @@
 
 ## Internal Replenishment Intelligence - Current State
 
-_Last updated: 2026-06-26. Covers commits `4a763f1`, `c99ea82`, `512a284`, and the date-range + Seller Central demand session (Task A–J)._
+_Last updated: 2026-06-26. Covers commits `4a763f1`, `c99ea82`, `512a284`, date-range + Seller Central demand session, and geo demand reconciliation session._
+
+### Transaction Geo Demand + FC Ledger Reconciliation (2026-06-26)
+
+**What changed:**
+
+- **`amazon_sku_geo_sales_daily` table** (migration 047, applied): derived aggregate table for SKU × date × geo × fulfillment demand. Intentionally excludes buyer identity, full address, and raw order payloads. Order IDs are not stored. Sources from `internal_payment_transactions`.
+- **Geo demand API route** `GET /api/internal/stock-actions/geo-demand`: queries `internal_payment_transactions` directly (no derived table round-trip yet). Aggregates in application memory. Classifies fulfillment: `"Amazon"` → `fba_fc`, `"Merchant"` → `direct_flex_easyship`, null → `unknown`. Accepts `lookbackDays` or `demandStartDate`/`demandEndDate` (reuses date-range selector). 200K row limit per query.
+- **FC ledger reconciliation**: joins `internal_fba_report_rows` (event_type = 'Shipments') for the same period to get FBA shipment units by fulfillment center. Computes `transactionVsLedgerDiff` (FBA transaction units − ledger FC shipment units) and diff %. **This is an estimation only** — no exact FC-to-order mapping exists in the source data.
+- **"Sales & FC Movement Reconciliation" UI section**: collapsible card at the bottom of the Internal Stock Dashboard. Lazy-loaded (button tap). Shows:
+  - Total transaction units, FBA/FC transaction units, Direct/Flex/EasyShip units, FBA Ledger Shipment Units
+  - Transaction vs Ledger diff with color coding
+  - Top states table (state, fulfillment bucket, units sold, orders, returns, return rate)
+  - Top cities table (city, state, units sold, orders)
+  - FBA Ledger FC breakdown table (FC ID, units shipped)
+  - Export Geo Demand Summary CSV (state/city/pincode rows)
+  - Export FC Movement Estimate CSV (FC breakdown with diff, labeled "Estimated")
+  - Note: "Transaction geo demand can later become a planning source or cross-check source after validation."
+- **Safety**: no buyer identity, no full addresses, no raw order payloads, no order IDs in exports or UI. City/state/pincode aggregates only.
+
+**DB migrations applied:**
+- Migration 047: `amazon_sku_geo_sales_daily` (created; not yet populated — API queries `internal_payment_transactions` directly for now)
+
+**Files changed:**
+- `supabase/migrations/047_amazon_sku_geo_sales_daily.sql` (NEW)
+- `src/app/api/internal/stock-actions/geo-demand/route.ts` (NEW)
+- `src/app/(dashboard)/dashboard/internal/stock-dashboard.tsx` (geo section + types + state + loadGeo + exports)
+
+**FC reconciliation note:**
+- Transaction report = ordered units (what customers bought)
+- FBA Ledger = shipped/dispatched units (what left the FC)
+- Timing difference, return processing, and in-transit items will cause a nonzero diff — this is expected.
+- The section is labeled "estimated" throughout and is not wired into replenishment math.
+
+---
 
 ### Date-range-aware demand + Seller Central planning (2026-06-26)
 
