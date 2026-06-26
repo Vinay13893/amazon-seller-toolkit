@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { FolderKanban, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
-import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function inr(v: number | null): string {
   if (v === null) return '—'
@@ -49,7 +49,7 @@ function toCsv(rows: ManualReviewCase[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.mainEntity, r.issueSummary,
+      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, entityDisplayLabel(r.mainEntity), r.issueSummary,
       r.combinedSalesDecline, r.worstAcosBefore, r.worstAcosAfter, r.relatedChangesCount,
       r.earliestRelatedChange, r.latestRelatedChange, r.timingBucket, r.changeSummary.join('|'),
       r.fromValues.join('|'), r.toValues.join('|'), r.matchStrength, r.facetCount, r.suggestedReviewAction,
@@ -96,7 +96,7 @@ function CaseRow({
         <td className="py-2 px-2 text-muted-foreground">{c.rank}</td>
         <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(c.portfolio)}</td>
         <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
-        <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.mainEntity}>{c.mainEntity}</td>
+        <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={entityDisplayLabel(c.mainEntity)}>{entityDisplayLabel(c.mainEntity)}</td>
         <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{c.issueSummary}</td>
         <td className="py-2 px-2 text-center text-foreground">{c.relatedChangesCount}</td>
         <td className="py-2 px-2 whitespace-nowrap">

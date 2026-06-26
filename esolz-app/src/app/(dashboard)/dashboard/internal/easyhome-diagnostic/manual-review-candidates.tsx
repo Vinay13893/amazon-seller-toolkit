@@ -5,7 +5,7 @@ import { ClipboardList, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { ManualReviewCandidate, ReviewChangeType, TimingBucket } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { RelatedChangeMatchStrength } from '@/lib/internal/easyhome-change-history-diagnostic'
-import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function inr(v: number | null): string {
   if (v === null) return '—'
@@ -45,7 +45,7 @@ function toCsv(rows: ManualReviewCandidate[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, r.entity, r.issueType,
+      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, entityDisplayLabel(r.entity), r.issueType,
       r.salesDecline, r.beforeAcos, r.afterAcos, r.beforeRoas, r.afterRoas,
       r.relatedChangeAt, r.timingBucket, r.changeType, r.fromValue, r.toValue, r.changeMagnitude,
       r.matchStrength, r.suggestedReviewAction, r.evidenceSummary,
@@ -133,7 +133,7 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
                 <td className="py-2 px-2"><Badge variant={PRIORITY_BADGE[c.priority] ?? 'outline'}>{c.priority}</Badge></td>
                 <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(c.portfolio)}</td>
                 <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
-                <td className="py-2 px-2 max-w-[150px] truncate text-foreground" title={c.entity}>{c.entity}</td>
+                <td className="py-2 px-2 max-w-[150px] truncate text-foreground" title={entityDisplayLabel(c.entity)}>{entityDisplayLabel(c.entity)}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{c.issueType}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-foreground">{inr(c.salesDecline)}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{pct(c.beforeAcos)}→{pct(c.afterAcos)}</td>

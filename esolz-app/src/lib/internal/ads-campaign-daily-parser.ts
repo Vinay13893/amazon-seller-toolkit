@@ -2,6 +2,7 @@
 // Read-only analytics input only — never used to change bids/budgets.
 
 import { parseFlexibleDate, splitCsvLine, toNumber, toNumberOrNull, toTextOrNull } from './csv-report-parsing'
+import { resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type AdsCampaignDailyRecord = {
   sourceRowNumber: number
@@ -106,7 +107,7 @@ function findColumnIndex(header: string[], aliases: string[]): number {
 // "Papfoil"/baking-paper/parchment-paper/butter-paper is a real EasyHOME-adjacent
 // product line that isn't one of the 7 core portfolios — kept as its own bucket
 // so it doesn't pollute "Unmapped / Needs Review" (Phase 1D category cleanup).
-export const PAPFOIL_PORTFOLIO = 'Papfoil / Kitchen Paper'
+export const PAPFOIL_PORTFOLIO = 'Coze'
 
 // Rule order matters: mapCampaignNameToPortfolio() returns the FIRST match.
 // "Liltoes" is a brand name used across both BPM (baby play mats) and EVA
@@ -114,7 +115,10 @@ export const PAPFOIL_PORTFOLIO = 'Papfoil / Kitchen Paper'
 // ahead of the more specific EVA Kids signal — a generic brand term should
 // not out-rank a specific category term (Phase 1D.1 mapping QA fix).
 const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
-  { pattern: /papfoil|baking paper|parchment paper|butter paper/i, portfolio: PAPFOIL_PORTFOLIO },
+  { pattern: /papfoil|baking paper|parchment paper|butter paper|facial\s*box|facialbox|face\s*tissue|tissue\s*box/i, portfolio: PAPFOIL_PORTFOLIO },
+  { pattern: /\b(sra|sra_)/i, portfolio: 'Sage Royal Ayurveda' },
+  { pattern: /sage\s*royal\s*ayurveda/i, portfolio: 'Sage Royal Ayurveda' },
+  { pattern: /\b(eh_?boc|boc)\b|curtain/i, portfolio: 'Curtains' },
   { pattern: /baby play mat|\bbpm\b/i, portfolio: 'BPM' },
   { pattern: /eva.*kids|kids.*mat|interlocking.*kids|kids.*interlocking/i, portfolio: 'EVA Kids' },
   { pattern: /anti.?slip|\basm\b|shelf liner/i, portfolio: 'ASM' },
@@ -128,6 +132,8 @@ const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
 ]
 
 export function mapCampaignNameToPortfolio(campaignName: string): string {
+  const resolved = resolveEasyhomePortfolio(null, campaignName)
+  if (resolved !== 'Unmapped / Needs Review') return resolved
   for (const rule of PORTFOLIO_RULES) {
     if (rule.pattern.test(campaignName)) return rule.portfolio
   }

@@ -4,6 +4,7 @@
 // internal_sku_cost_master and pass them in; nothing here touches the database.
 
 import { DEFAULT_RANGE_A, DEFAULT_RANGE_B, type DateRange, inWindow as inDateRange } from './date-range'
+import { resolveEasyhomePortfolio } from './portfolio-labels'
 
 // Re-exported for callers/tests that want the original June-15 default preset.
 export const BEFORE_START = DEFAULT_RANGE_A.startDate
@@ -15,6 +16,9 @@ export type EasyhomePortfolio =
   | 'EVA Gym'
   | 'EVA Kids'
   | 'BPM'
+  | 'Sage Royal Ayurveda'
+  | 'Curtains'
+  | 'Coze'
   | 'Water Tank Cover'
   | 'Storage Bags'
   | 'Planter and Garden'
@@ -26,6 +30,14 @@ const PORTFOLIO_BY_COST_MASTER_CATEGORY: Record<string, EasyhomePortfolio> = {
   'eva gym mat': 'EVA Gym',
   'eva kids mat': 'EVA Kids',
   'baby play mat': 'BPM',
+  'sage royal ayurveda': 'Sage Royal Ayurveda',
+  'curtains': 'Curtains',
+  'curtain': 'Curtains',
+  'coze': 'Coze',
+  'papfoil': 'Coze',
+  'baking paper': 'Coze',
+  'parchment paper': 'Coze',
+  'butter paper': 'Coze',
   'water tank cover': 'Water Tank Cover',
   'storage bag': 'Storage Bags',
   'planters': 'Planter and Garden',
@@ -35,7 +47,7 @@ const PORTFOLIO_BY_COST_MASTER_CATEGORY: Record<string, EasyhomePortfolio> = {
 export function mapCostMasterCategoryToPortfolio(rawCategory: string | null): EasyhomePortfolio {
   if (!rawCategory) return 'Unmapped / Needs Review'
   const key = rawCategory.trim().toLowerCase()
-  return PORTFOLIO_BY_COST_MASTER_CATEGORY[key] ?? 'Unmapped / Needs Review'
+  return (PORTFOLIO_BY_COST_MASTER_CATEGORY[key] ?? resolveEasyhomePortfolio(null, rawCategory)) as EasyhomePortfolio
 }
 
 export type PaymentTxnInput = {
@@ -224,7 +236,10 @@ export function buildEasyhomeDropDiagnostic(params: {
 
   const portfolioForSkuNorm = (skuNorm: string | null): EasyhomePortfolio => {
     if (!skuNorm) return 'Unmapped / Needs Review'
-    return mapCostMasterCategoryToPortfolio(costMasterByNorm.get(skuNorm)?.category ?? null)
+    const costMasterRow = costMasterByNorm.get(skuNorm)
+    const fromCategory = mapCostMasterCategoryToPortfolio(costMasterRow?.category ?? null)
+    if (fromCategory !== 'Unmapped / Needs Review') return fromCategory
+    return resolveEasyhomePortfolio(null, skuNorm, costMasterRow?.productName) as EasyhomePortfolio
   }
 
   const beforeRows = transactions.filter(r => inWindow(r.transactionDate, rangeA))

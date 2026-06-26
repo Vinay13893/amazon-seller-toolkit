@@ -9,6 +9,7 @@ import type { ActionItemWithChanges } from './easyhome-change-history-diagnostic
 import type { ActionIssueType, ActionStatus } from './easyhome-action-queue'
 import type { CampaignRow } from './easyhome-ads-campaign-diagnostic'
 import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyhome-ads-deep-diagnostic'
+import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type FindingIssueLabel =
   | 'Spend cut'
@@ -248,10 +249,10 @@ const EXPLANATION_TEMPLATES: Record<FindingIssueLabel, FindingExplanation> = {
     riskCaution: 'Bid changes alone may not fix conversion problems.',
   },
   'Mapping cleanup': {
-    problem: 'This row is not mapped to a clear EasyHOME portfolio/category.',
-    whyItMatters: 'Wrong mapping can create wrong ads decisions.',
+    problem: 'This SKU/campaign/target is not mapped to a known portfolio.',
+    whyItMatters: 'Without category mapping, Brahmastra may group the performance under the wrong bucket.',
     whatToCheckFirst: 'Check SKU/campaign naming and category mapping.',
-    recommendedManualAction: 'Fix mapping before taking performance action.',
+    recommendedManualAction: 'Fix SKU/campaign/category mapping first; do not make ad changes from this row yet.',
     expectedOutcome: 'Cleaner category reporting and fewer false alerts.',
     riskCaution: 'Do not make ad changes from unmapped rows.',
   },
@@ -311,10 +312,10 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
     return {
       actionKey: item.actionKey,
       priority: item.priority,
-      portfolio: item.portfolio,
-      campaignName: item.campaignName,
-      adGroupName: item.relatedChanges.find(c => c.adGroupName)?.adGroupName ?? null,
-      entityName: item.entityName,
+      portfolio: resolveEasyhomePortfolio(item.portfolio, item.campaignName, item.adGroupName, item.entityName),
+      campaignName: item.campaignName ?? item.relatedChanges.find(c => c.campaignName)?.campaignName ?? null,
+      adGroupName: item.adGroupName ?? item.relatedChanges.find(c => c.adGroupName)?.adGroupName ?? null,
+      entityName: entityDisplayLabel(item.entityName),
       issueType,
       spendA: metrics.spendA,
       spendB: metrics.spendB,
@@ -342,6 +343,7 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
 type WinnerInput = {
   portfolio: string
   campaignName: string | null
+  adGroupName?: string | null
   entityName: string
   entityType: GoodWorkingRow['entityType']
   beforeSpend: number
@@ -392,7 +394,7 @@ export function buildGoodWorkingRows(params: {
     ...params.campaignRows.map(r => ({
       portfolio: r.portfolio,
       campaignName: r.campaignName,
-      entityName: r.campaignName,
+      entityName: entityDisplayLabel(r.campaignName),
       entityType: 'Campaign' as const,
       beforeSpend: r.beforeSpend,
       afterSpend: r.afterSpend,
@@ -408,7 +410,8 @@ export function buildGoodWorkingRows(params: {
     ...params.advertisedProductRows.map(r => ({
       portfolio: r.portfolio,
       campaignName: r.campaignName,
-      entityName: r.advertisedSku,
+      entityName: entityDisplayLabel(r.advertisedSku),
+      adGroupName: r.adGroupName,
       entityType: 'SKU' as const,
       beforeSpend: r.beforeSpend,
       afterSpend: r.afterSpend,
@@ -424,7 +427,8 @@ export function buildGoodWorkingRows(params: {
     ...params.targetingRows.map(r => ({
       portfolio: r.portfolio,
       campaignName: r.campaignName,
-      entityName: r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel,
+      entityName: entityDisplayLabel(r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel),
+      adGroupName: r.adGroupName,
       entityType: 'Keyword / Target' as const,
       beforeSpend: r.beforeSpend,
       afterSpend: r.afterSpend,
@@ -440,7 +444,8 @@ export function buildGoodWorkingRows(params: {
     ...params.searchTermRows.map(r => ({
       portfolio: r.portfolio,
       campaignName: r.campaignName,
-      entityName: r.searchTerm,
+      entityName: entityDisplayLabel(r.searchTerm),
+      adGroupName: r.adGroupName,
       entityType: 'Search Term' as const,
       beforeSpend: r.beforeSpend,
       afterSpend: r.afterSpend,
@@ -462,9 +467,9 @@ export function buildGoodWorkingRows(params: {
     .slice(0, 40)
     .map((entry, index) => ({
       rank: index + 1,
-      portfolio: entry.row.portfolio,
+      portfolio: resolveEasyhomePortfolio(entry.row.portfolio, entry.row.campaignName, entry.row.adGroupName, entry.row.entityName),
       campaignName: entry.row.campaignName,
-      adGroupName: null,
+      adGroupName: entry.row.adGroupName ?? null,
       entityName: entry.row.entityName,
       entityType: entry.row.entityType,
       whyGood: entry.reason,

@@ -6,6 +6,7 @@
 
 import type { CampaignRow } from './easyhome-ads-campaign-diagnostic'
 import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyhome-ads-deep-diagnostic'
+import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type ActionPriority = 'High' | 'Medium' | 'Low'
 export type ActionEntityType = 'SKU' | 'Campaign' | 'Target' | 'Search Term' | 'Mapping'
@@ -36,6 +37,7 @@ export type ActionItem = {
   // Used to link this item to Change History events (Phase 1E.2) — null
   // for items with no single owning campaign (e.g. SKU-level mapping gaps).
   campaignName: string | null
+  adGroupName: string | null
   problemSummary: string
   beforeMetrics: ActionMetrics
   afterMetrics: ActionMetrics
@@ -63,7 +65,7 @@ const SUGGESTED_REVIEW_BY_ISSUE: Record<ActionIssueType, string> = {
   'Efficiency collapse': 'Efficiency collapse; check targeting/search term/listing before increasing spend.',
   'Clicks continued but sales collapsed': 'Conversion issue suspected; check price, coupon, stock, buy box, reviews, delivery promise, listing suppression.',
   'High spend zero orders': 'Waste candidate; review for negative/pause.',
-  'Mapping cleanup': 'Mapping review.',
+  'Mapping cleanup': 'Fix SKU/campaign/category mapping first; do not make ad changes from this row yet.',
   'Conversion/listing issue suspected': 'Conversion issue suspected; check price, coupon, stock, buy box, reviews, delivery promise, listing suppression.',
 }
 
@@ -89,6 +91,10 @@ function metricsOf(spend: number, sales: number, acos: number | null, clicks: nu
   return { spend: round2(spend), sales: round2(sales), acos, clicks, purchases }
 }
 
+function stillUnmapped(...values: Array<string | null | undefined>): boolean {
+  return resolveEasyhomePortfolio(null, ...values) === 'Unmapped / Needs Review'
+}
+
 /** "Spend cut" vs "Efficiency collapse" split shared by SKU/target/campaign losers. */
 function classifyLoser(deltaSpend: number, beforeAcos: number | null, afterAcos: number | null): { issueType: ActionIssueType } {
   const acosWorsened = beforeAcos !== null && afterAcos !== null && afterAcos > beforeAcos + 10
@@ -108,9 +114,9 @@ export function buildActionQueue(params: {
 }): ActionItem[] {
   const items: ActionItem[] = []
 
-  function push(item: Omit<ActionItem, 'status' | 'notes' | 'campaignName'> & { campaignName?: string | null }) {
+  function push(item: Omit<ActionItem, 'status' | 'notes' | 'campaignName' | 'adGroupName'> & { campaignName?: string | null; adGroupName?: string | null }) {
     const existing = params.existingStatuses.get(item.actionKey)
-    items.push({ campaignName: null, ...item, status: existing?.status ?? 'Open', notes: existing?.notes ?? null })
+    items.push({ campaignName: null, adGroupName: null, ...item, status: existing?.status ?? 'Open', notes: existing?.notes ?? null })
   }
 
   // --- SKU level (advertised product) ---
@@ -124,6 +130,7 @@ export function buildActionQueue(params: {
         entityType: 'SKU',
         entityName: r.advertisedSku,
         campaignName: r.campaignName,
+        adGroupName: r.adGroupName,
         problemSummary: `Ad sales for "${r.advertisedSku}" fell from ${inr(r.beforeSales)} to ${inr(r.afterSales)} (Δ${inr(r.deltaSales)}), correlated with selected Range B.`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
@@ -140,6 +147,7 @@ export function buildActionQueue(params: {
         entityType: 'SKU',
         entityName: r.advertisedSku,
         campaignName: r.campaignName,
+        adGroupName: r.adGroupName,
         problemSummary: `"${r.advertisedSku}" kept ${r.afterClicks} clicks (vs ${r.beforeClicks} before) but sales collapsed to ${inr(r.afterSales)} (was ${inr(r.beforeSales)}) — likely issue is conversion, not traffic.`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
@@ -161,7 +169,8 @@ export function buildActionQueue(params: {
         entityType: 'Target',
         entityName: r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel,
         campaignName: r.campaignName,
-        problemSummary: `Target "${r.targetLabel}" sales fell from ${inr(r.beforeSales)} to ${inr(r.afterSales)} (Δ${inr(r.deltaSales)}) on campaign "${r.campaignName}".`,
+        adGroupName: r.adGroupName,
+        problemSummary: `Target "${entityDisplayLabel(r.targetLabel)}" sales fell from ${inr(r.beforeSales)} to ${inr(r.afterSales)} (Δ${inr(r.deltaSales)}) on campaign "${r.campaignName}".`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
         issueType,
@@ -177,7 +186,8 @@ export function buildActionQueue(params: {
         entityType: 'Target',
         entityName: r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel,
         campaignName: r.campaignName,
-        problemSummary: `ACOS on "${r.targetLabel}" worsened from ${r.beforeAcos?.toFixed(1)}% to ${r.afterAcos?.toFixed(1)}% — efficiency collapse correlated with the drop window.`,
+        adGroupName: r.adGroupName,
+        problemSummary: `ACOS on "${entityDisplayLabel(r.targetLabel)}" worsened from ${r.beforeAcos?.toFixed(1)}% to ${r.afterAcos?.toFixed(1)}% — efficiency collapse correlated with the drop window.`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
         issueType: 'Efficiency collapse',
@@ -197,7 +207,8 @@ export function buildActionQueue(params: {
         entityType: 'Search Term',
         entityName: r.searchTerm,
         campaignName: r.campaignName,
-        problemSummary: `Search term "${r.searchTerm}" spent ${inr(r.afterSpend)} in Range B with zero orders (campaign "${r.campaignName}").`,
+        adGroupName: r.adGroupName,
+        problemSummary: `Search term "${entityDisplayLabel(r.searchTerm)}" spent ${inr(r.afterSpend)} in Range B with zero orders (campaign "${r.campaignName}").`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
         issueType: 'High spend zero orders',
@@ -213,7 +224,8 @@ export function buildActionQueue(params: {
         entityType: 'Search Term',
         entityName: r.searchTerm,
         campaignName: r.campaignName,
-        problemSummary: `Search term "${r.searchTerm}" spend rose by ${inr(r.deltaSpend)} while sales fell by ${inr(Math.abs(r.deltaSales))} — needs review before continuing to invest.`,
+        adGroupName: r.adGroupName,
+        problemSummary: `Search term "${entityDisplayLabel(r.searchTerm)}" spend rose by ${inr(r.deltaSpend)} while sales fell by ${inr(Math.abs(r.deltaSales))} — needs review before continuing to invest.`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
         issueType: 'Efficiency collapse',
@@ -230,7 +242,8 @@ export function buildActionQueue(params: {
         entityType: 'Search Term',
         entityName: r.searchTerm,
         campaignName: r.campaignName,
-        problemSummary: `Search term "${r.searchTerm}" was healthy in Range A (ACOS ${r.beforeAcos?.toFixed(1)}%, ${r.beforePurchases} purchases) but is now ${r.afterPurchases === 0 ? 'converting zero orders' : `ACOS ${r.afterAcos?.toFixed(1)}%`} — needs review.`,
+        adGroupName: r.adGroupName,
+        problemSummary: `Search term "${entityDisplayLabel(r.searchTerm)}" was healthy in Range A (ACOS ${r.beforeAcos?.toFixed(1)}%, ${r.beforePurchases} purchases) but is now ${r.afterPurchases === 0 ? 'converting zero orders' : `ACOS ${r.afterAcos?.toFixed(1)}%`} — needs review.`,
         beforeMetrics: metricsOf(r.beforeSpend, r.beforeSales, r.beforeAcos, r.beforeClicks, r.beforePurchases),
         afterMetrics: metricsOf(r.afterSpend, r.afterSales, r.afterAcos, r.afterClicks, r.afterPurchases),
         issueType,
@@ -282,6 +295,7 @@ export function buildActionQueue(params: {
   // --- Mapping cleanup ---
   const MAPPING_MEANINGFUL_THRESHOLD = 500
   for (const r of params.campaignTopUnmapped) {
+    if (!stillUnmapped(r.campaignName)) continue
     const combined = r.totalSpend + r.totalSales
     if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
     push({
@@ -291,7 +305,7 @@ export function buildActionQueue(params: {
       entityType: 'Mapping',
       entityName: r.campaignName,
       campaignName: r.campaignName,
-      problemSummary: `Campaign "${r.campaignName}" has no portfolio mapping (spend ${inr(r.totalSpend)}, sales ${inr(r.totalSales)}) and is currently excluded from category-level totals.`,
+      problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Campaign "${r.campaignName}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
       beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
       afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
       issueType: 'Mapping cleanup',
@@ -300,6 +314,7 @@ export function buildActionQueue(params: {
     })
   }
   for (const r of params.skuTopUnmapped) {
+    if (!stillUnmapped(r.sku)) continue
     const combined = r.beforeSales + r.afterSales
     if (Math.abs(combined) < MAPPING_MEANINGFUL_THRESHOLD) continue
     push({
@@ -308,7 +323,7 @@ export function buildActionQueue(params: {
       portfolio: 'Unmapped / Needs Review',
       entityType: 'Mapping',
       entityName: r.sku,
-      problemSummary: `SKU "${r.sku}" has no cost-master category (sales ${inr(r.beforeSales)} before / ${inr(r.afterSales)} after) and is excluded from category-level totals.`,
+      problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. SKU "${r.sku}" has sales ${inr(r.beforeSales)} before / ${inr(r.afterSales)} after.`,
       beforeMetrics: { spend: null, sales: round2(r.beforeSales), acos: null, clicks: null, purchases: null },
       afterMetrics: { spend: null, sales: round2(r.afterSales), acos: null, clicks: null, purchases: null },
       issueType: 'Mapping cleanup',
@@ -318,6 +333,7 @@ export function buildActionQueue(params: {
   }
   if (params.advertisedProduct) {
     for (const r of params.advertisedProduct.mappingHealth.topUnmapped) {
+      if (!stillUnmapped(r.name)) continue
       const combined = r.totalSpend + r.totalSales
       if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
       push({
@@ -326,7 +342,7 @@ export function buildActionQueue(params: {
         portfolio: 'Unmapped / Needs Review',
         entityType: 'Mapping',
         entityName: r.name,
-        problemSummary: `Advertised SKU "${r.name}" has no portfolio mapping (spend ${inr(r.totalSpend)}, sales ${inr(r.totalSales)}).`,
+        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Advertised SKU "${r.name}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
         beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
         afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
         issueType: 'Mapping cleanup',
@@ -337,6 +353,7 @@ export function buildActionQueue(params: {
   }
   if (params.targeting) {
     for (const r of params.targeting.mappingHealth.topUnmapped) {
+      if (!stillUnmapped(r.name)) continue
       const combined = r.totalSpend + r.totalSales
       if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
       push({
@@ -345,7 +362,7 @@ export function buildActionQueue(params: {
         portfolio: 'Unmapped / Needs Review',
         entityType: 'Mapping',
         entityName: r.name,
-        problemSummary: `Target "${r.name}" sits under a campaign with no portfolio mapping (spend ${inr(r.totalSpend)}, sales ${inr(r.totalSales)}).`,
+        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Target "${r.name}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
         beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
         afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
         issueType: 'Mapping cleanup',
@@ -356,6 +373,7 @@ export function buildActionQueue(params: {
   }
   if (params.searchTerm) {
     for (const r of params.searchTerm.mappingHealth.topUnmapped) {
+      if (!stillUnmapped(r.name)) continue
       const combined = r.totalSpend + r.totalSales
       if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
       push({
@@ -364,7 +382,7 @@ export function buildActionQueue(params: {
         portfolio: 'Unmapped / Needs Review',
         entityType: 'Mapping',
         entityName: r.name,
-        problemSummary: `Search term "${r.name}" sits under a campaign with no portfolio mapping (spend ${inr(r.totalSpend)}, sales ${inr(r.totalSales)}).`,
+        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Search term "${r.name}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
         beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
         afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
         issueType: 'Mapping cleanup',

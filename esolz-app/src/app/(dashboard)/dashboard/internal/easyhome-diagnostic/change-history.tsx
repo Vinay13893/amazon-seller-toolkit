@@ -5,7 +5,7 @@ import { KpiCard } from '@/components/dashboard/KpiCard'
 import { Badge } from '@/components/ui/badge'
 import type { ChangeHistorySummary } from '@/lib/internal/easyhome-change-history-diagnostic'
 import type { ActionItemWithChanges } from '@/lib/internal/easyhome-change-history-diagnostic'
-import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 type ChangeHistoryImportStatus = {
   original_filename: string
@@ -69,7 +69,7 @@ export function ChangeHistorySection({
     const lines = [headers.join(',')]
     for (const c of changesBeforeOrDuringAll) {
       lines.push([
-        c.changedAtIso, c.timing, c.description, c.campaignName, c.actionEntity, portfolioDisplayLabel(c.actionPortfolio), c.actionPriority,
+        c.changedAtIso, c.timing, c.description, c.campaignName, entityDisplayLabel(c.actionEntity), portfolioDisplayLabel(c.actionPortfolio), c.actionPriority,
         c.oldValue, c.newValue, c.matchStrength,
       ].map(esc).join(','))
     }
@@ -144,7 +144,7 @@ export function ChangeHistorySection({
                   c.timing,
                   c.description,
                   c.campaignName ?? '—',
-                  c.actionEntity,
+                  entityDisplayLabel(c.actionEntity),
                   portfolioDisplayLabel(c.actionPortfolio),
                   c.actionPriority,
                 ])}
@@ -164,7 +164,7 @@ export function ChangeHistorySection({
                   <li key={item.actionKey} className="flex gap-2">
                     <Badge variant="destructive">High</Badge>
                     <span>
-                      <strong>{item.entityName}</strong> ({portfolioDisplayLabel(item.portfolio)}) has {item.relatedChanges.length} correlated change(s) —{' '}
+                      <strong>{entityDisplayLabel(item.entityName)}</strong> ({portfolioDisplayLabel(item.portfolio)}) has {item.relatedChanges.length} correlated change(s) —{' '}
                       {item.relatedChanges[0]?.description.toLowerCase()}. Consider manually reviewing in Ads Console whether to revert; this tool does not change bids/budgets/campaigns.
                     </span>
                   </li>

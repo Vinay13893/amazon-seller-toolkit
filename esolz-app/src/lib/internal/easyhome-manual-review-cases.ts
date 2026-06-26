@@ -7,6 +7,7 @@
 
 import type { ManualReviewCandidate, ReviewChangeType, TimingBucket } from './easyhome-manual-review-candidates'
 import type { RelatedChangeMatchStrength } from './easyhome-change-history-diagnostic'
+import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type CaseTimingBucket = TimingBucket | 'mixed'
 
@@ -203,8 +204,8 @@ export function buildManualReviewCases(
     const issueTypes = new Set<string>()
     let mainEntity = facets[0].entity
     let mainEntityPriorityRank = 0
-    let portfolio = facets[0].portfolio
-    let campaignName = facets[0].campaignName
+    let portfolio = resolveEasyhomePortfolio(facets[0].portfolio, facets[0].campaignName, facets[0].adGroupName, facets[0].entity)
+    let campaignName = facets.find(f => f.campaignName)?.campaignName ?? facets[0].campaignName
     let adGroupName: string | null = null
 
     for (const f of facets) {
@@ -225,7 +226,12 @@ export function buildManualReviewCases(
       if (f.adGroupName) adGroupName = f.adGroupName
       // Prefer the entity label from the highest-priority facet for display.
       const pr = PRIORITY_RANK[f.priority] ?? 0
-      if (pr > mainEntityPriorityRank) { mainEntityPriorityRank = pr; mainEntity = f.entity; portfolio = f.portfolio; campaignName = f.campaignName }
+      if (pr > mainEntityPriorityRank) {
+        mainEntityPriorityRank = pr
+        mainEntity = f.entity
+        portfolio = resolveEasyhomePortfolio(f.portfolio, f.campaignName, f.adGroupName, f.entity)
+        campaignName = f.campaignName ?? campaignName
+      }
     }
 
     const timingBucket: CaseTimingBucket = timings.size === 0 ? 'after decline' : timings.size > 1 ? 'mixed' : [...timings][0]
@@ -249,7 +255,7 @@ export function buildManualReviewCases(
     const review = reviewStatuses.get(caseKey)
 
     const evParts: string[] = []
-    evParts.push(`${priority}-priority ${[...entityTypes].join('/')} "${mainEntity}" on campaign "${campaignName ?? '—'}"`)
+    evParts.push(`${priority}-priority ${[...entityTypes].join('/')} "${entityDisplayLabel(mainEntity)}" on campaign "${campaignName ?? '—'}"`)
     if (combinedSalesDecline !== null) evParts.push(`ad sales decline ${inr(combinedSalesDecline)}`)
     if (worstAcosBefore !== null && worstAcosAfter !== null) evParts.push(`ACOS ${worstAcosBefore.toFixed(1)}%→${worstAcosAfter.toFixed(1)}%`)
     evParts.push(`${relatedChangesCount} related change(s) [${[...changeTypes].join(', ')}] ${timingBucket}`)

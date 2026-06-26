@@ -332,8 +332,5 @@ export function resolveAdvertisedProductPortfolio(
   if (resolved !== 'Unmapped / Needs Review') return resolved
   // SKU has no cost-master entry at all — fall back to the SKU's own text for
   // the kitchen-paper line (Phase 1D category cleanup) before giving up.
-  if (/papfoil|baking paper|parchment paper|butter paper/i.test(record.advertisedSku ?? '')) {
-    return PAPFOIL_PORTFOLIO
-  }
-  return resolved
+  return mapCampaignNameToPortfolio(`${record.advertisedSku ?? ''} ${record.campaignName}`)
 }

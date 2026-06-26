@@ -6,6 +6,7 @@
 // "review whether...", "compare...", "do not revert blindly".
 
 import type { ActionItemWithChanges, RelatedChange, RelatedChangeMatchStrength } from './easyhome-change-history-diagnostic'
+import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type TimingBucket = 'before decline' | 'during decline' | 'after decline'
 export type ReviewChangeType = 'bid increased' | 'bid reduced' | 'bid unchanged' | 'target paused' | 'target enabled' | 'created' | 'other'
@@ -147,11 +148,13 @@ export function buildManualReviewCandidates(actionQueue: ActionItemWithChanges[]
       const timingBucket = timingBucketOf(change)
       const changeType = reviewChangeTypeOf(change)
       const magnitude = changeMagnitudeOf(change)
-      const campKey = change.campaignName?.trim().toUpperCase() ?? ''
+      const campaignName = change.campaignName ?? item.campaignName
+      const adGroupName = change.adGroupName ?? item.adGroupName
+      const campKey = campaignName?.trim().toUpperCase() ?? ''
       const repeatedPreDrop = preDropChangesByCampaign.get(campKey) ?? 0
 
       const evidenceParts: string[] = []
-      evidenceParts.push(`${item.priority}-priority ${item.entityType} "${item.entityName}"`)
+      evidenceParts.push(`${item.priority}-priority ${item.entityType} "${entityDisplayLabel(item.entityName)}"`)
       if (decline !== null && decline < 0) evidenceParts.push(`ad sales ${inr(item.beforeMetrics.sales ?? 0)}→${inr(item.afterMetrics.sales ?? 0)} (${inr(decline)})`)
       if (item.beforeMetrics.acos !== null && item.afterMetrics.acos !== null) evidenceParts.push(`ACOS ${item.beforeMetrics.acos.toFixed(1)}%→${item.afterMetrics.acos.toFixed(1)}%`)
       evidenceParts.push(`${change.description.toLowerCase()} on ${change.changedAtIso.slice(0, 10)} (${timingBucket}${change.daysBeforeAfterStart !== null ? `, ${change.daysBeforeAfterStart}d before` : ''})`)
@@ -161,9 +164,9 @@ export function buildManualReviewCandidates(actionQueue: ActionItemWithChanges[]
       rows.push({
         score: scoreCandidate(item, change),
         priority: item.priority,
-        portfolio: item.portfolio,
-        campaignName: change.campaignName,
-        adGroupName: change.adGroupName,
+        portfolio: resolveEasyhomePortfolio(item.portfolio, campaignName, adGroupName, item.entityName),
+        campaignName,
+        adGroupName,
         entityType: item.entityType,
         entity: item.entityName,
         issueType: item.issueType,

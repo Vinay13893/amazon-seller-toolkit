@@ -52,6 +52,7 @@ import {
   type ExpectedMetric,
 } from '@/lib/internal/easyhome-manual-review-cases'
 import { createClient } from '@/lib/supabase/server'
+import { resolveEasyhomePortfolio } from '@/lib/internal/portfolio-labels'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -229,7 +230,7 @@ export async function GET(request: Request) {
       campaignRows.push({
         reportDate: row.report_date as string,
         campaignName: row.campaign_name as string,
-        easyhomePortfolio: row.easyhome_portfolio as string,
+        easyhomePortfolio: resolveEasyhomePortfolio(row.easyhome_portfolio as string, row.campaign_name as string),
         impressions: Number(row.impressions ?? 0),
         clicks: Number(row.clicks ?? 0),
         spend: Number(row.spend ?? 0),
@@ -267,7 +268,7 @@ export async function GET(request: Request) {
   {
     const { data } = await supabase
       .from('internal_ads_advertised_product_daily_rows')
-      .select('report_date, advertised_sku, advertised_asin, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
+      .select('report_date, advertised_sku, advertised_asin, campaign_name, ad_group_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
       .gte('report_date', fetchFrom)
       .limit(50000)
@@ -277,7 +278,8 @@ export async function GET(request: Request) {
         advertisedSku: (row.advertised_sku as string | null) ?? null,
         advertisedAsin: (row.advertised_asin as string | null) ?? null,
         campaignName: row.campaign_name as string,
-        portfolio: row.easyhome_portfolio as string,
+        adGroupName: (row.ad_group_name as string | null) ?? null,
+        portfolio: resolveEasyhomePortfolio(row.easyhome_portfolio as string, row.advertised_sku as string | null, row.campaign_name as string, row.ad_group_name as string | null),
         impressions: Number(row.impressions ?? 0),
         clicks: Number(row.clicks ?? 0),
         spend: Number(row.spend ?? 0),
@@ -291,7 +293,7 @@ export async function GET(request: Request) {
   {
     const { data } = await supabase
       .from('internal_ads_targeting_daily_rows')
-      .select('report_date, keyword, targeting, match_type, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
+      .select('report_date, keyword, targeting, match_type, campaign_name, ad_group_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
       .gte('report_date', fetchFrom)
       .limit(50000)
@@ -302,7 +304,8 @@ export async function GET(request: Request) {
         targeting: (row.targeting as string | null) ?? null,
         matchType: (row.match_type as string | null) ?? null,
         campaignName: row.campaign_name as string,
-        portfolio: row.easyhome_portfolio as string,
+        adGroupName: (row.ad_group_name as string | null) ?? null,
+        portfolio: resolveEasyhomePortfolio(row.easyhome_portfolio as string, row.keyword as string | null, row.targeting as string | null, row.campaign_name as string, row.ad_group_name as string | null),
         impressions: Number(row.impressions ?? 0),
         clicks: Number(row.clicks ?? 0),
         spend: Number(row.spend ?? 0),
@@ -316,7 +319,7 @@ export async function GET(request: Request) {
   {
     const { data } = await supabase
       .from('internal_ads_search_term_daily_rows')
-      .select('report_date, search_term, targeting, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
+      .select('report_date, search_term, targeting, campaign_name, ad_group_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
       .gte('report_date', fetchFrom)
       .limit(50000)
@@ -326,7 +329,8 @@ export async function GET(request: Request) {
         searchTerm: (row.search_term as string | null) ?? null,
         targeting: (row.targeting as string | null) ?? null,
         campaignName: row.campaign_name as string,
-        portfolio: row.easyhome_portfolio as string,
+        adGroupName: (row.ad_group_name as string | null) ?? null,
+        portfolio: resolveEasyhomePortfolio(row.easyhome_portfolio as string, row.search_term as string | null, row.targeting as string | null, row.campaign_name as string, row.ad_group_name as string | null),
         impressions: Number(row.impressions ?? 0),
         clicks: Number(row.clicks ?? 0),
         spend: Number(row.spend ?? 0),
@@ -403,7 +407,7 @@ export async function GET(request: Request) {
         campaignName: (row.campaign_name as string | null) ?? null,
         adGroupId: (row.ad_group_id as string | null) ?? null,
         adGroupName: (row.ad_group_name as string | null) ?? null,
-        portfolio: row.easyhome_portfolio as string,
+        portfolio: resolveEasyhomePortfolio(row.easyhome_portfolio as string, row.campaign_name as string, row.entity_name as string | null, row.ad_group_name as string | null),
       })
     }
   }

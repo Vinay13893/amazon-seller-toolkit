@@ -126,6 +126,7 @@ export type AdvertisedProductRowInput = {
   advertisedSku: string | null
   advertisedAsin: string | null
   campaignName: string
+  adGroupName: string | null
   portfolio: string
   impressions: number
   clicks: number
@@ -134,7 +135,7 @@ export type AdvertisedProductRowInput = {
   sales: number
 }
 
-export type AdvertisedProductRow = BeforeAfterRow<{ advertisedSku: string; advertisedAsin: string | null; campaignName: string }>
+export type AdvertisedProductRow = BeforeAfterRow<{ advertisedSku: string; advertisedAsin: string | null; campaignName: string; adGroupName: string | null }>
 
 export function buildAdvertisedProductDiagnostic(rows: AdvertisedProductRowInput[], rangeA: DateRange = DEFAULT_RANGE_A, rangeB: DateRange = DEFAULT_RANGE_B) {
   const table = aggregateBeforeAfter(
@@ -142,7 +143,7 @@ export function buildAdvertisedProductDiagnostic(rows: AdvertisedProductRowInput
     rangeA,
     rangeB,
     row => row.advertisedSku ?? `NOSKU:${row.campaignName}`,
-    row => ({ advertisedSku: row.advertisedSku ?? '(no SKU)', advertisedAsin: row.advertisedAsin, campaignName: row.campaignName }),
+    row => ({ advertisedSku: row.advertisedSku ?? '(no SKU)', advertisedAsin: row.advertisedAsin, campaignName: row.campaignName, adGroupName: row.adGroupName }),
   ) as AdvertisedProductRow[]
 
   const topLosers = [...table].sort((a, b) => a.deltaSales - b.deltaSales).slice(0, 20)
@@ -165,6 +166,7 @@ export type TargetingRowInput = {
   targeting: string | null
   matchType: string | null
   campaignName: string
+  adGroupName: string | null
   portfolio: string
   impressions: number
   clicks: number
@@ -173,7 +175,7 @@ export type TargetingRowInput = {
   sales: number
 }
 
-export type TargetingRow = BeforeAfterRow<{ targetLabel: string; matchType: string | null; campaignName: string }>
+export type TargetingRow = BeforeAfterRow<{ targetLabel: string; matchType: string | null; campaignName: string; adGroupName: string | null }>
 
 export function buildTargetingDiagnostic(rows: TargetingRowInput[], rangeA: DateRange = DEFAULT_RANGE_A, rangeB: DateRange = DEFAULT_RANGE_B) {
   const table = aggregateBeforeAfter(
@@ -181,7 +183,7 @@ export function buildTargetingDiagnostic(rows: TargetingRowInput[], rangeA: Date
     rangeA,
     rangeB,
     row => `${row.keyword ?? row.targeting ?? row.campaignName}|${row.matchType ?? ''}`,
-    row => ({ targetLabel: row.keyword ?? row.targeting ?? '(unlabeled target)', matchType: row.matchType, campaignName: row.campaignName }),
+    row => ({ targetLabel: row.keyword ?? row.targeting ?? '(unlabeled target)', matchType: row.matchType, campaignName: row.campaignName, adGroupName: row.adGroupName }),
   ) as TargetingRow[]
 
   const topLosers = [...table].sort((a, b) => a.deltaSales - b.deltaSales).slice(0, 20)
@@ -203,6 +205,7 @@ export type SearchTermRowInput = {
   searchTerm: string | null
   targeting: string | null
   campaignName: string
+  adGroupName: string | null
   portfolio: string
   impressions: number
   clicks: number
@@ -211,7 +214,7 @@ export type SearchTermRowInput = {
   sales: number
 }
 
-export type SearchTermRow = BeforeAfterRow<{ searchTerm: string; campaignName: string }>
+export type SearchTermRow = BeforeAfterRow<{ searchTerm: string; campaignName: string; adGroupName: string | null }>
 
 export function buildSearchTermDiagnostic(rows: SearchTermRowInput[], rangeA: DateRange = DEFAULT_RANGE_A, rangeB: DateRange = DEFAULT_RANGE_B) {
   const table = aggregateBeforeAfter(
@@ -219,7 +222,7 @@ export function buildSearchTermDiagnostic(rows: SearchTermRowInput[], rangeA: Da
     rangeA,
     rangeB,
     row => row.searchTerm ?? `NOTERM:${row.campaignName}`,
-    row => ({ searchTerm: row.searchTerm ?? '(no search term)', campaignName: row.campaignName }),
+    row => ({ searchTerm: row.searchTerm ?? '(no search term)', campaignName: row.campaignName, adGroupName: row.adGroupName }),
   ) as SearchTermRow[]
 
   const spendUpSalesDown = table

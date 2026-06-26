@@ -32,7 +32,7 @@ import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-revie
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import type { FindingRow, GoodWorkingRow } from '@/lib/internal/easyhome-findings-table'
 import { DEFAULT_RANGE_B, autoBaselineFor, usesJune15, type DateRange } from '@/lib/internal/date-range'
-import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import { ActionQueue } from './action-queue'
 import { ChangeHistorySection } from './change-history'
 import { ChangeHistoryArchiveSection } from './change-history-archive'
@@ -713,7 +713,7 @@ export function EasyhomeDiagnosticDashboard() {
             <DataTable
               columns={['Target', 'Match type', 'Campaign', 'Range A Sales', 'Range B Sales', 'Δ Sales']}
               rows={deepDiagnostic.targeting.topLosers.map((r: TargetingRow) => [
-                r.targetLabel, r.matchType ?? '—', r.campaignName, formatInr(r.beforeSales), formatInr(r.afterSales), formatInr(r.deltaSales),
+                entityDisplayLabel(r.targetLabel), entityDisplayLabel(r.matchType ?? '—'), r.campaignName, formatInr(r.beforeSales), formatInr(r.afterSales), formatInr(r.deltaSales),
               ])}
             />
           </div>
@@ -726,7 +726,7 @@ export function EasyhomeDiagnosticDashboard() {
               <DataTable
                 columns={['Target', 'Match type', 'Range A ACOS', 'Range B ACOS', 'Range B Clicks']}
                 rows={deepDiagnostic.targeting.acosWorsenedSharply.map((r: TargetingRow) => [
-                  r.targetLabel, r.matchType ?? '—',
+                  entityDisplayLabel(r.targetLabel), entityDisplayLabel(r.matchType ?? '—'),
                   r.beforeAcos !== null ? `${r.beforeAcos.toFixed(1)}%` : '—',
                   r.afterAcos !== null ? `${r.afterAcos.toFixed(1)}%` : '—',
                   r.afterClicks,
@@ -746,7 +746,7 @@ export function EasyhomeDiagnosticDashboard() {
             ) : (
               <DataTable
                 columns={['Search term', 'Campaign', 'Range B Spend', 'Range B Clicks']}
-                rows={deepDiagnostic.searchTerm.highSpendZeroOrdersAfter.map((r: SearchTermRow) => [r.searchTerm, r.campaignName, formatInr(r.afterSpend), r.afterClicks])}
+                rows={deepDiagnostic.searchTerm.highSpendZeroOrdersAfter.map((r: SearchTermRow) => [entityDisplayLabel(r.searchTerm), r.campaignName, formatInr(r.afterSpend), r.afterClicks])}
               />
             )}
           </div>
@@ -758,7 +758,7 @@ export function EasyhomeDiagnosticDashboard() {
             ) : (
               <DataTable
                 columns={['Search term', 'Campaign', 'Δ Spend', 'Δ Sales']}
-                rows={deepDiagnostic.searchTerm.spendUpSalesDown.map((r: SearchTermRow) => [r.searchTerm, r.campaignName, formatInr(r.deltaSpend), formatInr(r.deltaSales)])}
+                rows={deepDiagnostic.searchTerm.spendUpSalesDown.map((r: SearchTermRow) => [entityDisplayLabel(r.searchTerm), r.campaignName, formatInr(r.deltaSpend), formatInr(r.deltaSales)])}
               />
             )}
           </div>
@@ -771,7 +771,7 @@ export function EasyhomeDiagnosticDashboard() {
               <DataTable
                 columns={['Search term', 'Campaign', 'Range A ACOS', 'Range B ACOS', 'Range A Purchases', 'Range B Purchases']}
                 rows={deepDiagnostic.searchTerm.goodBeforeBadAfter.map((r: SearchTermRow) => [
-                  r.searchTerm, r.campaignName,
+                  entityDisplayLabel(r.searchTerm), r.campaignName,
                   r.beforeAcos !== null ? `${r.beforeAcos.toFixed(1)}%` : '—',
                   r.afterAcos !== null ? `${r.afterAcos.toFixed(1)}%` : '—',
                   r.beforePurchases, r.afterPurchases,

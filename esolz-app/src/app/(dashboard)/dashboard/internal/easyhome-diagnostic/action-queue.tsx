@@ -12,7 +12,7 @@ import type {
   ActionStatus,
 } from '@/lib/internal/easyhome-action-queue'
 import type { ActionItemWithChanges } from '@/lib/internal/easyhome-change-history-diagnostic'
-import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function formatInr(value: number | null): string {
   if (value === null) return '—'
@@ -40,7 +40,7 @@ function toActionQueueCsv(rows: ActionItemWithChanges[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.priority, portfolioDisplayLabel(r.portfolio), r.entityType, r.entityName, r.campaignName, r.issueType, r.problemSummary,
+      r.priority, portfolioDisplayLabel(r.portfolio), r.entityType, entityDisplayLabel(r.entityName), r.campaignName, r.issueType, r.problemSummary,
       r.beforeMetrics.spend, r.beforeMetrics.sales, r.beforeMetrics.acos, r.afterMetrics.spend, r.afterMetrics.sales, r.afterMetrics.acos,
       r.suggestedReview, r.dataSource, r.relatedChanges.length, r.status, r.notes,
     ].map(esc).join(','))
@@ -86,7 +86,7 @@ function ActionRow({ item, onStatusChange }: { item: ActionItemWithChanges; onSt
         <td className="py-2 px-2"><Badge variant={PRIORITY_BADGE[item.priority]}>{item.priority}</Badge></td>
         <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(item.portfolio)}</td>
         <td className="py-2 px-2 whitespace-nowrap text-foreground">{item.entityType}</td>
-        <td className="py-2 px-2 text-foreground max-w-[160px] truncate" title={item.entityName}>{item.entityName}</td>
+        <td className="py-2 px-2 text-foreground max-w-[160px] truncate" title={entityDisplayLabel(item.entityName)}>{entityDisplayLabel(item.entityName)}</td>
         <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{item.issueType}</td>
         <td className="py-2 px-2 text-foreground max-w-[280px]">{item.problemSummary}</td>
         <td className="py-2 px-2 text-muted-foreground whitespace-nowrap">
@@ -141,7 +141,7 @@ function ActionRow({ item, onStatusChange }: { item: ActionItemWithChanges; onSt
               {item.relatedChanges.map((c, i) => (
                 <li key={i} className="flex gap-2">
                   <Badge variant={c.timing === 'Changed during decline window' ? 'destructive' : 'outline'}>{c.timing}</Badge>
-                  <span>{new Date(c.changedAtIso).toLocaleString('en-IN')} — {c.description}{c.entityName ? ` (${c.entityName})` : ''}</span>
+                  <span>{new Date(c.changedAtIso).toLocaleString('en-IN')} — {c.description}{c.entityName ? ` (${entityDisplayLabel(c.entityName)})` : ''}</span>
                 </li>
               ))}
             </ul>
