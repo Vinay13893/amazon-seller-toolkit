@@ -298,6 +298,7 @@ export async function GET(request: Request) {
     reportEndDate: string | null
     periodLabel: string | null
     acceptedCount: number
+    rejectedCount: number
     uploadedAt: string
     originalFilename: string
   } | null = null
@@ -338,6 +339,7 @@ export async function GET(request: Request) {
       reportEndDate: scEnd,
       periodLabel: activeSCBatch.period_label as string | null,
       acceptedCount: Number(activeSCBatch.accepted_count ?? 0),
+      rejectedCount: Number(activeSCBatch.rejected_count ?? 0),
       uploadedAt: activeSCBatch.uploaded_at as string,
       originalFilename: activeSCBatch.original_filename as string,
     }

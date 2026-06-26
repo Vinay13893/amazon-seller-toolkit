@@ -2,7 +2,43 @@
 
 ## Internal Replenishment Intelligence - Current State
 
-_Last updated: 2026-06-23. Covers commits `4a763f1`, `c99ea82`, `512a284`._
+_Last updated: 2026-06-26. Covers commits `4a763f1`, `c99ea82`, `512a284`, and the date-range + Seller Central demand session (Task A–J)._
+
+### Date-range-aware demand + Seller Central planning (2026-06-26)
+
+**What changed:**
+
+- **Date range selector**: Planning assumptions panel now has a "Demand period" preset selector: 7D / 15D / 30D / 45D / 60D / Custom. Custom shows start/end date pickers. All replenishment calculations use the selected period — not hardcoded 30 days.
+- **`formatDemandPeriodLabel`**: Helper in `internal-replenishment-planner.ts` and `stock-dashboard.tsx`. Returns preset labels (`30D`) or `D Mon–D Mon` for custom ranges.
+- **`demandDays`**: Replaces all hardcoded `30` velocity divisors in `buildNextStockPlan`. Computed from inclusive day count of the selected window. Returned in `nextStockPlan.assumptions`.
+- **Seller Central sales upload**: New DB tables `seller_central_sales_upload_batches` + `seller_central_sales_rows` (migration 045). Upload route at `POST /api/internal/stock-actions/seller-central-sales/import`. UI in Flex tab: CSV upload with optional report date range, active batch status, period match indicator.
+- **Dual-source planning model**: `buildFlexReplenishmentRows` + `buildFlexDemandBreakdownRows` now accept `sellerCentralDemandBySkuNorm` and `sellerCentralPeriodMatch`. Per-row `planningDemandSource` indicates which source was used. SC used when period matches; falls back to trusted demand with labelled reason.
+- **SC CSV parser**: `src/lib/internal/seller-central-sales-csv.ts`. Accepts many column aliases, CSV and TSV, rejects negative/PII, 5000-row limit.
+- **Dynamic column labels**: All "30D" headings in flex table, exports, and stat cards now use the live period label.
+- **New columns in Flex/Vendor table**: SC Period Units, SC Component Units, Planning Component Units Used, Planning Demand Source.
+- **`ALLOWED_LOOKBACK_DAYS`** expanded to `[7, 15, 30, 45, 60, 90]` in the route.
+
+**DB migrations applied:**
+- Migration 045: `seller_central_sales_upload_batches`, `seller_central_sales_rows`
+
+**Files changed:**
+- `supabase/migrations/045_seller_central_sales_upload.sql` (NEW)
+- `src/lib/internal-replenishment-planner.ts` (formatDemandPeriodLabel, demandDays, date range filtering)
+- `src/lib/internal-replenishment-report.ts` (PlanningDemandSource, SC fields)
+- `src/lib/internal/seller-central-sales-csv.ts` (NEW)
+- `src/app/api/internal/stock-actions/seller-central-sales/import/route.ts` (NEW)
+- `src/app/api/internal/stock-actions/route.ts` (date range, SC batch query, period match logic)
+- `src/app/(dashboard)/dashboard/internal/stock-dashboard.tsx` (all UI changes)
+
+**Planning source logic (per component row):**
+- SC batch uploaded AND period matches AND this SKU has SC units → `seller_central_uploaded`
+- SC batch uploaded AND period matches BUT this SKU not in SC export → `seller_central_missing_fallback_trusted`
+- SC batch uploaded BUT period doesn't match → `seller_central_period_mismatch_fallback_trusted`
+- No SC batch → `trusted_fulfillment`
+
+**Required action after deploy:**
+- Apply migration 045 via Supabase MCP or `supabase db push`.
+- Upload a Seller Central sales CSV once to populate the active SC batch.
 
 ### Demand source definition
 
@@ -78,9 +114,9 @@ Verified against pack-of-4/2/1 examples. Formula itself was not modified in any 
 
 ### Known open issues / next tasks
 
-1. Re-upload the latest XHZU stock CSV to populate the upload batch history.
-2. Decide whether planning should continue using trusted fulfilment demand only, or also show/use Seller Central Manage Inventory 30D units sold as a secondary reference.
-3. If needed, add Manage Inventory 30D units sold ingestion/upload as a separate, clearly-labelled source (not a silent replacement).
+1. **Apply migration 045** — `seller_central_sales_upload_batches` + `seller_central_sales_rows` tables must be created via `supabase db push` or the Supabase MCP.
+2. **Upload SC demand CSV** — upload a Seller Central Manage Inventory export once to populate the active batch.
+3. **Verify replenishment numbers** — confirm Trusted demand (300) vs SC demand (493) display correctly end-to-end before marking this feature complete.
 4. Build assumptions save/edit UI for `replenishment_assumptions`.
 5. Build the actual Amazon Restock Recommendations report fetch — only after explicit approval (per AGENTS.md: do not create new Amazon reports unless specifically instructed).
 6. Verify the FC Allocation tab against real product/component data end-to-end.

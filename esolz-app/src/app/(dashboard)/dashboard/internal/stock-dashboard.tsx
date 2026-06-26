@@ -271,7 +271,6 @@ type StockResponse = {
   }
   activeSellerCentralBatch: {
     originalFilename: string
-    uploadedBy: string | null
     uploadedAt: string
     reportStartDate: string | null
     reportEndDate: string | null
@@ -2670,8 +2669,8 @@ export function InternalStockDashboard() {
                 <p className="mt-1 text-xs text-muted-foreground">
                   Uploaded at {formatDate(data.activeSellerCentralBatch.uploadedAt)} ·{' '}
                   {data.activeSellerCentralBatch.reportStartDate && data.activeSellerCentralBatch.reportEndDate
-                    ? `Period: ${data.activeSellerCentralBatch.reportStartDate} to ${data.activeSellerCentralBatch.reportEndDate} ·`
-                    : 'No period dates stored ·'}{' '}
+                    ? `Period: ${data.activeSellerCentralBatch.reportStartDate} to ${data.activeSellerCentralBatch.reportEndDate} · `
+                    : 'No period dates stored · '}
                   Accepted {data.activeSellerCentralBatch.acceptedCount.toLocaleString('en-IN')} rows
                   {data.activeSellerCentralBatch.rejectedCount > 0
                     ? ` · Rejected ${data.activeSellerCentralBatch.rejectedCount.toLocaleString('en-IN')}`
