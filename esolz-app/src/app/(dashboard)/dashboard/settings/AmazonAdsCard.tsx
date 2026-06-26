@@ -22,7 +22,7 @@ type AdsStatusResponse = {
   message?: string
   profilesSynced?: number
   configured?: boolean
-  configuredVia?: 'oauth' | 'env' | 'none'
+  configuredVia?: 'oauth' | 'oauth_ready' | 'env' | 'none'
   envPresence?: {
     configuredEnvNames?: string[]
     missingEnvNames?: string[]
@@ -183,6 +183,12 @@ export default function AmazonAdsCard() {
             {configuredVia === 'oauth' && (
               <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-xs text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
                 Connected via OAuth.
+              </div>
+            )}
+
+            {configuredVia === 'oauth_ready' && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-300">
+                <span className="font-medium">OAuth ready — not connected.</span> Amazon Ads OAuth is configured. Click Connect Amazon Ads to authorize the account.
               </div>
             )}
 

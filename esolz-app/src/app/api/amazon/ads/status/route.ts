@@ -132,8 +132,20 @@ export async function GET() {
     }, { status: 200 })
   }
 
+  // OAuth app env vars (client id/secret/redirect uri) being present only
+  // means the Connect button is *ready to use* — it does not mean a
+  // connection already exists. Those are two different states, and
+  // conflating them previously made the Settings card show "Not configured"
+  // (and disable Connect) even when OAuth was correctly set up and just
+  // waiting for the user to click it.
   const connectedViaOauth = connection?.status === 'active'
-  const configuredVia: 'oauth' | 'env' | 'none' = connectedViaOauth ? 'oauth' : directCredentialsConfigured ? 'env' : 'none'
+  const configuredVia: 'oauth' | 'oauth_ready' | 'env' | 'none' = connectedViaOauth
+    ? 'oauth'
+    : directCredentialsConfigured
+      ? 'env'
+      : configured
+        ? 'oauth_ready'
+        : 'none'
 
   if (!configured && !directCredentialsConfigured) {
     return NextResponse.json({
