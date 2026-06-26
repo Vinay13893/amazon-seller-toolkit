@@ -71,6 +71,12 @@ export type FcReplenishmentSummary = {
   rowsMarginReview: number
 }
 
+export type PlanningDemandSource =
+  | 'seller_central_uploaded'
+  | 'trusted_fulfillment'
+  | 'seller_central_missing_fallback_trusted'
+  | 'seller_central_period_mismatch_fallback_trusted'
+
 export type FlexReplenishmentRow = {
   componentSku: string
   wmsParentSkuCount: number
@@ -79,6 +85,10 @@ export type FlexReplenishmentRow = {
   fbaFc30dUnits: number
   xhzuFlex30dUnits: number
   demandSourceUsed: string
+  sellerCentralPeriodUnits: number
+  sellerCentralComponentUnits: number
+  planningComponentUnitsUsed: number
+  planningDemandSource: PlanningDemandSource
   componentAdjustedDemand: number
   dailyComponentVelocity: number
   growthFactor: number
@@ -272,7 +282,13 @@ export function buildFlexReplenishmentRows(input: {
   paymentSignals: PaymentSignalRow[]
   stateZoneDemand: StateZoneDemandSignal[]
   sellerFlexLocationCodes: Set<string>
+  /** Seller Central uploaded demand: amazon_sku_norm → units_sold. Empty map = not available. */
+  sellerCentralDemandBySkuNorm?: Map<string, number>
+  /** True when an active SC batch covers the selected demand period. */
+  sellerCentralPeriodMatch?: boolean
 }): { rows: FlexReplenishmentRow[]; summary: FlexReplenishmentSummary } {
+  const scDemand = input.sellerCentralDemandBySkuNorm ?? new Map<string, number>()
+  const scPeriodMatch = input.sellerCentralPeriodMatch ?? false
   // Trusted Amazon demand for vendor/component planning combines FBA Ledger Detail
   // shipments at FCs and Seller Flex shipments/sales, since XHZU feeds both channels.
   // Easy Ship/MFN and unattributed sales are excluded because they are not backed by
@@ -331,12 +347,17 @@ export function buildFlexReplenishmentRows(input: {
     let fbaFc30dUnits = 0
     let xhzuFlex30dUnits = 0
     let componentAdjustedDemand = 0
+    let sellerCentralPeriodUnits = 0
+    let sellerCentralComponentUnits = 0
     for (const mapping of mappings) {
       const demand = demandBySkuNorm.get(mapping.amazonSkuNorm) ?? 0
       amazonDemand30d += demand
       fbaFc30dUnits += fbaDemandBySkuNorm.get(mapping.amazonSkuNorm) ?? 0
       xhzuFlex30dUnits += flexDemandBySkuNorm.get(mapping.amazonSkuNorm) ?? 0
       componentAdjustedDemand += demand * mapping.componentQuantity
+      const scUnits = scDemand.get(mapping.amazonSkuNorm) ?? 0
+      sellerCentralPeriodUnits += scUnits
+      sellerCentralComponentUnits += scUnits * mapping.componentQuantity
     }
     const demandSourceUsed = fbaFc30dUnits > 0 && xhzuFlex30dUnits > 0
       ? 'FBA/FC + XHZU/Seller Flex'
@@ -346,7 +367,26 @@ export function buildFlexReplenishmentRows(input: {
           ? 'XHZU/Seller Flex only'
           : 'No trusted demand source found'
 
-    const dailyComponentVelocity = lookbackDays > 0 ? componentAdjustedDemand / lookbackDays : 0
+    // Determine planning demand source and units
+    let planningComponentUnitsUsed: number
+    let planningDemandSource: PlanningDemandSource
+    if (scPeriodMatch && sellerCentralPeriodUnits > 0) {
+      planningComponentUnitsUsed = sellerCentralComponentUnits
+      planningDemandSource = 'seller_central_uploaded'
+    } else if (scDemand.size > 0 && !scPeriodMatch) {
+      // SC data exists but period doesn't match
+      planningComponentUnitsUsed = componentAdjustedDemand
+      planningDemandSource = 'seller_central_period_mismatch_fallback_trusted'
+    } else if (scDemand.size > 0 && sellerCentralPeriodUnits === 0) {
+      // SC data exists for this period but this SKU is missing from it
+      planningComponentUnitsUsed = componentAdjustedDemand
+      planningDemandSource = 'seller_central_missing_fallback_trusted'
+    } else {
+      planningComponentUnitsUsed = componentAdjustedDemand
+      planningDemandSource = 'trusted_fulfillment'
+    }
+
+    const dailyComponentVelocity = lookbackDays > 0 ? planningComponentUnitsUsed / lookbackDays : 0
     const requiredComponentStock = Math.ceil(dailyComponentVelocity * growthFactor * targetStockDays)
     const currentXhzuComponentStock = xhzuStockByComponent.has(componentSkuNorm)
       ? xhzuStockByComponent.get(componentSkuNorm)!
@@ -394,6 +434,10 @@ export function buildFlexReplenishmentRows(input: {
       fbaFc30dUnits,
       xhzuFlex30dUnits,
       demandSourceUsed,
+      sellerCentralPeriodUnits,
+      sellerCentralComponentUnits,
+      planningComponentUnitsUsed,
+      planningDemandSource,
       componentAdjustedDemand,
       dailyComponentVelocity: Math.round(dailyComponentVelocity * 100) / 100,
       growthFactor,
@@ -442,6 +486,10 @@ export type FlexDemandBreakdownRow = {
   amazonDemand30d: number
   fbaDemand30d: number
   sellerFlexDemand30d: number
+  sellerCentralPeriodUnits: number
+  sellerCentralComponentUnits: number
+  planningComponentUnitsUsed: number
+  planningDemandSource: PlanningDemandSource
   componentQuantityPerAmazonUnit: number
   componentUnitsRequiredContribution: number
   demandSourceLabel: string
@@ -456,7 +504,12 @@ export type FlexDemandBreakdownRow = {
 export function buildFlexDemandBreakdownRows(input: {
   componentMappings: ComponentMappingRow[]
   planRows: NextStockPlanRow[]
+  sellerCentralDemandBySkuNorm?: Map<string, number>
+  sellerCentralPeriodMatch?: boolean
 }): FlexDemandBreakdownRow[] {
+  const scDemand = input.sellerCentralDemandBySkuNorm ?? new Map<string, number>()
+  const scPeriodMatch = input.sellerCentralPeriodMatch ?? false
+
   const planRowBySkuNorm = new Map<string, NextStockPlanRow>()
   for (const row of input.planRows) {
     const skuNorm = norm(row.sku)
@@ -471,6 +524,8 @@ export function buildFlexDemandBreakdownRows(input: {
     const untrustedDemand30d = planRow
       ? planRow.easyShipMfnSales30d + planRow.unknownSourceSales30d
       : 0
+    const scUnits = scDemand.get(norm(mapping.amazonSkuNorm)) ?? 0
+    const scComponentUnits = scUnits * mapping.componentQuantity
 
     const demandSourceLabel = fbaDemand30d > 0 && sellerFlexDemand30d > 0
       ? 'FBA Ledger Detail + Seller Flex'
@@ -502,6 +557,23 @@ export function buildFlexDemandBreakdownRows(input: {
               ? 'Only Easy Ship/MFN or unattributed sales found; excluded from trusted component demand.'
               : 'No FBA/FC or XHZU/Seller Flex demand found in the selected lookback window.'
 
+    // Planning demand source for this individual mapping row
+    let planningDemandSource: PlanningDemandSource
+    let planningComponentUnitsUsed: number
+    if (scPeriodMatch && scUnits > 0) {
+      planningDemandSource = 'seller_central_uploaded'
+      planningComponentUnitsUsed = scComponentUnits
+    } else if (scDemand.size > 0 && !scPeriodMatch) {
+      planningDemandSource = 'seller_central_period_mismatch_fallback_trusted'
+      planningComponentUnitsUsed = amazonDemand30d * mapping.componentQuantity
+    } else if (scDemand.size > 0 && scUnits === 0) {
+      planningDemandSource = 'seller_central_missing_fallback_trusted'
+      planningComponentUnitsUsed = amazonDemand30d * mapping.componentQuantity
+    } else {
+      planningDemandSource = 'trusted_fulfillment'
+      planningComponentUnitsUsed = amazonDemand30d * mapping.componentQuantity
+    }
+
     return {
       componentSku: mapping.componentSku,
       amazonSku: mapping.amazonSku,
@@ -509,6 +581,10 @@ export function buildFlexDemandBreakdownRows(input: {
       amazonDemand30d,
       fbaDemand30d,
       sellerFlexDemand30d,
+      sellerCentralPeriodUnits: scUnits,
+      sellerCentralComponentUnits: scComponentUnits,
+      planningComponentUnitsUsed,
+      planningDemandSource,
       componentQuantityPerAmazonUnit: mapping.componentQuantity,
       componentUnitsRequiredContribution: amazonDemand30d * mapping.componentQuantity,
       demandSourceLabel,

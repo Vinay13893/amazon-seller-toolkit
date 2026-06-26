@@ -28,7 +28,7 @@ import { createClient } from '@/lib/supabase/server'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const ALLOWED_LOOKBACK_DAYS = [15, 30, 60, 90] as const
+const ALLOWED_LOOKBACK_DAYS = [7, 15, 30, 45, 60, 90] as const
 const ALLOWED_PLANNING_CYCLE_DAYS = [15, 30, 45, 60, 90] as const
 const ALLOWED_TRANSIT_BUFFER_DAYS = [7, 15, 21, 30] as const
 const ALLOWED_GROWTH_MULTIPLIERS = [1, 1.25, 1.5, 2] as const
@@ -70,9 +70,37 @@ export async function GET(request: Request) {
     DEFAULT_REPLENISHMENT_ASSUMPTIONS.growthMultiplier,
   )
 
+  // Optional explicit demand window for custom date range
+  const demandStartDateRaw = searchParams.get('demandStartDate')
+  const demandEndDateRaw = searchParams.get('demandEndDate')
+  const isValidDate = (s: string | null): s is string => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s)
+  const demandStartDate = isValidDate(demandStartDateRaw) ? demandStartDateRaw : undefined
+  const demandEndDate = isValidDate(demandEndDateRaw) ? demandEndDateRaw : undefined
+  const hasCustomRange = !!(demandStartDate && demandEndDate && demandStartDate <= demandEndDate)
+
   const supabase = await createClient()
+  // Resolve the effective demand window for DB queries
+  const today = new Date()
+  const effectiveDemandStart = hasCustomRange
+    ? demandStartDate!
+    : (() => {
+        const d = new Date(today)
+        d.setUTCDate(d.getUTCDate() - (lookbackDays - 1))
+        return d.toISOString().slice(0, 10)
+      })()
+  const effectiveDemandEnd = hasCustomRange
+    ? demandEndDate!
+    : today.toISOString().slice(0, 10)
+
   const salesStart = new Date()
-  salesStart.setUTCDate(salesStart.getUTCDate() - (Math.max(30, lookbackDays) - 1))
+  // Fetch enough data for at least 30d lookback for stock actions calculation, but also include
+  // the selected demand window start if it's earlier.
+  const salesLookbackDate = new Date()
+  salesLookbackDate.setUTCDate(salesLookbackDate.getUTCDate() - (Math.max(30, lookbackDays) - 1))
+  const salesStartIso = hasCustomRange && demandStartDate! < salesLookbackDate.toISOString().slice(0, 10)
+    ? demandStartDate!
+    : salesLookbackDate.toISOString().slice(0, 10)
+  salesStart.setTime(new Date(`${salesStartIso}T00:00:00Z`).getTime())
   const lookbackStart = new Date()
   lookbackStart.setUTCDate(lookbackStart.getUTCDate() - (lookbackDays - 1))
   const paymentTransactionsPromise = async () => {
@@ -159,6 +187,7 @@ export async function GET(request: Request) {
     componentMappingsResult,
     amazonRecommendationsResult,
     amazonConnectionResult,
+    activeSCBatchResult,
   ] = await Promise.all([
     supabase
       .from('amazon_listing_items')
@@ -176,7 +205,7 @@ export async function GET(request: Request) {
       .from('internal_sku_daily_sales')
       .select('asin, sku, marketplace_id, sales_date, ordered_units, source')
       .eq('workspace_id', access.workspaceId)
-      .gte('sales_date', salesStart.toISOString().slice(0, 10))
+      .gte('sales_date', salesStartIso)
       .limit(30000),
     supabase
       .from('amazon_sync_jobs')
@@ -243,6 +272,13 @@ export async function GET(request: Request) {
       .eq('status', 'active')
       .limit(1)
       .maybeSingle(),
+    // Active Seller Central sales upload batch
+    supabase
+      .from('seller_central_sales_upload_batches')
+      .select('id, report_start_date, report_end_date, period_label, accepted_count, rejected_count, uploaded_at, original_filename')
+      .eq('workspace_id', access.workspaceId)
+      .eq('is_active', true)
+      .maybeSingle(),
   ])
 
   if (listingsResult.error) {
@@ -250,6 +286,61 @@ export async function GET(request: Request) {
       { error: 'Stock action data is temporarily unavailable.' },
       { status: 503 },
     )
+  }
+
+  // Seller Central demand: fetch rows for the active batch and check period overlap
+  const activeSCBatch = activeSCBatchResult.data ?? null
+  let sellerCentralDemandBySkuNorm = new Map<string, number>()
+  let sellerCentralPeriodMatch = false
+  let scBatchInfo: {
+    batchId: string
+    reportStartDate: string | null
+    reportEndDate: string | null
+    periodLabel: string | null
+    acceptedCount: number
+    uploadedAt: string
+    originalFilename: string
+  } | null = null
+
+  if (activeSCBatch) {
+    const scStart = activeSCBatch.report_start_date as string | null
+    const scEnd = activeSCBatch.report_end_date as string | null
+
+    // Period match: the SC batch covers the selected demand window (overlaps or contains it)
+    sellerCentralPeriodMatch = !!(
+      scStart
+      && scEnd
+      && scStart <= effectiveDemandEnd
+      && scEnd >= effectiveDemandStart
+    )
+
+    // If no period dates are stored, treat it as a match (user uploaded for unknown period)
+    if (!scStart && !scEnd) sellerCentralPeriodMatch = true
+
+    const { data: scRows } = await supabase
+      .from('seller_central_sales_rows')
+      .select('amazon_sku_norm, units_sold')
+      .eq('batch_id', activeSCBatch.id)
+      .eq('workspace_id', access.workspaceId)
+      .limit(10000)
+
+    for (const row of scRows ?? []) {
+      const skuNorm = (row.amazon_sku_norm as string).toUpperCase()
+      sellerCentralDemandBySkuNorm.set(
+        skuNorm,
+        (sellerCentralDemandBySkuNorm.get(skuNorm) ?? 0) + Number(row.units_sold ?? 0),
+      )
+    }
+
+    scBatchInfo = {
+      batchId: activeSCBatch.id as string,
+      reportStartDate: scStart,
+      reportEndDate: scEnd,
+      periodLabel: activeSCBatch.period_label as string | null,
+      acceptedCount: Number(activeSCBatch.accepted_count ?? 0),
+      uploadedAt: activeSCBatch.uploaded_at as string,
+      originalFilename: activeSCBatch.original_filename as string,
+    }
   }
 
   if (latestSyncResult.data?.status === 'running') {
@@ -559,6 +650,8 @@ export async function GET(request: Request) {
     planningCycleDays,
     transitBufferDays,
     growthMultiplier,
+    demandStartDate: hasCustomRange ? demandStartDate : undefined,
+    demandEndDate: hasCustomRange ? demandEndDate : undefined,
   })
   const paymentContext = buildReplenishmentPaymentSignals({
     transactions: paymentTransactionsResult.error
@@ -616,6 +709,8 @@ export async function GET(request: Request) {
     paymentSignals: paymentContext.paymentSignals,
     stateZoneDemand: paymentContext.stateZoneDemand,
     sellerFlexLocationCodes,
+    sellerCentralDemandBySkuNorm: sellerCentralDemandBySkuNorm,
+    sellerCentralPeriodMatch,
   })
   const fcStockMatrix = buildFcStockMatrix({
     fcReplenishmentRows: fcReplenishment.rows,
@@ -647,6 +742,8 @@ export async function GET(request: Request) {
   const flexDemandBreakdownRows = buildFlexDemandBreakdownRows({
     componentMappings: componentMappingRows,
     planRows: nextStockPlan.rows,
+    sellerCentralDemandBySkuNorm: sellerCentralDemandBySkuNorm,
+    sellerCentralPeriodMatch,
   })
 
   const inventoryDates = inventoryRows
@@ -700,6 +797,8 @@ export async function GET(request: Request) {
     fcFulfillmentRows: fcFulfillment.componentRows,
     fcAllocationCsvRows: fcFulfillment.csvRows,
     fcFulfillmentSummary: fcFulfillment.summary,
+    activeSellerCentralBatch: scBatchInfo,
+    sellerCentralPeriodMatch,
     activeXhzuBatch: activeXhzuBatch
       ? {
           originalFilename: activeXhzuBatch.original_filename as string,

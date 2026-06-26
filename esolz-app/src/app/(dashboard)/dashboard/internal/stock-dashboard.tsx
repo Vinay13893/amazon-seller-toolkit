@@ -40,6 +40,9 @@ type StockResponse = {
       transitBufferDays: number
       growthMultiplier: number
       maxLookbackDays: number
+      demandDays: number
+      demandStartDate: string
+      demandEndDate: string
     }
     summary: {
       fbaReplenishmentNeeded: number
@@ -180,6 +183,10 @@ type StockResponse = {
     reason: string
     stateZoneSignal: string | null
     paymentSignal: ReplenishmentPaymentSignalSummary | null
+    sellerCentralPeriodUnits: number
+    sellerCentralComponentUnits: number
+    planningComponentUnitsUsed: number
+    planningDemandSource: 'trusted_fulfillment' | 'seller_central_uploaded' | 'seller_central_missing_fallback_trusted' | 'seller_central_period_mismatch_fallback_trusted'
   }>
   flexReplenishmentSummary: {
     rows: number
@@ -262,6 +269,17 @@ type StockResponse = {
     flex: 'default' | 'saved'
     fc: 'default' | 'saved'
   }
+  activeSellerCentralBatch: {
+    originalFilename: string
+    uploadedBy: string | null
+    uploadedAt: string
+    reportStartDate: string | null
+    reportEndDate: string | null
+    periodLabel: string | null
+    acceptedCount: number
+    rejectedCount: number
+  } | null
+  sellerCentralPeriodMatch: boolean
   flexDemandBreakdownRows: Array<{
     componentSku: string
     amazonSku: string
@@ -278,6 +296,10 @@ type StockResponse = {
       | 'Mapped but only untrusted/non-FBA demand'
       | 'SKU mismatch / no demand source match'
     reason: string
+    sellerCentralPeriodUnits: number
+    sellerCentralComponentUnits: number
+    planningComponentUnitsUsed: number
+    planningDemandSource: 'trusted_fulfillment' | 'seller_central_uploaded' | 'seller_central_missing_fallback_trusted' | 'seller_central_period_mismatch_fallback_trusted'
   }>
   diagnostics: {
     products_with_sales: number
@@ -334,6 +356,15 @@ type XhzuStockImportResult = {
   updatedCount: number
 }
 
+type SellerCentralSalesUploadResult = {
+  accepted: number
+  rejected: number
+  batchId: string
+  reportStartDate: string | null
+  reportEndDate: string | null
+  errors: Array<{ row: number; message: string }>
+}
+
 type AmazonSyncResult = {
   jobId: string
   status: 'running' | 'completed' | 'partial_success' | 'failed'
@@ -355,11 +386,16 @@ type FulfillmentReportResult = {
   completedAt?: string | null
 }
 
+type DemandPreset = '7d' | '15d' | '30d' | '45d' | '60d' | 'custom'
+
 type PlanningAssumptions = {
-  lookbackDays: 15 | 30 | 60 | 90
+  lookbackDays: 7 | 15 | 30 | 45 | 60 | 90
   planningCycleDays: 15 | 30 | 45 | 60 | 90
   transitBufferDays: 7 | 15 | 21 | 30
   growthMultiplier: 1 | 1.25 | 1.5 | 2
+  demandPreset: DemandPreset
+  demandStartDate?: string
+  demandEndDate?: string
 }
 
 type CsvColumn<Row> = {
@@ -374,6 +410,7 @@ const DEFAULT_PLANNING_ASSUMPTIONS: PlanningAssumptions = {
   planningCycleDays: 30,
   transitBufferDays: 15,
   growthMultiplier: 1.5,
+  demandPreset: '30d',
 }
 
 type FcReplenishmentRow = StockResponse['fcReplenishmentRows'][number]
@@ -627,13 +664,24 @@ function amazonRecommendationStatusLabel(status: AmazonRecommendationStatus): st
   }
 }
 
-function exportFcAllocationPlanCsv(rows: FcAllocationCsvRow[]) {
+function formatDemandPeriodLabel(demandDays: number, startDate: string, endDate: string): string {
+  const presetMap: Record<number, string> = { 7: '7D', 15: '15D', 30: '30D', 45: '45D', 60: '60D', 90: '90D' }
+  if (presetMap[demandDays]) return presetMap[demandDays]
+  const fmt = (iso: string) => {
+    const parts = iso.split('-')
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    return `${Number(parts[2])} ${months[Number(parts[1]) - 1]}`
+  }
+  return `${fmt(startDate)}–${fmt(endDate)}`
+}
+
+function exportFcAllocationPlanCsv(rows: FcAllocationCsvRow[], salesLookbackDays: number) {
   const columns: CsvColumn<FcAllocationCsvRow>[] = [
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Amazon SKU', value: row => row.amazonSku },
     { header: 'FC / Warehouse', value: row => row.fcCode },
-    { header: '30D SKU Demand', value: row => row.skuDemand30d },
-    { header: '30D FC Demand', value: row => row.fcDemand30d },
+    { header: `${salesLookbackDays}D SKU Demand`, value: row => row.skuDemand30d },
+    { header: `${salesLookbackDays}D FC Demand`, value: row => row.fcDemand30d },
     { header: 'Required Send Units', value: row => row.requiredSendUnits },
     { header: 'Component Qty Per Unit', value: row => row.componentQtyPerUnit },
     { header: 'Component Units Required', value: row => row.componentUnitsRequired },
@@ -659,7 +707,7 @@ function exportFcAllocationPlanCsv(rows: FcAllocationCsvRow[]) {
   URL.revokeObjectURL(url)
 }
 
-function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
+function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[], periodLabel: string) {
   const sortedRows = [...rows].sort((a, b) => {
     const sentA = a.suggestedVendorReplenishQty ?? 0
     const sentB = b.suggestedVendorReplenishQty ?? 0
@@ -674,10 +722,14 @@ function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
     { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-    { header: 'FBA/FC 30D Finished Units', value: row => row.fbaFc30dUnits },
-    { header: 'XHZU/Flex 30D Finished Units', value: row => row.xhzuFlex30dUnits },
-    { header: 'Total Trusted 30D Finished Units', value: row => row.amazonDemand30d },
-    { header: '30D Component Units Sold', value: row => row.componentAdjustedDemand },
+    { header: `FBA/FC ${periodLabel} Finished Units`, value: row => row.fbaFc30dUnits },
+    { header: `XHZU/Flex ${periodLabel} Finished Units`, value: row => row.xhzuFlex30dUnits },
+    { header: `Total Trusted ${periodLabel} Finished Units`, value: row => row.amazonDemand30d },
+    { header: `${periodLabel} Component Units Sold`, value: row => row.componentAdjustedDemand },
+    { header: `SC ${periodLabel} Finished Units`, value: row => row.sellerCentralPeriodUnits },
+    { header: `SC ${periodLabel} Component Units`, value: row => row.sellerCentralComponentUnits },
+    { header: `Planning ${periodLabel} Component Units Used`, value: row => row.planningComponentUnitsUsed },
+    { header: 'Planning Demand Source', value: row => row.planningDemandSource },
     { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
     { header: 'Required Component Stock', value: row => row.requiredComponentStock },
     { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
@@ -699,16 +751,20 @@ function exportFlexPurchasePlanCsv(rows: FlexReplenishmentRow[]) {
   URL.revokeObjectURL(url)
 }
 
-function exportFlexDemandBreakdownCsv(rows: FlexDemandBreakdownRow[]) {
+function exportFlexDemandBreakdownCsv(rows: FlexDemandBreakdownRow[], periodLabel: string) {
   const columns: CsvColumn<FlexDemandBreakdownRow>[] = [
     { header: 'Component SKU', value: row => row.componentSku },
     { header: 'Amazon SKU', value: row => row.amazonSku },
     { header: 'WMS Parent SKU', value: row => row.wmsParentSku },
     { header: 'Component Qty Per Unit', value: row => row.componentQuantityPerAmazonUnit },
-    { header: 'FBA/FC 30D Units', value: row => row.fbaDemand30d },
-    { header: 'XHZU/Flex 30D Units', value: row => row.sellerFlexDemand30d },
-    { header: 'Total Trusted 30D Units', value: row => row.amazonDemand30d },
+    { header: `FBA/FC ${periodLabel} Units`, value: row => row.fbaDemand30d },
+    { header: `XHZU/Flex ${periodLabel} Units`, value: row => row.sellerFlexDemand30d },
+    { header: `Total Trusted ${periodLabel} Units`, value: row => row.amazonDemand30d },
     { header: 'Component Units Sold', value: row => row.componentUnitsRequiredContribution },
+    { header: `SC ${periodLabel} Finished Units`, value: row => row.sellerCentralPeriodUnits },
+    { header: `SC ${periodLabel} Component Units`, value: row => row.sellerCentralComponentUnits },
+    { header: `Planning ${periodLabel} Component Units Used`, value: row => row.planningComponentUnitsUsed },
+    { header: 'Planning Demand Source', value: row => row.planningDemandSource },
     { header: 'Match Status', value: row => row.matchStatus },
     { header: 'Reason', value: row => row.reason },
   ]
@@ -743,6 +799,9 @@ export function InternalStockDashboard() {
   const [actionsPage, setActionsPage] = useState(1)
   const [stateDemandPage, setStateDemandPage] = useState(1)
   const [paymentSignalPage, setPaymentSignalPage] = useState(1)
+  const [fcStockMatrixPage, setFcStockMatrixPage] = useState(1)
+  const [fcFulfillmentPage, setFcFulfillmentPage] = useState(1)
+  const [flexPage, setFlexPage] = useState(1)
   const [planSort, setPlanSort] = useState<SortState>(null)
   const [fcDiagnosticsSort, setFcDiagnosticsSort] = useState<SortState>(null)
   const [actionsSort, setActionsSort] = useState<SortState>(null)
@@ -766,6 +825,12 @@ export function InternalStockDashboard() {
   const [xhzuUploadResult, setXhzuUploadResult] = useState<XhzuStockImportResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const xhzuFileInputRef = useRef<HTMLInputElement>(null)
+  const scFileInputRef = useRef<HTMLInputElement>(null)
+  const [scUploading, setScUploading] = useState(false)
+  const [scUploadError, setScUploadError] = useState<string | null>(null)
+  const [scUploadResult, setScUploadResult] = useState<SellerCentralSalesUploadResult | null>(null)
+  const [scReportStartDate, setScReportStartDate] = useState('')
+  const [scReportEndDate, setScReportEndDate] = useState('')
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -778,6 +843,15 @@ export function InternalStockDashboard() {
         transitBufferDays: String(planningAssumptions.transitBufferDays),
         growthMultiplier: String(planningAssumptions.growthMultiplier),
       })
+      if (
+        planningAssumptions.demandPreset === 'custom'
+        && planningAssumptions.demandStartDate
+        && planningAssumptions.demandEndDate
+        && planningAssumptions.demandStartDate <= planningAssumptions.demandEndDate
+      ) {
+        params.set('demandStartDate', planningAssumptions.demandStartDate)
+        params.set('demandEndDate', planningAssumptions.demandEndDate)
+      }
       const response = await fetch(`/api/internal/stock-actions?${params.toString()}`, {
         cache: 'no-store',
         credentials: 'same-origin',
@@ -868,6 +942,45 @@ export function InternalStockDashboard() {
     link.click()
     URL.revokeObjectURL(url)
   }, [])
+
+  const downloadSellerCentralTemplate = useCallback(() => {
+    const csv = 'sku,units_sold,asin,title\r\n'
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'seller-central-sales-template.csv'
+    link.click()
+    URL.revokeObjectURL(url)
+  }, [])
+
+  const uploadSellerCentralSales = useCallback(async (file: File) => {
+    setScUploading(true)
+    setScUploadError(null)
+    setScUploadResult(null)
+
+    try {
+      const body = new FormData()
+      body.set('file', file)
+      if (scReportStartDate) body.set('reportStartDate', scReportStartDate)
+      if (scReportEndDate) body.set('reportEndDate', scReportEndDate)
+      const response = await fetch('/api/internal/stock-actions/seller-central-sales/import', {
+        method: 'POST',
+        body,
+        credentials: 'same-origin',
+      })
+      const result = await response.json() as SellerCentralSalesUploadResult & { error?: string }
+      if (!response.ok) {
+        throw new Error(result.error ?? 'Seller Central sales upload failed.')
+      }
+      setScUploadResult(result)
+      if (result.accepted > 0) await load()
+    } catch (uploadFailure) {
+      setScUploadError(uploadFailure instanceof Error ? uploadFailure.message : 'Seller Central sales upload failed.')
+    } finally {
+      setScUploading(false)
+      if (scFileInputRef.current) scFileInputRef.current.value = ''
+    }
+  }, [load, scReportStartDate, scReportEndDate])
 
   const syncAmazonData = useCallback(async () => {
     setSyncingAmazon(true)
@@ -1142,6 +1255,10 @@ export function InternalStockDashboard() {
     setPaymentSignalPage(1)
   }, [paymentPriority, paymentSignalQuery, paymentSignalSort])
 
+  useEffect(() => {
+    setFlexPage(1)
+  }, [showZeroDemandFlexRows])
+
   const planTotalPages = Math.max(1, Math.ceil(sortedPlanRows.length / pageSize))
   const fcDiagnosticsPageSize = 20
   const fcDiagnosticsTotalPages = Math.max(
@@ -1170,6 +1287,27 @@ export function InternalStockDashboard() {
   const paginatedPaymentSignals = sortedPaymentSignals.slice(
     (safePaymentSignalPage - 1) * supportingSignalPageSize,
     safePaymentSignalPage * supportingSignalPageSize,
+  )
+  const fcStockMatrixPageSize = 20
+  const fcStockMatrixTotalPages = Math.max(1, Math.ceil((data?.fcStockMatrixRows.length ?? 0) / fcStockMatrixPageSize))
+  const safeFcStockMatrixPage = Math.min(fcStockMatrixPage, fcStockMatrixTotalPages)
+  const paginatedFcStockMatrixRows = (data?.fcStockMatrixRows ?? []).slice(
+    (safeFcStockMatrixPage - 1) * fcStockMatrixPageSize,
+    safeFcStockMatrixPage * fcStockMatrixPageSize,
+  )
+  const fcFulfillmentPageSize = 20
+  const fcFulfillmentTotalPages = Math.max(1, Math.ceil((data?.fcFulfillmentRows.length ?? 0) / fcFulfillmentPageSize))
+  const safeFcFulfillmentPage = Math.min(fcFulfillmentPage, fcFulfillmentTotalPages)
+  const paginatedFcFulfillmentRows = (data?.fcFulfillmentRows ?? []).slice(
+    (safeFcFulfillmentPage - 1) * fcFulfillmentPageSize,
+    safeFcFulfillmentPage * fcFulfillmentPageSize,
+  )
+  const flexPageSize = 20
+  const flexTotalPages = Math.max(1, Math.ceil(visibleFlexRows.length / flexPageSize))
+  const safeFlexPage = Math.min(flexPage, flexTotalPages)
+  const paginatedFlexRows = visibleFlexRows.slice(
+    (safeFlexPage - 1) * flexPageSize,
+    safeFlexPage * flexPageSize,
   )
   const hasActiveFilter = status !== 'All' || planFilter !== null || query.trim().length > 0
   const tabFilterText = `tab=${activeTab === 'fc' ? 'FC Replenishment' : 'Flex Replenishment'}`
@@ -1473,20 +1611,54 @@ export function InternalStockDashboard() {
             Shared scenario controls for replenishment planning. Settings are temporary and are not saved.
           </p>
         </div>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
           <label className="text-xs font-medium text-muted-foreground">
-            Lookback days
+            Demand period
             <select
-              value={planningDraft.lookbackDays}
-              onChange={event => setPlanningDraft(current => ({
-                ...current,
-                lookbackDays: Number(event.target.value) as PlanningAssumptions['lookbackDays'],
-              }))}
+              value={planningDraft.demandPreset}
+              onChange={event => {
+                const preset = event.target.value as DemandPreset
+                const presetToLookback: Record<Exclude<DemandPreset, 'custom'>, PlanningAssumptions['lookbackDays']> = {
+                  '7d': 7, '15d': 15, '30d': 30, '45d': 45, '60d': 60,
+                }
+                setPlanningDraft(current => ({
+                  ...current,
+                  demandPreset: preset,
+                  ...(preset !== 'custom' ? { lookbackDays: presetToLookback[preset] } : {}),
+                }))
+              }}
               className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground"
             >
-              {[15, 30, 60, 90].map(value => <option key={value} value={value}>{value}</option>)}
+              <option value="7d">Last 7 days</option>
+              <option value="15d">Last 15 days</option>
+              <option value="30d">Last 30 days</option>
+              <option value="45d">Last 45 days</option>
+              <option value="60d">Last 60 days</option>
+              <option value="custom">Custom range…</option>
             </select>
           </label>
+          {planningDraft.demandPreset === 'custom' && (
+            <label className="text-xs font-medium text-muted-foreground sm:col-span-2">
+              Custom date range
+              <div className="mt-1 flex gap-2">
+                <input
+                  type="date"
+                  value={planningDraft.demandStartDate ?? ''}
+                  onChange={event => setPlanningDraft(current => ({ ...current, demandStartDate: event.target.value }))}
+                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                  placeholder="Start date"
+                />
+                <span className="flex items-center text-muted-foreground">–</span>
+                <input
+                  type="date"
+                  value={planningDraft.demandEndDate ?? ''}
+                  onChange={event => setPlanningDraft(current => ({ ...current, demandEndDate: event.target.value }))}
+                  className="h-9 flex-1 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+                  placeholder="End date"
+                />
+              </div>
+            </label>
+          )}
           <label className="text-xs font-medium text-muted-foreground">
             Planning cycle days
             <select
@@ -1622,7 +1794,7 @@ export function InternalStockDashboard() {
                 { header: 'Product Title', value: row => row.productTitle },
                 { header: 'ASIN', value: row => row.asin },
                 { header: 'Amazon SKU', value: row => row.amazonSku },
-                { header: 'Total 30D Demand', value: row => row.totalDemand30d },
+                { header: `Total ${data.nextStockPlan.assumptions.salesLookbackDays}D Demand`, value: row => row.totalDemand30d },
                 { header: 'XHZU/Flex Stock', value: row => row.xhzuOrSellerFlexStock },
                 { header: 'Total Suggested Send Qty', value: row => row.totalSuggestedSendQty },
                 { header: 'Overall Action', value: row => row.action },
@@ -1676,7 +1848,7 @@ export function InternalStockDashboard() {
                 <th className="px-4 py-3 text-left">Product</th>
                 <th className="px-3 py-3 text-left">ASIN</th>
                 <th className="px-3 py-3 text-left">Amazon SKU</th>
-                <th className="px-3 py-3 text-right">Total 30D Demand</th>
+                <th className="px-3 py-3 text-right">Total {data.nextStockPlan.assumptions.salesLookbackDays}D Demand</th>
                 <th className="px-3 py-3 text-right">XHZU/Flex Stock</th>
                 <th className="px-3 py-3 text-right">Total Send Qty</th>
                 {data.fcStockMatrixColumns.map(fcCode => (
@@ -1685,7 +1857,7 @@ export function InternalStockDashboard() {
               </tr>
             </thead>
             <tbody>
-              {data.fcStockMatrixRows.slice(0, 50).map((row: FcStockMatrixRow, index, page) => {
+              {paginatedFcStockMatrixRows.map((row: FcStockMatrixRow, index, page) => {
                 const cellsByFc = new Map(row.fcCells.map(cell => [cell.fcCode, cell]))
                 return (
                   <tr
@@ -1729,11 +1901,13 @@ export function InternalStockDashboard() {
             </div>
           )}
         </div>
-        {data.fcStockMatrixRows.length > 50 && (
-          <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-            Showing top 50 of {data.fcStockMatrixRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
-          </div>
-        )}
+        <PaginationControls
+          page={safeFcStockMatrixPage}
+          totalPages={fcStockMatrixTotalPages}
+          pageSize={fcStockMatrixPageSize}
+          totalRows={data.fcStockMatrixRows.length}
+          onPageChange={setFcStockMatrixPage}
+        />
       </div>
       <div className="rounded-xl border border-border bg-card">
         <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1747,7 +1921,7 @@ export function InternalStockDashboard() {
           <Button
             type="button"
             disabled={data.fcAllocationCsvRows.length === 0}
-            onClick={() => exportFcAllocationPlanCsv(data.fcAllocationCsvRows)}
+            onClick={() => exportFcAllocationPlanCsv(data.fcAllocationCsvRows, data.nextStockPlan.assumptions.salesLookbackDays)}
           >
             <Download className="mr-2 h-4 w-4" /> Export FC Allocation Plan
           </Button>
@@ -1782,7 +1956,7 @@ export function InternalStockDashboard() {
               </tr>
             </thead>
             <tbody>
-              {data.fcFulfillmentRows.slice(0, 50).map((row: FcFulfillmentRow, index, page) => (
+              {paginatedFcFulfillmentRows.map((row: FcFulfillmentRow, index, page) => (
                 <tr
                   key={`fc-fulfillment-${row.componentSku}`}
                   className={index < page.length - 1 ? 'border-b border-border/50' : ''}
@@ -1811,11 +1985,13 @@ export function InternalStockDashboard() {
             </div>
           )}
         </div>
-        {data.fcFulfillmentRows.length > 50 && (
-          <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-            Showing top 50 of {data.fcFulfillmentRows.length.toLocaleString('en-IN')} rows. Export FC Allocation Plan for the full list.
-          </div>
-        )}
+        <PaginationControls
+          page={safeFcFulfillmentPage}
+          totalPages={fcFulfillmentTotalPages}
+          pageSize={fcFulfillmentPageSize}
+          totalRows={data.fcFulfillmentRows.length}
+          onPageChange={setFcFulfillmentPage}
+        />
       </div>
       <p className="px-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
         Technical detail (channel-wise breakdown, diagnostics, and supporting signals)
@@ -2419,6 +2595,117 @@ export function InternalStockDashboard() {
             </div>
           )}
         </div>
+
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="font-bold">Upload Seller Central Sales Demand</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Upload Seller Central Manage Inventory demand export to use as planning source when its units exceed trusted FBA/Flex ledger demand.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Required CSV columns: sku, units_sold. Optional: asin, title.
+                Also accepted: merchant_sku / seller_sku / amazon_sku, units_ordered / ordered_units / units_sold_last_30_days.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Optionally enter the report date range so the tool can verify the period matches your selected demand window.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" onClick={downloadSellerCentralTemplate}>
+                <Download className="mr-2 h-4 w-4" /> Download template
+              </Button>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <label className="text-xs font-medium text-muted-foreground">
+              Report start date (optional)
+              <input
+                type="date"
+                value={scReportStartDate}
+                onChange={event => setScReportStartDate(event.target.value)}
+                className="mt-1 h-9 w-44 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+              />
+            </label>
+            <label className="text-xs font-medium text-muted-foreground">
+              Report end date (optional)
+              <input
+                type="date"
+                value={scReportEndDate}
+                onChange={event => setScReportEndDate(event.target.value)}
+                className="mt-1 h-9 w-44 rounded-md border border-input bg-background px-3 text-sm text-foreground"
+              />
+            </label>
+            <Button
+              type="button"
+              onClick={() => scFileInputRef.current?.click()}
+              disabled={scUploading}
+            >
+              {scUploading
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                : <Upload className="mr-2 h-4 w-4" />}
+              {scUploading ? 'Importing…' : 'Import SC sales'}
+            </Button>
+            <input
+              ref={scFileInputRef}
+              type="file"
+              accept=".csv,.txt,text/csv,text/plain"
+              className="hidden"
+              onChange={event => {
+                const file = event.target.files?.[0]
+                if (file) void uploadSellerCentralSales(file)
+              }}
+            />
+          </div>
+
+          <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+            {data.activeSellerCentralBatch ? (
+              <>
+                <p className="font-medium">
+                  Active SC batch: <span className="font-mono text-xs">{data.activeSellerCentralBatch.originalFilename}</span>
+                  {data.sellerCentralPeriodMatch
+                    ? <span className="ml-2 text-xs text-green-700 dark:text-green-400">· Period matches selected demand window</span>
+                    : <span className="ml-2 text-xs text-amber-700 dark:text-amber-300">· Period does not match selected demand window — planning falls back to trusted demand</span>}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Uploaded at {formatDate(data.activeSellerCentralBatch.uploadedAt)} ·{' '}
+                  {data.activeSellerCentralBatch.reportStartDate && data.activeSellerCentralBatch.reportEndDate
+                    ? `Period: ${data.activeSellerCentralBatch.reportStartDate} to ${data.activeSellerCentralBatch.reportEndDate} ·`
+                    : 'No period dates stored ·'}{' '}
+                  Accepted {data.activeSellerCentralBatch.acceptedCount.toLocaleString('en-IN')} rows
+                  {data.activeSellerCentralBatch.rejectedCount > 0
+                    ? ` · Rejected ${data.activeSellerCentralBatch.rejectedCount.toLocaleString('en-IN')}`
+                    : ''}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">No Seller Central sales file uploaded yet. Upload one to enable SC-based planning.</p>
+            )}
+          </div>
+
+          {scUploadError && (
+            <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+              {scUploadError}
+            </div>
+          )}
+
+          {scUploadResult && (
+            <div className="mt-4 rounded-lg border border-border bg-muted/30 px-3 py-3 text-sm">
+              <p className="font-medium">
+                Accepted {scUploadResult.accepted.toLocaleString('en-IN')} rows ·{' '}
+                Rejected {scUploadResult.rejected.toLocaleString('en-IN')} rows
+              </p>
+              {scUploadResult.errors.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                  {scUploadResult.errors.map(errorItem => (
+                    <li key={`${errorItem.row}-${errorItem.message}`}>Row {errorItem.row}: {errorItem.message}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="rounded-xl border border-border bg-card">
           <div className="flex flex-col gap-3 border-b border-border p-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -2429,17 +2716,21 @@ export function InternalStockDashboard() {
                 (FBA Ledger Detail shipments + Seller Flex shipments/sales), not Seller Flex sales alone.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Component demand includes FBA/FC shipped units plus XHZU/Seller Flex dispatched units where
-                available. Easy Ship/MFN/unattributed sources are excluded unless enabled.
+                Demand period: <strong>{formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate)}</strong> ({data.nextStockPlan.assumptions.demandDays} days, {data.nextStockPlan.assumptions.demandStartDate} to {data.nextStockPlan.assumptions.demandEndDate}).
+                Change the demand period in Planning assumptions above.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                30D Finished Units Sold is calculated from trusted FBA/Seller Flex demand sources for mapped Amazon SKUs.
+                Trusted demand = FBA/FC ledger shipped units + XHZU/Seller Flex dispatched units for the selected period.
+                Easy Ship, MFN, and unattributed sources are excluded unless explicitly enabled.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                30D Component Units Consumed = sum across linked Amazon SKUs of (that SKU&apos;s 30D units sold ×
-                its component quantity from the SKU mapping). Required Component Stock is the forecasted stock
-                target (consumption rate × planning + transit days × growth), and Suggested Vendor Qty is that
-                target minus Current XHZU Stock.
+                If a Seller Central sales file is uploaded and its period matches the selected demand window,
+                SC demand is used for planning instead of trusted demand. Trusted demand is the fallback when SC is not uploaded or the period does not match.
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Component Units Consumed = sum across linked Amazon SKUs of (that SKU&apos;s period units × component quantity).
+                Required Component Stock is the forecasted stock target (daily rate × planning + transit days × growth),
+                and Suggested Vendor Qty is that target minus Current XHZU Stock.
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
                 Planning assumptions: {data.assumptionsSource.flex === 'saved' ? 'Saved for this workspace' : 'Default (not yet saved)'}.
@@ -2456,7 +2747,7 @@ export function InternalStockDashboard() {
               <Button
                 type="button"
                 disabled={data.flexReplenishmentRows.length === 0}
-                onClick={() => exportFlexPurchasePlanCsv(data.flexReplenishmentRows)}
+                onClick={() => exportFlexPurchasePlanCsv(data.flexReplenishmentRows, formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate))}
               >
                 <Download className="mr-2 h-4 w-4" /> Export Purchase Plan
               </Button>
@@ -2464,27 +2755,34 @@ export function InternalStockDashboard() {
                 type="button"
                 variant="outline"
                 disabled={data.flexReplenishmentRows.length === 0}
-                onClick={() => exportFilteredCsv(
-                  'Vendor Component Replenishment',
-                  [
-                    { header: 'Component SKU', value: row => row.componentSku },
-                    { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
-                    { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
-                    { header: 'FBA/FC 30D Finished Units', value: row => row.fbaFc30dUnits },
-                    { header: 'XHZU/Flex 30D Finished Units', value: row => row.xhzuFlex30dUnits },
-                    { header: 'Total Trusted 30D Finished Units', value: row => row.amazonDemand30d },
-                    { header: '30D Component Units Sold', value: row => row.componentAdjustedDemand },
-                    { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
-                    { header: 'Required Component Stock', value: row => row.requiredComponentStock },
-                    { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
-                    { header: 'Demand Source Used', value: row => row.demandSourceUsed },
-                    { header: 'Action', value: row => row.action },
-                    { header: 'Reason', value: row => row.reason },
-                  ],
-                  data.flexReplenishmentRows,
-                  data.nextStockPlan.assumptions,
-                  'report=Vendor/Component Replenishment (full list)',
-                )}
+                onClick={() => {
+                  const pl = formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate)
+                  exportFilteredCsv(
+                    'Vendor Component Replenishment',
+                    [
+                      { header: 'Component SKU', value: row => row.componentSku },
+                      { header: 'Linked Amazon SKUs Count', value: row => row.linkedAmazonSkuCount },
+                      { header: 'WMS Parent SKU Count', value: row => row.wmsParentSkuCount },
+                      { header: `FBA/FC ${pl} Finished Units`, value: row => row.fbaFc30dUnits },
+                      { header: `XHZU/Flex ${pl} Finished Units`, value: row => row.xhzuFlex30dUnits },
+                      { header: `Total Trusted ${pl} Finished Units`, value: row => row.amazonDemand30d },
+                      { header: `${pl} Component Units Sold`, value: row => row.componentAdjustedDemand },
+                      { header: `SC ${pl} Finished Units`, value: row => row.sellerCentralPeriodUnits },
+                      { header: `SC ${pl} Component Units`, value: row => row.sellerCentralComponentUnits },
+                      { header: `Planning ${pl} Component Units Used`, value: row => row.planningComponentUnitsUsed },
+                      { header: 'Planning Demand Source', value: row => row.planningDemandSource },
+                      { header: 'Current XHZU Stock', value: row => row.currentXhzuComponentStock },
+                      { header: 'Required Component Stock', value: row => row.requiredComponentStock },
+                      { header: 'Suggested Vendor Qty', value: row => row.suggestedVendorReplenishQty },
+                      { header: 'Demand Source Used', value: row => row.demandSourceUsed },
+                      { header: 'Action', value: row => row.action },
+                      { header: 'Reason', value: row => row.reason },
+                    ],
+                    data.flexReplenishmentRows,
+                    data.nextStockPlan.assumptions,
+                    'report=Vendor/Component Replenishment (full list)',
+                  )
+                }}
               >
                 <Download className="mr-2 h-4 w-4" /> Export Full CSV
               </Button>
@@ -2492,7 +2790,7 @@ export function InternalStockDashboard() {
                 type="button"
                 variant="outline"
                 disabled={data.flexDemandBreakdownRows.length === 0}
-                onClick={() => exportFlexDemandBreakdownCsv(data.flexDemandBreakdownRows)}
+                onClick={() => exportFlexDemandBreakdownCsv(data.flexDemandBreakdownRows, formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate))}
               >
                 <Download className="mr-2 h-4 w-4" /> Export Demand Breakdown
               </Button>
@@ -2503,39 +2801,48 @@ export function InternalStockDashboard() {
           </p>
           {data.flexDemandBreakdownRows.some(row => row.matchStatus !== 'Matched with trusted demand') && (
             <p className="px-4 pt-1 text-xs text-amber-700 dark:text-amber-300">
-              Some mapped Amazon SKUs have no trusted 30D demand. Use Export Demand Breakdown to verify pack/combo SKUs.
+              {`Some mapped Amazon SKUs have no trusted ${formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate)} demand. Use Export Demand Breakdown to verify pack/combo SKUs.`}
             </p>
           )}
           <ReportStatCards
             cards={[
               ['Components with demand', data.flexReplenishmentSummary.componentsWithDemand],
-              ['Component units consumed (30D)', data.flexReplenishmentSummary.componentUnitsDemanded],
+              [`Component units consumed (${formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate)})`, data.flexReplenishmentSummary.componentUnitsDemanded],
               ['Needs XHZU stock', data.flexReplenishmentSummary.rowsNeedingXhzuStockContext],
               ['Missing mapping', data.flexReplenishmentSummary.rowsMissingMapping],
               ['Margin review', data.flexReplenishmentSummary.rowsMarginReview],
             ]}
           />
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1680px] text-sm">
+            <table className="w-full min-w-[2200px] text-sm">
               <thead>
-                <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
-                  <th className="px-4 py-3 text-left">Component SKU</th>
-                  <th className="px-3 py-3 text-right">Linked Amazon SKUs Count</th>
-                  <th className="px-3 py-3 text-right">WMS Parent SKU Count</th>
-                  <th className="px-3 py-3 text-right">FBA/FC 30D Finished Units</th>
-                  <th className="px-3 py-3 text-right">XHZU/Flex 30D Finished Units</th>
-                  <th className="px-3 py-3 text-right">Total Trusted 30D Finished Units</th>
-                  <th className="px-3 py-3 text-right">30D Component Units Sold</th>
-                  <th className="px-3 py-3 text-right">Current XHZU Stock</th>
-                  <th className="px-3 py-3 text-right">Required Component Stock</th>
-                  <th className="px-3 py-3 text-right">Suggested Vendor Qty</th>
-                  <th className="px-3 py-3 text-left">Demand Source Used</th>
-                  <th className="px-3 py-3 text-left">Action</th>
-                  <th className="px-4 py-3 text-left">Reason</th>
-                </tr>
+                {(() => {
+                  const pl = formatDemandPeriodLabel(data.nextStockPlan.assumptions.demandDays, data.nextStockPlan.assumptions.demandStartDate, data.nextStockPlan.assumptions.demandEndDate)
+                  return (
+                    <tr className="border-b border-border text-xs uppercase tracking-wider text-muted-foreground">
+                      <th className="px-4 py-3 text-left">Component SKU</th>
+                      <th className="px-3 py-3 text-right">Linked Amazon SKUs Count</th>
+                      <th className="px-3 py-3 text-right">WMS Parent SKU Count</th>
+                      <th className="px-3 py-3 text-right">FBA/FC {pl} Finished Units</th>
+                      <th className="px-3 py-3 text-right">XHZU/Flex {pl} Finished Units</th>
+                      <th className="px-3 py-3 text-right">Total Trusted {pl} Finished Units</th>
+                      <th className="px-3 py-3 text-right">{pl} Component Units Sold</th>
+                      <th className="px-3 py-3 text-right">SC {pl} Finished Units</th>
+                      <th className="px-3 py-3 text-right">SC {pl} Component Units</th>
+                      <th className="px-3 py-3 text-right">Planning {pl} Component Units Used</th>
+                      <th className="px-3 py-3 text-left">Planning Demand Source</th>
+                      <th className="px-3 py-3 text-right">Current XHZU Stock</th>
+                      <th className="px-3 py-3 text-right">Required Component Stock</th>
+                      <th className="px-3 py-3 text-right">Suggested Vendor Qty</th>
+                      <th className="px-3 py-3 text-left">Demand Source Used</th>
+                      <th className="px-3 py-3 text-left">Action</th>
+                      <th className="px-4 py-3 text-left">Reason</th>
+                    </tr>
+                  )
+                })()}
               </thead>
               <tbody>
-                {visibleFlexRows.slice(0, 50).map((row: FlexReplenishmentRow, index, page) => (
+                {paginatedFlexRows.map((row: FlexReplenishmentRow, index, page) => (
                   <tr
                     key={`flex-replenish-${row.componentSku}`}
                     className={index < page.length - 1 ? 'border-b border-border/50' : ''}
@@ -2547,6 +2854,18 @@ export function InternalStockDashboard() {
                     <td className="px-3 py-3 text-right">{formatNumber(row.xhzuFlex30dUnits)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.amazonDemand30d)}</td>
                     <td className="px-3 py-3 text-right">{formatNumber(row.componentAdjustedDemand)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.sellerCentralPeriodUnits)}</td>
+                    <td className="px-3 py-3 text-right">{formatNumber(row.sellerCentralComponentUnits)}</td>
+                    <td className="px-3 py-3 text-right font-semibold">{formatNumber(row.planningComponentUnitsUsed)}</td>
+                    <td className="px-3 py-3 text-xs text-muted-foreground">
+                      {row.planningDemandSource === 'seller_central_uploaded'
+                        ? 'Seller Central'
+                        : row.planningDemandSource === 'seller_central_missing_fallback_trusted'
+                          ? 'SC (SKU missing → Trusted)'
+                          : row.planningDemandSource === 'seller_central_period_mismatch_fallback_trusted'
+                            ? 'SC (period mismatch → Trusted)'
+                            : 'Trusted'}
+                    </td>
                     <td className="px-3 py-3 text-right">
                       {row.currentXhzuComponentStock === null ? '—' : formatNumber(row.currentXhzuComponentStock)}
                     </td>
@@ -2573,11 +2892,13 @@ export function InternalStockDashboard() {
               </div>
             )}
           </div>
-          {visibleFlexRows.length > 50 && (
-            <div className="border-t border-border px-4 py-3 text-xs text-muted-foreground">
-              Showing top 50 of {visibleFlexRows.length.toLocaleString('en-IN')} rows. Export CSV for the full list.
-            </div>
-          )}
+          <PaginationControls
+            page={safeFlexPage}
+            totalPages={flexTotalPages}
+            pageSize={flexPageSize}
+            totalRows={visibleFlexRows.length}
+            onPageChange={setFlexPage}
+          />
         </div>
         </>
       )}

@@ -6,6 +6,23 @@ export const DEFAULT_REPLENISHMENT_ASSUMPTIONS = {
   maxLookbackDays: 365,
 } as const
 
+/** Returns 'NND' for preset-aligned windows or 'D MMM–D MMM' for custom ranges. */
+export function formatDemandPeriodLabel(
+  lookbackDays: number,
+  startDate: string,
+  endDate: string,
+): string {
+  const presetMap: Record<number, string> = { 7: '7D', 15: '15D', 30: '30D', 45: '45D', 60: '60D', 90: '90D' }
+  if (presetMap[lookbackDays]) return presetMap[lookbackDays]
+  // Custom: format as short dates
+  const fmt = (iso: string) => {
+    const [, m, d] = iso.split('-')
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    return `${parseInt(d, 10)} ${months[parseInt(m, 10) - 1]}`
+  }
+  return `${fmt(startDate)}–${fmt(endDate)}`
+}
+
 export const SELLER_FLEX_CODES = new Set(['XHZU', 'XHZV', 'XHZR', 'TPKR'])
 const EASY_SHIP_SOURCES = new Set(['easy_ship', 'easyship', 'mfn', 'merchant_fulfilled'])
 
@@ -127,6 +144,9 @@ export type NextStockPlanAssumptions = {
   transitBufferDays: number
   growthMultiplier: number
   maxLookbackDays: number
+  demandDays: number
+  demandStartDate: string
+  demandEndDate: string
 }
 
 export type FcDiagnosticRow = {
@@ -163,6 +183,9 @@ type BuildInput = {
   transitBufferDays?: number
   growthMultiplier?: number
   now?: Date
+  /** Explicit demand window — overrides lookbackDays-based window when both are provided. */
+  demandStartDate?: string
+  demandEndDate?: string
 }
 
 type StockSlice = {
@@ -231,9 +254,29 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       Math.trunc(input.lookbackDays ?? DEFAULT_REPLENISHMENT_ASSUMPTIONS.salesLookbackDays),
     ),
   )
-  const startDate = new Date(now)
-  startDate.setUTCDate(startDate.getUTCDate() - (resolvedLookbackDays - 1))
-  const startDateIso = startDate.toISOString().slice(0, 10)
+
+  // If explicit demand window is provided and valid, use it; otherwise compute from lookbackDays.
+  const computedStartDate = new Date(now)
+  computedStartDate.setUTCDate(computedStartDate.getUTCDate() - (resolvedLookbackDays - 1))
+  const computedStartDateIso = computedStartDate.toISOString().slice(0, 10)
+  const computedEndDateIso = now.toISOString().slice(0, 10)
+
+  const hasExplicitRange = (
+    typeof input.demandStartDate === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(input.demandStartDate)
+    && typeof input.demandEndDate === 'string'
+    && /^\d{4}-\d{2}-\d{2}$/.test(input.demandEndDate)
+    && input.demandStartDate <= input.demandEndDate
+  )
+  const startDateIso = hasExplicitRange ? input.demandStartDate! : computedStartDateIso
+  const endDateIso = hasExplicitRange ? input.demandEndDate! : computedEndDateIso
+
+  // Number of calendar days in the demand window (inclusive both ends)
+  const demandDays = hasExplicitRange
+    ? Math.max(1, Math.round(
+        (new Date(`${endDateIso}T00:00:00Z`).getTime() - new Date(`${startDateIso}T00:00:00Z`).getTime()) / 86400000
+      ) + 1)
+    : resolvedLookbackDays
 
   const resolvedPlanningCycleDays = Math.max(
     1,
@@ -385,7 +428,7 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
   }
 
   for (const row of input.fulfillmentRows) {
-    if (!row.reportDate || row.reportDate < startDateIso) continue
+    if (!row.reportDate || row.reportDate < startDateIso || row.reportDate > endDateIso) continue
     const planRow = resolvePlanRow(row.marketplaceId, row.asin, row.sku)
     if (!planRow) continue
     const flags = flagsForRow(planRow)
@@ -405,7 +448,7 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
   }
 
   for (const row of input.salesRows) {
-    if (!row.salesDate || row.salesDate < startDateIso) continue
+    if (!row.salesDate || row.salesDate < startDateIso || row.salesDate > endDateIso) continue
     const planRow = resolvePlanRow(row.marketplaceId, row.asin, row.sku)
     if (!planRow) continue
     const flags = flagsForRow(planRow)
@@ -436,7 +479,7 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
   }
 
   for (const row of input.fulfillmentSalesDaily) {
-    if (!row.salesDate || row.salesDate < startDateIso) continue
+    if (!row.salesDate || row.salesDate < startDateIso || row.salesDate > endDateIso) continue
     const planRow = resolvePlanRow(row.marketplaceId, row.asin, row.sku)
     if (!planRow) continue
     const flags = flagsForRow(planRow)
@@ -527,7 +570,11 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       fcDiagnosticsByKey.set(diagnosticKey, diagnostic)
     }
 
-    if (fulfillmentRow.reportDate && fulfillmentRow.reportDate >= startDateIso) {
+    if (
+      fulfillmentRow.reportDate
+      && fulfillmentRow.reportDate >= startDateIso
+      && fulfillmentRow.reportDate <= endDateIso
+    ) {
       diagnostic.row.shipments30d += inferFulfillmentSalesUnits(
         fulfillmentRow.eventType,
         fulfillmentRow.quantity,
@@ -580,9 +627,9 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       + row.easyShipMfnSales30d
       + row.unknownSourceSales30d
 
-    const avgDailyFba = row.fbaSales30d / resolvedLookbackDays
-    const avgDailyFlex = row.sellerFlexSales30d / resolvedLookbackDays
-    const avgDailyTotal = row.totalSales30d / resolvedLookbackDays
+    const avgDailyFba = row.fbaSales30d / demandDays
+    const avgDailyFlex = row.sellerFlexSales30d / demandDays
+    const avgDailyTotal = row.totalSales30d / demandDays
 
     const adjustedDailyFba = avgDailyFba * resolvedGrowthMultiplier
     const adjustedDailyFlex = avgDailyFlex * resolvedGrowthMultiplier
@@ -705,6 +752,9 @@ export function buildNextStockPlan(input: BuildInput): NextStockPlanResult {
       planningCycleDays: resolvedPlanningCycleDays,
       transitBufferDays: resolvedTransitBufferDays,
       growthMultiplier: resolvedGrowthMultiplier,
+      demandDays,
+      demandStartDate: startDateIso,
+      demandEndDate: endDateIso,
     },
     summary,
     rows,
