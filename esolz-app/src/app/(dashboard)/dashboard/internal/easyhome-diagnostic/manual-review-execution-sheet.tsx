@@ -74,6 +74,23 @@ function matchesFocusList(c: ManualReviewCase): boolean {
   return THIRTY_MIN_FOCUS.some(needle => haystack.includes(needle.toLowerCase()))
 }
 
+function whyItMattersFor(c: ManualReviewCase): string {
+  const parts: string[] = []
+  if (c.combinedSalesDecline !== null) parts.push(`${inr(c.combinedSalesDecline)} correlated sales decline`)
+  if (c.facetCount > 1) parts.push(`${c.facetCount} evidence facets merged`)
+  if (c.timingBucket === 'before decline') parts.push('changed before decline')
+  return parts.length > 0 ? parts.join('; ') : 'High-priority correlated case.'
+}
+
+function whatToCheckFirstFor(c: ManualReviewCase): string {
+  const types = new Set(c.changeSummary)
+  if (types.has('bid increased') && types.has('bid reduced')) return 'Current live bid vs old/new values; net bid direction.'
+  if (types.has('bid increased')) return 'Stock, buy box, price, listing status, current live bid.'
+  if (types.has('bid reduced')) return 'Current live bid vs old bid; whether reduction is still in effect.'
+  if (types.has('target paused') || types.has('target enabled')) return 'Current live status vs old/new status.'
+  return 'Current live bid/status/budget vs old values.'
+}
+
 function GuardrailBanner() {
   return (
     <div className="bg-amber-950/40 border border-amber-700/50 rounded-lg p-3 mb-4 flex gap-2 items-start">
@@ -327,13 +344,31 @@ export function ManualReviewExecutionSheet({
           <p className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
             <Timer className="w-3.5 h-3.5 text-primary" /> First 30-minute team checklist ({focusCases.length} cases)
           </p>
-          <ul className="text-xs text-muted-foreground space-y-1">
-            {focusCases.map(c => (
-              <li key={c.caseKey}>
-                <span className="text-foreground font-medium">#{c.rank}</span> {c.mainEntity} — {c.campaignName ?? '—'} ({c.portfolio}) — {c.issueSummary}, {inr(c.combinedSalesDecline)}, ACOS {pct(c.worstAcosBefore)}→{pct(c.worstAcosAfter)}
-              </li>
-            ))}
-          </ul>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-muted-foreground">
+                  {['Rank', 'Case', 'Portfolio', 'Issue', 'Why it matters', 'What to check first', 'Suggested manual action', 'Status'].map(h => (
+                    <th key={h} className="text-left font-semibold py-1.5 pr-3 whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {focusCases.map(c => (
+                  <tr key={c.caseKey} className="border-t border-border/40 align-top">
+                    <td className="py-1.5 pr-3 text-foreground font-medium">#{c.rank}</td>
+                    <td className="py-1.5 pr-3 max-w-[160px] text-foreground" title={`${c.mainEntity} — ${c.campaignName ?? '—'}`}>{c.mainEntity}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{c.portfolio}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{c.issueSummary}</td>
+                    <td className="py-1.5 pr-3 max-w-[200px] text-muted-foreground">{whyItMattersFor(c)}</td>
+                    <td className="py-1.5 pr-3 max-w-[200px] text-muted-foreground">{whatToCheckFirstFor(c)}</td>
+                    <td className="py-1.5 pr-3 max-w-[220px] text-muted-foreground">{c.suggestedReviewAction}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap text-foreground">{c.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <p className="text-xs text-amber-300 mt-2">Compare old vs current before any change. Do not revert blindly.</p>
         </div>
       )}

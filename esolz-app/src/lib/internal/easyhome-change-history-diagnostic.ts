@@ -4,7 +4,7 @@
 // "changed before decline," "changed during decline window," or
 // "correlated change," with an explicit "review manually" suggestion.
 
-import { AFTER_START } from './easyhome-drop-diagnostic'
+import { DEFAULT_RANGE_B, type DateRange } from './date-range'
 import type { ActionItem } from './easyhome-action-queue'
 
 export type ChangeEventInput = {
@@ -80,7 +80,7 @@ function classifyTiming(changedAtIso: string, afterStart: string): { timing: Rel
  * keyword IDs are not yet threaded through the existing aggregation
  * pipeline) — every match here is "correlated," not confirmed by ID.
  */
-function findRelatedChanges(item: ActionItem, eventsByCampaign: Map<string, ChangeEventInput[]>, afterEnd: string): RelatedChange[] {
+function findRelatedChanges(item: ActionItem, eventsByCampaign: Map<string, ChangeEventInput[]>, rangeB: DateRange): RelatedChange[] {
   if (!item.campaignName) return []
   const candidates = eventsByCampaign.get(item.campaignName.trim().toUpperCase()) ?? []
   if (candidates.length === 0) return []
@@ -95,14 +95,14 @@ function findRelatedChanges(item: ActionItem, eventsByCampaign: Map<string, Chan
   })
 
   const relevant = matched.filter(event => {
-    if (event.changedAtIso >= AFTER_START && event.changedAtIso <= afterEnd) return true
-    const daysBefore = daysBetween(AFTER_START, event.changedAtIso)
+    if (event.changedAtIso >= rangeB.startDate && event.changedAtIso <= rangeB.endDate) return true
+    const daysBefore = daysBetween(rangeB.startDate, event.changedAtIso)
     return daysBefore >= 0 && daysBefore <= PRE_WINDOW_DAYS
   })
 
   return relevant
     .map(event => {
-      const { timing, daysBeforeAfterStart } = classifyTiming(event.changedAtIso, AFTER_START)
+      const { timing, daysBeforeAfterStart } = classifyTiming(event.changedAtIso, rangeB.startDate)
       // exact target match: a Target item whose entity name equals the event's
       // entity name. campaign match: a Campaign-level item. fallback name match:
       // a SKU/Search-Term item linked only via shared campaign name.
@@ -131,7 +131,7 @@ function findRelatedChanges(item: ActionItem, eventsByCampaign: Map<string, Chan
     .sort((a, b) => (a.changedAtIso < b.changedAtIso ? -1 : 1))
 }
 
-export function attachRelatedChanges(actionQueue: ActionItem[], events: ChangeEventInput[], afterEnd: string): ActionItemWithChanges[] {
+export function attachRelatedChanges(actionQueue: ActionItem[], events: ChangeEventInput[], rangeB: DateRange = DEFAULT_RANGE_B): ActionItemWithChanges[] {
   const eventsByCampaign = new Map<string, ChangeEventInput[]>()
   for (const event of events) {
     if (!event.campaignName) continue
@@ -142,7 +142,7 @@ export function attachRelatedChanges(actionQueue: ActionItem[], events: ChangeEv
 
   return actionQueue.map(item => ({
     ...item,
-    relatedChanges: findRelatedChanges(item, eventsByCampaign, afterEnd),
+    relatedChanges: findRelatedChanges(item, eventsByCampaign, rangeB),
   }))
 }
 

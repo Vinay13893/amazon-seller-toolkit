@@ -1,11 +1,14 @@
-// Phase 0B: read-only EasyHOME June-15 drop diagnostic. Pure aggregation —
-// callers fetch rows from internal_payment_transactions / internal_sku_cost_master
-// and pass them in; nothing here touches the database.
+// Phase 0B/2A: read-only EasyHOME drop diagnostic, generalized to run against
+// any two equal- or unequal-length date ranges (not just the June-15 drop).
+// Pure aggregation — callers fetch rows from internal_payment_transactions /
+// internal_sku_cost_master and pass them in; nothing here touches the database.
 
-export const BEFORE_START = '2026-06-01'
-export const BEFORE_END = '2026-06-14'
-export const AFTER_START = '2026-06-15'
-export const OUTLIER_DAYS = ['2026-06-18', '2026-06-22'] as const
+import { DEFAULT_RANGE_A, DEFAULT_RANGE_B, type DateRange, inWindow as inDateRange } from './date-range'
+
+// Re-exported for callers/tests that want the original June-15 default preset.
+export const BEFORE_START = DEFAULT_RANGE_A.startDate
+export const BEFORE_END = DEFAULT_RANGE_A.endDate
+export const AFTER_START = DEFAULT_RANGE_B.startDate
 
 export type EasyhomePortfolio =
   | 'ASM'
@@ -118,7 +121,7 @@ type OutlierDayRow = {
 }
 
 export type EasyhomeDropDiagnostic = {
-  windows: { beforeStart: string; beforeEnd: string; afterStart: string; afterEnd: string }
+  windows: { beforeStart: string; beforeEnd: string; afterStart: string; afterEnd: string; rangeA: DateRange; rangeB: DateRange }
   accountSummary: { before: PeriodTotals; after: PeriodTotals }
   dailyTrend: DailyTrendRow[]
   categoryTable: CategoryRow[]
@@ -145,9 +148,8 @@ function dateOf(transactionDateIso: string): string {
   return transactionDateIso.slice(0, 10)
 }
 
-function inWindow(transactionDateIso: string, start: string, endInclusive: string): boolean {
-  const d = dateOf(transactionDateIso)
-  return d >= start && d <= endInclusive
+function inWindow(transactionDateIso: string, range: DateRange): boolean {
+  return inDateRange(transactionDateIso, range)
 }
 
 function pctChange(before: number, after: number): number | null {
@@ -209,10 +211,13 @@ function buildDailyTrend(rows: PaymentTxnInput[]): DailyTrendRow[] {
 export function buildEasyhomeDropDiagnostic(params: {
   transactions: PaymentTxnInput[]
   costMaster: CostMasterInput[]
-  afterEnd: string
+  rangeA?: DateRange
+  rangeB?: DateRange
   keywordRankCoverage?: { beforeCount: number; afterCount: number }
 }): EasyhomeDropDiagnostic {
-  const { transactions, costMaster, afterEnd } = params
+  const { transactions, costMaster } = params
+  const rangeA = params.rangeA ?? DEFAULT_RANGE_A
+  const rangeB = params.rangeB ?? DEFAULT_RANGE_B
 
   const costMasterByNorm = new Map<string, CostMasterInput>()
   for (const row of costMaster) costMasterByNorm.set(row.skuNorm, row)
@@ -222,8 +227,8 @@ export function buildEasyhomeDropDiagnostic(params: {
     return mapCostMasterCategoryToPortfolio(costMasterByNorm.get(skuNorm)?.category ?? null)
   }
 
-  const beforeRows = transactions.filter(r => inWindow(r.transactionDate, BEFORE_START, BEFORE_END))
-  const afterRows = transactions.filter(r => inWindow(r.transactionDate, AFTER_START, afterEnd))
+  const beforeRows = transactions.filter(r => inWindow(r.transactionDate, rangeA))
+  const afterRows = transactions.filter(r => inWindow(r.transactionDate, rangeB))
   const allRows = [...beforeRows, ...afterRows]
 
   const accountSummary = { before: summarizePeriod(beforeRows), after: summarizePeriod(afterRows) }
@@ -323,7 +328,12 @@ export function buildEasyhomeDropDiagnostic(params: {
     afterPortfolioDailyAvg.set(row.portfolio, accountSummary.after.dayCount > 0 ? row.afterSales / accountSummary.after.dayCount : 0)
   }
 
-  const outlierDays: OutlierDayRow[] = OUTLIER_DAYS.map(date => {
+  // Dynamic outlier days: the days within Range B whose net sales deviate most
+  // from the Range B daily average (was a hardcoded 2-date list before Phase 2A).
+  const candidateDates = afterRows.length > 0
+    ? [...new Set(afterRows.map(r => dateOf(r.transactionDate)))].sort()
+    : []
+  const outlierDays: OutlierDayRow[] = candidateDates.map(date => {
     const dayRows = allRows.filter(r => dateOf(r.transactionDate) === date)
     const trend = afterDailyByDate.get(date)
     const byPortfolioThatDay = new Map<EasyhomePortfolio, number>()
@@ -353,7 +363,7 @@ export function buildEasyhomeDropDiagnostic(params: {
       vsAfterPeriodAvgSalesPct: afterPeriodAvgSales !== 0 ? round2(((dayTotal - afterPeriodAvgSales) / afterPeriodAvgSales) * 100) : null,
       topPortfolioDrops,
     }
-  })
+  }).sort((a, b) => Math.abs(b.vsAfterPeriodAvgSalesPct ?? 0) - Math.abs(a.vsAfterPeriodAvgSalesPct ?? 0)).slice(0, 3)
 
   const rankingSignalCoverage = {
     beforeCount: params.keywordRankCoverage?.beforeCount ?? 0,
@@ -380,9 +390,11 @@ export function buildEasyhomeDropDiagnostic(params: {
 
   const diagnosticNotes = buildDiagnosticNotes({ accountSummary, categoryTable, topRevenueLosers, outlierDays })
   const dataGaps = buildDataGaps(rankingSignalCoverage)
+  if (beforeRows.length === 0) dataGaps.unshift(`Data incomplete for selected range: no transactions found for Range A (${rangeA.startDate} to ${rangeA.endDate}).`)
+  if (afterRows.length === 0) dataGaps.unshift(`Data incomplete for selected range: no transactions found for Range B (${rangeB.startDate} to ${rangeB.endDate}).`)
 
   return {
-    windows: { beforeStart: BEFORE_START, beforeEnd: BEFORE_END, afterStart: AFTER_START, afterEnd },
+    windows: { beforeStart: rangeA.startDate, beforeEnd: rangeA.endDate, afterStart: rangeB.startDate, afterEnd: rangeB.endDate, rangeA, rangeB },
     accountSummary,
     dailyTrend,
     categoryTable,

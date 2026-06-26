@@ -30,12 +30,16 @@ import type { ActionItemWithChanges, ChangeHistorySummary, ChangeEventInput } fr
 import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary } from '@/lib/internal/easyhome-change-history-archive'
 import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
+import type { FindingRow } from '@/lib/internal/easyhome-findings-table'
+import { DEFAULT_RANGE_A, DEFAULT_RANGE_B, usesJune15, type DateRange } from '@/lib/internal/date-range'
 import { ActionQueue } from './action-queue'
 import { ChangeHistorySection } from './change-history'
 import { ChangeHistoryArchiveSection } from './change-history-archive'
 import { ManualReviewCandidates } from './manual-review-candidates'
 import { ManualReviewCases } from './manual-review-cases'
 import { ManualReviewExecutionSheet, type ExecutionSheetUpdate } from './manual-review-execution-sheet'
+import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
+import { FindingsActionsTable, toFindingsCsv } from './findings-actions-table'
 
 type LatestCampaignUploadBatch = {
   original_filename: string
@@ -95,7 +99,21 @@ type ChangeHistoryBatchRow = {
 
 type ChangeHistoryImportStatus = ChangeHistoryBatchRow | null
 
+type ControlPanelMeta = {
+  mode: 'single' | 'compare'
+  rangeA: DateRange
+  rangeB: DateRange
+  requestedRangeA: DateRange
+  portfolioFilter: string | null
+  campaignFilter: string | null
+  daysInRangeA: number
+  daysInRangeB: number
+  dataIncomplete: boolean
+}
+
 type ApiResponse = {
+  controlPanel: ControlPanelMeta
+  findingsTable: FindingRow[]
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic
   latestCampaignUploadBatch: LatestCampaignUploadBatch
@@ -134,15 +152,39 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
   )
 }
 
+const DEFAULT_QUERY: ControlPanelQuery = {
+  mode: 'compare',
+  rangeA: DEFAULT_RANGE_A,
+  rangeB: DEFAULT_RANGE_B,
+  portfolio: null,
+  campaign: null,
+}
+
+function buildQueryString(query: ControlPanelQuery): string {
+  const params = new URLSearchParams()
+  params.set('mode', query.mode)
+  params.set('aStart', query.rangeA.startDate)
+  params.set('aEnd', query.rangeA.endDate)
+  if (query.mode === 'compare') {
+    params.set('bStart', query.rangeB.startDate)
+    params.set('bEnd', query.rangeB.endDate)
+  }
+  if (query.portfolio) params.set('portfolio', query.portfolio)
+  if (query.campaign) params.set('campaign', query.campaign)
+  return params.toString()
+}
+
 export function EasyhomeDiagnosticDashboard() {
   const [data, setData] = useState<ApiResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState<ControlPanelQuery>(DEFAULT_QUERY)
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    fetch('/api/internal/easyhome-drop-diagnostic')
+    setError(null)
+    fetch(`/api/internal/easyhome-drop-diagnostic?${buildQueryString(query)}`)
       .then(async res => {
         if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? 'Failed to load diagnostic')
         return res.json() as Promise<ApiResponse>
@@ -151,9 +193,9 @@ export function EasyhomeDiagnosticDashboard() {
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load diagnostic') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [])
+  }, [query])
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground gap-2">
         <Loader2 className="w-5 h-5 animate-spin" /> Loading EasyHOME diagnostic…
@@ -161,19 +203,40 @@ export function EasyhomeDiagnosticDashboard() {
     )
   }
 
-  if (error || !data) {
+  if (error && !data) {
     return (
-      <div className="p-6 text-sm text-red-400">{error ?? 'No data available.'}</div>
+      <div className="p-6 text-sm text-red-400">{error}</div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="p-6 text-sm text-red-400">No data available.</div>
     )
   }
 
   const {
+    controlPanel, findingsTable,
     diagnostic, campaignDiagnostic, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
     changeHistoryImportStatus, changeHistoryBatches, changeHistorySummary, changeHistoryEvents,
     changeHistoryDayByDay, changeHistoryArchiveCoverage, changeHistoryChunkCoverage, changeHistoryCorrelationSummary,
     manualReviewCandidates, manualReviewCases,
     meta,
   } = data
+
+  const portfolioOptions = [...new Set(campaignDiagnostic.campaignTable.map(c => c.portfolio))].sort()
+  const campaignOptions = [...new Set(campaignDiagnostic.campaignTable.map(c => c.campaignName))].sort()
+  const showJune15Label = usesJune15(controlPanel.rangeA, controlPanel.rangeB)
+
+  function handleExportAll() {
+    const blob = new Blob([toFindingsCsv(findingsTable)], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `brahmastra_findings_actions_${controlPanel.rangeA.startDate}_to_${controlPanel.rangeB.endDate}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   async function handleActionStatusChange(actionKey: string, status: ActionStatus, notes: string | null) {
     setData(prev => prev ? {
@@ -215,25 +278,44 @@ export function EasyhomeDiagnosticDashboard() {
   return (
     <div className="p-6 space-y-8 max-w-7xl mx-auto">
       <div>
-        <h1 className="text-2xl font-black text-foreground">EasyHOME — June 15 Drop Diagnostic</h1>
+        <h1 className="text-2xl font-black text-foreground">
+          EasyHOME — Brahmastra Ads Intelligence{showJune15Label ? ' (June 15 drop)' : ''}
+        </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Before {diagnostic.windows.beforeStart} → {diagnostic.windows.beforeEnd} vs After {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd}.
-          Read-only. Data through {diagnostic.windows.afterEnd} ({meta.transactionRowsFetched.toLocaleString('en-IN')} transaction rows).
+          {controlPanel.mode === 'single'
+            ? <>Single Range: {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd} (auto-baseline Range A: {diagnostic.windows.beforeStart} → {diagnostic.windows.beforeEnd}).</>
+            : <>Range A {diagnostic.windows.beforeStart} → {diagnostic.windows.beforeEnd} vs Range B {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd}.</>}
+          {' '}Read-only. Data through {diagnostic.windows.afterEnd} ({meta.transactionRowsFetched.toLocaleString('en-IN')} transaction rows).
         </p>
+        {controlPanel.dataIncomplete && (
+          <p className="text-sm text-amber-400 mt-1">Data incomplete for selected range.</p>
+        )}
+        {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
       </div>
+
+      <BrahmastraControlPanel
+        portfolios={portfolioOptions}
+        campaigns={campaignOptions}
+        onRun={q => setQuery(q)}
+        onExportAll={handleExportAll}
+        loading={loading}
+      />
+
+      {/* Findings & Actions Table — the main, easier-to-scan view above the raw sections */}
+      <FindingsActionsTable rows={findingsTable} />
 
       {/* Account summary */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="Sales / day (before)" value={formatInr(before.netSales / Math.max(before.dayCount, 1))} />
-        <KpiCard label="Sales / day (after)" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} />
-        <KpiCard label="Ad spend / day (before)" value={formatInr(before.adSpend / Math.max(before.dayCount, 1))} />
-        <KpiCard label="Ad spend / day (after)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} />
-        <KpiCard label="Ad-to-sales ratio (before)" value={before.adToSalesRatioPct !== null ? `${before.adToSalesRatioPct.toFixed(1)}%` : '—'} />
-        <KpiCard label="Ad-to-sales ratio (after)" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} />
-        <KpiCard label="Orders (before)" value={before.orderCount.toLocaleString('en-IN')} sub={`${before.unitsOrdered.toLocaleString('en-IN')} units`} />
-        <KpiCard label="Orders (after)" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units`} />
-        <KpiCard label="Refunds (before)" value={formatInr(before.refundAmount)} sub={`${before.refundCount} orders`} />
-        <KpiCard label="Refunds (after)" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders`} />
+        <KpiCard label="Sales / day (Range A)" value={formatInr(before.netSales / Math.max(before.dayCount, 1))} />
+        <KpiCard label="Sales / day (Range B)" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} />
+        <KpiCard label="Ad spend / day (Range A)" value={formatInr(before.adSpend / Math.max(before.dayCount, 1))} />
+        <KpiCard label="Ad spend / day (Range B)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} />
+        <KpiCard label="Ad-to-sales ratio (Range A)" value={before.adToSalesRatioPct !== null ? `${before.adToSalesRatioPct.toFixed(1)}%` : '—'} />
+        <KpiCard label="Ad-to-sales ratio (Range B)" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} />
+        <KpiCard label="Orders (Range A)" value={before.orderCount.toLocaleString('en-IN')} sub={`${before.unitsOrdered.toLocaleString('en-IN')} units`} />
+        <KpiCard label="Orders (Range B)" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units`} />
+        <KpiCard label="Refunds (Range A)" value={formatInr(before.refundAmount)} sub={`${before.refundCount} orders`} />
+        <KpiCard label="Refunds (Range B)" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders`} />
       </div>
 
       {/* Mapping health */}
@@ -247,7 +329,7 @@ export function EasyhomeDiagnosticDashboard() {
         </div>
         {diagnostic.mappingHealth.topUnmappedSkus.length > 0 && (
           <DataTable
-            columns={['SKU', 'Before', 'After', 'Total']}
+            columns={['SKU', 'Range A', 'Range B', 'Total']}
             rows={diagnostic.mappingHealth.topUnmappedSkus.map(row => [
               row.sku,
               formatInr(row.beforeSales),
@@ -337,7 +419,7 @@ export function EasyhomeDiagnosticDashboard() {
           </ResponsiveContainer>
         </div>
         <DataTable
-          columns={['Portfolio', 'Before', 'After', 'Δ Sales', 'Δ %', 'Before Units', 'After Units', 'Before Refund', 'After Refund']}
+          columns={['Portfolio', 'Range A', 'Range B', 'Δ Sales', 'Δ %', 'Range A Units', 'Range B Units', 'Range A Refund', 'Range B Refund']}
           rows={diagnostic.categoryTable.map(row => [
             row.portfolio,
             formatInr(row.beforeSales),
@@ -448,7 +530,7 @@ export function EasyhomeDiagnosticDashboard() {
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-bold text-foreground mb-4">Campaign — before vs after</h2>
             <DataTable
-              columns={['Campaign', 'Portfolio', 'Before Spend', 'After Spend', 'Before Sales', 'After Sales', 'Before ACOS', 'After ACOS']}
+              columns={['Campaign', 'Portfolio', 'Range A Spend', 'Range B Spend', 'Range A Sales', 'Range B Sales', 'Range A ACOS', 'Range B ACOS']}
               rows={campaignDiagnostic.campaignTable.map(row => [
                 row.campaignName,
                 row.portfolio,
@@ -466,7 +548,7 @@ export function EasyhomeDiagnosticDashboard() {
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-bold text-foreground mb-4">Top 20 campaign losers (by sales delta)</h2>
             <DataTable
-              columns={['Campaign', 'Portfolio', 'Before Sales', 'After Sales', 'Δ Sales', 'Δ Spend']}
+              columns={['Campaign', 'Portfolio', 'Range A Sales', 'Range B Sales', 'Δ Sales', 'Δ Spend']}
               rows={campaignDiagnostic.topCampaignLosers.map(row => [
                 row.campaignName,
                 row.portfolio,
@@ -517,7 +599,7 @@ export function EasyhomeDiagnosticDashboard() {
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-bold text-foreground mb-4">Campaign sales vs actual portfolio sales (cross-check)</h2>
             <DataTable
-              columns={['Portfolio', 'Campaign Before', 'Actual Before', 'Gap %', 'Campaign After', 'Actual After', 'Gap %']}
+              columns={['Portfolio', 'Campaign Range A', 'Actual Range A', 'Gap %', 'Campaign Range B', 'Actual Range B', 'Gap %']}
               rows={campaignDiagnostic.campaignPortfolioCrossCheck.map(row => [
                 row.portfolio,
                 formatInr(row.campaignBeforeSales),
@@ -565,7 +647,7 @@ export function EasyhomeDiagnosticDashboard() {
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-bold text-foreground mb-4">Top 20 advertised SKU ad-sales losers</h2>
             <DataTable
-              columns={['SKU', 'Portfolio', 'Before Sales', 'After Sales', 'Δ Sales', 'Before ACOS', 'After ACOS']}
+              columns={['SKU', 'Portfolio', 'Range A Sales', 'Range B Sales', 'Δ Sales', 'Range A ACOS', 'Range B ACOS']}
               rows={deepDiagnostic.advertisedProduct.topLosers.map((r: AdvertisedProductRow) => [
                 r.advertisedSku, r.portfolio, formatInr(r.beforeSales), formatInr(r.afterSales), formatInr(r.deltaSales),
                 r.beforeAcos !== null ? `${r.beforeAcos.toFixed(1)}%` : '—',
@@ -580,7 +662,7 @@ export function EasyhomeDiagnosticDashboard() {
               <p className="text-sm text-muted-foreground">None found.</p>
             ) : (
               <DataTable
-                columns={['SKU', 'Portfolio', 'Before Clicks', 'After Clicks', 'Before Sales', 'After Sales']}
+                columns={['SKU', 'Portfolio', 'Range A Clicks', 'Range B Clicks', 'Range A Sales', 'Range B Sales']}
                 rows={deepDiagnostic.advertisedProduct.trafficContinuedSalesCollapsed.map((r: AdvertisedProductRow) => [
                   r.advertisedSku, r.portfolio, r.beforeClicks, r.afterClicks, formatInr(r.beforeSales), formatInr(r.afterSales),
                 ])}
@@ -595,7 +677,7 @@ export function EasyhomeDiagnosticDashboard() {
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-bold text-foreground mb-4">Top 20 target/keyword losers</h2>
             <DataTable
-              columns={['Target', 'Match type', 'Campaign', 'Before Sales', 'After Sales', 'Δ Sales']}
+              columns={['Target', 'Match type', 'Campaign', 'Range A Sales', 'Range B Sales', 'Δ Sales']}
               rows={deepDiagnostic.targeting.topLosers.map((r: TargetingRow) => [
                 r.targetLabel, r.matchType ?? '—', r.campaignName, formatInr(r.beforeSales), formatInr(r.afterSales), formatInr(r.deltaSales),
               ])}
@@ -608,7 +690,7 @@ export function EasyhomeDiagnosticDashboard() {
               <p className="text-sm text-muted-foreground">None found.</p>
             ) : (
               <DataTable
-                columns={['Target', 'Match type', 'Before ACOS', 'After ACOS', 'After Clicks']}
+                columns={['Target', 'Match type', 'Range A ACOS', 'Range B ACOS', 'Range B Clicks']}
                 rows={deepDiagnostic.targeting.acosWorsenedSharply.map((r: TargetingRow) => [
                   r.targetLabel, r.matchType ?? '—',
                   r.beforeAcos !== null ? `${r.beforeAcos.toFixed(1)}%` : '—',
@@ -629,7 +711,7 @@ export function EasyhomeDiagnosticDashboard() {
               <p className="text-sm text-muted-foreground">None found.</p>
             ) : (
               <DataTable
-                columns={['Search term', 'Campaign', 'After Spend', 'After Clicks']}
+                columns={['Search term', 'Campaign', 'Range B Spend', 'Range B Clicks']}
                 rows={deepDiagnostic.searchTerm.highSpendZeroOrdersAfter.map((r: SearchTermRow) => [r.searchTerm, r.campaignName, formatInr(r.afterSpend), r.afterClicks])}
               />
             )}
@@ -653,7 +735,7 @@ export function EasyhomeDiagnosticDashboard() {
               <p className="text-sm text-muted-foreground">None found.</p>
             ) : (
               <DataTable
-                columns={['Search term', 'Campaign', 'Before ACOS', 'After ACOS', 'Before Purchases', 'After Purchases']}
+                columns={['Search term', 'Campaign', 'Range A ACOS', 'Range B ACOS', 'Range A Purchases', 'Range B Purchases']}
                 rows={deepDiagnostic.searchTerm.goodBeforeBadAfter.map((r: SearchTermRow) => [
                   r.searchTerm, r.campaignName,
                   r.beforeAcos !== null ? `${r.beforeAcos.toFixed(1)}%` : '—',
@@ -699,7 +781,7 @@ export function EasyhomeDiagnosticDashboard() {
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="text-sm font-bold text-foreground mb-4">Portfolio-level deep diagnostic summary (SKU-attributed ad spend/sales)</h2>
           <DataTable
-            columns={['Portfolio', 'Before Spend', 'After Spend', 'Before Sales', 'After Sales', 'Before ACOS', 'After ACOS']}
+            columns={['Portfolio', 'Range A Spend', 'Range B Spend', 'Range A Sales', 'Range B Sales', 'Range A ACOS', 'Range B ACOS']}
             rows={Object.values(
               deepDiagnostic.advertisedProduct.table.reduce((acc: Record<string, { portfolio: string; beforeSpend: number; afterSpend: number; beforeSales: number; afterSales: number }>, row: AdvertisedProductRow) => {
                 if (!acc[row.portfolio]) acc[row.portfolio] = { portfolio: row.portfolio, beforeSpend: 0, afterSpend: 0, beforeSales: 0, afterSales: 0 }
@@ -747,7 +829,7 @@ function SkuLoserTable({
     <div className="bg-card border border-border rounded-xl p-5">
       <h2 className="text-sm font-bold text-foreground mb-4">{title}</h2>
       <DataTable
-        columns={['SKU', 'Portfolio', 'Before', 'After', metric === 'refund' ? 'Δ Refund' : 'Δ']}
+        columns={['SKU', 'Portfolio', 'Range A', 'Range B', metric === 'refund' ? 'Δ Refund' : 'Δ']}
         rows={rows.map(row => [
           row.sku,
           row.portfolio,

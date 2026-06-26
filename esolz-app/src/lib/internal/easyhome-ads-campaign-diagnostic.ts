@@ -2,7 +2,7 @@
 // internal_ads_campaign_daily_rows table. Pure functions — callers fetch rows
 // and pass them in. Read-only analytics only.
 
-import { AFTER_START, BEFORE_END, BEFORE_START } from './easyhome-drop-diagnostic'
+import { DEFAULT_RANGE_A, DEFAULT_RANGE_B, type DateRange, inWindow as inDateRange } from './date-range'
 
 export type AdsCampaignRowInput = {
   reportDate: string
@@ -41,8 +41,8 @@ function roasOf(spend: number, sales: number): number | null {
   return spend > 0 ? round2(sales / spend) : null
 }
 
-function inWindow(reportDate: string, start: string, endInclusive: string): boolean {
-  return reportDate >= start && reportDate <= endInclusive
+function inWindow(reportDate: string, range: DateRange): boolean {
+  return inDateRange(reportDate, range)
 }
 
 export type CampaignRow = {
@@ -113,11 +113,14 @@ export type EasyhomeAdsCampaignDiagnostic = {
 
 export function buildEasyhomeAdsCampaignDiagnostic(params: {
   campaignRows: AdsCampaignRowInput[]
-  afterEnd: string
+  rangeA?: DateRange
+  rangeB?: DateRange
   actualCategorySales: Array<{ portfolio: string; beforeSales: number; afterSales: number }>
   transactionAdSpend: { before: number; after: number }
 }): EasyhomeAdsCampaignDiagnostic {
-  const { campaignRows, afterEnd, actualCategorySales, transactionAdSpend } = params
+  const { campaignRows, actualCategorySales, transactionAdSpend } = params
+  const rangeA = params.rangeA ?? DEFAULT_RANGE_A
+  const rangeB = params.rangeB ?? DEFAULT_RANGE_B
 
   if (campaignRows.length === 0) {
     return {
@@ -140,8 +143,8 @@ export function buildEasyhomeAdsCampaignDiagnostic(params: {
     }
   }
 
-  const beforeRows = campaignRows.filter(r => inWindow(r.reportDate, BEFORE_START, BEFORE_END))
-  const afterRows = campaignRows.filter(r => inWindow(r.reportDate, AFTER_START, afterEnd))
+  const beforeRows = campaignRows.filter(r => inWindow(r.reportDate, rangeA))
+  const afterRows = campaignRows.filter(r => inWindow(r.reportDate, rangeB))
 
   const beforeByCampaign = new Map<string, { agg: PeriodAgg; portfolio: string }>()
   const afterByCampaign = new Map<string, { agg: PeriodAgg; portfolio: string }>()

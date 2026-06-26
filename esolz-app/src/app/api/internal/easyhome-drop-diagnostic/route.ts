@@ -1,12 +1,21 @@
 import { NextResponse } from 'next/server'
 import { getInternalAccessContext } from '@/lib/internal-access'
 import {
-  AFTER_START,
-  BEFORE_START,
   buildEasyhomeDropDiagnostic,
   type CostMasterInput,
   type PaymentTxnInput,
 } from '@/lib/internal/easyhome-drop-diagnostic'
+import {
+  autoBaselineFor,
+  DEFAULT_RANGE_A,
+  DEFAULT_RANGE_B,
+  minStartDate,
+  validateCompareRanges,
+  validateRange,
+  type AnalysisMode,
+  type DateRange,
+} from '@/lib/internal/date-range'
+import { buildFindingsTable } from '@/lib/internal/easyhome-findings-table'
 import {
   buildEasyhomeAdsCampaignDiagnostic,
   type AdsCampaignRowInput,
@@ -51,12 +60,47 @@ export const maxDuration = 60
 const PAGE_SIZE = 1000
 const MAX_ROWS = 100000
 
-export async function GET() {
+function parseDateParam(value: string | null): string | null {
+  return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null
+}
+
+export async function GET(request: Request) {
   const access = await getInternalAccessContext()
   if (!access.authorized || !access.workspaceId) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }
   const workspaceId = access.workspaceId
+
+  const url = new URL(request.url)
+  const params = url.searchParams
+  const mode: AnalysisMode = params.get('mode') === 'single' ? 'single' : 'compare'
+  const portfolioFilter = params.get('portfolio')
+  const campaignFilter = params.get('campaign')
+
+  const requestedRangeA: DateRange = {
+    startDate: parseDateParam(params.get('aStart')) ?? DEFAULT_RANGE_A.startDate,
+    endDate: parseDateParam(params.get('aEnd')) ?? DEFAULT_RANGE_A.endDate,
+  }
+  const requestedRangeB: DateRange | null = mode === 'compare'
+    ? {
+      startDate: parseDateParam(params.get('bStart')) ?? DEFAULT_RANGE_B.startDate,
+      endDate: parseDateParam(params.get('bEnd')) ?? DEFAULT_RANGE_B.endDate,
+    }
+    : null
+
+  // Single-range mode investigates one window; we silently diff it against the
+  // immediately preceding period of equal length so the existing delta-based
+  // issue detection (spend cut, efficiency collapse, ACOS worsened, etc.) still
+  // works. Range B in the response IS the user's selected window in this mode.
+  const rangeA: DateRange = mode === 'single' ? autoBaselineFor(requestedRangeA) : requestedRangeA
+  const rangeB: DateRange = mode === 'single' ? requestedRangeA : (requestedRangeB as DateRange)
+
+  const rangeValidation = mode === 'compare' ? validateCompareRanges(rangeA, rangeB) : validateRange(rangeA)
+  if (!rangeValidation.valid) {
+    return NextResponse.json({ error: rangeValidation.error }, { status: 400 })
+  }
+
+  const fetchFrom = minStartDate(rangeA, rangeB)
 
   const supabase = await createClient()
 
@@ -67,7 +111,7 @@ export async function GET() {
       .from('internal_payment_transactions')
       .select('transaction_date, category, sku, sku_norm, quantity, product_sales, total_amount, order_id')
       .eq('workspace_id', workspaceId)
-      .gte('transaction_date', BEFORE_START)
+      .gte('transaction_date', fetchFrom)
       .order('transaction_date', { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1)
 
@@ -115,23 +159,19 @@ export async function GET() {
     supabase
       .from('keyword_rank_snapshots')
       .select('*', { count: 'exact', head: true })
-      .gte('checked_at', BEFORE_START)
-      .lt('checked_at', AFTER_START),
+      .gte('checked_at', rangeA.startDate)
+      .lt('checked_at', rangeB.startDate),
     supabase
       .from('keyword_rank_snapshots')
       .select('*', { count: 'exact', head: true })
-      .gte('checked_at', AFTER_START),
+      .gte('checked_at', rangeB.startDate),
   ])
-
-  const maxDate = transactions.length > 0
-    ? transactions.reduce((max, r) => (r.transactionDate > max ? r.transactionDate : max), transactions[0].transactionDate)
-    : AFTER_START
-  const afterEnd = maxDate.slice(0, 10)
 
   const diagnostic = buildEasyhomeDropDiagnostic({
     transactions,
     costMaster,
-    afterEnd,
+    rangeA,
+    rangeB,
     keywordRankCoverage: {
       beforeCount: keywordBeforeCount ?? 0,
       afterCount: keywordAfterCount ?? 0,
@@ -144,7 +184,7 @@ export async function GET() {
       .from('internal_ads_campaign_daily_rows')
       .select('report_date, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
-      .gte('report_date', BEFORE_START)
+      .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
       campaignRows.push({
@@ -168,13 +208,10 @@ export async function GET() {
     .limit(1)
     .maybeSingle()
 
-  const campaignAfterEnd = campaignRows.length > 0
-    ? campaignRows.reduce((max, r) => (r.reportDate > max ? r.reportDate : max), campaignRows[0].reportDate)
-    : afterEnd
-
   const campaignDiagnostic = buildEasyhomeAdsCampaignDiagnostic({
     campaignRows,
-    afterEnd: campaignAfterEnd,
+    rangeA,
+    rangeB,
     actualCategorySales: diagnostic.categoryTable.map(row => ({
       portfolio: row.portfolio,
       beforeSales: row.beforeSales,
@@ -193,7 +230,7 @@ export async function GET() {
       .from('internal_ads_advertised_product_daily_rows')
       .select('report_date, advertised_sku, advertised_asin, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
-      .gte('report_date', BEFORE_START)
+      .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
       advertisedProductRows.push({
@@ -217,7 +254,7 @@ export async function GET() {
       .from('internal_ads_targeting_daily_rows')
       .select('report_date, keyword, targeting, match_type, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
-      .gte('report_date', BEFORE_START)
+      .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
       targetingRows.push({
@@ -242,7 +279,7 @@ export async function GET() {
       .from('internal_ads_search_term_daily_rows')
       .select('report_date, search_term, targeting, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
-      .gte('report_date', BEFORE_START)
+      .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
       searchTermRows.push({
@@ -267,14 +304,10 @@ export async function GET() {
     .order('uploaded_at', { ascending: false })
     .limit(20)
 
-  function maxDateOf(rows: Array<{ reportDate: string }>): string {
-    return rows.length > 0 ? rows.reduce((max, r) => (r.reportDate > max ? r.reportDate : max), rows[0].reportDate).slice(0, 10) : afterEnd
-  }
-
   const deepDiagnostic = {
-    advertisedProduct: advertisedProductRows.length > 0 ? buildAdvertisedProductDiagnostic(advertisedProductRows, maxDateOf(advertisedProductRows)) : null,
-    targeting: targetingRows.length > 0 ? buildTargetingDiagnostic(targetingRows, maxDateOf(targetingRows)) : null,
-    searchTerm: searchTermRows.length > 0 ? buildSearchTermDiagnostic(searchTermRows, maxDateOf(searchTermRows)) : null,
+    advertisedProduct: advertisedProductRows.length > 0 ? buildAdvertisedProductDiagnostic(advertisedProductRows, rangeA, rangeB) : null,
+    targeting: targetingRows.length > 0 ? buildTargetingDiagnostic(targetingRows, rangeA, rangeB) : null,
+    searchTerm: searchTermRows.length > 0 ? buildSearchTermDiagnostic(searchTermRows, rangeA, rangeB) : null,
   }
 
   // --- Phase 1D: Brahmastra Action Queue ---
@@ -288,7 +321,7 @@ export async function GET() {
     existingStatuses.set(row.action_key as string, { status: row.status as ActionStatus, notes: (row.notes as string | null) ?? null })
   }
 
-  const actionQueue = buildActionQueue({
+  const actionQueueUnfiltered = buildActionQueue({
     advertisedProduct: deepDiagnostic.advertisedProduct,
     targeting: deepDiagnostic.targeting,
     searchTerm: deepDiagnostic.searchTerm,
@@ -298,6 +331,12 @@ export async function GET() {
     skuTopUnmapped: diagnostic.mappingHealth.topUnmappedSkus,
     existingStatuses,
   })
+  // Brahmastra Control Panel portfolio/campaign filters apply across the
+  // action queue and everything derived from it (findings, candidates, cases).
+  const actionQueue = actionQueueUnfiltered.filter(item =>
+    (!portfolioFilter || item.portfolio === portfolioFilter)
+    && (!campaignFilter || item.campaignName === campaignFilter),
+  )
   const actionQueueSummary = summarizeActionQueue(actionQueue)
 
   // --- Phase 1E.2: manually-imported Change History linkage ---
@@ -338,14 +377,14 @@ export async function GET() {
     .limit(50)
   const latestChangeHistoryBatch = changeHistoryBatches?.[0] ?? null
 
-  const actionQueueWithChanges = attachRelatedChanges(actionQueue, changeEvents, afterEnd)
+  const actionQueueWithChanges = attachRelatedChanges(actionQueue, changeEvents, rangeB)
   const changeHistorySummary = buildChangeHistorySummary(changeEvents, actionQueueWithChanges)
 
   // --- Phase 1E.4: 30-day archive (day-by-day, coverage, chunk status, correlation) ---
   const changeHistoryDayByDay = buildDayByDayBreakdown(changeEvents, actionQueueWithChanges)
   const changeHistoryArchiveCoverage = buildArchiveCoverage(changeEvents, changeHistoryBatches ?? [])
   const changeHistoryChunkCoverage = buildChunkCoverage(changeHistoryArchiveCoverage.eventsByDay)
-  const changeHistoryCorrelationSummary = buildCorrelationSummary(changeEvents, AFTER_START)
+  const changeHistoryCorrelationSummary = buildCorrelationSummary(changeEvents, rangeB.startDate)
 
   // --- Phase 1F: Manual Review Candidates (ranked change × performance join) ---
   const manualReviewCandidates = buildManualReviewCandidates(actionQueueWithChanges)
@@ -386,7 +425,23 @@ export async function GET() {
   }
   const manualReviewCases = buildManualReviewCases(manualReviewCandidates, caseReviewStatuses)
 
+  // --- Phase 2A: Findings & Actions Table + Brahmastra Control Panel metadata ---
+  const findingsTable = buildFindingsTable(actionQueueWithChanges)
+  const dataIncomplete = diagnostic.accountSummary.before.rowCount === 0 || diagnostic.accountSummary.after.rowCount === 0
+
   return NextResponse.json({
+    controlPanel: {
+      mode,
+      rangeA,
+      rangeB,
+      requestedRangeA,
+      portfolioFilter,
+      campaignFilter,
+      daysInRangeA: diagnostic.accountSummary.before.dayCount,
+      daysInRangeB: diagnostic.accountSummary.after.dayCount,
+      dataIncomplete,
+    },
+    findingsTable,
     diagnostic,
     campaignDiagnostic,
     latestCampaignUploadBatch,

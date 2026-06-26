@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
-import { ListChecks, History } from 'lucide-react'
+import { ListChecks, History, Download } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { Badge } from '@/components/ui/badge'
 import type {
@@ -25,6 +25,27 @@ const PRIORITY_BADGE: Record<ActionPriority, 'destructive' | 'secondary' | 'outl
 }
 
 const STATUS_OPTIONS: ActionStatus[] = ['Open', 'Reviewing', 'Done', 'Ignored']
+
+function toActionQueueCsv(rows: ActionItemWithChanges[]): string {
+  const headers = [
+    'priority', 'portfolio', 'entity_type', 'entity_name', 'campaign_name', 'issue_type', 'problem_summary',
+    'spend_a', 'sales_a', 'acos_a', 'spend_b', 'sales_b', 'acos_b', 'suggested_review', 'data_source',
+    'related_changes_count', 'status', 'notes',
+  ]
+  const esc = (v: unknown) => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [headers.join(',')]
+  for (const r of rows) {
+    lines.push([
+      r.priority, r.portfolio, r.entityType, r.entityName, r.campaignName, r.issueType, r.problemSummary,
+      r.beforeMetrics.spend, r.beforeMetrics.sales, r.beforeMetrics.acos, r.afterMetrics.spend, r.afterMetrics.sales, r.afterMetrics.acos,
+      r.suggestedReview, r.dataSource, r.relatedChanges.length, r.status, r.notes,
+    ].map(esc).join(','))
+  }
+  return lines.join('\n')
+}
 
 function FilterSelect<T extends string>({ label, value, options, onChange }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void }) {
   return (
@@ -160,11 +181,26 @@ export function ActionQueue({
 
   const visible = showAll ? filtered : filtered.slice(0, 30)
 
+  function downloadCsv() {
+    const blob = new Blob([toActionQueueCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `brahmastra_action_queue_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="bg-card border border-border rounded-xl p-5">
-      <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
-        <ListChecks className="w-4 h-4 text-primary" /> Brahmastra Action Queue
-      </h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+          <ListChecks className="w-4 h-4 text-primary" /> Brahmastra Action Queue
+        </h2>
+        <button type="button" onClick={downloadCsv} className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">
+          <Download className="w-3 h-3" /> Export CSV ({filtered.length})
+        </button>
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
         <KpiCard label="High priority actions" value={summary.highPriorityCount.toLocaleString('en-IN')} />

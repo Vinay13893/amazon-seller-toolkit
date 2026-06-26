@@ -3,14 +3,14 @@
 // tables. Pure functions — callers fetch rows and pass them in. Read-only
 // analytics only; never used to change bids/budgets/campaigns.
 
-import { AFTER_START, BEFORE_END, BEFORE_START } from './easyhome-drop-diagnostic'
+import { DEFAULT_RANGE_A, DEFAULT_RANGE_B, type DateRange, inWindow as inDateRange } from './date-range'
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
 }
 
-function inWindow(reportDate: string, start: string, endInclusive: string): boolean {
-  return reportDate >= start && reportDate <= endInclusive
+function inWindow(reportDate: string, range: DateRange): boolean {
+  return inDateRange(reportDate, range)
 }
 
 function acosOf(spend: number, sales: number): number | null {
@@ -55,12 +55,13 @@ export type BeforeAfterRow<TDims> = TDims & {
 
 function aggregateBeforeAfter<TRow extends Metrics & { reportDate: string; portfolio: string }, TDims>(
   rows: TRow[],
-  afterEnd: string,
+  rangeA: DateRange,
+  rangeB: DateRange,
   keyFn: (row: TRow) => string,
   dimsFn: (row: TRow) => TDims,
 ): BeforeAfterRow<TDims>[] {
-  const beforeRows = rows.filter(r => inWindow(r.reportDate, BEFORE_START, BEFORE_END))
-  const afterRows = rows.filter(r => inWindow(r.reportDate, AFTER_START, afterEnd))
+  const beforeRows = rows.filter(r => inWindow(r.reportDate, rangeA))
+  const afterRows = rows.filter(r => inWindow(r.reportDate, rangeB))
 
   const beforeByKey = new Map<string, { agg: Metrics; portfolio: string; dims: TDims }>()
   const afterByKey = new Map<string, { agg: Metrics; portfolio: string; dims: TDims }>()
@@ -135,10 +136,11 @@ export type AdvertisedProductRowInput = {
 
 export type AdvertisedProductRow = BeforeAfterRow<{ advertisedSku: string; advertisedAsin: string | null; campaignName: string }>
 
-export function buildAdvertisedProductDiagnostic(rows: AdvertisedProductRowInput[], afterEnd: string) {
+export function buildAdvertisedProductDiagnostic(rows: AdvertisedProductRowInput[], rangeA: DateRange = DEFAULT_RANGE_A, rangeB: DateRange = DEFAULT_RANGE_B) {
   const table = aggregateBeforeAfter(
     rows as Array<AdvertisedProductRowInput & { portfolio: string }>,
-    afterEnd,
+    rangeA,
+    rangeB,
     row => row.advertisedSku ?? `NOSKU:${row.campaignName}`,
     row => ({ advertisedSku: row.advertisedSku ?? '(no SKU)', advertisedAsin: row.advertisedAsin, campaignName: row.campaignName }),
   ) as AdvertisedProductRow[]
@@ -173,10 +175,11 @@ export type TargetingRowInput = {
 
 export type TargetingRow = BeforeAfterRow<{ targetLabel: string; matchType: string | null; campaignName: string }>
 
-export function buildTargetingDiagnostic(rows: TargetingRowInput[], afterEnd: string) {
+export function buildTargetingDiagnostic(rows: TargetingRowInput[], rangeA: DateRange = DEFAULT_RANGE_A, rangeB: DateRange = DEFAULT_RANGE_B) {
   const table = aggregateBeforeAfter(
     rows as Array<TargetingRowInput & { portfolio: string }>,
-    afterEnd,
+    rangeA,
+    rangeB,
     row => `${row.keyword ?? row.targeting ?? row.campaignName}|${row.matchType ?? ''}`,
     row => ({ targetLabel: row.keyword ?? row.targeting ?? '(unlabeled target)', matchType: row.matchType, campaignName: row.campaignName }),
   ) as TargetingRow[]
@@ -210,10 +213,11 @@ export type SearchTermRowInput = {
 
 export type SearchTermRow = BeforeAfterRow<{ searchTerm: string; campaignName: string }>
 
-export function buildSearchTermDiagnostic(rows: SearchTermRowInput[], afterEnd: string) {
+export function buildSearchTermDiagnostic(rows: SearchTermRowInput[], rangeA: DateRange = DEFAULT_RANGE_A, rangeB: DateRange = DEFAULT_RANGE_B) {
   const table = aggregateBeforeAfter(
     rows as Array<SearchTermRowInput & { portfolio: string }>,
-    afterEnd,
+    rangeA,
+    rangeB,
     row => row.searchTerm ?? `NOTERM:${row.campaignName}`,
     row => ({ searchTerm: row.searchTerm ?? '(no search term)', campaignName: row.campaignName }),
   ) as SearchTermRow[]

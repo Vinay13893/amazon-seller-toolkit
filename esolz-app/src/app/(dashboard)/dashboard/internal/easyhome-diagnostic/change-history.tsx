@@ -1,6 +1,6 @@
 'use client'
 
-import { History, ShieldAlert } from 'lucide-react'
+import { Download, History, ShieldAlert } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { Badge } from '@/components/ui/badge'
 import type { ChangeHistorySummary } from '@/lib/internal/easyhome-change-history-diagnostic'
@@ -52,12 +52,34 @@ export function ChangeHistorySection({
   actionQueue: ActionItemWithChanges[]
   afterStart: string
 }) {
-  const changesBeforeOrDuring = actionQueue
+  const changesBeforeOrDuringAll = actionQueue
     .flatMap(item => item.relatedChanges.map(c => ({ ...c, actionEntity: item.entityName, actionPortfolio: item.portfolio, actionPriority: item.priority })))
     .sort((a, b) => (a.changedAtIso < b.changedAtIso ? -1 : 1))
-    .slice(0, 50)
+  const changesBeforeOrDuring = changesBeforeOrDuringAll.slice(0, 50)
 
   const highPriorityWithChanges = actionQueue.filter(item => item.priority === 'High' && item.relatedChanges.length > 0)
+
+  function downloadChangeHistoryCsv() {
+    const headers = ['changed_at', 'timing', 'change_description', 'campaign_name', 'action_entity', 'portfolio', 'priority', 'old_value', 'new_value', 'match_strength']
+    const esc = (v: unknown) => {
+      const s = v === null || v === undefined ? '' : String(v)
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    const lines = [headers.join(',')]
+    for (const c of changesBeforeOrDuringAll) {
+      lines.push([
+        c.changedAtIso, c.timing, c.description, c.campaignName, c.actionEntity, c.actionPortfolio, c.actionPriority,
+        c.oldValue, c.newValue, c.matchStrength,
+      ].map(esc).join(','))
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `brahmastra_change_history_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <>
@@ -103,9 +125,14 @@ export function ChangeHistorySection({
           </div>
 
           <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="text-sm font-bold text-foreground mb-4">
-              Changes correlated with action-queue items (before/during the {afterStart}+ decline window)
-            </h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-sm font-bold text-foreground">
+                Changes correlated with action-queue items (before/during the {afterStart}+ decline window)
+              </h2>
+              <button type="button" onClick={downloadChangeHistoryCsv} className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">
+                <Download className="w-3 h-3" /> Export CSV ({changesBeforeOrDuringAll.length})
+              </button>
+            </div>
             {changesBeforeOrDuring.length === 0 ? (
               <p className="text-sm text-muted-foreground">No correlated changes found for current action-queue items.</p>
             ) : (
