@@ -122,7 +122,7 @@ export function BrahmastraControlPanel({
   }
 
   return (
-    <div className="sticky top-0 z-20 bg-card border border-border rounded-xl p-4 mb-6 shadow-lg">
+    <div className="bg-card border border-border rounded-xl p-4 mb-6 shadow-lg">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
           <CalendarRange className="w-4 h-4 text-primary" /> Brahmastra Control Panel
