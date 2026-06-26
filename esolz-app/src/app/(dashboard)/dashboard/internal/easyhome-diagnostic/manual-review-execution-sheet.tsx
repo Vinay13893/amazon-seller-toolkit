@@ -5,6 +5,7 @@ import { ClipboardCheck, Download, ShieldAlert, Timer } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { CaseReviewStatus, ExpectedMetric, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 export type ExecutionSheetUpdate = {
   status: CaseReviewStatus
@@ -317,6 +318,8 @@ export function ManualReviewExecutionSheet({
 
   const focusCases = useMemo(() => cases.filter(matchesFocusList).slice(0, 8), [cases])
 
+  const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(filtered)
+
   function downloadCsv() {
     const blob = new Blob([toCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
@@ -412,7 +415,7 @@ export function ManualReviewExecutionSheet({
         </label>
       </div>
 
-      <p className="text-xs text-muted-foreground mb-2">Showing {filtered.length} of {cases.length} grouped cases. Click a row for the full checklist, change history, and decision fields.</p>
+      <p className="text-xs text-muted-foreground mb-2">{filtered.length} of {cases.length} grouped cases. Click a row for the full checklist, change history, and decision fields.</p>
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
@@ -424,10 +427,12 @@ export function ManualReviewExecutionSheet({
             </tr>
           </thead>
           <tbody>
-            {filtered.map(c => <ExecutionRow key={c.caseKey} c={c} onUpdate={onUpdate} />)}
+            {visible.map(c => <ExecutionRow key={c.caseKey} c={c} onUpdate={onUpdate} />)}
           </tbody>
         </table>
       </div>
+
+      <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
 
       <p className="text-xs text-muted-foreground mt-3">
         Correlated with the post-15-June window — review manually; possible rollback review only after the checklist is complete. Compare old vs current. Do not revert blindly.

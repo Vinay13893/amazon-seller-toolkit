@@ -41,6 +41,7 @@ import { ManualReviewCases } from './manual-review-cases'
 import { ManualReviewExecutionSheet, type ExecutionSheetUpdate } from './manual-review-execution-sheet'
 import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
 import { FindingsActionsTable, GoodWorkingTable, toFindingsCsv, toGoodWorkingCsv } from './findings-actions-table'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 type LatestCampaignUploadBatch = {
   original_filename: string
@@ -194,6 +195,8 @@ export function EasyhomeDiagnosticDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState<ControlPanelQuery>(DEFAULT_QUERY)
+  // Declared unconditionally (rules of hooks) even though only used once data has loaded.
+  const campaignTablePaging = usePaginatedRows(data?.campaignDiagnostic.campaignTable ?? [])
 
   useEffect(() => {
     let cancelled = false
@@ -565,7 +568,7 @@ export function EasyhomeDiagnosticDashboard() {
             <h2 className="text-sm font-bold text-foreground mb-4">Campaign — before vs after</h2>
             <DataTable
               columns={['Campaign', 'Portfolio', 'Range A Spend', 'Range B Spend', 'Range A Sales', 'Range B Sales', 'Range A ACOS', 'Range B ACOS']}
-              rows={campaignDiagnostic.campaignTable.map(row => [
+              rows={campaignTablePaging.pageRows.map(row => [
                 row.campaignName,
                 portfolioDisplayLabel(row.portfolio),
                 formatInr(row.beforeSpend),
@@ -575,6 +578,10 @@ export function EasyhomeDiagnosticDashboard() {
                 row.beforeAcos !== null ? `${row.beforeAcos.toFixed(1)}%` : '—',
                 row.afterAcos !== null ? `${row.afterAcos.toFixed(1)}%` : '—',
               ])}
+            />
+            <TablePaginationControls
+              page={campaignTablePaging.page} setPage={campaignTablePaging.setPage} pageSize={campaignTablePaging.pageSize} setPageSize={campaignTablePaging.setPageSize}
+              totalPages={campaignTablePaging.totalPages} totalRows={campaignTablePaging.totalRows} startIndex={campaignTablePaging.startIndex} endIndex={campaignTablePaging.endIndex}
             />
           </div>
 

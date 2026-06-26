@@ -5,6 +5,7 @@ import { Download, Table2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { FindingIssueLabel, FindingRow, GoodWorkingRow } from '@/lib/internal/easyhome-findings-table'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 function inr(v: number | null): string {
   return v === null ? '—' : `₹${Math.round(v).toLocaleString('en-IN')}`
@@ -129,7 +130,6 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
   const [portfolio, setPortfolio] = useState<string | 'All'>('All')
   const [issueType, setIssueType] = useState<FindingIssueLabel | 'All'>('All')
   const [priority, setPriority] = useState<string | 'All'>('All')
-  const [showAll, setShowAll] = useState(false)
 
   const portfolios = useMemo(() => [...new Set(rows.map(r => r.portfolio))].sort(), [rows])
   const issueTypes = useMemo(() => [...new Set(rows.map(r => r.issueType))].sort(), [rows])
@@ -140,7 +140,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
     && (priority === 'All' || r.priority === priority),
   ), [rows, portfolio, issueType, priority])
 
-  const visible = showAll ? filtered : filtered.slice(0, 30)
+  const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(filtered)
 
   function downloadCsv() {
     const blob = new Blob([toFindingsCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
@@ -170,9 +170,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
       </div>
 
       <p className="text-xs text-muted-foreground mb-2">
-        Showing {visible.length} of {filtered.length} filtered findings ({rows.length} total). Click a row to see why it matters, what to check first, expected outcome, risk/caution, and full metrics.
-        {!showAll && filtered.length > 30 && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(true)}>Show all</button>}
-        {showAll && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(false)}>Show top 30</button>}
+        {filtered.length} filtered findings ({rows.length} total). Click a row to see why it matters, what to check first, expected outcome, risk/caution, and full metrics.
       </p>
 
       <div className="overflow-x-auto">
@@ -192,6 +190,8 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
         </table>
       </div>
 
+      <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
+
       <p className="text-xs text-muted-foreground mt-3">
         Range A vs Range B, correlated with change-history events where available. Review manually; compare old vs current. Do not revert blindly.
       </p>
@@ -200,8 +200,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
 }
 
 export function GoodWorkingTable({ rows }: { rows: GoodWorkingRow[] }) {
-  const [showAll, setShowAll] = useState(false)
-  const visible = showAll ? rows : rows.slice(0, 20)
+  const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(rows)
 
   function downloadCsv() {
     const blob = new Blob([toGoodWorkingCsv(rows)], { type: 'text/csv;charset=utf-8;' })
@@ -228,9 +227,7 @@ export function GoodWorkingTable({ rows }: { rows: GoodWorkingRow[] }) {
       ) : (
         <>
           <p className="text-xs text-muted-foreground mb-2">
-            Showing {visible.length} of {rows.length} protected/scaling candidates.
-            {!showAll && rows.length > 20 && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(true)}>Show all</button>}
-            {showAll && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(false)}>Show top 20</button>}
+            {rows.length} protected/scaling candidates.
           </p>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
@@ -262,6 +259,7 @@ export function GoodWorkingTable({ rows }: { rows: GoodWorkingRow[] }) {
               </tbody>
             </table>
           </div>
+          <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
         </>
       )}
     </div>

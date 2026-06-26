@@ -13,6 +13,7 @@ import type {
 } from '@/lib/internal/easyhome-action-queue'
 import type { ActionItemWithChanges } from '@/lib/internal/easyhome-change-history-diagnostic'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 function formatInr(value: number | null): string {
   if (value === null) return '—'
@@ -166,7 +167,6 @@ export function ActionQueue({
   const [entityType, setEntityType] = useState<ActionEntityType | 'All'>('All')
   const [issueType, setIssueType] = useState<ActionIssueType | 'All'>('All')
   const [status, setStatus] = useState<ActionStatus | 'All'>('All')
-  const [showAll, setShowAll] = useState(false)
 
   const portfolios = useMemo(() => [...new Set(actionQueue.map(i => i.portfolio))].sort(), [actionQueue])
   const entityTypes = useMemo(() => [...new Set(actionQueue.map(i => i.entityType))].sort(), [actionQueue])
@@ -180,7 +180,7 @@ export function ActionQueue({
     && (status === 'All' || item.status === status),
   ), [actionQueue, portfolio, priority, entityType, issueType, status])
 
-  const visible = showAll ? filtered : filtered.slice(0, 30)
+  const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(filtered)
 
   function downloadCsv() {
     const blob = new Blob([toActionQueueCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
@@ -220,13 +220,7 @@ export function ActionQueue({
       </div>
 
       <p className="text-xs text-muted-foreground mb-2">
-        Showing {visible.length} of {filtered.length} filtered actions ({actionQueue.length} total).
-        {!showAll && filtered.length > 30 && (
-          <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(true)}>Show all</button>
-        )}
-        {showAll && (
-          <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(false)}>Show top 30</button>
-        )}
+        {filtered.length} filtered actions ({actionQueue.length} total).
       </p>
 
       <div className="overflow-x-auto">
@@ -245,6 +239,8 @@ export function ActionQueue({
           </tbody>
         </table>
       </div>
+
+      <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
 
       <p className="text-xs text-muted-foreground mt-3">
         All items are suggestions for manual review, not automated changes. &quot;Correlated with&quot; selected Range B — not a causal claim.

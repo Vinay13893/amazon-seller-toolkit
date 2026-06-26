@@ -6,6 +6,7 @@ import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary, ChunkCoverageStatus } from '@/lib/internal/easyhome-change-history-archive'
 import type { ChangeEventInput } from '@/lib/internal/easyhome-change-history-diagnostic'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 type ChangeHistoryBatch = {
   original_filename: string
@@ -71,6 +72,9 @@ export function ChangeHistoryArchiveSection({
   events: ChangeEventInput[]
 }) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
+
+  const dayByDayPaged = usePaginatedRows(dayByDay)
+  const batchesPaged = usePaginatedRows(batches)
 
   const dayDetail = useMemo(() => {
     if (!selectedDate) return []
@@ -157,7 +161,7 @@ export function ChangeHistoryArchiveSection({
           <h2 className="text-sm font-bold text-foreground mb-4">Import batch history</h2>
           <DataTable
             columns={['File', 'Date range', 'Reported total', 'Imported', 'Inserted/Updated', 'Page', 'Incomplete?']}
-            rows={batches.map(b => [
+            rows={batchesPaged.pageRows.map(b => [
               b.original_filename,
               `${b.from_date?.slice(0, 10) ?? '—'} → ${b.to_date?.slice(0, 10) ?? '—'}`,
               b.total_records_reported ?? '—',
@@ -166,6 +170,10 @@ export function ChangeHistoryArchiveSection({
               `offset ${b.page_offset ?? '—'}, size ${b.page_size ?? '—'}, max page ${b.max_page_number ?? '—'}`,
               b.is_incomplete ? 'Yes — needs more pages' : 'No',
             ])}
+          />
+          <TablePaginationControls
+            page={batchesPaged.page} setPage={batchesPaged.setPage} pageSize={batchesPaged.pageSize} setPageSize={batchesPaged.setPageSize}
+            totalPages={batchesPaged.totalPages} totalRows={batchesPaged.totalRows} startIndex={batchesPaged.startIndex} endIndex={batchesPaged.endIndex}
           />
         </div>
       )}
@@ -193,7 +201,7 @@ export function ChangeHistoryArchiveSection({
               </tr>
             </thead>
             <tbody>
-              {dayByDay.map(day => (
+              {dayByDayPaged.pageRows.map(day => (
                 <tr
                   key={day.date}
                   className={`border-b border-border/50 hover:bg-muted/30 cursor-pointer ${selectedDate === day.date ? 'bg-muted/40' : ''}`}
@@ -212,6 +220,10 @@ export function ChangeHistoryArchiveSection({
             </tbody>
           </table>
         </div>
+        <TablePaginationControls
+          page={dayByDayPaged.page} setPage={dayByDayPaged.setPage} pageSize={dayByDayPaged.pageSize} setPageSize={dayByDayPaged.setPageSize}
+          totalPages={dayByDayPaged.totalPages} totalRows={dayByDayPaged.totalRows} startIndex={dayByDayPaged.startIndex} endIndex={dayByDayPaged.endIndex}
+        />
 
         {selectedDate && (
           <div className="border border-border rounded-lg p-4 mt-2">

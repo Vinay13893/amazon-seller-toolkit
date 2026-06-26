@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import type { ManualReviewCandidate, ReviewChangeType, TimingBucket } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { RelatedChangeMatchStrength } from '@/lib/internal/easyhome-change-history-diagnostic'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 function inr(v: number | null): string {
   if (v === null) return '—'
@@ -61,7 +62,6 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
   const [changeType, setChangeType] = useState<ReviewChangeType | 'All'>('All')
   const [matchStrength, setMatchStrength] = useState<RelatedChangeMatchStrength | 'All'>('All')
   const [highOnly, setHighOnly] = useState(false)
-  const [showAll, setShowAll] = useState(false)
 
   const portfolios = useMemo(() => [...new Set(candidates.map(c => c.portfolio))].sort(), [candidates])
   const campaigns = useMemo(() => [...new Set(candidates.map(c => c.campaignName).filter((x): x is string => !!x))].sort(), [candidates])
@@ -77,7 +77,7 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
     && (!highOnly || c.priority === 'High'),
   ), [candidates, portfolio, campaign, timing, changeType, matchStrength, highOnly])
 
-  const visible = showAll ? filtered : filtered.slice(0, 30)
+  const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(filtered)
 
   function downloadCsv() {
     const blob = new Blob([toCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
@@ -112,9 +112,7 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
       </div>
 
       <p className="text-xs text-muted-foreground mb-2">
-        Showing {visible.length} of {filtered.length} filtered candidates ({candidates.length} total).
-        {!showAll && filtered.length > 30 && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(true)}>Show all</button>}
-        {showAll && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(false)}>Show top 30</button>}
+        {filtered.length} filtered candidates ({candidates.length} total).
       </p>
 
       <div className="overflow-x-auto">
@@ -150,6 +148,8 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
           </tbody>
         </table>
       </div>
+
+      <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
 
       <p className="text-xs text-muted-foreground mt-3">
         Suggestions for manual review only — correlation with the post-15-June window, not a confirmed cause. Do not revert blindly; no automated changes are made by this tool.

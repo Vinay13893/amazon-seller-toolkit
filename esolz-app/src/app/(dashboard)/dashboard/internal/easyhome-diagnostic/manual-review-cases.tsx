@@ -5,6 +5,7 @@ import { FolderKanban, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 function inr(v: number | null): string {
   if (v === null) return '—'
@@ -165,7 +166,6 @@ export function ManualReviewCases({
   const [status, setStatus] = useState<CaseReviewStatus | 'All'>('All')
   const [highOnly, setHighOnly] = useState(false)
   const [beforeOnly, setBeforeOnly] = useState(false)
-  const [showAll, setShowAll] = useState(false)
 
   const portfolios = useMemo(() => [...new Set(cases.map(c => c.portfolio))].sort(), [cases])
   const campaigns = useMemo(() => [...new Set(cases.map(c => c.campaignName).filter((x): x is string => !!x))].sort(), [cases])
@@ -180,7 +180,7 @@ export function ManualReviewCases({
     && (!beforeOnly || c.timingBucket === 'before decline'),
   ), [cases, portfolio, campaign, issueType, status, highOnly, beforeOnly])
 
-  const visible = showAll ? filtered : filtered.slice(0, 20)
+  const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(filtered)
 
   function downloadCsv() {
     const blob = new Blob([toCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
@@ -217,9 +217,7 @@ export function ManualReviewCases({
       </div>
 
       <p className="text-xs text-muted-foreground mb-2">
-        Showing {visible.length} of {filtered.length} filtered cases ({cases.length} total grouped cases).
-        {!showAll && filtered.length > 20 && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(true)}>Show all</button>}
-        {showAll && <button type="button" className="ml-2 text-primary underline" onClick={() => setShowAll(false)}>Show top 20</button>}
+        {filtered.length} filtered cases ({cases.length} total grouped cases).
       </p>
 
       <div className="overflow-x-auto">
@@ -236,6 +234,8 @@ export function ManualReviewCases({
           </tbody>
         </table>
       </div>
+
+      <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
 
       <p className="text-xs text-muted-foreground mt-3">
         Each row merges every action-queue facet (sales-loss, ACOS-worsened, search-term, SKU) and change-history event for the same underlying target/campaign.

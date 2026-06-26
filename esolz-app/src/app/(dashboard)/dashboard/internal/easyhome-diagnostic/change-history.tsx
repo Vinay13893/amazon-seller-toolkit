@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import type { ChangeHistorySummary } from '@/lib/internal/easyhome-change-history-diagnostic'
 import type { ActionItemWithChanges } from '@/lib/internal/easyhome-change-history-diagnostic'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
+import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 type ChangeHistoryImportStatus = {
   original_filename: string
@@ -56,7 +57,7 @@ export function ChangeHistorySection({
   const changesBeforeOrDuringAll = actionQueue
     .flatMap(item => item.relatedChanges.map(c => ({ ...c, actionEntity: item.entityName, actionPortfolio: item.portfolio, actionPriority: item.priority })))
     .sort((a, b) => (a.changedAtIso < b.changedAtIso ? -1 : 1))
-  const changesBeforeOrDuring = changesBeforeOrDuringAll.slice(0, 50)
+  const { page, setPage, pageSize, setPageSize, pageRows: changesBeforeOrDuring, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(changesBeforeOrDuringAll)
 
   const highPriorityWithChanges = actionQueue.filter(item => item.priority === 'High' && item.relatedChanges.length > 0)
 
@@ -137,18 +138,21 @@ export function ChangeHistorySection({
             {changesBeforeOrDuring.length === 0 ? (
               <p className="text-sm text-muted-foreground">No correlated changes found for current action-queue items.</p>
             ) : (
-              <DataTable
-                columns={['Date/time', 'Timing', 'Change', 'Campaign', 'Action item', 'Portfolio', 'Priority']}
-                rows={changesBeforeOrDuring.map(c => [
-                  new Date(c.changedAtIso).toLocaleString('en-IN'),
-                  c.timing,
-                  c.description,
-                  c.campaignName ?? '—',
-                  entityDisplayLabel(c.actionEntity),
-                  portfolioDisplayLabel(c.actionPortfolio),
-                  c.actionPriority,
-                ])}
-              />
+              <>
+                <DataTable
+                  columns={['Date/time', 'Timing', 'Change', 'Campaign', 'Action item', 'Portfolio', 'Priority']}
+                  rows={changesBeforeOrDuring.map(c => [
+                    new Date(c.changedAtIso).toLocaleString('en-IN'),
+                    c.timing,
+                    c.description,
+                    c.campaignName ?? '—',
+                    entityDisplayLabel(c.actionEntity),
+                    portfolioDisplayLabel(c.actionPortfolio),
+                    c.actionPriority,
+                  ])}
+                />
+                <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
+              </>
             )}
           </div>
 
