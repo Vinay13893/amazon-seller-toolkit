@@ -10,7 +10,8 @@
     "lint": "eslint",
     "preview:sku-mappings": "tsx scripts/preview-sku-component-mappings.ts",
     "preview:sku-cost-master": "tsx scripts/preview-sku-cost-master.ts",
-    "preview:payment-transactions": "tsx scripts/preview-payment-transactions.ts"
+    "preview:payment-transactions": "tsx scripts/preview-payment-transactions.ts",
+    "sync:ads-reports": "tsx scripts/sync-ads-reports.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

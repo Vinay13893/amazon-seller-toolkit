@@ -22,9 +22,14 @@ type AdsStatusResponse = {
   message?: string
   profilesSynced?: number
   configured?: boolean
+  configuredVia?: 'oauth' | 'env' | 'none'
   envPresence?: {
     configuredEnvNames?: string[]
     missingEnvNames?: string[]
+  }
+  directCredentials?: {
+    configured: boolean
+    envNames: string[]
   }
   connection?: {
     status: string
@@ -133,8 +138,10 @@ export default function AmazonAdsCard() {
 
   const profiles = status?.profiles ?? []
   const connectionStatus = status?.connection?.status ?? 'not_configured'
-  const notConfigured = status?.errorCode === 'ads_connection_not_configured' || status?.configured === false
   const connected = connectionStatus === 'active'
+  const configuredVia = status?.configuredVia ?? (connected ? 'oauth' : 'none')
+  const directCredsConfigured = status?.directCredentials?.configured === true
+  const notConfigured = configuredVia === 'none'
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
@@ -173,13 +180,26 @@ export default function AmazonAdsCard() {
               </div>
             </div>
 
-            {notConfigured && (
-              <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground">
-                Amazon Ads OAuth is not configured yet. Add the required Ads OAuth environment names in Vercel to enable the connect button.
+            {configuredVia === 'oauth' && (
+              <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-xs text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
+                Connected via OAuth.
               </div>
             )}
 
-            {status?.errorCode && !notConfigured && (
+            {configuredVia === 'env' && (
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+                Configured via environment credentials. Report sync can run. OAuth profile connection is not required for cron.
+              </div>
+            )}
+
+            {notConfigured && (
+              <div className="rounded-lg border border-dashed border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+                Not configured. Either connect Amazon Ads via OAuth above, or set direct Ads credential environment variables
+                (AMZN_ADS_CLIENT_ID/AMAZON_ADS_CLIENT_ID, *_CLIENT_SECRET, *_REFRESH_TOKEN, *_PROFILE_ID) to enable report sync without OAuth.
+              </div>
+            )}
+
+            {status?.errorCode && status.errorCode !== 'ads_connection_not_configured' && (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
                 {status.errorCode}: {status.message ?? 'Amazon Ads is not ready yet.'}
               </div>
@@ -209,7 +229,7 @@ export default function AmazonAdsCard() {
             )}
 
             <div className="flex justify-end gap-2">
-              {!connected && (
+              {!connected && !directCredsConfigured && (
                 <Button
                   size="sm"
                   disabled={connecting || notConfigured}

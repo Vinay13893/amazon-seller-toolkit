@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { presentDirectAdsCredentialEnvNames, resolveDirectAdsCredentials } from '@/lib/internal/amazon-ads-direct-credentials'
 
 export const runtime = 'nodejs'
 export const maxDuration = 10
@@ -76,6 +77,11 @@ export async function GET() {
     configuredEnvNames: configuredEnvNames(),
     missingEnvNames: missingEnvNames(),
   }
+  // Names only — never values. A workspace can have a working Ads setup via
+  // a directly-configured refresh token even when the in-app OAuth app
+  // (AMAZON_ADS_CLIENT_ID/SECRET/REDIRECT_URI) isn't configured.
+  const directCredentialsConfigured = resolveDirectAdsCredentials() !== null
+  const directCredentialEnvNames = presentDirectAdsCredentialEnvNames()
 
   let connection: AdsConnectionRow | null = null
   let profiles: AdsProfileRow[] = []
@@ -126,13 +132,18 @@ export async function GET() {
     }, { status: 200 })
   }
 
-  if (!configured) {
+  const connectedViaOauth = connection?.status === 'active'
+  const configuredVia: 'oauth' | 'env' | 'none' = connectedViaOauth ? 'oauth' : directCredentialsConfigured ? 'env' : 'none'
+
+  if (!configured && !directCredentialsConfigured) {
     return NextResponse.json({
       success: false,
       errorCode: 'ads_connection_not_configured',
-      message: 'Amazon Ads OAuth is not configured yet.',
+      message: 'Amazon Ads is not configured yet.',
       configured,
+      configuredVia,
       envPresence,
+      directCredentials: { configured: directCredentialsConfigured, envNames: directCredentialEnvNames },
       connection: connection ? {
         status: connection.status,
         marketplaceId: connection.marketplace_id,
@@ -149,7 +160,9 @@ export async function GET() {
   return NextResponse.json({
     success: true,
     configured,
+    configuredVia,
     envPresence,
+    directCredentials: { configured: directCredentialsConfigured, envNames: directCredentialEnvNames },
     connection: connection ? {
       status: connection.status,
       marketplaceId: connection.marketplace_id,
