@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { Download, Table2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { FindingIssueLabel, FindingRow } from '@/lib/internal/easyhome-findings-table'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function inr(v: number | null): string {
   return v === null ? '—' : `₹${Math.round(v).toLocaleString('en-IN')}`
@@ -33,7 +34,7 @@ export function toFindingsCsv(rows: FindingRow[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.priority, r.portfolio, r.campaignName, r.adGroupName, r.entityName, r.issueType,
+      r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityName, r.issueType,
       r.spendA, r.spendB, r.spendChange, r.salesA, r.salesB, r.salesChange,
       r.acosA, r.acosB, r.roasA, r.roasB, r.whatChanged, r.comment, r.recommendedManualAction, r.reviewStatus,
     ].map(esc).join(','))
@@ -41,13 +42,13 @@ export function toFindingsCsv(rows: FindingRow[]): string {
   return lines.join('\n')
 }
 
-function FilterSelect<T extends string>({ label, value, options, onChange }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void }) {
+function FilterSelect<T extends string>({ label, value, options, onChange, formatLabel }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void; formatLabel?: (opt: T) => string }) {
   return (
     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
       {label}
       <select className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground" value={value} onChange={e => onChange(e.target.value as T | 'All')}>
         <option value="All">All</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
+        {options.map(o => <option key={o} value={o}>{formatLabel ? formatLabel(o) : o}</option>)}
       </select>
     </label>
   )
@@ -92,7 +93,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
       </div>
 
       <div className="flex flex-wrap gap-3 mb-3">
-        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} />
+        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} formatLabel={portfolioDisplayLabel} />
         <FilterSelect label="Issue type" value={issueType} options={issueTypes} onChange={setIssueType} />
         <FilterSelect label="Priority" value={priority} options={['High', 'Medium', 'Low']} onChange={setPriority} />
       </div>
@@ -116,7 +117,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
             {visible.map((r, i) => (
               <tr key={`${r.actionKey}-${i}`} className="border-b border-border/50 hover:bg-muted/30 align-top">
                 <td className="py-2 px-2"><Badge variant={PRIORITY_BADGE[r.priority] ?? 'outline'}>{r.priority}</Badge></td>
-                <td className="py-2 px-2 whitespace-nowrap text-foreground">{r.portfolio}</td>
+                <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(r.portfolio)}</td>
                 <td className="py-2 px-2 max-w-[140px] truncate text-foreground" title={r.campaignName ?? ''}>{r.campaignName ?? '—'}</td>
                 <td className="py-2 px-2 max-w-[110px] truncate text-muted-foreground" title={r.adGroupName ?? ''}>{r.adGroupName ?? '—'}</td>
                 <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={r.entityName}>{r.entityName}</td>

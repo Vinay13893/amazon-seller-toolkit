@@ -32,6 +32,7 @@ import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-revie
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import type { FindingRow } from '@/lib/internal/easyhome-findings-table'
 import { DEFAULT_RANGE_B, autoBaselineFor, usesJune15, type DateRange } from '@/lib/internal/date-range'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import { ActionQueue } from './action-queue'
 import { ChangeHistorySection } from './change-history'
 import { ChangeHistoryArchiveSection } from './change-history-archive'
@@ -426,9 +427,9 @@ export function EasyhomeDiagnosticDashboard() {
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={diagnostic.categoryTable} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
               <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-              <XAxis dataKey="portfolio" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" interval={0} />
+              <XAxis dataKey="portfolio" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" interval={0} tickFormatter={portfolioDisplayLabel} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
-              <Tooltip content={<ChartTooltip />} />
+              <Tooltip content={<ChartTooltip />} labelFormatter={label => typeof label === 'string' ? portfolioDisplayLabel(label) : label} />
               <Bar dataKey="deltaSales" name="Sales delta" fill="#ef4444" radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -436,7 +437,7 @@ export function EasyhomeDiagnosticDashboard() {
         <DataTable
           columns={['Portfolio', 'Range A', 'Range B', 'Δ Sales', 'Δ %', 'Range A Units', 'Range B Units', 'Range A Refund', 'Range B Refund']}
           rows={diagnostic.categoryTable.map(row => [
-            row.portfolio,
+            portfolioDisplayLabel(row.portfolio),
             formatInr(row.beforeSales),
             formatInr(row.afterSales),
             formatInr(row.deltaSales),
@@ -479,7 +480,7 @@ export function EasyhomeDiagnosticDashboard() {
                 <ul className="mt-2 text-xs text-muted-foreground space-y-1">
                   {day.topPortfolioDrops.map(p => (
                     <li key={p.portfolio}>
-                      {p.portfolio}: {p.dayShare.toFixed(1)}% of that day&apos;s sales vs {p.afterPeriodAvgShare.toFixed(1)}% of the after-period average
+                      {portfolioDisplayLabel(p.portfolio)}: {p.dayShare.toFixed(1)}% of that day&apos;s sales vs {p.afterPeriodAvgShare.toFixed(1)}% of the after-period average
                     </li>
                   ))}
                 </ul>
@@ -548,7 +549,7 @@ export function EasyhomeDiagnosticDashboard() {
               columns={['Campaign', 'Portfolio', 'Range A Spend', 'Range B Spend', 'Range A Sales', 'Range B Sales', 'Range A ACOS', 'Range B ACOS']}
               rows={campaignDiagnostic.campaignTable.map(row => [
                 row.campaignName,
-                row.portfolio,
+                portfolioDisplayLabel(row.portfolio),
                 formatInr(row.beforeSpend),
                 formatInr(row.afterSpend),
                 formatInr(row.beforeSales),
@@ -566,7 +567,7 @@ export function EasyhomeDiagnosticDashboard() {
               columns={['Campaign', 'Portfolio', 'Range A Sales', 'Range B Sales', 'Δ Sales', 'Δ Spend']}
               rows={campaignDiagnostic.topCampaignLosers.map(row => [
                 row.campaignName,
-                row.portfolio,
+                portfolioDisplayLabel(row.portfolio),
                 formatInr(row.beforeSales),
                 formatInr(row.afterSales),
                 formatInr(row.deltaSales),
@@ -585,7 +586,7 @@ export function EasyhomeDiagnosticDashboard() {
                 columns={['Campaign', 'Portfolio', 'Δ Spend', 'Δ Sales']}
                 rows={campaignDiagnostic.campaignsWithSpendUpAndSalesDown.map(row => [
                   row.campaignName,
-                  row.portfolio,
+                  portfolioDisplayLabel(row.portfolio),
                   formatInr(row.deltaSpend),
                   formatInr(row.deltaSales),
                 ])}
@@ -616,7 +617,7 @@ export function EasyhomeDiagnosticDashboard() {
             <DataTable
               columns={['Portfolio', 'Campaign Range A', 'Actual Range A', 'Gap %', 'Campaign Range B', 'Actual Range B', 'Gap %']}
               rows={campaignDiagnostic.campaignPortfolioCrossCheck.map(row => [
-                row.portfolio,
+                portfolioDisplayLabel(row.portfolio),
                 formatInr(row.campaignBeforeSales),
                 formatInr(row.actualBeforeSales),
                 row.beforeGapPct !== null ? `${row.beforeGapPct.toFixed(0)}%` : '—',
@@ -664,7 +665,7 @@ export function EasyhomeDiagnosticDashboard() {
             <DataTable
               columns={['SKU', 'Portfolio', 'Range A Sales', 'Range B Sales', 'Δ Sales', 'Range A ACOS', 'Range B ACOS']}
               rows={deepDiagnostic.advertisedProduct.topLosers.map((r: AdvertisedProductRow) => [
-                r.advertisedSku, r.portfolio, formatInr(r.beforeSales), formatInr(r.afterSales), formatInr(r.deltaSales),
+                r.advertisedSku, portfolioDisplayLabel(r.portfolio), formatInr(r.beforeSales), formatInr(r.afterSales), formatInr(r.deltaSales),
                 r.beforeAcos !== null ? `${r.beforeAcos.toFixed(1)}%` : '—',
                 r.afterAcos !== null ? `${r.afterAcos.toFixed(1)}%` : '—',
               ])}
@@ -679,7 +680,7 @@ export function EasyhomeDiagnosticDashboard() {
               <DataTable
                 columns={['SKU', 'Portfolio', 'Range A Clicks', 'Range B Clicks', 'Range A Sales', 'Range B Sales']}
                 rows={deepDiagnostic.advertisedProduct.trafficContinuedSalesCollapsed.map((r: AdvertisedProductRow) => [
-                  r.advertisedSku, r.portfolio, r.beforeClicks, r.afterClicks, formatInr(r.beforeSales), formatInr(r.afterSales),
+                  r.advertisedSku, portfolioDisplayLabel(r.portfolio), r.beforeClicks, r.afterClicks, formatInr(r.beforeSales), formatInr(r.afterSales),
                 ])}
               />
             )}
@@ -807,7 +808,7 @@ export function EasyhomeDiagnosticDashboard() {
                 return acc
               }, {}),
             ).map(p => [
-              p.portfolio, formatInr(p.beforeSpend), formatInr(p.afterSpend), formatInr(p.beforeSales), formatInr(p.afterSales),
+              portfolioDisplayLabel(p.portfolio), formatInr(p.beforeSpend), formatInr(p.afterSpend), formatInr(p.beforeSales), formatInr(p.afterSales),
               p.beforeSales > 0 ? `${((p.beforeSpend / p.beforeSales) * 100).toFixed(1)}%` : '—',
               p.afterSales > 0 ? `${((p.afterSpend / p.afterSales) * 100).toFixed(1)}%` : '—',
             ])}
@@ -847,7 +848,7 @@ function SkuLoserTable({
         columns={['SKU', 'Portfolio', 'Range A', 'Range B', metric === 'refund' ? 'Δ Refund' : 'Δ']}
         rows={rows.map(row => [
           row.sku,
-          row.portfolio,
+          portfolioDisplayLabel(row.portfolio),
           metric === 'units' ? row.beforeUnits.toLocaleString('en-IN') : formatInr(metric === 'refund' ? row.beforeRefund : row.beforeSales),
           metric === 'units' ? row.afterUnits.toLocaleString('en-IN') : formatInr(metric === 'refund' ? row.afterRefund : row.afterSales),
           metric === 'units'

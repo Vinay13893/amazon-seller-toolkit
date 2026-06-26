@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { ClipboardCheck, Download, ShieldAlert, Timer } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { CaseReviewStatus, ExpectedMetric, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 export type ExecutionSheetUpdate = {
   status: CaseReviewStatus
@@ -121,7 +122,7 @@ function toCsv(rows: ManualReviewCase[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.rank, r.priority, r.portfolio, r.campaignName, r.adGroupName, r.mainEntity, r.issueSummary,
+      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.mainEntity, r.issueSummary,
       r.combinedSalesDecline, r.worstAcosBefore, r.worstAcosAfter, r.worstRoasBefore, r.worstRoasAfter,
       r.relatedChangesCount, r.earliestRelatedChange, r.latestRelatedChange, r.timingBucket, r.matchStrength,
       r.evidenceSummary, r.status, r.owner, r.decision, r.decisionDate, r.nextCheckDate, r.expectedMetrics.join('|'),
@@ -170,7 +171,7 @@ function ExecutionRow({
       <tr className="border-b border-border/50 hover:bg-muted/30 align-top cursor-pointer" onClick={() => setExpanded(v => !v)}>
         <td className="py-2 px-2 text-muted-foreground">{c.rank}</td>
         <td className="py-2 px-2 whitespace-nowrap"><Badge variant={PRIORITY_BADGE[c.priority] ?? 'outline'}>{c.priority}</Badge></td>
-        <td className="py-2 px-2 whitespace-nowrap text-foreground">{c.portfolio}</td>
+        <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(c.portfolio)}</td>
         <td className="py-2 px-2 max-w-[140px] truncate text-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
         <td className="py-2 px-2 max-w-[110px] truncate text-muted-foreground" title={c.adGroupName ?? ''}>{c.adGroupName ?? '—'}</td>
         <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.mainEntity}>{c.mainEntity}</td>
@@ -358,7 +359,7 @@ export function ManualReviewExecutionSheet({
                   <tr key={c.caseKey} className="border-t border-border/40 align-top">
                     <td className="py-1.5 pr-3 text-foreground font-medium">#{c.rank}</td>
                     <td className="py-1.5 pr-3 max-w-[140px] text-foreground" title={`${c.mainEntity} — ${c.campaignName ?? '—'}`}>{c.mainEntity}</td>
-                    <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{c.portfolio}</td>
+                    <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{portfolioDisplayLabel(c.portfolio)}</td>
                     <td className="py-1.5 pr-3 max-w-[140px] truncate text-muted-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
                     <td className="py-1.5 pr-3 max-w-[140px] truncate text-foreground" title={c.mainEntity}>{c.mainEntity}</td>
                     <td className="py-1.5 pr-3 whitespace-nowrap text-muted-foreground">{c.issueSummary}</td>
@@ -394,7 +395,7 @@ export function ManualReviewExecutionSheet({
           Portfolio
           <select className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground" value={portfolio} onChange={e => setPortfolio(e.target.value)}>
             <option value="All">All</option>
-            {portfolios.map(p => <option key={p} value={p}>{p}</option>)}
+            {portfolios.map(p => <option key={p} value={p}>{portfolioDisplayLabel(p)}</option>)}
           </select>
         </label>
         <label className="flex items-center gap-1.5 text-xs text-muted-foreground self-end pb-1">

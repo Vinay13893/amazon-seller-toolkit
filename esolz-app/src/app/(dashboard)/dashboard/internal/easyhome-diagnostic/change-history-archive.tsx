@@ -5,6 +5,7 @@ import { CalendarDays, AlertTriangle, Download } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary, ChunkCoverageStatus } from '@/lib/internal/easyhome-change-history-archive'
 import type { ChangeEventInput } from '@/lib/internal/easyhome-change-history-diagnostic'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 type ChangeHistoryBatch = {
   original_filename: string
@@ -85,7 +86,7 @@ export function ChangeHistoryArchiveSection({
     const lines = [headers.join(',')]
     for (const e of events) {
       lines.push([
-        e.changedAtIso, e.changeType, e.oldValue, e.newValue, e.campaignName, e.adGroupName, e.entityName, e.matchType, e.portfolio, e.isSystemEvent,
+        e.changedAtIso, e.changeType, e.oldValue, e.newValue, e.campaignName, e.adGroupName, e.entityName, e.matchType, portfolioDisplayLabel(e.portfolio), e.isSystemEvent,
       ].map(esc).join(','))
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
@@ -224,7 +225,7 @@ export function ChangeHistoryArchiveSection({
                 e.changeType,
                 e.oldValue ?? '—',
                 e.newValue ?? '—',
-                e.portfolio,
+                portfolioDisplayLabel(e.portfolio),
               ])}
             />
           </div>

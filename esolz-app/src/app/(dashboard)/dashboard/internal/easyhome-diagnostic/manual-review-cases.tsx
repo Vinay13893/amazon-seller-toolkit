@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react'
 import { FolderKanban, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function inr(v: number | null): string {
   if (v === null) return '—'
@@ -21,13 +22,13 @@ const STATUS_OPTIONS: CaseReviewStatus[] = [
   'Check listing first', 'Pause/negative review', 'Done', 'Ignore',
 ]
 
-function FilterSelect<T extends string>({ label, value, options, onChange }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void }) {
+function FilterSelect<T extends string>({ label, value, options, onChange, formatLabel }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void; formatLabel?: (opt: T) => string }) {
   return (
     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
       {label}
       <select className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground" value={value} onChange={e => onChange(e.target.value as T | 'All')}>
         <option value="All">All</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
+        {options.map(o => <option key={o} value={o}>{formatLabel ? formatLabel(o) : o}</option>)}
       </select>
     </label>
   )
@@ -48,7 +49,7 @@ function toCsv(rows: ManualReviewCase[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.rank, r.priority, r.portfolio, r.campaignName, r.adGroupName, r.mainEntity, r.issueSummary,
+      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.mainEntity, r.issueSummary,
       r.combinedSalesDecline, r.worstAcosBefore, r.worstAcosAfter, r.relatedChangesCount,
       r.earliestRelatedChange, r.latestRelatedChange, r.timingBucket, r.changeSummary.join('|'),
       r.fromValues.join('|'), r.toValues.join('|'), r.matchStrength, r.facetCount, r.suggestedReviewAction,
@@ -93,7 +94,7 @@ function CaseRow({
     <>
       <tr className="border-b border-border/50 hover:bg-muted/30 align-top cursor-pointer" onClick={() => setExpanded(v => !v)}>
         <td className="py-2 px-2 text-muted-foreground">{c.rank}</td>
-        <td className="py-2 px-2 whitespace-nowrap text-foreground">{c.portfolio}</td>
+        <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(c.portfolio)}</td>
         <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
         <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.mainEntity}>{c.mainEntity}</td>
         <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{c.issueSummary}</td>
@@ -203,7 +204,7 @@ export function ManualReviewCases({
       </div>
 
       <div className="flex flex-wrap gap-3 mb-3">
-        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} />
+        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} formatLabel={portfolioDisplayLabel} />
         <FilterSelect label="Campaign" value={campaign} options={campaigns} onChange={setCampaign} />
         <FilterSelect label="Issue type" value={issueType} options={issueTypes} onChange={setIssueType} />
         <FilterSelect label="Review status" value={status} options={STATUS_OPTIONS} onChange={setStatus} />

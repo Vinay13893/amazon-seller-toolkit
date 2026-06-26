@@ -5,6 +5,7 @@ import { ClipboardList, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import type { ManualReviewCandidate, ReviewChangeType, TimingBucket } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { RelatedChangeMatchStrength } from '@/lib/internal/easyhome-change-history-diagnostic'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function inr(v: number | null): string {
   if (v === null) return '—'
@@ -18,13 +19,13 @@ const PRIORITY_BADGE: Record<string, 'destructive' | 'secondary' | 'outline'> = 
   High: 'destructive', Medium: 'secondary', Low: 'outline',
 }
 
-function FilterSelect<T extends string>({ label, value, options, onChange }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void }) {
+function FilterSelect<T extends string>({ label, value, options, onChange, formatLabel }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void; formatLabel?: (opt: T) => string }) {
   return (
     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
       {label}
       <select className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground" value={value} onChange={e => onChange(e.target.value as T | 'All')}>
         <option value="All">All</option>
-        {options.map(o => <option key={o} value={o}>{o}</option>)}
+        {options.map(o => <option key={o} value={o}>{formatLabel ? formatLabel(o) : o}</option>)}
       </select>
     </label>
   )
@@ -44,7 +45,7 @@ function toCsv(rows: ManualReviewCandidate[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.rank, r.priority, r.portfolio, r.campaignName, r.adGroupName, r.entityType, r.entity, r.issueType,
+      r.rank, r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, r.entity, r.issueType,
       r.salesDecline, r.beforeAcos, r.afterAcos, r.beforeRoas, r.afterRoas,
       r.relatedChangeAt, r.timingBucket, r.changeType, r.fromValue, r.toValue, r.changeMagnitude,
       r.matchStrength, r.suggestedReviewAction, r.evidenceSummary,
@@ -100,7 +101,7 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
       </div>
 
       <div className="flex flex-wrap gap-3 mb-3">
-        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} />
+        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} formatLabel={portfolioDisplayLabel} />
         <FilterSelect label="Campaign" value={campaign} options={campaigns} onChange={setCampaign} />
         <FilterSelect label="Timing" value={timing} options={['before decline', 'during decline', 'after decline']} onChange={setTiming} />
         <FilterSelect label="Change type" value={changeType} options={changeTypes} onChange={setChangeType} />
@@ -130,7 +131,7 @@ export function ManualReviewCandidates({ candidates }: { candidates: ManualRevie
               <tr key={`${c.rank}`} className="border-b border-border/50 hover:bg-muted/30 align-top">
                 <td className="py-2 px-2 text-muted-foreground">{c.rank}</td>
                 <td className="py-2 px-2"><Badge variant={PRIORITY_BADGE[c.priority] ?? 'outline'}>{c.priority}</Badge></td>
-                <td className="py-2 px-2 whitespace-nowrap text-foreground">{c.portfolio}</td>
+                <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(c.portfolio)}</td>
                 <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={c.campaignName ?? ''}>{c.campaignName ?? '—'}</td>
                 <td className="py-2 px-2 max-w-[150px] truncate text-foreground" title={c.entity}>{c.entity}</td>
                 <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{c.issueType}</td>

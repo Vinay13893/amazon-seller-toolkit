@@ -14,6 +14,7 @@ import {
   type DateRange,
   type PresetId,
 } from '@/lib/internal/date-range'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 export type ControlPanelQuery = {
   mode: AnalysisMode
@@ -173,7 +174,7 @@ export function BrahmastraControlPanel({
           Portfolio
           <select className="bg-background border border-border rounded-md px-2 py-1 text-xs text-foreground" value={portfolio} onChange={e => setPortfolio(e.target.value)}>
             <option value="All">All</option>
-            {portfolios.map(p => <option key={p} value={p}>{p}</option>)}
+            {portfolios.map(p => <option key={p} value={p}>{portfolioDisplayLabel(p)}</option>)}
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">

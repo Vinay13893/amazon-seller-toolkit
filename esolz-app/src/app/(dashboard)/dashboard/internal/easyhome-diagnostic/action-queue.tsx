@@ -12,6 +12,7 @@ import type {
   ActionStatus,
 } from '@/lib/internal/easyhome-action-queue'
 import type { ActionItemWithChanges } from '@/lib/internal/easyhome-change-history-diagnostic'
+import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 
 function formatInr(value: number | null): string {
   if (value === null) return '—'
@@ -39,7 +40,7 @@ function toActionQueueCsv(rows: ActionItemWithChanges[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.priority, r.portfolio, r.entityType, r.entityName, r.campaignName, r.issueType, r.problemSummary,
+      r.priority, portfolioDisplayLabel(r.portfolio), r.entityType, r.entityName, r.campaignName, r.issueType, r.problemSummary,
       r.beforeMetrics.spend, r.beforeMetrics.sales, r.beforeMetrics.acos, r.afterMetrics.spend, r.afterMetrics.sales, r.afterMetrics.acos,
       r.suggestedReview, r.dataSource, r.relatedChanges.length, r.status, r.notes,
     ].map(esc).join(','))
@@ -47,7 +48,7 @@ function toActionQueueCsv(rows: ActionItemWithChanges[]): string {
   return lines.join('\n')
 }
 
-function FilterSelect<T extends string>({ label, value, options, onChange }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void }) {
+function FilterSelect<T extends string>({ label, value, options, onChange, formatLabel }: { label: string; value: T | 'All'; options: T[]; onChange: (v: T | 'All') => void; formatLabel?: (opt: T) => string }) {
   return (
     <label className="flex flex-col gap-1 text-xs text-muted-foreground">
       {label}
@@ -58,7 +59,7 @@ function FilterSelect<T extends string>({ label, value, options, onChange }: { l
       >
         <option value="All">All</option>
         {options.map(opt => (
-          <option key={opt} value={opt}>{opt}</option>
+          <option key={opt} value={opt}>{formatLabel ? formatLabel(opt) : opt}</option>
         ))}
       </select>
     </label>
@@ -83,7 +84,7 @@ function ActionRow({ item, onStatusChange }: { item: ActionItemWithChanges; onSt
     <>
       <tr className="border-b border-border/50 hover:bg-muted/30 align-top">
         <td className="py-2 px-2"><Badge variant={PRIORITY_BADGE[item.priority]}>{item.priority}</Badge></td>
-        <td className="py-2 px-2 whitespace-nowrap text-foreground">{item.portfolio}</td>
+        <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(item.portfolio)}</td>
         <td className="py-2 px-2 whitespace-nowrap text-foreground">{item.entityType}</td>
         <td className="py-2 px-2 text-foreground max-w-[160px] truncate" title={item.entityName}>{item.entityName}</td>
         <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{item.issueType}</td>
@@ -211,7 +212,7 @@ export function ActionQueue({
       </div>
 
       <div className="flex flex-wrap gap-3 mb-4">
-        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} />
+        <FilterSelect label="Portfolio" value={portfolio} options={portfolios} onChange={setPortfolio} formatLabel={portfolioDisplayLabel} />
         <FilterSelect label="Priority" value={priority} options={['High', 'Medium', 'Low']} onChange={setPriority} />
         <FilterSelect label="Entity type" value={entityType} options={entityTypes} onChange={setEntityType} />
         <FilterSelect label="Issue type" value={issueType} options={issueTypes} onChange={setIssueType} />
