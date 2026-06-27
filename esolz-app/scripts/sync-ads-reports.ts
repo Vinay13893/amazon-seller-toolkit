@@ -38,6 +38,7 @@ import {
 } from '../src/lib/internal/amazon-ads-reporting-client'
 import { jsonRowsToCsv } from '../src/lib/internal/json-rows-to-csv'
 import { resolveDirectAdsCredentials } from '../src/lib/internal/amazon-ads-direct-credentials'
+import { resolveBrahmastraProfile } from '../src/lib/internal/brahmastra-ads-profile-selection'
 import { parseAdsCampaignDailyReport, type AdsCampaignDailyRecord } from '../src/lib/internal/ads-campaign-daily-parser'
 import {
   parseDeepReport,
@@ -374,13 +375,33 @@ async function main() {
       const workspaceId = connection.workspace_id as string
       const { data: profiles, error: profileError } = await admin
         .from('amazon_ads_profiles')
-        .select('id, profile_id, status')
+        .select('profile_id, status, account_name, display_name, brahmastra_sync_enabled, is_primary')
         .eq('amazon_ads_connection_id', connection.id)
         .eq('status', 'active')
       if (profileError || !profiles || profiles.length === 0) {
         console.error(`Workspace ${workspaceId}: no active Amazon Ads profile found — skipping. Run profile sync first.`)
+        process.exitCode = 1
         continue
       }
+
+      // Never default to "every profile" — a connection can carry many
+      // advertiser profiles for unrelated businesses under the same Amazon
+      // login. Only the one profile explicitly selected for Brahmastra in
+      // Settings (or the designated primary, if more than one is enabled)
+      // may be synced.
+      const selection = resolveBrahmastraProfile(profiles.map(p => ({
+        profileId: p.profile_id as string,
+        brahmastraSyncEnabled: p.brahmastra_sync_enabled as boolean,
+        isPrimary: p.is_primary as boolean,
+      })))
+      if (!selection.ok) {
+        console.error(`Workspace ${workspaceId}: ${selection.message}`)
+        process.exitCode = 1
+        continue
+      }
+
+      const profile = profiles.find(p => p.profile_id === selection.profileId)!
+      const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? selection.profileId
 
       let accessToken: string
       try {
@@ -389,15 +410,14 @@ async function main() {
         accessToken = refreshed.accessToken
       } catch (error) {
         console.error(`Workspace ${workspaceId}: Ads token refresh failed — ${error instanceof Error ? error.message : error}`)
+        process.exitCode = 1
         continue
       }
 
-      for (const profile of profiles) {
-        const ctx: AdsApiContext = { region: connection.region as string, accessToken, profileId: profile.profile_id as string }
-        console.log(`Workspace ${workspaceId}, profile ${profile.profile_id}:`)
-        for (const def of REPORT_DEFS) {
-          await syncOneReport(admin, ctx, workspaceId, def, startDate, endDate)
-        }
+      const ctx: AdsApiContext = { region: connection.region as string, accessToken, profileId: selection.profileId }
+      console.log(`Workspace ${workspaceId}, profile ${selection.profileId} (${profileLabel}):`)
+      for (const def of REPORT_DEFS) {
+        await syncOneReport(admin, ctx, workspaceId, def, startDate, endDate)
       }
     }
     return

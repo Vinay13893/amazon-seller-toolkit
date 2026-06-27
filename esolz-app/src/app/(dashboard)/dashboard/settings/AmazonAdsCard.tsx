@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { AlertCircle, BarChart3, CheckCircle2, Loader2, RefreshCw } from 'lucide-react'
+import { AlertCircle, BarChart3, CheckCircle2, Loader2, Pencil, RefreshCw, Star } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { resolveBrahmastraProfile } from '@/lib/internal/brahmastra-ads-profile-selection'
 
 type AdsProfile = {
   profile_id: string
@@ -11,9 +13,14 @@ type AdsProfile = {
   country_code: string | null
   currency_code: string | null
   timezone: string | null
+  account_name: string | null
+  account_id: string | null
   profile_type: string | null
   status: string | null
   last_synced_at: string | null
+  brahmastra_sync_enabled: boolean
+  is_primary: boolean
+  display_name: string | null
 }
 
 type AdsStatusResponse = {
@@ -75,6 +82,9 @@ export default function AmazonAdsCard() {
   const [connecting, setConnecting] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [status, setStatus] = useState<AdsStatusResponse | null>(null)
+  const [pendingProfileAction, setPendingProfileAction] = useState<string | null>(null)
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
+  const [editingLabel, setEditingLabel] = useState('')
 
   async function fetchStatus() {
     setLoading(true)
@@ -118,6 +128,31 @@ export default function AmazonAdsCard() {
     }
   }
 
+  async function updateProfile(profileId: string, action: 'enable' | 'disable' | 'set_primary' | 'rename', displayName?: string) {
+    setPendingProfileAction(`${profileId}:${action}`)
+    try {
+      await fetch('/api/amazon/ads/profiles/select', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profileId, action, displayName }),
+      })
+      await fetchStatus()
+    } finally {
+      setPendingProfileAction(null)
+    }
+  }
+
+  function startRename(profile: AdsProfile) {
+    setEditingProfileId(profile.profile_id)
+    setEditingLabel(profile.display_name ?? profile.account_name ?? '')
+  }
+
+  async function saveRename(profileId: string) {
+    const label = editingLabel
+    setEditingProfileId(null)
+    await updateProfile(profileId, 'rename', label)
+  }
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const ads = params.get('amazon_ads')
@@ -137,6 +172,11 @@ export default function AmazonAdsCard() {
   }, [])
 
   const profiles = status?.profiles ?? []
+  const brahmastraSelection = resolveBrahmastraProfile(profiles.map(p => ({
+    profileId: p.profile_id,
+    brahmastraSyncEnabled: p.brahmastra_sync_enabled,
+    isPrimary: p.is_primary,
+  })))
   const connectionStatus = status?.connection?.status ?? 'not_configured'
   const connected = connectionStatus === 'active'
   const configuredVia = status?.configuredVia ?? (connected ? 'oauth' : 'none')
@@ -211,22 +251,113 @@ export default function AmazonAdsCard() {
               </div>
             )}
 
+            {profiles.length > 0 && (
+              brahmastraSelection.ok ? (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-xs text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
+                  Brahmastra sync will use:{' '}
+                  <span className="font-medium">
+                    {profiles.find(p => p.profile_id === brahmastraSelection.profileId)?.display_name
+                      ?? profiles.find(p => p.profile_id === brahmastraSelection.profileId)?.account_name
+                      ?? brahmastraSelection.profileId}
+                  </span>{' '}
+                  ({brahmastraSelection.profileId})
+                </div>
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                  {brahmastraSelection.reason === 'no_profile_selected'
+                    ? 'Select one Ads profile for Brahmastra sync.'
+                    : 'Multiple profiles are enabled for Brahmastra — set exactly one as primary.'}
+                </div>
+              )
+            )}
+
             {profiles.length > 0 ? (
-              <div className="rounded-lg border border-border">
-                <div className="grid grid-cols-4 gap-3 border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <div className="grid min-w-[820px] grid-cols-7 gap-3 border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">
                   <span>Profile</span>
+                  <span>Profile ID</span>
                   <span>Marketplace</span>
                   <span>Status</span>
                   <span>Last sync</span>
+                  <span>Brahmastra sync</span>
+                  <span>Actions</span>
                 </div>
-                {profiles.map(profile => (
-                  <div key={profile.profile_id} className="grid grid-cols-4 gap-3 px-3 py-2 text-xs text-foreground">
-                    <span className="font-mono">{profile.profile_id}</span>
-                    <span>{profile.marketplace_id ?? profile.country_code ?? '-'}</span>
-                    <span>{profile.status ?? 'unknown'}</span>
-                    <span>{timeAgo(profile.last_synced_at)}</span>
-                  </div>
-                ))}
+                {profiles.map(profile => {
+                  const label = profile.display_name ?? profile.account_name
+                  const isEditing = editingProfileId === profile.profile_id
+                  return (
+                    <div key={profile.profile_id} className="grid min-w-[820px] grid-cols-7 gap-3 px-3 py-2 text-xs text-foreground">
+                      <span className="flex items-center gap-1">
+                        {profile.is_primary && <Star className="h-3 w-3 flex-shrink-0 fill-amber-400 text-amber-400" />}
+                        {isEditing ? (
+                          <span className="flex items-center gap-1">
+                            <Input
+                              value={editingLabel}
+                              onChange={e => setEditingLabel(e.target.value)}
+                              onKeyDown={e => { if (e.key === 'Enter') void saveRename(profile.profile_id) }}
+                              className="h-6 w-32 text-xs"
+                              autoFocus
+                            />
+                            <button className="text-xs text-primary" onClick={() => void saveRename(profile.profile_id)}>Save</button>
+                          </span>
+                        ) : (
+                          <span className="truncate">{label ?? <span className="text-muted-foreground">(no name)</span>}</span>
+                        )}
+                      </span>
+                      <span className="font-mono">{profile.profile_id}</span>
+                      <span>{profile.marketplace_id ?? profile.country_code ?? '-'}</span>
+                      <span>{profile.status ?? 'unknown'}</span>
+                      <span>{timeAgo(profile.last_synced_at)}</span>
+                      <span>
+                        <span className={cn(
+                          'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium',
+                          profile.brahmastra_sync_enabled
+                            ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300'
+                            : 'border-border bg-muted/40 text-muted-foreground',
+                        )}>
+                          {profile.brahmastra_sync_enabled ? 'Enabled' : 'Disabled'}
+                        </span>
+                      </span>
+                      <span className="flex flex-wrap items-center gap-2">
+                        {profile.brahmastra_sync_enabled ? (
+                          <button
+                            className="text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            disabled={pendingProfileAction === `${profile.profile_id}:disable`}
+                            onClick={() => void updateProfile(profile.profile_id, 'disable')}
+                          >
+                            Disable
+                          </button>
+                        ) : (
+                          <button
+                            className="text-primary hover:underline disabled:opacity-50"
+                            disabled={pendingProfileAction === `${profile.profile_id}:enable`}
+                            onClick={() => void updateProfile(profile.profile_id, 'enable')}
+                          >
+                            Enable for Brahmastra
+                          </button>
+                        )}
+                        {!profile.is_primary && (
+                          <button
+                            className="text-primary hover:underline disabled:opacity-50"
+                            disabled={pendingProfileAction === `${profile.profile_id}:set_primary`}
+                            onClick={() => void updateProfile(profile.profile_id, 'set_primary')}
+                          >
+                            Set as primary
+                          </button>
+                        )}
+                        {!isEditing && (
+                          <button
+                            className="text-muted-foreground hover:text-foreground"
+                            onClick={() => startRename(profile)}
+                            title="Rename"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
             ) : (
               <p className="text-xs text-muted-foreground">

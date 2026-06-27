@@ -28,9 +28,14 @@ type AdsProfileRow = {
   country_code: string | null
   currency_code: string | null
   timezone: string | null
+  account_name: string | null
+  account_id: string | null
   profile_type: string | null
   status: string | null
   last_synced_at: string | null
+  brahmastra_sync_enabled: boolean
+  is_primary: boolean
+  display_name: string | null
 }
 
 function configuredEnvNames() {
@@ -112,7 +117,7 @@ export async function GET() {
     if (connection?.id) {
       const { data: profileRows } = await admin
         .from('amazon_ads_profiles')
-        .select('profile_id, marketplace_id, country_code, currency_code, timezone, profile_type, status, last_synced_at')
+        .select('profile_id, marketplace_id, country_code, currency_code, timezone, account_name, account_id, profile_type, status, last_synced_at, brahmastra_sync_enabled, is_primary, display_name')
         .eq('workspace_id', workspace.workspaceId)
         .eq('amazon_ads_connection_id', connection.id)
         .order('last_synced_at', { ascending: false, nullsFirst: false })
