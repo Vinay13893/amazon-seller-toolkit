@@ -119,8 +119,7 @@ export async function GET(request: Request): Promise<Response> {
   const { data: txRows, error: txError } = await supabase
     .from('internal_payment_transactions')
     .select(
-      'fulfillment, quantity, order_state, order_city, order_postal, ' +
-      'category, product_sales, total_amount, transaction_date',
+      'fulfillment, quantity, order_state, order_city, order_postal, category, product_sales, total_amount, transaction_date',
     )
     .eq('workspace_id', workspaceId)
     .in('category', ['Order', 'Refund'])
@@ -132,7 +131,18 @@ export async function GET(request: Request): Promise<Response> {
     return NextResponse.json({ error: 'Failed to load transaction data.' }, { status: 500 })
   }
 
-  const rows = txRows ?? []
+  type TxRow = {
+    fulfillment: string | null
+    quantity: number | null
+    order_state: string | null
+    order_city: string | null
+    order_postal: string | null
+    category: string | null
+    product_sales: number | null
+    total_amount: number | null
+    transaction_date: string
+  }
+  const rows = (txRows ?? []) as TxRow[]
 
   let totalTransactionUnits = 0
   let fbaFcTransactionUnits = 0
@@ -149,11 +159,11 @@ export async function GET(request: Request): Promise<Response> {
 
   for (const row of rows) {
     const qty = Math.abs(Number(row.quantity ?? 0))
-    const bucket = classifyFulfillmentBucket(row.fulfillment as string | null)
-    const isRefund = (row.category as string) === 'Refund'
-    const state = (row.order_state as string | null) ?? null
-    const city = (row.order_city as string | null) ?? null
-    const pincode = (row.order_postal as string | null) ?? null
+    const bucket = classifyFulfillmentBucket(row.fulfillment)
+    const isRefund = row.category === 'Refund'
+    const state = row.order_state ?? null
+    const city = row.order_city ?? null
+    const pincode = row.order_postal ?? null
     const sales = Number(row.product_sales ?? 0)
 
     if (!isRefund) {
@@ -244,7 +254,7 @@ export async function GET(request: Request): Promise<Response> {
 
   const lastTransactionDate = rows.length > 0
     ? rows.reduce((max, r) => {
-        const d = (r.transaction_date as string).slice(0, 10)
+        const d = r.transaction_date.slice(0, 10)
         return d > max ? d : max
       }, '0000-00-00')
     : null
@@ -259,14 +269,15 @@ export async function GET(request: Request): Promise<Response> {
     .lte('reported_date', demandEndDate)
     .limit(200000)
 
+  type LedgerRow = { fulfillment_center_id: string | null; quantity: number | null }
   let ledgerFbaShipmentUnits = 0
   const fcMap = new Map<string, { units: number; skus: Set<string> }>()
 
   if (!ledgerError) {
-    for (const row of ledgerRows ?? []) {
+    for (const row of (ledgerRows ?? []) as LedgerRow[]) {
       const qty = Math.abs(Number(row.quantity ?? 0))
       ledgerFbaShipmentUnits += qty
-      const fc = (row.fulfillment_center_id as string | null) ?? 'UNKNOWN'
+      const fc = row.fulfillment_center_id ?? 'UNKNOWN'
       const existing = fcMap.get(fc) ?? { units: 0, skus: new Set() }
       existing.units += qty
       fcMap.set(fc, existing)
