@@ -111,12 +111,16 @@ type ControlPanelMeta = {
   allowUnequalLengths: boolean
   daysInRangeA: number
   daysInRangeB: number
+  /** @deprecated use dataFreshness.adsDataIncomplete / salesDataIncomplete instead. */
   dataIncomplete: boolean
   dataFreshness?: {
     latestAdsDate: string | null
     latestSalesDate: string | null
     latestChangeHistoryDate: string | null
     selectedRangeEnd: string
+    adsDataIncomplete: boolean
+    salesDataIncomplete: boolean
+    changeHistoryIncomplete: boolean
     tables: Array<{ table: string; latestDate: string | null }>
   }
 }
@@ -324,15 +328,26 @@ export function EasyhomeDiagnosticDashboard() {
         {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
       </div>
 
-      {/* Data freshness — always visible so "zero" never gets confused with "not imported yet" */}
+      {/* Data freshness — always visible so "zero" never gets confused with "not imported yet".
+          Warnings are metric-specific: a lag in one source must not make the whole page look invalid. */}
       <div className="bg-card border border-border rounded-xl p-4">
         <p className="text-sm font-semibold text-foreground mb-1">Data available</p>
         <p className="text-xs text-muted-foreground">
-          Ads reports: through {controlPanel.dataFreshness?.latestAdsDate ?? 'unknown'} · Sales/payment transactions: through {controlPanel.dataFreshness?.latestSalesDate ?? 'unknown'} · Change History: through {controlPanel.dataFreshness?.latestChangeHistoryDate ?? 'unknown'}
+          Ads reports are complete through {controlPanel.dataFreshness?.latestAdsDate ?? 'unknown'}. Sales/payment transactions are complete through {controlPanel.dataFreshness?.latestSalesDate ?? 'unknown'}. Change History is complete through {controlPanel.dataFreshness?.latestChangeHistoryDate ?? 'unknown'}.
         </p>
-        {controlPanel.dataIncomplete && (
+        {controlPanel.dataFreshness?.adsDataIncomplete && (
           <p className="text-sm text-amber-400 mt-2">
-            Selected range includes dates after latest available sales/ads data. Metrics for those dates may be incomplete.
+            Selected range extends beyond available Ads data — Ads spend/sales/clicks/ACOS/ROAS findings and Good Working rows may be incomplete for this range.
+          </p>
+        )}
+        {controlPanel.dataFreshness?.salesDataIncomplete && (
+          <p className="text-sm text-amber-400 mt-2">
+            Sales/payment data incomplete for blended/total-sales metrics — selected range ends after the latest available payment-transaction date. Ads-only metrics above are still valid.
+          </p>
+        )}
+        {controlPanel.dataFreshness?.changeHistoryIncomplete && (
+          <p className="text-xs text-muted-foreground mt-2">
+            Change History is behind the selected range — change-history correlation context may be incomplete; this does not affect Ads or sales metrics.
           </p>
         )}
         <p className="text-xs text-muted-foreground mt-2 italic">

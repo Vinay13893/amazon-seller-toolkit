@@ -98,9 +98,9 @@ function delta(a: number | null, b: number | null): number | null {
   return round2(b - a)
 }
 
-/** Maps metrics onto the Findings vocabulary the team asked for. */
-function findingIssueLabelOf(item: ActionItemWithChanges, dataIncomplete = false): FindingIssueLabel {
-  if (dataIncomplete) return 'Data incomplete'
+/** Maps metrics onto the Findings vocabulary the team asked for. Findings are Ads-only, so only Ads completeness can trigger 'Data incomplete' — payment-transaction lag must not. */
+function findingIssueLabelOf(item: ActionItemWithChanges, adsDataIncomplete = false): FindingIssueLabel {
+  if (adsDataIncomplete) return 'Data incomplete'
   if (item.issueType === 'Mapping cleanup') return 'Mapping cleanup'
   const spendA = item.beforeMetrics.spend ?? 0
   const spendB = item.afterMetrics.spend ?? 0
@@ -313,9 +313,9 @@ export function buildFindingExplanation(
   }
 }
 
-export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options: { dataIncomplete?: boolean; freshness?: FindingsFreshness } = {}): FindingRow[] {
+export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options: { adsDataIncomplete?: boolean; freshness?: FindingsFreshness } = {}): FindingRow[] {
   return actionQueue.map(item => {
-    const issueType = findingIssueLabelOf(item, options.dataIncomplete)
+    const issueType = findingIssueLabelOf(item, options.adsDataIncomplete)
     const metrics = {
       spendA: item.beforeMetrics.spend,
       spendB: item.afterMetrics.spend,
@@ -327,7 +327,7 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
     const whatChanged = whatChangedOf(item)
     const explanation = buildFindingExplanation(issueType, metrics, whatChanged)
     const noBaselineActivity = (metrics.spendA ?? 0) === 0 && (metrics.salesA ?? 0) === 0
-    const evidence = options.dataIncomplete
+    const evidence = options.adsDataIncomplete
       ? dataIncompleteEvidenceOf(options.freshness)
       : noBaselineActivity
         ? noBaselineActivityEvidenceOf(metrics)

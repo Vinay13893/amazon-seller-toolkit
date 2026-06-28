@@ -70,6 +70,15 @@ type DataFreshness = {
   latestSalesDate: string | null
   latestChangeHistoryDate: string | null
   selectedRangeEnd: string
+  // Metric-specific completeness: Ads spend/sales/clicks/ACOS/ROAS only need
+  // the Ads report tables; total-sales/blended/order/geo/returns metrics only
+  // need payment transactions; change-history context only needs its own
+  // table. A lag in one must never hide or zero out metrics that only depend
+  // on a different, fully-synced source.
+  adsDataIncomplete: boolean
+  salesDataIncomplete: boolean
+  changeHistoryIncomplete: boolean
+  /** @deprecated kept for backward-compat call sites; true if ANY of the above is true. */
   incomplete: boolean
   tables: FreshnessTable[]
 }
@@ -494,27 +503,36 @@ export async function GET(request: Request) {
   const latestChangeHistoryDate = dateOnly((latestChangeEvent as { changed_at?: string } | null)?.changed_at ?? null)
   const latestAdsDate = minDate(latestAdsTables.map(row => row.latestDate))
   const selectedRangeEnd = maxDate([rangeA.endDate, rangeB.endDate]) ?? rangeB.endDate
+  // Each source is checked against its own latest date only — a lag in one
+  // (e.g. payment transactions) must never hide or zero out metrics that
+  // depend solely on a different, fully-synced source (e.g. Ads reports).
+  const adsDataIncomplete = rangeExceedsLatest(rangeA, rangeB, latestAdsDate)
+  const salesDataIncomplete = rangeExceedsLatest(rangeA, rangeB, latestSalesDate)
+    || diagnostic.accountSummary.before.rowCount === 0
+    || diagnostic.accountSummary.after.rowCount === 0
+  const changeHistoryIncomplete = rangeExceedsLatest(rangeA, rangeB, latestChangeHistoryDate)
   const dataFreshness: DataFreshness = {
     latestAdsDate,
     latestSalesDate,
     latestChangeHistoryDate,
     selectedRangeEnd,
-    incomplete:
-      rangeExceedsLatest(rangeA, rangeB, latestSalesDate)
-      || rangeExceedsLatest(rangeA, rangeB, latestAdsDate)
-      || rangeExceedsLatest(rangeA, rangeB, latestChangeHistoryDate),
+    adsDataIncomplete,
+    salesDataIncomplete,
+    changeHistoryIncomplete,
+    incomplete: adsDataIncomplete || salesDataIncomplete || changeHistoryIncomplete,
     tables: [
       { table: 'internal_payment_transactions', latestDate: latestSalesDate },
       ...latestAdsTables,
       { table: 'internal_ads_change_history_events', latestDate: latestChangeHistoryDate },
     ],
   }
-  const dataIncomplete = diagnostic.accountSummary.before.rowCount === 0 || diagnostic.accountSummary.after.rowCount === 0 || dataFreshness.incomplete
+  // Findings and Good Working are built from Ads report tables only — gate
+  // them on Ads completeness, not on payment-transaction (sales) lag.
   const findingsTable = buildFindingsTable(actionQueueWithChanges, {
-    dataIncomplete,
+    adsDataIncomplete,
     freshness: { latestAdsDate, latestSalesDate, selectedRangeEnd },
   })
-  const goodWorkingRows = dataIncomplete ? [] : buildGoodWorkingRows({
+  const goodWorkingRows = adsDataIncomplete ? [] : buildGoodWorkingRows({
     campaignRows: campaignDiagnostic.campaignTable,
     advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
     targetingRows: deepDiagnostic.targeting?.table ?? [],
@@ -532,7 +550,8 @@ export async function GET(request: Request) {
       allowUnequalLengths,
       daysInRangeA: diagnostic.accountSummary.before.dayCount,
       daysInRangeB: diagnostic.accountSummary.after.dayCount,
-      dataIncomplete,
+      /** @deprecated use dataFreshness.adsDataIncomplete / salesDataIncomplete instead. */
+      dataIncomplete: dataFreshness.incomplete,
       dataFreshness,
     },
     findingsTable,
