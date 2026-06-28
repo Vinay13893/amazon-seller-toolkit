@@ -118,11 +118,10 @@ const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
   { pattern: /papfoil|baking paper|parchment paper|butter paper|facial\s*box|facialbox|face\s*tissue|tissue\s*box/i, portfolio: PAPFOIL_PORTFOLIO },
   { pattern: /\b(sra|sra_)/i, portfolio: 'Sage Royal Ayurveda' },
   { pattern: /sage\s*royal\s*ayurveda/i, portfolio: 'Sage Royal Ayurveda' },
-  // \b alone doesn't create a boundary before "_" (it's a word character),
-  // so "EH_BOC_4x9_Maroon_P1" was falling through to Unmapped — same fix as
-  // the shared resolveEasyhomePortfolio rule in portfolio-labels.ts.
-  { pattern: /\b(eh_?boc|boc)(?:[_\s-]|$)|curtains?/i, portfolio: 'Curtains' },
-  { pattern: /baby play mat|\bbpm\b/i, portfolio: 'BPM' },
+  // BOC/Curtains, BPM, and Storage Bags are now handled by the shared
+  // resolveEasyhomePortfolio() rules (checked first, below) — removed the
+  // duplicate copies here per the "one shared resolver" rule. EVA
+  // Kids/ASM/EVA Gym/Liltoes/Planter are genuinely only needed here.
   { pattern: /eva.*kids|kids.*mat|interlocking.*kids|kids.*interlocking/i, portfolio: 'EVA Kids' },
   { pattern: /anti.?slip|\basm\b|shelf liner/i, portfolio: 'ASM' },
   { pattern: /eva.*gym|gym.*mat/i, portfolio: 'EVA Gym' },
@@ -130,7 +129,6 @@ const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
   // this account's Liltoes-branded campaigns are baby play mats).
   { pattern: /liltoes/i, portfolio: 'BPM' },
   { pattern: /water tank|tank cover|insulation cover/i, portfolio: 'Water Tank Cover' },
-  { pattern: /storage bag|wardrobe|under ?bed/i, portfolio: 'Storage Bags' },
   { pattern: /planter|garden/i, portfolio: 'Planter and Garden' },
 ]
 

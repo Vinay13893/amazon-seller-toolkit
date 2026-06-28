@@ -27,7 +27,17 @@ const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
   { pattern: /\b(eh_?boc|boc)(?:[_\s-]|$)|curtains?/i, portfolio: 'Curtains' },
   { pattern: /\b(wtc|spa-?wtc)\b|tank[_\s-]*cover|water\s*tank\s*cover|insulation\s*cover/i, portfolio: 'Water Tank Cover' },
   { pattern: /facial\s*box|facialbox|face\s*tissue|tissue\s*box|papfoil|baking\s*paper|parchment\s*paper|butter\s*paper/i, portfolio: 'Coze' },
-  { pattern: /baby\s*play\s*mat|\bbpm\b/i, portfolio: 'BPM' },
+  // Same underscore-boundary issue as BOC above — "EH_BPM" and
+  // "SP-PT-EH_BPM-(...)" were falling through because "_BPM" has no \b.
+  { pattern: /\b(eh_?)?bpm(?:[_\s-]|$)|baby\s*play\s*mat|baby\s*mats?\s*for\s*floor/i, portfolio: 'BPM' },
+  // "SB"/"SBin" is the account's own abbreviation for Storage Bags — require
+  // it as its own delimited token (not just a substring) to avoid false
+  // positives on unrelated names that happen to contain "sb".
+  { pattern: /storage\s*bags?|wardrobe|under\s*-?bed|\bsbin\b|(?:^|[_-])sb(?:[_-]|$)/i, portfolio: 'Storage Bags' },
+  // EH_SelfAdv_Rack_withHooks_* specifically — NOT EH_SelfAdv_Corner_*, which
+  // shares the cost-master category text "Self Adhesive Organiser" but is a
+  // different product the team hasn't asked to bucket here yet.
+  { pattern: /selfadv[_\s-]*rack|self\s*adhesive\s*rack|rack[_\s]*with[_\s]*hooks?|bathroom[_\s]*rack|bathroom[_\s]*shelf/i, portfolio: 'Bathroom Shelf' },
 ]
 
 const AUTO_TARGET_LABELS: Record<string, string> = {

@@ -167,6 +167,22 @@ function formatInr(value: number): string {
   return `₹${Math.round(value).toLocaleString('en-IN')}`
 }
 
+/** Generic CSV download for the smaller dashboard tables (Mapping health, Top spenders, Top ad sales generators) that don't already have their own export helper. */
+function downloadCsv(filenamePrefix: string, headers: string[], rows: Array<Array<string | number | null>>) {
+  const esc = (v: unknown) => {
+    const s = v === null || v === undefined ? '' : String(v)
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [headers.join(','), ...rows.map(row => row.map(esc).join(','))]
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${filenamePrefix}_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { value: number; name: string; color: string }[]; label?: string }) {
   if (!active || !payload?.length) return null
   return (
@@ -424,7 +440,23 @@ export function EasyhomeDiagnosticDashboard() {
       {controlPanel.mode === 'single' && (topSpenders.length > 0 || topAdSalesGenerators.length > 0) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="text-sm font-bold text-foreground mb-1">Top spenders (selected period)</h2>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-bold text-foreground">Top spenders (selected period)</h2>
+              <button
+                type="button"
+                onClick={() => downloadCsv(
+                  'brahmastra_top_spenders',
+                  ['date_range_start', 'date_range_end', 'mode', 'portfolio', 'campaign', 'spend', 'ad_attributed_sales', 'clicks', 'acos', 'roas', 'source'],
+                  topSpenders.map(row => [
+                    diagnostic.windows.afterStart, diagnostic.windows.afterEnd, controlPanel.mode, portfolioDisplayLabel(row.portfolio), row.campaignName,
+                    row.afterSpend, row.afterSales, row.afterClicks, row.afterAcos, row.afterRoas, 'Amazon Ads Reports',
+                  ]),
+                )}
+                className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
+              >
+                Export CSV
+              </button>
+            </div>
             <p className="text-xs text-muted-foreground mb-3">Source: Amazon Ads Reports</p>
             <DataTable
               columns={['Campaign', 'Portfolio', 'Ad Spend', 'Ad-attributed Sales', 'ACOS']}
@@ -435,7 +467,23 @@ export function EasyhomeDiagnosticDashboard() {
             />
           </div>
           <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="text-sm font-bold text-foreground mb-1">Top ad sales generators (selected period)</h2>
+            <div className="flex items-center justify-between mb-1">
+              <h2 className="text-sm font-bold text-foreground">Top ad sales generators (selected period)</h2>
+              <button
+                type="button"
+                onClick={() => downloadCsv(
+                  'brahmastra_top_ad_sales_generators',
+                  ['date_range_start', 'date_range_end', 'mode', 'portfolio', 'campaign', 'ad_attributed_sales', 'spend', 'clicks', 'acos', 'roas', 'source'],
+                  topAdSalesGenerators.map(row => [
+                    diagnostic.windows.afterStart, diagnostic.windows.afterEnd, controlPanel.mode, portfolioDisplayLabel(row.portfolio), row.campaignName,
+                    row.afterSales, row.afterSpend, row.afterClicks, row.afterAcos, row.afterRoas, 'Amazon Ads Reports',
+                  ]),
+                )}
+                className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
+              >
+                Export CSV
+              </button>
+            </div>
             <p className="text-xs text-muted-foreground mb-3">Source: Amazon Ads Reports</p>
             <DataTable
               columns={['Campaign', 'Portfolio', 'Ad-attributed Sales', 'Ad Spend', 'ROAS']}
@@ -480,7 +528,22 @@ export function EasyhomeDiagnosticDashboard() {
 
       {/* Mapping health */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="text-sm font-bold text-foreground mb-4">Mapping health</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-bold text-foreground">Mapping health</h2>
+          {diagnostic.mappingHealth.topUnmappedSkus.length > 0 && (
+            <button
+              type="button"
+              onClick={() => downloadCsv(
+                'brahmastra_unmapped_skus',
+                ['sku', 'range_a_sales', 'range_b_sales', 'total_sales'],
+                diagnostic.mappingHealth.topUnmappedSkus.map(row => [row.sku, row.beforeSales, row.afterSales, row.totalSales]),
+              )}
+              className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
+            >
+              Export Unmapped SKUs CSV
+            </button>
+          )}
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <KpiCard label="SKUs analysed" value={diagnostic.mappingHealth.totalSkusAnalyzed.toLocaleString('en-IN')} />
           <KpiCard label="Mapped" value={diagnostic.mappingHealth.mappedSkuCount.toLocaleString('en-IN')} />
