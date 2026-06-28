@@ -42,6 +42,19 @@ function EasyhomeDiagnosticDashboardInner() {
   const [loadedQuery, setLoadedQuery] = useState<ControlPanelQuery>(DEFAULT_QUERY)
   const [loadedAt, setLoadedAt] = useState<Date | null>(null)
 
+  // Switching tabs must always land the user at the top of the new section's
+  // content — without this, the browser keeps whatever scroll position the
+  // previous (often much longer) tab was at, so e.g. opening Trends can land
+  // mid-page instead of at the Trends heading. Query-param navigation does
+  // not reset scroll on its own since the route never unmounts.
+  useEffect(() => {
+    // The dashboard shell scrolls inside <main>, not the window itself —
+    // scroll both so this works regardless of which element actually owns
+    // the scrollbar.
+    document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [view])
+
   useEffect(() => {
     let cancelled = false
     setLoading(true)

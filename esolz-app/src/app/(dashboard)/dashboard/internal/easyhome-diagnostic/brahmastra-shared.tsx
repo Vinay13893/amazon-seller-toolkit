@@ -202,6 +202,39 @@ export function roasStr(value: number | null): string {
 }
 
 /**
+ * Compact Indian-numbering currency for KPI cards (₹10.20L / ₹1.20Cr) so
+ * large settlement/ad-spend figures never overflow a narrow card. Always
+ * pair with `formatInr(value)` as a `valueTitle` tooltip so the exact rupee
+ * amount is never lost — this is display formatting only, not a calculation
+ * change.
+ */
+export function formatInrCompact(value: number): string {
+  const abs = Math.abs(value)
+  const sign = value < 0 ? '-' : ''
+  if (abs >= 1_00_00_000) return `${sign}₹${(abs / 1_00_00_000).toFixed(2)}Cr`
+  if (abs >= 1_00_000) return `${sign}₹${(abs / 1_00_000).toFixed(2)}L`
+  return formatInr(value)
+}
+
+/**
+ * Short badge text for the recurring "Source: X" sub-labels so they never
+ * truncate mid-word inside a narrow card. The full original string is still
+ * passed as the KpiCard `title` tooltip by callers.
+ */
+const SHORT_SOURCE_LABELS: Record<string, string> = {
+  'Source: Payment Transactions': 'Payment Txns',
+  'Payment Transactions': 'Payment Txns',
+  'Payment Transactions (settlement)': 'Payment Txns (settlement)',
+  'Source: Amazon Ads Reports': 'Ads Reports',
+  'Amazon Ads Reports': 'Ads Reports',
+  'Audit only, not Ads KPI': 'Audit only',
+}
+
+export function shortSourceLabel(full: string): string {
+  return SHORT_SOURCE_LABELS[full] ?? full
+}
+
+/**
  * Generic CSV download for dashboard tables that don't already have their
  * own export helper. `rangeSuffix` must be the loaded/applied range (never
  * the draft Control Panel inputs), so a stale-but-not-yet-run date edit can

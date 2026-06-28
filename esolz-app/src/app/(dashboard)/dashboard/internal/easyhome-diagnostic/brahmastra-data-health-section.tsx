@@ -4,7 +4,7 @@ import { AlertTriangle, Megaphone } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import type { ApiResponse, ControlPanelMeta, SourceAccuracyAudit } from './brahmastra-shared'
-import { DataTable, downloadCsv, formatInr } from './brahmastra-shared'
+import { DataTable, downloadCsv, formatInr, formatInrCompact } from './brahmastra-shared'
 
 /**
  * Reused by both Overview (standard view) and Data Health & Imports
@@ -31,39 +31,42 @@ export function AccuracyAuditPanel({
           {controlPanel.mode === 'single' ? 'Selected range' : 'Range A vs Range B'}
         </span>
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-        <KpiCard label="Mode" value={sourceAccuracyAudit.ranges.mode} sub="Requested by Control Panel" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-3">
+        <KpiCard label="Mode" value={sourceAccuracyAudit.ranges.mode} sub="Requested by Control Panel" subWrap />
         <KpiCard
           label="Requested Range A"
           value={`${sourceAccuracyAudit.ranges.requestedRangeA.startDate} → ${sourceAccuracyAudit.ranges.requestedRangeA.endDate}`}
           sub="From query params"
+          subWrap
         />
         <KpiCard
           label="Effective Range A"
           value={`${sourceAccuracyAudit.ranges.effectiveRangeA.startDate} → ${sourceAccuracyAudit.ranges.effectiveRangeA.endDate}`}
           sub="Actually used by API"
+          subWrap
         />
         <KpiCard
           label="Effective Range B"
           value={`${sourceAccuracyAudit.ranges.effectiveRangeB.startDate} → ${sourceAccuracyAudit.ranges.effectiveRangeB.endDate}`}
           sub="Actually used by API"
+          subWrap
         />
-        <KpiCard label="Latest Ads Date" value={sourceAccuracyAudit.latestAdsDate ?? '—'} sub="Amazon Ads Reports" />
-        <KpiCard label="Latest Payment Transaction Date" value={sourceAccuracyAudit.latestSalesDate ?? '—'} sub="Payment Transactions (settlement)" />
-        <KpiCard label="Blended metrics complete" value={sourceAccuracyAudit.blendedMetricsComplete ? 'Yes' : 'No'} sub="Both sources must be complete" />
-        <KpiCard label="Business Report" value="Not connected" sub="No sessions/page-views in this diagnostic" />
+        <KpiCard label="Latest Ads Date" value={sourceAccuracyAudit.latestAdsDate ?? '—'} sub="Ads Reports" subTitle="Amazon Ads Reports" />
+        <KpiCard label="Latest Payment Transaction Date" value={sourceAccuracyAudit.latestSalesDate ?? '—'} sub="Payment Txns" subTitle="Payment Transactions (settlement)" />
+        <KpiCard label="Blended metrics complete" value={sourceAccuracyAudit.blendedMetricsComplete ? 'Yes' : 'No'} sub="Both sources required" subWrap />
+        <KpiCard label="Business Report" value="Not connected" sub="No sessions/page-views" subTitle="No sessions/page-views in this diagnostic" />
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiCard label="Settlement Net Sales (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementNetSales)} sub="Payment Transactions" />
-        <KpiCard label="Amazon Ads Spend (B)" value={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend)} sub="Campaign daily rows" />
-        <KpiCard label="Settlement Ad Charges (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementAdCharges)} sub="Settlement Ad Charges — not used as campaign spend" />
-        <KpiCard label="Campaign vs Deep Report Spend Variance (B)" value={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend - sourceAccuracyAudit.rangeB.advertisedProductSpend)} sub="Campaign-level minus advertised-product-level" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <KpiCard label="Settlement Net Sales (B)" value={formatInrCompact(sourceAccuracyAudit.rangeB.settlementNetSales)} valueTitle={formatInr(sourceAccuracyAudit.rangeB.settlementNetSales)} sub="Payment Txns" subTitle="Payment Transactions" />
+        <KpiCard label="Amazon Ads Spend (B)" value={formatInrCompact(sourceAccuracyAudit.rangeB.amazonAdsSpend)} valueTitle={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend)} sub="Campaign daily rows" />
+        <KpiCard label="Settlement Ad Charges (B)" value={formatInrCompact(sourceAccuracyAudit.rangeB.settlementAdCharges)} valueTitle={formatInr(sourceAccuracyAudit.rangeB.settlementAdCharges)} sub="Audit only" subTitle="Settlement Ad Charges — not used as campaign spend" />
+        <KpiCard label="Campaign vs Deep Report Variance (B)" value={formatInrCompact(sourceAccuracyAudit.rangeB.amazonAdsSpend - sourceAccuracyAudit.rangeB.advertisedProductSpend)} valueTitle={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend - sourceAccuracyAudit.rangeB.advertisedProductSpend)} sub="Campaign minus adv-product" subTitle="Campaign-level minus advertised-product-level" subWrap />
         {controlPanel.mode === 'compare' && (
           <>
-            <KpiCard label="Settlement Net Sales (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementNetSales)} sub="Payment Transactions" />
-            <KpiCard label="Amazon Ads Spend (A)" value={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend)} sub="Campaign daily rows" />
-            <KpiCard label="Settlement Ad Charges (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementAdCharges)} sub="Settlement Ad Charges — not used as campaign spend" />
-            <KpiCard label="Campaign vs Deep Report Spend Variance (A)" value={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend - sourceAccuracyAudit.rangeA.advertisedProductSpend)} sub="Campaign-level minus advertised-product-level" />
+            <KpiCard label="Settlement Net Sales (A)" value={formatInrCompact(sourceAccuracyAudit.rangeA.settlementNetSales)} valueTitle={formatInr(sourceAccuracyAudit.rangeA.settlementNetSales)} sub="Payment Txns" subTitle="Payment Transactions" />
+            <KpiCard label="Amazon Ads Spend (A)" value={formatInrCompact(sourceAccuracyAudit.rangeA.amazonAdsSpend)} valueTitle={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend)} sub="Campaign daily rows" />
+            <KpiCard label="Settlement Ad Charges (A)" value={formatInrCompact(sourceAccuracyAudit.rangeA.settlementAdCharges)} valueTitle={formatInr(sourceAccuracyAudit.rangeA.settlementAdCharges)} sub="Audit only" subTitle="Settlement Ad Charges — not used as campaign spend" />
+            <KpiCard label="Campaign vs Deep Report Variance (A)" value={formatInrCompact(sourceAccuracyAudit.rangeA.amazonAdsSpend - sourceAccuracyAudit.rangeA.advertisedProductSpend)} valueTitle={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend - sourceAccuracyAudit.rangeA.advertisedProductSpend)} sub="Campaign minus adv-product" subTitle="Campaign-level minus advertised-product-level" subWrap />
           </>
         )}
       </div>
@@ -95,11 +98,11 @@ export function MappingHealthCard({ data, loadedRangeSuffix }: { data: ApiRespon
           </button>
         )}
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         <KpiCard label="SKUs analysed" value={diagnostic.mappingHealth.totalSkusAnalyzed.toLocaleString('en-IN')} />
         <KpiCard label="Mapped" value={diagnostic.mappingHealth.mappedSkuCount.toLocaleString('en-IN')} />
         <KpiCard label="Unmapped" value={diagnostic.mappingHealth.unmappedSkuCount.toLocaleString('en-IN')} />
-        <KpiCard label="Revenue in unmapped bucket" value={formatInr(diagnostic.mappingHealth.unmappedRevenue)} />
+        <KpiCard label="Revenue in unmapped bucket" value={formatInrCompact(diagnostic.mappingHealth.unmappedRevenue)} valueTitle={formatInr(diagnostic.mappingHealth.unmappedRevenue)} />
       </div>
       {diagnostic.mappingHealth.topUnmappedSkus.length > 0 && (
         <DataTable
@@ -228,11 +231,11 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix }: { data:
           {/* Campaign mapping health */}
           <div className="bg-card border border-border rounded-xl p-5">
             <h2 className="text-sm font-bold text-foreground mb-4">Campaign mapping health</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+            <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
               <KpiCard label="Campaigns analysed" value={campaignDiagnostic.campaignMappingHealth.totalCampaignsAnalyzed.toLocaleString('en-IN')} />
               <KpiCard label="Mapped" value={campaignDiagnostic.campaignMappingHealth.mappedCampaignCount.toLocaleString('en-IN')} />
               <KpiCard label="Unmapped" value={campaignDiagnostic.campaignMappingHealth.unmappedCampaignCount.toLocaleString('en-IN')} />
-              <KpiCard label="Spend in unmapped bucket" value={formatInr(campaignDiagnostic.campaignMappingHealth.unmappedSpend)} />
+              <KpiCard label="Spend in unmapped bucket" value={formatInrCompact(campaignDiagnostic.campaignMappingHealth.unmappedSpend)} valueTitle={formatInr(campaignDiagnostic.campaignMappingHealth.unmappedSpend)} />
             </div>
             {campaignDiagnostic.campaignMappingHealth.topUnmappedCampaigns.length > 0 && (
               <DataTable

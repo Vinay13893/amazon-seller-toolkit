@@ -17,10 +17,10 @@ export function BrahmastraSettingsMappingSection({ data, loadedRangeSuffix }: { 
     <div className="space-y-6">
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="text-sm font-bold text-foreground mb-4">Amazon Ads profile</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <KpiCard label="Selected profile" value={controlPanel.selectedProfileName ?? controlPanel.selectedProfileId} sub={controlPanel.selectedProfileId} />
-          <KpiCard label="Latest Ads date" value={controlPanel.latestAdsDate ?? '—'} sub="Amazon Ads Reports" />
-          <KpiCard label="Latest payment date" value={controlPanel.latestPaymentDate ?? '—'} sub="Payment Transactions (settlement)" />
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <KpiCard label="Selected profile" value={controlPanel.selectedProfileName ?? controlPanel.selectedProfileId} sub={controlPanel.selectedProfileId} subWrap />
+          <KpiCard label="Latest Ads date" value={controlPanel.latestAdsDate ?? '—'} sub="Ads Reports" subTitle="Amazon Ads Reports" />
+          <KpiCard label="Latest payment date" value={controlPanel.latestPaymentDate ?? '—'} sub="Payment Txns" subTitle="Payment Transactions (settlement)" />
         </div>
         <p className="text-xs text-muted-foreground mt-3">
           Profile selection/switching for Brahmastra sync is managed outside this diagnostic. Ads tables here are always scoped to the profile above (profile_id filter).

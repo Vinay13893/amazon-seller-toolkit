@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { ApiResponse } from './brahmastra-shared'
-import { formatInr, pctStr, roasStr, rangeLabel } from './brahmastra-shared'
+import { formatInr, formatInrCompact, pctStr, roasStr, rangeLabel, shortSourceLabel } from './brahmastra-shared'
 import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
 import { AccuracyAuditPanel } from './brahmastra-data-health-section'
 
@@ -84,15 +84,15 @@ export function BrahmastraOverviewSection({
       <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
 
       {/* Executive Summary / key KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="Settlement Net Sales" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Source: Payment Transactions" />
-        <KpiCard label="Amazon Ads Spend" value={formatInr(blendedMetrics.after.adSpend)} sub="Source: Amazon Ads Reports" />
-        <KpiCard label="Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Settlement Net Sales ÷ Amazon Ads Spend" />
-        <KpiCard label="TACOS / Blended ACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Amazon Ads Spend ÷ Settlement Net Sales" />
-        <KpiCard label="Ad Sales Share" value={pctStr(blendedMetrics.after.adSalesShare)} sub="Amazon Ads Attributed Sales ÷ Settlement Net Sales" />
-        <KpiCard label="Organic Estimate" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Estimate, not a direct Amazon metric" />
-        <KpiCard label="Orders" value={after.orderCount.toLocaleString('en-IN')} sub="Distinct orders · Payment Transactions" />
-        <KpiCard label="Settlement Refunds" value={formatInr(blendedMetrics.after.refunds)} sub="Source: Payment Transactions" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
+        <KpiCard label="Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub={shortSourceLabel('Source: Amazon Ads Reports')} subTitle="Source: Amazon Ads Reports" />
+        <KpiCard label="Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Net Sales ÷ Ads Spend" subTitle="Settlement Net Sales ÷ Amazon Ads Spend" />
+        <KpiCard label="TACOS / Blended ACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ads Spend ÷ Net Sales" subTitle="Amazon Ads Spend ÷ Settlement Net Sales" />
+        <KpiCard label="Ad Sales Share" value={pctStr(blendedMetrics.after.adSalesShare)} sub="Ads Sales ÷ Net Sales" subTitle="Amazon Ads Attributed Sales ÷ Settlement Net Sales" />
+        <KpiCard label="Organic Estimate" value={formatInrCompact(blendedMetrics.after.organicEstimate)} valueTitle={formatInr(blendedMetrics.after.organicEstimate)} sub="Estimate" subTitle="Estimate, not a direct Amazon metric" />
+        <KpiCard label="Orders" value={after.orderCount.toLocaleString('en-IN')} sub="Payment Txns" subTitle="Distinct orders · Payment Transactions" />
+        <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
       </div>
       {!blendedMetrics.complete && (
         <p className="text-xs text-amber-600 dark:text-amber-300">
