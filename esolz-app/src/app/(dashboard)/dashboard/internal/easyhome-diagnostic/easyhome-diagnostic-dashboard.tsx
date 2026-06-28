@@ -31,6 +31,7 @@ import type { DayBreakdown, ArchiveCoverage, ChunkCoverage, CorrelationSummary }
 import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-review-candidates'
 import type { CaseReviewStatus, ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import type { FindingRow, GoodWorkingRow } from '@/lib/internal/easyhome-findings-table'
+import type { BlendedPeriodMetrics } from '@/lib/internal/easyhome-blended-metrics'
 import { DEFAULT_RANGE_B, autoBaselineFor, usesJune15, type DateRange } from '@/lib/internal/date-range'
 import { entityDisplayLabel, portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import { ActionQueue } from './action-queue'
@@ -142,6 +143,14 @@ type ApiResponse = {
   goodWorkingRows: GoodWorkingRow[]
   topSpenders: CampaignRow[]
   topAdSalesGenerators: CampaignRow[]
+  blendedMetrics: {
+    mode: 'single' | 'compare'
+    complete: boolean
+    after: BlendedPeriodMetrics
+    before: BlendedPeriodMetrics | null
+    insights: string[]
+    sourceLabels: Record<string, string>
+  }
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic
   paymentImportStatus: PaymentImportStatus
@@ -165,6 +174,12 @@ type ApiResponse = {
 
 function formatInr(value: number): string {
   return `₹${Math.round(value).toLocaleString('en-IN')}`
+}
+function pctStr(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(1)}%`
+}
+function roasStr(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(2)}x`
 }
 
 /** Generic CSV download for the smaller dashboard tables (Mapping health, Top spenders, Top ad sales generators) that don't already have their own export helper. */
@@ -277,7 +292,7 @@ export function EasyhomeDiagnosticDashboard() {
   }
 
   const {
-    controlPanel, findingsTable, goodWorkingRows, topSpenders, topAdSalesGenerators,
+    controlPanel, findingsTable, goodWorkingRows, topSpenders, topAdSalesGenerators, blendedMetrics,
     diagnostic, campaignDiagnostic, paymentImportStatus, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
     changeHistoryImportStatus, changeHistoryBatches, changeHistorySummary, changeHistoryEvents,
     changeHistoryDayByDay, changeHistoryArchiveCoverage, changeHistoryChunkCoverage, changeHistoryCorrelationSummary,
@@ -523,8 +538,78 @@ export function EasyhomeDiagnosticDashboard() {
         )}
       </div>
       <p className="text-xs text-muted-foreground -mt-2">
-        Ad-attributed Sales / Ad Spend figures in the Campaign and deep-report sections below come from Amazon Ads Reports, not payment transactions.
+        Ad-attributed Sales / Ad Spend figures below — including Blended ROAS/TACOS — come from Amazon Ads Reports, not payment transactions.
       </p>
+
+      {/* Blended ROAS / TACOS — Total Sales/Refunds/Orders from Payment Transactions, Ad Spend/Ad Sales from Amazon Ads Reports. */}
+      <div className="bg-card border border-border rounded-xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="text-sm font-bold text-foreground">Blended ROAS / TACOS</h2>
+          {!blendedMetrics.complete && (
+            <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+              Incomplete for selected range
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mb-4">
+          Total Sales/Refunds/Orders: Source: Payment Transactions · Ad Spend/Ad-attributed Sales: Source: Amazon Ads Reports · Blended ROAS/TACOS: Source: Amazon Ads Reports + Payment Transactions
+        </p>
+        {!blendedMetrics.complete && (
+          <p className="text-xs text-amber-600 dark:text-amber-300 mb-3">
+            Selected range exceeds the latest available Ads and/or payment-transaction data — blended figures below may be incomplete until both sources catch up. This does not affect Ads-only Findings/Good Working.
+          </p>
+        )}
+        {controlPanel.mode === 'single' ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <KpiCard label="Total Sales" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Source: Payment Transactions" />
+            <KpiCard label="Gross Sales" value={formatInr(blendedMetrics.after.grossSales)} sub="Source: Payment Transactions" />
+            <KpiCard label="Refunds" value={formatInr(blendedMetrics.after.refunds)} sub="Source: Payment Transactions" />
+            <KpiCard label="Orders" value={blendedMetrics.after.totalOrders.toLocaleString('en-IN')} sub="Distinct orders · Payment Transactions" />
+            <KpiCard label="Units" value={blendedMetrics.after.unitsSold.toLocaleString('en-IN')} sub={`${blendedMetrics.after.refundedUnits.toLocaleString('en-IN')} refunded`} />
+            <KpiCard label="Ad Spend" value={formatInr(blendedMetrics.after.adSpend)} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Ad-attributed Sales" value={formatInr(blendedMetrics.after.adSales)} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Ad ROAS" value={roasStr(blendedMetrics.after.adRoas)} sub="Ad Sales ÷ Ad Spend" />
+            <KpiCard label="Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Total Sales ÷ Ad Spend" />
+            <KpiCard label="TACOS / Blended ACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Organic Estimate" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Total Sales − Ad Sales (estimate)" />
+            <KpiCard label="Ad Sales Share" value={pctStr(blendedMetrics.after.adSalesShare)} sub="Ad Sales ÷ Total Sales" />
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <KpiCard label="Total Sales (A)" value={formatInr(blendedMetrics.before?.totalSalesNet ?? 0)} sub="Payment Transactions" />
+            <KpiCard label="Total Sales (B)" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Transactions" />
+            <KpiCard label="Ad Spend (A)" value={formatInr(blendedMetrics.before?.adSpend ?? 0)} sub="Amazon Ads Reports" />
+            <KpiCard label="Ad Spend (B)" value={formatInr(blendedMetrics.after.adSpend)} sub="Amazon Ads Reports" />
+            <KpiCard label="Ad-attributed Sales (A)" value={formatInr(blendedMetrics.before?.adSales ?? 0)} sub="Amazon Ads Reports" />
+            <KpiCard label="Ad-attributed Sales (B)" value={formatInr(blendedMetrics.after.adSales)} sub="Amazon Ads Reports" />
+            <KpiCard label="Blended ROAS (A)" value={roasStr(blendedMetrics.before?.blendedRoas ?? null)} sub="Total Sales ÷ Ad Spend" />
+            <KpiCard label="Blended ROAS (B)" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Total Sales ÷ Ad Spend" />
+            <KpiCard label="TACOS (A)" value={pctStr(blendedMetrics.before?.tacos ?? null)} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="TACOS (B)" value={pctStr(blendedMetrics.after.tacos)} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Organic Estimate (A)" value={formatInr(blendedMetrics.before?.organicEstimate ?? 0)} sub="Estimate" />
+            <KpiCard label="Organic Estimate (B)" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Estimate" />
+            <KpiCard label="Refunds (A)" value={formatInr(blendedMetrics.before?.refunds ?? 0)} sub="Payment Transactions" />
+            <KpiCard label="Refunds (B)" value={formatInr(blendedMetrics.after.refunds)} sub="Payment Transactions" />
+            <KpiCard label="Orders (A)" value={(blendedMetrics.before?.totalOrders ?? 0).toLocaleString('en-IN')} sub="Distinct orders" />
+            <KpiCard label="Orders (B)" value={blendedMetrics.after.totalOrders.toLocaleString('en-IN')} sub="Distinct orders" />
+            <KpiCard label="Units (A)" value={(blendedMetrics.before?.unitsSold ?? 0).toLocaleString('en-IN')} sub="Payment Transactions" />
+            <KpiCard label="Units (B)" value={blendedMetrics.after.unitsSold.toLocaleString('en-IN')} sub="Payment Transactions" />
+          </div>
+        )}
+        {blendedMetrics.insights.length > 0 && (
+          <div className="mt-4 border-t border-border/60 pt-3">
+            <p className="text-xs font-semibold text-foreground mb-2">Blended insights (correlation only — review manually, not a causal claim)</p>
+            <ul className="space-y-1.5 text-xs text-muted-foreground">
+              {blendedMetrics.insights.map((note, i) => (
+                <li key={i} className="flex gap-2">
+                  <span>•</span>
+                  <span>{note}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
 
       {/* Mapping health */}
       <div className="bg-card border border-border rounded-xl p-5">

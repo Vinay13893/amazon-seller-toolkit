@@ -53,6 +53,7 @@ import {
 import { createClient } from '@/lib/supabase/server'
 import { resolveEasyhomePortfolio } from '@/lib/internal/portfolio-labels'
 import { resolveSelectedProfileForWorkspace } from '@/lib/internal/brahmastra-selected-profile'
+import { computeBlendedMetrics, buildBlendedInsights, type BlendedPeriodMetrics } from '@/lib/internal/easyhome-blended-metrics'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -205,6 +206,15 @@ export async function GET(request: Request) {
     }
     if (!data || data.length < PAGE_SIZE) break
     if (offset + PAGE_SIZE >= MAX_ROWS) limitReached = true
+  }
+
+  // Refunded units aren't exposed by buildEasyhomeDropDiagnostic's account
+  // summary, so derive before/after from the same in-memory transactions —
+  // no extra query needed.
+  function refundedUnitsIn(range: DateRange): number {
+    return transactions
+      .filter(r => r.category === 'Refund' && r.transactionDate.slice(0, 10) >= range.startDate && r.transactionDate.slice(0, 10) <= range.endDate)
+      .reduce((sum, r) => sum + Math.abs(r.quantity ?? 0), 0)
   }
 
   const costMaster: CostMasterInput[] = []
@@ -555,6 +565,61 @@ export async function GET(request: Request) {
       { table: 'internal_ads_change_history_events', latestDate: latestChangeHistoryDate },
     ],
   }
+  // --- Phase R3: blended ROAS / TACOS ---
+  // Ad Spend/Ad-attributed Sales here are summed from the Amazon Ads
+  // Reporting API tables (campaignDiagnostic.campaignTable) — never the
+  // payment-transaction "Ad" fee line items used by accountSummary.adSpend.
+  const adTotals = campaignDiagnostic.campaignTable.reduce(
+    (acc, row) => {
+      acc.beforeSpend += row.beforeSpend
+      acc.afterSpend += row.afterSpend
+      acc.beforeSales += row.beforeSales
+      acc.afterSales += row.afterSales
+      return acc
+    },
+    { beforeSpend: 0, afterSpend: 0, beforeSales: 0, afterSales: 0 },
+  )
+  const blendedAfter: BlendedPeriodMetrics = computeBlendedMetrics({
+    totalSalesNet: diagnostic.accountSummary.after.netSales,
+    grossSales: diagnostic.accountSummary.after.netSales + diagnostic.accountSummary.after.refundAmount,
+    refunds: diagnostic.accountSummary.after.refundAmount,
+    unitsSold: diagnostic.accountSummary.after.unitsOrdered,
+    refundedUnits: refundedUnitsIn(rangeB),
+    totalOrders: diagnostic.accountSummary.after.orderCount,
+    adSpend: adTotals.afterSpend,
+    adSales: adTotals.afterSales,
+  })
+  const blendedBefore: BlendedPeriodMetrics = computeBlendedMetrics({
+    totalSalesNet: diagnostic.accountSummary.before.netSales,
+    grossSales: diagnostic.accountSummary.before.netSales + diagnostic.accountSummary.before.refundAmount,
+    refunds: diagnostic.accountSummary.before.refundAmount,
+    unitsSold: diagnostic.accountSummary.before.unitsOrdered,
+    refundedUnits: refundedUnitsIn(rangeA),
+    totalOrders: diagnostic.accountSummary.before.orderCount,
+    adSpend: adTotals.beforeSpend,
+    adSales: adTotals.beforeSales,
+  })
+  // Blended metrics need BOTH sources complete — a lag in either one makes
+  // the combined ratio unreliable, even though each source alone is fine.
+  const blendedDataComplete = !adsDataIncomplete && !salesDataIncomplete
+  const blendedMetrics = {
+    mode,
+    complete: blendedDataComplete,
+    after: blendedAfter,
+    before: mode === 'compare' ? blendedBefore : null,
+    insights: mode === 'compare' && blendedDataComplete ? buildBlendedInsights(blendedBefore, blendedAfter) : [],
+    sourceLabels: {
+      totalSales: 'Payment Transactions',
+      grossSales: 'Payment Transactions',
+      refunds: 'Payment Transactions',
+      orders: 'Payment Transactions (distinct order count)',
+      adSpend: 'Amazon Ads Reports',
+      adSales: 'Amazon Ads Reports',
+      blendedRoasTacos: 'Amazon Ads Reports + Payment Transactions',
+      organicEstimate: 'Total Sales − Ad-attributed Sales (estimate, not a direct Amazon metric)',
+    },
+  }
+
   // Findings and Good Working are built from Ads report tables only — gate
   // them on Ads completeness, not on payment-transaction (sales) lag.
   const findingsTable = buildFindingsTable(actionQueueWithChanges, {
@@ -610,6 +675,7 @@ export async function GET(request: Request) {
     goodWorkingRows,
     topSpenders,
     topAdSalesGenerators,
+    blendedMetrics,
     diagnostic,
     campaignDiagnostic,
     paymentImportStatus: latestPaymentBatch
