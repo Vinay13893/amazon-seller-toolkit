@@ -1,10 +1,171 @@
 'use client'
 
-import { AlertTriangle, Megaphone } from 'lucide-react'
+import { useRef, useState } from 'react'
+import { AlertTriangle, Megaphone, Upload } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import type { ApiResponse, ControlPanelMeta, SourceAccuracyAudit } from './brahmastra-shared'
-import { DataTable, downloadCsv, formatInr, formatInrCompact } from './brahmastra-shared'
+import { DataTable, downloadCsv, formatInr, formatInrCompact, roasStr, pctStr } from './brahmastra-shared'
+
+/**
+ * Phase R6: three sales sources, intentionally never merged —
+ *   - Business Report Ordered Product Sales: order-date based, Seller
+ *     Central Business Reports.
+ *   - Settlement Net Sales: settlement/refund-date based, Payment Transactions.
+ *   - Amazon Ads Spend/Attributed Sales: Amazon Ads Reports.
+ * Shown side-by-side here (and in Overview) so the user can see all three
+ * without the UI silently substituting one for another.
+ */
+export function SourceComparisonCards({ data }: { data: ApiResponse }) {
+  const { businessReport, blendedMetrics, controlPanel } = data
+  const hasBusinessReportB = businessReport.rangeB.rowCount > 0
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <h2 className="text-sm font-bold text-foreground mb-1">Source comparison — selected loaded range</h2>
+      <p className="text-xs text-muted-foreground mb-4">
+        These three sources are never merged. Business Report Ordered Product Sales is order-date based and can differ from Settlement Net Sales (settlement/refund-date based).
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {hasBusinessReportB ? (
+          <>
+            <KpiCard label="Business Report Ordered Product Sales" value={formatInrCompact(businessReport.rangeB.orderedProductSales)} valueTitle={formatInr(businessReport.rangeB.orderedProductSales)} sub="Business Reports" subTitle="Seller Central Business Reports (Sales and Traffic by Date), order-date based" />
+            <KpiCard label="Business Report Units Ordered" value={businessReport.rangeB.unitsOrdered.toLocaleString('en-IN')} sub="Business Reports" subTitle="Seller Central Business Reports" />
+            <KpiCard label="Business Report Total Order Items" value={businessReport.rangeB.totalOrderItems.toLocaleString('en-IN')} sub="Business Reports" subTitle="Seller Central Business Reports" />
+          </>
+        ) : (
+          <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+            Business Report data not imported for this range. Import a CSV below to see Ordered Product Sales/Units/Order Items here.
+          </div>
+        )}
+        <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Txns" subTitle="Payment Transactions (settlement/refund-date based)" />
+        <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub="Payment Txns" subTitle="Payment Transactions" />
+        <KpiCard label="Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub="Ads Reports" subTitle="Amazon Ads Reports" />
+        <KpiCard label="Amazon Ads Attributed Sales" value={formatInrCompact(blendedMetrics.after.adSales)} valueTitle={formatInr(blendedMetrics.after.adSales)} sub="Ads Reports" subTitle="Amazon Ads Reports" />
+      </div>
+      {controlPanel.mode === 'compare' && (
+        <p className="text-xs text-muted-foreground mt-3">Range A figures are available in the Accuracy Audit panel above; this comparison shows Range B (or the selected single range).</p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Business Report Blended ROAS/TACOS = Ordered Product Sales ÷ Amazon Ads
+ * Spend — a second, clearly-labeled blended metric. Never replaces or hides
+ * the Settlement-based Blended ROAS/TACOS shown elsewhere; only rendered
+ * when Business Report data actually exists for the loaded range.
+ */
+export function BusinessReportBlendedCards({ data }: { data: ApiResponse }) {
+  const { businessReportBlended, controlPanel } = data
+  if (!businessReportBlended.after && !businessReportBlended.before) {
+    return (
+      <div className="bg-card border border-border rounded-xl p-5">
+        <h2 className="text-sm font-bold text-foreground mb-1">Business Report Blended ROAS / TACOS</h2>
+        <p className="text-xs text-muted-foreground">Business Report data not imported for this range. Settlement-based Blended ROAS/TACOS above is unaffected.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-sm font-bold text-foreground">Business Report Blended ROAS / TACOS</h2>
+        {!businessReportBlended.complete && (
+          <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+            Incomplete for selected range
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">
+        Ordered Product Sales: Source: Seller Central Business Reports (order-date based) · Amazon Ads Spend: Source: Amazon Ads Reports. This is separate from the Settlement-based Blended ROAS/TACOS shown above.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        {businessReportBlended.after && (
+          <>
+            <KpiCard label={controlPanel.mode === 'compare' ? 'Ordered Product Sales (B)' : 'Ordered Product Sales'} value={formatInrCompact(businessReportBlended.after.orderedProductSales)} valueTitle={formatInr(businessReportBlended.after.orderedProductSales)} sub="Business Reports" />
+            <KpiCard label={controlPanel.mode === 'compare' ? 'Business Report ROAS (B)' : 'Business Report ROAS'} value={roasStr(businessReportBlended.after.roas)} sub="Ordered Sales ÷ Ads Spend" subWrap />
+            <KpiCard label={controlPanel.mode === 'compare' ? 'Business Report TACOS (B)' : 'Business Report TACOS'} value={pctStr(businessReportBlended.after.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap />
+          </>
+        )}
+        {businessReportBlended.before && (
+          <>
+            <KpiCard label="Ordered Product Sales (A)" value={formatInrCompact(businessReportBlended.before.orderedProductSales)} valueTitle={formatInr(businessReportBlended.before.orderedProductSales)} sub="Business Reports" />
+            <KpiCard label="Business Report ROAS (A)" value={roasStr(businessReportBlended.before.roas)} sub="Ordered Sales ÷ Ads Spend" subWrap />
+            <KpiCard label="Business Report TACOS (A)" value={pctStr(businessReportBlended.before.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap />
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export function BusinessReportImportPanel({ data, onImported }: { data: ApiResponse; onImported?: () => void }) {
+  const { businessReport } = data
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [result, setResult] = useState<{ acceptedRows: number; rejectedRows: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch('/api/internal/business-report/sales-traffic/import', { method: 'POST', body: formData })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Import failed.')
+      setResult({ acceptedRows: json.acceptedRows, rejectedRows: json.rejectedRows })
+      onImported?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed.')
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const status = businessReport.importStatus
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-bold text-foreground">Business Report Import</h2>
+        <div>
+          <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} disabled={uploading} />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            className="inline-flex items-center gap-1 text-xs text-primary-foreground bg-primary rounded-md px-3 py-1.5 disabled:opacity-50"
+          >
+            <Upload className="w-3 h-3" /> {uploading ? 'Uploading…' : 'Upload CSV'}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground mb-3">
+        Source: Seller Central Business Reports → Sales and Traffic → By Date. This is Ordered Product Sales and can differ from Settlement Net Sales.
+      </p>
+      {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
+      {result && (
+        <p className="text-sm text-foreground mb-2">
+          Imported {result.acceptedRows} day(s), {result.rejectedRows} row(s) rejected.
+        </p>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <KpiCard label="Last upload" value={status?.filename ?? 'None yet'} sub={status ? new Date(status.created_at).toLocaleString('en-IN') : 'No import yet'} subWrap />
+        <KpiCard label="Accepted / Rejected rows" value={status ? `${status.accepted_rows} / ${status.rejected_rows}` : '—'} sub={status?.status ?? '—'} />
+        <KpiCard label="Latest Business Report date" value={businessReport.latestBusinessReportDate ?? '—'} sub="Business Reports" />
+      </div>
+      {status?.error_summary && (
+        <p className="text-xs text-amber-600 dark:text-amber-300 mt-3">{status.error_summary}</p>
+      )}
+    </div>
+  )
+}
 
 /**
  * Reused by both Overview (standard view) and Data Health & Imports
@@ -119,7 +280,7 @@ export function MappingHealthCard({ data, loadedRangeSuffix }: { data: ApiRespon
   )
 }
 
-export function BrahmastraDataHealthSection({ data, loadedRangeSuffix }: { data: ApiResponse; loadedRangeSuffix: string }) {
+export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusinessReportImported }: { data: ApiResponse; loadedRangeSuffix: string; onBusinessReportImported?: () => void }) {
   const { controlPanel, sourceAccuracyAudit, paymentImportStatus, campaignDiagnostic, latestCampaignUploadBatch, latestDeepReportBatches, deepDiagnostic } = data
 
   return (
@@ -190,6 +351,12 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix }: { data:
       </div>
 
       <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
+
+      <BusinessReportImportPanel data={data} onImported={onBusinessReportImported} />
+
+      <SourceComparisonCards data={data} />
+
+      <BusinessReportBlendedCards data={data} />
 
       <MappingHealthCard data={data} loadedRangeSuffix={loadedRangeSuffix} />
 

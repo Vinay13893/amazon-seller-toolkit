@@ -85,3 +85,24 @@ export function buildBlendedInsights(before: BlendedPeriodMetrics, after: Blende
   }
   return notes
 }
+
+export type RoasTacos = {
+  roas: number | null
+  tacos: number | null
+}
+
+/**
+ * Phase R6: Business Report Blended ROAS/TACOS = Seller Central Business
+ * Report Ordered Product Sales (order-date based) ÷ Amazon Ads Spend. This
+ * is intentionally a SEPARATE metric from the Settlement-based
+ * computeBlendedMetrics() above — Ordered Product Sales is a different
+ * number from Settlement Net Sales and the two must never be substituted
+ * for one another. Callers gate this on Business Report import
+ * completeness and must never synthesize a value when data is missing.
+ */
+export function computeRoasTacos(sales: number, spend: number): RoasTacos {
+  return {
+    roas: spend > 0 ? Math.round((sales / spend) * 100) / 100 : null,
+    tacos: sales > 0 ? Math.round((spend / sales) * 10000) / 100 : null,
+  }
+}

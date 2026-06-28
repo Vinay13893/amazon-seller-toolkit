@@ -6,7 +6,7 @@ import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { ApiResponse } from './brahmastra-shared'
 import { formatInr, formatInrCompact, pctStr, roasStr, rangeLabel, shortSourceLabel } from './brahmastra-shared'
 import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
-import { AccuracyAuditPanel } from './brahmastra-data-health-section'
+import { AccuracyAuditPanel, SourceComparisonCards } from './brahmastra-data-health-section'
 
 /**
  * Overview is intentionally the only tab that carries the full Control
@@ -82,6 +82,8 @@ export function BrahmastraOverviewSection({
       )}
 
       <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
+
+      <SourceComparisonCards data={data} />
 
       {/* Executive Summary / key KPI cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">

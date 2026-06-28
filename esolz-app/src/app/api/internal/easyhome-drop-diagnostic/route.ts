@@ -53,7 +53,7 @@ import {
 import { createClient } from '@/lib/supabase/server'
 import { resolveEasyhomePortfolio } from '@/lib/internal/portfolio-labels'
 import { resolveSelectedProfileForWorkspace } from '@/lib/internal/brahmastra-selected-profile'
-import { computeBlendedMetrics, buildBlendedInsights, type BlendedPeriodMetrics } from '@/lib/internal/easyhome-blended-metrics'
+import { computeBlendedMetrics, buildBlendedInsights, computeRoasTacos, type BlendedPeriodMetrics } from '@/lib/internal/easyhome-blended-metrics'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -70,6 +70,7 @@ type DataFreshness = {
   latestAdsDate: string | null
   latestSalesDate: string | null
   latestChangeHistoryDate: string | null
+  latestBusinessReportDate: string | null
   selectedRangeEnd: string
   // Metric-specific completeness: Ads spend/sales/clicks/ACOS/ROAS only need
   // the Ads report tables; total-sales/blended/order/geo/returns metrics only
@@ -79,6 +80,8 @@ type DataFreshness = {
   adsDataIncomplete: boolean
   salesDataIncomplete: boolean
   changeHistoryIncomplete: boolean
+  /** Business Report ("Sales and Traffic by Date") import lag — separate from salesDataIncomplete, which tracks Payment Transactions only. */
+  businessReportIncomplete: boolean
   /** @deprecated kept for backward-compat call sites; true if ANY of the above is true. */
   incomplete: boolean
   tables: FreshnessTable[]
@@ -105,6 +108,10 @@ function maxDate(values: Array<string | null>): string | null {
 function rangeExceedsLatest(rangeA: DateRange, rangeB: DateRange, latestDate: string | null): boolean {
   if (!latestDate) return true
   return rangeA.endDate > latestDate || rangeB.endDate > latestDate
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
 }
 
 export async function GET(request: Request) {
@@ -523,6 +530,8 @@ export async function GET(request: Request) {
     { data: latestTargetingRow },
     { data: latestSearchTermRow },
     { data: latestChangeEvent },
+    { data: latestBusinessReportRow },
+    { data: latestBusinessReportBatch },
   ] = await Promise.all([
     supabase.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_payment_transaction_upload_batches').select('original_filename, accepted_count, rejected_count, inserted_count, updated_count, uploaded_at').eq('workspace_id', workspaceId).order('uploaded_at', { ascending: false }).limit(1).maybeSingle(),
@@ -531,6 +540,8 @@ export async function GET(request: Request) {
     supabase.from('internal_ads_targeting_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_ads_search_term_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_ads_change_history_events').select('changed_at').eq('workspace_id', workspaceId).order('changed_at', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_business_report_sales_traffic_daily').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_business_report_upload_batches').select('filename, status, accepted_rows, rejected_rows, min_report_date, max_report_date, created_at, completed_at, error_summary').eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
   ])
   const latestSalesDate = dateOnly((latestPaymentTxn as { transaction_date?: string } | null)?.transaction_date ?? null)
   const latestAdsTables: FreshnessTable[] = [
@@ -540,6 +551,7 @@ export async function GET(request: Request) {
     { table: 'internal_ads_search_term_daily_rows', latestDate: dateOnly((latestSearchTermRow as { report_date?: string } | null)?.report_date ?? null) },
   ]
   const latestChangeHistoryDate = dateOnly((latestChangeEvent as { changed_at?: string } | null)?.changed_at ?? null)
+  const latestBusinessReportDate = dateOnly((latestBusinessReportRow as { report_date?: string } | null)?.report_date ?? null)
   const latestAdsDate = minDate(latestAdsTables.map(row => row.latestDate))
   const selectedRangeEnd = maxDate([rangeA.endDate, rangeB.endDate]) ?? rangeB.endDate
   // Each source is checked against its own latest date only — a lag in one
@@ -550,20 +562,55 @@ export async function GET(request: Request) {
     || diagnostic.accountSummary.before.rowCount === 0
     || diagnostic.accountSummary.after.rowCount === 0
   const changeHistoryIncomplete = rangeExceedsLatest(rangeA, rangeB, latestChangeHistoryDate)
+  const businessReportIncomplete = rangeExceedsLatest(rangeA, rangeB, latestBusinessReportDate)
   const dataFreshness: DataFreshness = {
     latestAdsDate,
     latestSalesDate,
     latestChangeHistoryDate,
+    latestBusinessReportDate,
     selectedRangeEnd,
     adsDataIncomplete,
     salesDataIncomplete,
     changeHistoryIncomplete,
+    businessReportIncomplete,
     incomplete: adsDataIncomplete || salesDataIncomplete || changeHistoryIncomplete,
     tables: [
       { table: 'internal_payment_transactions', latestDate: latestSalesDate },
       ...latestAdsTables,
       { table: 'internal_ads_change_history_events', latestDate: latestChangeHistoryDate },
+      { table: 'internal_business_report_sales_traffic_daily', latestDate: latestBusinessReportDate },
     ],
+  }
+
+  // --- Phase R6: Seller Central Business Report ("Sales and Traffic by
+  // Date") — a THIRD, separate sales source. Order-date based, intentionally
+  // never merged with Settlement Net Sales (settlement/refund-date based) or
+  // used as a substitute for it; shown side-by-side only.
+  const { data: businessReportRows } = await supabase
+    .from('internal_business_report_sales_traffic_daily')
+    .select('report_date, ordered_product_sales, units_ordered, total_order_items')
+    .eq('workspace_id', workspaceId)
+    .gte('report_date', fetchFrom)
+    .limit(5000)
+  function sumBusinessReportRange(range: DateRange) {
+    const rowsInRange = (businessReportRows ?? []).filter(row => {
+      const d = row.report_date as string
+      return d >= range.startDate && d <= range.endDate
+    })
+    return {
+      orderedProductSales: round2(rowsInRange.reduce((sum, r) => sum + Number(r.ordered_product_sales ?? 0), 0)),
+      unitsOrdered: rowsInRange.reduce((sum, r) => sum + Number(r.units_ordered ?? 0), 0),
+      totalOrderItems: rowsInRange.reduce((sum, r) => sum + Number(r.total_order_items ?? 0), 0),
+      rowCount: rowsInRange.length,
+    }
+  }
+  const businessReportComplete = !businessReportIncomplete && (businessReportRows ?? []).length > 0
+  const businessReport = {
+    latestBusinessReportDate,
+    complete: businessReportComplete,
+    importStatus: latestBusinessReportBatch ?? null,
+    rangeA: sumBusinessReportRange(rangeA),
+    rangeB: sumBusinessReportRange(rangeB),
   }
   // --- Phase R3: blended ROAS / TACOS ---
   // Ad Spend/Ad-attributed Sales here are summed from the Amazon Ads
@@ -579,6 +626,21 @@ export async function GET(request: Request) {
     },
     { beforeSpend: 0, afterSpend: 0, beforeSales: 0, afterSales: 0 },
   )
+
+  // Business Report Blended ROAS/TACOS = Ordered Product Sales (Business
+  // Report, order-date based) ÷ Amazon Ads Spend — a SEPARATE metric from
+  // the Settlement-based blended figures below. Only computed when Business
+  // Report data actually exists for that range; never backfilled/faked.
+  const businessReportBlended = {
+    complete: businessReportComplete && !adsDataIncomplete,
+    after: businessReport.rangeB.rowCount > 0
+      ? { orderedProductSales: businessReport.rangeB.orderedProductSales, adSpend: adTotals.afterSpend, ...computeRoasTacos(businessReport.rangeB.orderedProductSales, adTotals.afterSpend) }
+      : null,
+    before: mode === 'compare' && businessReport.rangeA.rowCount > 0
+      ? { orderedProductSales: businessReport.rangeA.orderedProductSales, adSpend: adTotals.beforeSpend, ...computeRoasTacos(businessReport.rangeA.orderedProductSales, adTotals.beforeSpend) }
+      : null,
+  }
+
   const blendedAfter: BlendedPeriodMetrics = computeBlendedMetrics({
     totalSalesNet: diagnostic.accountSummary.after.netSales,
     grossSales: diagnostic.accountSummary.after.netSales + diagnostic.accountSummary.after.refundAmount,
@@ -728,6 +790,7 @@ export async function GET(request: Request) {
       daysInRangeB: diagnostic.accountSummary.after.dayCount,
       latestAdsDate,
       latestPaymentDate: latestSalesDate,
+      latestBusinessReportDate,
       /** @deprecated use dataFreshness.adsDataIncomplete / salesDataIncomplete instead. */
       dataIncomplete: dataFreshness.incomplete,
       dataFreshness,
@@ -738,6 +801,8 @@ export async function GET(request: Request) {
     topSpenders,
     topAdSalesGenerators,
     blendedMetrics,
+    businessReport,
+    businessReportBlended,
     sourceAccuracyAudit,
     diagnostic,
     campaignDiagnostic,

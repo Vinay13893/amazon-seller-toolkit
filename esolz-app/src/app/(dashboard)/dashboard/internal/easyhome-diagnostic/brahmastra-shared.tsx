@@ -111,6 +111,7 @@ export type ControlPanelMeta = {
   daysInRangeB: number
   latestAdsDate: string | null
   latestPaymentDate: string | null
+  latestBusinessReportDate: string | null
   loadedAt: string
   /** @deprecated use dataFreshness.adsDataIncomplete / salesDataIncomplete instead. */
   dataIncomplete: boolean
@@ -118,12 +119,54 @@ export type ControlPanelMeta = {
     latestAdsDate: string | null
     latestSalesDate: string | null
     latestChangeHistoryDate: string | null
+    latestBusinessReportDate: string | null
     selectedRangeEnd: string
     adsDataIncomplete: boolean
     salesDataIncomplete: boolean
     changeHistoryIncomplete: boolean
+    businessReportIncomplete: boolean
     tables: Array<{ table: string; latestDate: string | null }>
   }
+}
+
+export type BusinessReportImportStatus = {
+  filename: string
+  status: 'completed' | 'failed'
+  accepted_rows: number
+  rejected_rows: number
+  min_report_date: string | null
+  max_report_date: string | null
+  created_at: string
+  completed_at: string | null
+  error_summary: string | null
+} | null
+
+export type BusinessReportRangeTotals = {
+  orderedProductSales: number
+  unitsOrdered: number
+  totalOrderItems: number
+  rowCount: number
+}
+
+export type BusinessReport = {
+  latestBusinessReportDate: string | null
+  complete: boolean
+  importStatus: BusinessReportImportStatus
+  rangeA: BusinessReportRangeTotals
+  rangeB: BusinessReportRangeTotals
+}
+
+export type BusinessReportBlendedPeriod = {
+  orderedProductSales: number
+  adSpend: number
+  roas: number | null
+  tacos: number | null
+}
+
+export type BusinessReportBlended = {
+  complete: boolean
+  after: BusinessReportBlendedPeriod | null
+  before: BusinessReportBlendedPeriod | null
 }
 
 export type SourceAccuracyAudit = {
@@ -169,6 +212,8 @@ export type ApiResponse = {
     insights: string[]
     sourceLabels: Record<string, string>
   }
+  businessReport: BusinessReport
+  businessReportBlended: BusinessReportBlended
   sourceAccuracyAudit: SourceAccuracyAudit
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic

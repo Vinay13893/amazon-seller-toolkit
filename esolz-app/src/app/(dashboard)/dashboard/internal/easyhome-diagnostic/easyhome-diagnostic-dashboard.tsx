@@ -208,7 +208,13 @@ function EasyhomeDiagnosticDashboardInner() {
           {view === 'findings' && <BrahmastraFindingsSection data={data} loadedRangeSuffix={loadedRangeSuffix} />}
           {view === 'trends' && <BrahmastraTrendsSection data={data} />}
           {view === 'category' && <BrahmastraCategorySection data={data} loadedRangeSuffix={loadedRangeSuffix} />}
-          {view === 'data-health' && <BrahmastraDataHealthSection data={data} loadedRangeSuffix={loadedRangeSuffix} />}
+          {view === 'data-health' && (
+            <BrahmastraDataHealthSection
+              data={data}
+              loadedRangeSuffix={loadedRangeSuffix}
+              onBusinessReportImported={() => setQuery(q => ({ ...q }))}
+            />
+          )}
           {view === 'change-history' && <BrahmastraChangeHistorySection data={data} />}
           {view === 'settings' && <BrahmastraSettingsMappingSection data={data} loadedRangeSuffix={loadedRangeSuffix} />}
         </>
