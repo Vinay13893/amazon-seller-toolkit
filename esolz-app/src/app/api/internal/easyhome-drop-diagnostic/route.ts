@@ -510,7 +510,10 @@ export async function GET(request: Request) {
     ],
   }
   const dataIncomplete = diagnostic.accountSummary.before.rowCount === 0 || diagnostic.accountSummary.after.rowCount === 0 || dataFreshness.incomplete
-  const findingsTable = buildFindingsTable(actionQueueWithChanges, { dataIncomplete })
+  const findingsTable = buildFindingsTable(actionQueueWithChanges, {
+    dataIncomplete,
+    freshness: { latestAdsDate, latestSalesDate, selectedRangeEnd },
+  })
   const goodWorkingRows = dataIncomplete ? [] : buildGoodWorkingRows({
     campaignRows: campaignDiagnostic.campaignTable,
     advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],

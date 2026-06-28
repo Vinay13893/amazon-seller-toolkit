@@ -150,6 +150,23 @@ function evidenceOf(metrics: { spendA: number | null; spendB: number | null; sal
   return `Spend ${inr(metrics.spendA)}→${inr(metrics.spendB)}, Sales ${inr(metrics.salesA)}→${inr(metrics.salesB)}, ACOS ${pctStr(metrics.acosA)}→${pctStr(metrics.acosB)}.`
 }
 
+export type FindingsFreshness = {
+  latestAdsDate: string | null
+  latestSalesDate: string | null
+  selectedRangeEnd: string
+}
+
+/** Data-incomplete rows must explain exactly which dates are missing, not show a bare zero. */
+function dataIncompleteEvidenceOf(freshness?: FindingsFreshness): string {
+  if (!freshness) return 'Selected range includes dates beyond available data.'
+  return `Latest Ads data: ${freshness.latestAdsDate ?? 'unknown'}. Latest Sales/payment data: ${freshness.latestSalesDate ?? 'unknown'}. Selected end date: ${freshness.selectedRangeEnd}.`
+}
+
+/** A true zero baseline (no spend, no sales) is not missing data — label it as new activity, not a collapse. */
+function noBaselineActivityEvidenceOf(metrics: { spendB: number | null; salesB: number | null }): string {
+  return `Baseline had no spend/sales; Selected Range spent ${inr(metrics.spendB)} and generated ${inr(metrics.salesB)} sales.`
+}
+
 /** Plain-business-English explanation templates, keyed by Finding issue type. Every field is non-empty. */
 const EXPLANATION_TEMPLATES: Record<FindingIssueLabel, FindingExplanation> = {
   'Search term negative review': {
@@ -257,10 +274,10 @@ const EXPLANATION_TEMPLATES: Record<FindingIssueLabel, FindingExplanation> = {
     riskCaution: 'Do not make ad changes from unmapped rows.',
   },
   'Data incomplete': {
-    problem: 'The selected range extends beyond available imported data.',
+    problem: 'The selected range includes dates beyond available sales/ads data.',
     whyItMatters: 'Missing dates can look like zero spend or zero sales even when the data has not been imported yet.',
     whatToCheckFirst: 'Check latest imported sales, ads, and change-history dates before interpreting this row.',
-    recommendedManualAction: 'Import/refresh the missing data or shorten the selected range.',
+    recommendedManualAction: 'Import/fetch missing reports or shorten the range to the latest available complete date.',
     expectedOutcome: 'Avoid false positives caused by incomplete data.',
     riskCaution: 'Do not make ad decisions from rows affected by incomplete range coverage.',
   },
@@ -296,7 +313,7 @@ export function buildFindingExplanation(
   }
 }
 
-export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options: { dataIncomplete?: boolean } = {}): FindingRow[] {
+export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options: { dataIncomplete?: boolean; freshness?: FindingsFreshness } = {}): FindingRow[] {
   return actionQueue.map(item => {
     const issueType = findingIssueLabelOf(item, options.dataIncomplete)
     const metrics = {
@@ -309,6 +326,12 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
     }
     const whatChanged = whatChangedOf(item)
     const explanation = buildFindingExplanation(issueType, metrics, whatChanged)
+    const noBaselineActivity = (metrics.spendA ?? 0) === 0 && (metrics.salesA ?? 0) === 0
+    const evidence = options.dataIncomplete
+      ? dataIncompleteEvidenceOf(options.freshness)
+      : noBaselineActivity
+        ? noBaselineActivityEvidenceOf(metrics)
+        : evidenceOf(metrics)
     return {
       actionKey: item.actionKey,
       priority: item.priority,
@@ -330,7 +353,7 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
       whatChanged,
       problem: explanation.problem,
       whyItMatters: explanation.whyItMatters,
-      evidence: evidenceOf(metrics),
+      evidence,
       whatToCheckFirst: explanation.whatToCheckFirst,
       recommendedManualAction: explanation.recommendedManualAction,
       expectedOutcome: explanation.expectedOutcome,
@@ -359,6 +382,12 @@ type WinnerInput = {
 }
 
 function goodReason(row: WinnerInput): string | null {
+  // A true zero baseline (no spend, no sales) is not a "before vs after" comparison —
+  // label it as new activity instead of misleadingly framing it as an improvement
+  // over a baseline that never existed.
+  const noBaselineActivity = row.beforeSpend === 0 && row.beforeSales === 0
+  if (noBaselineActivity && row.afterSales > 0) return 'New converting campaign/target in selected range.'
+
   const salesUp = row.afterSales > row.beforeSales && row.afterSales > 0
   const roasImproved = row.beforeRoas !== null && row.afterRoas !== null && row.afterRoas > row.beforeRoas
   const acosImproved = row.beforeAcos !== null && row.afterAcos !== null && row.afterAcos < row.beforeAcos
@@ -374,6 +403,7 @@ function goodReason(row: WinnerInput): string | null {
 }
 
 function goodAction(row: WinnerInput, reason: string): string {
+  if (reason.includes('New converting')) return 'Review early performance before scaling; no baseline exists yet to compare against.'
   if (row.entityType === 'Search Term') return 'Use this search term as a positive keyword/target reference.'
   if (reason.includes('Spend increased')) return 'Consider controlled scaling if stock/listing are healthy.'
   if (reason.includes('Spend decreased')) return 'Protect this campaign; do not cut blindly.'

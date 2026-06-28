@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CalendarRange, Download, Play } from 'lucide-react'
 import {
+  addDays,
   daysInRange,
   validateCompareRanges,
   validateRange,
@@ -57,12 +58,14 @@ export function BrahmastraControlPanel({
   onRun,
   onExportAll,
   loading,
+  dataFreshness,
 }: {
   portfolios: string[]
   campaigns: string[]
   onRun: (query: ControlPanelQuery) => void
   onExportAll: () => void
   loading: boolean
+  dataFreshness?: { latestAdsDate: string | null; latestSalesDate: string | null }
 }) {
   const [mode, setMode] = useState<AnalysisMode>('single')
   const [preset, setPreset] = useState<PresetId>('june15_single_default')
@@ -109,6 +112,24 @@ export function BrahmastraControlPanel({
     setPreset('custom')
   }
 
+  const latestCompleteDate = useMemo(() => {
+    const dates = [dataFreshness?.latestAdsDate, dataFreshness?.latestSalesDate].filter((d): d is string => Boolean(d))
+    if (dates.length === 0) return null
+    return dates.sort()[0]
+  }, [dataFreshness])
+
+  function handleUseLatestCompleteRange() {
+    if (!latestCompleteDate) return
+    const days = daysInRange(rangeA)
+    const startDate = addDays(latestCompleteDate, -(days - 1))
+    setRangeA({ startDate, endDate: latestCompleteDate })
+    if (mode === 'compare') {
+      const daysB = daysInRange(rangeB)
+      setRangeB({ startDate: addDays(latestCompleteDate, -(daysB - 1)), endDate: latestCompleteDate })
+    }
+    setPreset('custom')
+  }
+
   function handleRun() {
     if (!validation.valid) return
     onRun({
@@ -128,6 +149,16 @@ export function BrahmastraControlPanel({
           <CalendarRange className="w-4 h-4 text-primary" /> Brahmastra Control Panel
         </h2>
         <div className="flex gap-2">
+          {latestCompleteDate && (
+            <button
+              type="button"
+              onClick={handleUseLatestCompleteRange}
+              title={`Latest complete date: ${latestCompleteDate}`}
+              className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
+            >
+              Use latest complete range
+            </button>
+          )}
           <button
             type="button"
             onClick={onExportAll}
@@ -188,11 +219,20 @@ export function BrahmastraControlPanel({
 
       <div className="flex flex-wrap items-end gap-3">
         <fieldset className="flex items-end gap-2 border border-border/60 rounded-md p-2">
-          <legend className="text-xs text-muted-foreground px-1">{mode === 'single' ? 'Range (investigated)' : 'Range A'}</legend>
+          <legend className="text-xs text-muted-foreground px-1">{mode === 'single' ? 'Selected Range' : 'Range A'}</legend>
           <DateInput label="Start" value={rangeA.startDate} onChange={v => { setRangeA(r => ({ ...r, startDate: v })); setPreset('custom') }} />
           <DateInput label="End" value={rangeA.endDate} onChange={v => { setRangeA(r => ({ ...r, endDate: v })); setPreset('custom') }} />
           <span className="text-xs text-muted-foreground pb-1">{daysA !== null ? `${daysA} day(s)` : '—'}</span>
         </fieldset>
+
+        {mode === 'single' && validateRange(rangeA).valid && (
+          <fieldset className="flex items-end gap-2 border border-border/60 rounded-md p-2 opacity-80">
+            <legend className="text-xs text-muted-foreground px-1">Baseline / Previous Period</legend>
+            <span className="text-xs text-foreground pb-1">
+              {autoBaselineFor(rangeA).startDate} → {autoBaselineFor(rangeA).endDate}
+            </span>
+          </fieldset>
+        )}
 
         {mode === 'compare' && (
           <fieldset className="flex items-end gap-2 border border-border/60 rounded-md p-2">
@@ -218,7 +258,12 @@ export function BrahmastraControlPanel({
       )}
       {mode === 'single' && (
         <p className="text-xs text-muted-foreground mt-2">
-          Single Range mode auto-compares against the immediately preceding period of equal length to detect spend cuts/efficiency collapses — only the selected range&apos;s dates are shown as &quot;Range B&quot; below.
+          Single Range compares your selected date range against the immediately previous period of equal length.
+        </p>
+      )}
+      {mode === 'compare' && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Range A and Range B are user-selected equal-length periods.
         </p>
       )}
     </div>

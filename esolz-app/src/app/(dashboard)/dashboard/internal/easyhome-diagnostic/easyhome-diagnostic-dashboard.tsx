@@ -321,12 +321,23 @@ export function EasyhomeDiagnosticDashboard() {
             : <>Range A {diagnostic.windows.beforeStart} → {diagnostic.windows.beforeEnd} vs Range B {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd}.</>}
           {' '}Read-only. Data through {diagnostic.windows.afterEnd} ({meta.transactionRowsFetched.toLocaleString('en-IN')} transaction rows).
         </p>
+        {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
+      </div>
+
+      {/* Data freshness — always visible so "zero" never gets confused with "not imported yet" */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        <p className="text-sm font-semibold text-foreground mb-1">Data available</p>
+        <p className="text-xs text-muted-foreground">
+          Ads reports: through {controlPanel.dataFreshness?.latestAdsDate ?? 'unknown'} · Sales/payment transactions: through {controlPanel.dataFreshness?.latestSalesDate ?? 'unknown'} · Change History: through {controlPanel.dataFreshness?.latestChangeHistoryDate ?? 'unknown'}
+        </p>
         {controlPanel.dataIncomplete && (
-          <p className="text-sm text-amber-400 mt-1">
-            Data incomplete for selected range. Latest Ads data: {controlPanel.dataFreshness?.latestAdsDate ?? 'unknown'}. Latest sales data: {controlPanel.dataFreshness?.latestSalesDate ?? 'unknown'}.
+          <p className="text-sm text-amber-400 mt-2">
+            Selected range includes dates after latest available sales/ads data. Metrics for those dates may be incomplete.
           </p>
         )}
-        {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
+        <p className="text-xs text-muted-foreground mt-2 italic">
+          Order-level and geo demand metrics will use Amazon payment transaction reports as the source of truth for SKU/date/order/geo/fulfillment/returns where available. This is not yet auto-refreshed.
+        </p>
       </div>
 
       <BrahmastraControlPanel
@@ -335,11 +346,12 @@ export function EasyhomeDiagnosticDashboard() {
         onRun={q => setQuery(q)}
         onExportAll={handleExportAll}
         loading={loading}
+        dataFreshness={controlPanel.dataFreshness}
       />
 
       {/* Findings & Actions Table — the main, easier-to-scan view above the raw sections */}
-      <GoodWorkingTable rows={goodWorkingRows} />
-      <FindingsActionsTable rows={findingsTable} />
+      <GoodWorkingTable rows={goodWorkingRows} mode={controlPanel.mode} />
+      <FindingsActionsTable rows={findingsTable} mode={controlPanel.mode} />
 
       {/* Account summary */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">

@@ -21,6 +21,11 @@ const PRIORITY_BADGE: Record<string, 'destructive' | 'secondary' | 'outline'> = 
   High: 'destructive', Medium: 'secondary', Low: 'outline',
 }
 
+/** Single Range mode compares a user-picked window against an auto-computed baseline — label A/B accordingly so the table doesn't read like a generic "Range A/B" compare. */
+function rangeLabels(mode: 'single' | 'compare'): { a: string; b: string } {
+  return mode === 'single' ? { a: 'Baseline', b: 'Selected Range' } : { a: 'Range A', b: 'Range B' }
+}
+
 export function toFindingsCsv(rows: FindingRow[]): string {
   const headers = [
     'priority', 'portfolio', 'campaign', 'ad_group', 'entity', 'issue_type',
@@ -79,8 +84,9 @@ function FilterSelect<T extends string>({ label, value, options, onChange, forma
   )
 }
 
-function FindingRowItem({ r }: { r: FindingRow }) {
+function FindingRowItem({ r, mode }: { r: FindingRow; mode: 'single' | 'compare' }) {
   const [expanded, setExpanded] = useState(false)
+  const labels = rangeLabels(mode)
   return (
     <>
       <tr
@@ -110,12 +116,12 @@ function FindingRowItem({ r }: { r: FindingRow }) {
               {' · '}<span className="font-semibold text-foreground">Change History Signal:</span> {r.whatChanged}
             </p>
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 text-xs">
-              <div><span className="text-muted-foreground">Spend A</span><div className="text-foreground font-medium">{inr(r.spendA)}</div></div>
-              <div><span className="text-muted-foreground">Spend B</span><div className="text-foreground font-medium">{inr(r.spendB)}</div></div>
-              <div><span className="text-muted-foreground">Sales A</span><div className="text-foreground font-medium">{inr(r.salesA)}</div></div>
-              <div><span className="text-muted-foreground">Sales B</span><div className="text-foreground font-medium">{inr(r.salesB)}</div></div>
-              <div><span className="text-muted-foreground">ACOS A→B</span><div className="text-foreground font-medium">{pct(r.acosA)} → {pct(r.acosB)}</div></div>
-              <div><span className="text-muted-foreground">ROAS A→B</span><div className="text-foreground font-medium">{roas(r.roasA)} → {roas(r.roasB)}</div></div>
+              <div><span className="text-muted-foreground">Spend ({labels.a})</span><div className="text-foreground font-medium">{inr(r.spendA)}</div></div>
+              <div><span className="text-muted-foreground">Spend ({labels.b})</span><div className="text-foreground font-medium">{inr(r.spendB)}</div></div>
+              <div><span className="text-muted-foreground">Sales ({labels.a})</span><div className="text-foreground font-medium">{inr(r.salesA)}</div></div>
+              <div><span className="text-muted-foreground">Sales ({labels.b})</span><div className="text-foreground font-medium">{inr(r.salesB)}</div></div>
+              <div><span className="text-muted-foreground">ACOS {labels.a}→{labels.b}</span><div className="text-foreground font-medium">{pct(r.acosA)} → {pct(r.acosB)}</div></div>
+              <div><span className="text-muted-foreground">ROAS {labels.a}→{labels.b}</span><div className="text-foreground font-medium">{roas(r.roasA)} → {roas(r.roasB)}</div></div>
               <div><span className="text-muted-foreground">Sales Δ</span><div className="text-foreground font-medium">{inr(r.salesChange)}</div></div>
               <div><span className="text-muted-foreground">Review status</span><div className="text-foreground font-medium">{r.reviewStatus}</div></div>
             </div>
@@ -126,10 +132,11 @@ function FindingRowItem({ r }: { r: FindingRow }) {
   )
 }
 
-export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
+export function FindingsActionsTable({ rows, mode = 'compare' }: { rows: FindingRow[]; mode?: 'single' | 'compare' }) {
   const [portfolio, setPortfolio] = useState<string | 'All'>('All')
   const [issueType, setIssueType] = useState<FindingIssueLabel | 'All'>('All')
   const [priority, setPriority] = useState<string | 'All'>('All')
+  const labels = rangeLabels(mode)
 
   const portfolios = useMemo(() => [...new Set(rows.map(r => r.portfolio))].sort(), [rows])
   const issueTypes = useMemo(() => [...new Set(rows.map(r => r.issueType))].sort(), [rows])
@@ -184,7 +191,7 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
           </thead>
           <tbody>
             {visible.map((r, i) => (
-              <FindingRowItem key={`${r.actionKey}-${i}`} r={r} />
+              <FindingRowItem key={`${r.actionKey}-${i}`} r={r} mode={mode} />
             ))}
           </tbody>
         </table>
@@ -193,14 +200,36 @@ export function FindingsActionsTable({ rows }: { rows: FindingRow[] }) {
       <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
 
       <p className="text-xs text-muted-foreground mt-3">
-        Range A vs Range B, correlated with change-history events where available. Review manually; compare old vs current. Do not revert blindly.
+        {labels.a} vs {labels.b}, correlated with change-history events where available. Review manually; compare old vs current. Do not revert blindly.
       </p>
     </div>
   )
 }
 
-export function GoodWorkingTable({ rows }: { rows: GoodWorkingRow[] }) {
+/** Buckets `whyGood` reasons into the summary categories the team scans for first. */
+function summarizeGoodWorking(rows: GoodWorkingRow[]): { label: string; count: number }[] {
+  let newConverting = 0
+  let protectedCount = 0
+  let stable = 0
+  let bestImproved = 0
+  for (const r of rows) {
+    if (r.whyGood.startsWith('New converting')) newConverting += 1
+    else if (r.whyGood.startsWith('Spend decreased')) protectedCount += 1
+    else if (r.whyGood.startsWith('Converting well')) stable += 1
+    else bestImproved += 1
+  }
+  return [
+    { label: 'Best improved', count: bestImproved },
+    { label: 'New converting', count: newConverting },
+    { label: 'Protected', count: protectedCount },
+    { label: 'Stable performers', count: stable },
+  ].filter(b => b.count > 0)
+}
+
+export function GoodWorkingTable({ rows, mode = 'compare' }: { rows: GoodWorkingRow[]; mode?: 'single' | 'compare' }) {
   const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(rows)
+  const labels = rangeLabels(mode)
+  const summary = summarizeGoodWorking(rows)
 
   function downloadCsv() {
     const blob = new Blob([toGoodWorkingCsv(rows)], { type: 'text/csv;charset=utf-8;' })
@@ -223,17 +252,26 @@ export function GoodWorkingTable({ rows }: { rows: GoodWorkingRow[] }) {
         </button>
       </div>
       {rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No good-working rows found for the selected range.</p>
+        <p className="text-sm text-muted-foreground">
+          No good-working rows found under current strict rules. Try a shorter/complete date range or check after latest Ads/Sales data refresh.
+        </p>
       ) : (
         <>
-          <p className="text-xs text-muted-foreground mb-2">
-            {rows.length} protected/scaling candidates.
-          </p>
+          <div className="flex flex-wrap items-center gap-3 mb-2">
+            <p className="text-xs text-muted-foreground">
+              {rows.length} protected/scaling candidates.
+            </p>
+            {summary.map(b => (
+              <span key={b.label} className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/30 px-2 py-0.5 text-xs text-foreground">
+                {b.label}: {b.count}
+              </span>
+            ))}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border text-muted-foreground">
-                  {['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword / Target / SKU / Search Term', 'Why it is good', 'Spend A', 'Spend B', 'Sales A', 'Sales B', 'ACOS A -> B', 'ROAS A -> B', 'Suggested action'].map(h => (
+                  {['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword / Target / SKU / Search Term', 'Why it is good', `Spend (${labels.a})`, `Spend (${labels.b})`, `Sales (${labels.a})`, `Sales (${labels.b})`, `ACOS ${labels.a} -> ${labels.b}`, `ROAS ${labels.a} -> ${labels.b}`, 'Suggested action'].map(h => (
                     <th key={h} className="text-left font-semibold py-2 px-2 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
