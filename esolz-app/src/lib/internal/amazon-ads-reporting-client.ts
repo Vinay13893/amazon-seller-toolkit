@@ -149,8 +149,13 @@ export async function pollAdsReport(ctx: AdsApiContext, reportId: string): Promi
   return { status: data.status, url: data.url, failureReason: data.failureReason }
 }
 
-/** Polls until COMPLETED/FAILED, with a sane timeout — Amazon reports usually finish within a couple of minutes. */
-export async function waitForAdsReport(ctx: AdsApiContext, reportId: string, { maxWaitMs = 180_000, pollIntervalMs = 5_000 } = {}): Promise<string> {
+/**
+ * Polls until COMPLETED/FAILED. Amazon report generation is usually done
+ * within a couple of minutes but can take much longer under load — 15
+ * minutes is the default ceiling (Render cron run is the caller; this is
+ * not a user-facing request that needs a tight bound).
+ */
+export async function waitForAdsReport(ctx: AdsApiContext, reportId: string, { maxWaitMs = 900_000, pollIntervalMs = 15_000 } = {}): Promise<string> {
   const deadline = Date.now() + maxWaitMs
   while (Date.now() < deadline) {
     const result = await pollAdsReport(ctx, reportId)

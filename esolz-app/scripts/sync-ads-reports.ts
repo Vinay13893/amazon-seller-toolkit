@@ -9,6 +9,8 @@
 //   npx tsx scripts/sync-ads-reports.ts                  # last 7 days (today excluded)
 //   npx tsx scripts/sync-ads-reports.ts --days=2         # last 2 days (manual test / backfill)
 //   npx tsx scripts/sync-ads-reports.ts --from=2026-06-20 --to=2026-06-25
+//   npx tsx scripts/sync-ads-reports.ts --report-timeout-ms=900000   # default; report polling ceiling
+//   npx tsx scripts/sync-ads-reports.ts --force-refresh  # bypass the recent-success skip
 //
 // Required env vars (Render): NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 //
@@ -23,6 +25,18 @@
 //      AMZN_ADS_PROFILE_ID or AMAZON_ADS_PROFILE_ID
 //      AMZN_ADS_REGION or AMAZON_ADS_REGION (defaults to 'eu')
 //      AMZN_ADS_MARKETPLACE or AMAZON_ADS_MARKETPLACE (descriptive only)
+//
+// Reliability hardening (Phase R1):
+//   - Report polling timeout is configurable (default 15 min — Amazon report
+//     generation regularly takes longer than the old 3-minute ceiling).
+//   - One report failing/timing out never stops the other 3 from running.
+//   - A per-workspace+profile concurrency lock prevents two sync runs (e.g.
+//     an overlapping manual trigger) from racing each other.
+//   - Stale "running" rows older than 2 hours are cleaned up at startup so
+//     a crashed previous run can never look like an active lock forever.
+//   - Re-running for the same exact (profile, report type, date range) within
+//     a few hours reuses the in-flight/just-finished Amazon report instead of
+//     requesting a brand new one, unless --force-refresh is passed.
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -63,8 +77,10 @@ try {
 function parseArgs(): Map<string, string> {
   const args = new Map<string, string>()
   for (const arg of process.argv.slice(2)) {
-    const m = arg.match(/^--([a-zA-Z]+)=(.*)$/)
-    if (m) args.set(m[1], m[2])
+    const withValue = arg.match(/^--([a-zA-Z-]+)=(.*)$/)
+    if (withValue) { args.set(withValue[1], withValue[2]); continue }
+    const bareFlag = arg.match(/^--([a-zA-Z-]+)$/)
+    if (bareFlag) args.set(bareFlag[1], '1')
   }
   return args
 }
@@ -77,6 +93,9 @@ function addDays(iso: string, delta: number): string {
   d.setUTCDate(d.getUTCDate() + delta)
   return d.toISOString().slice(0, 10)
 }
+
+const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer than this is a crashed/abandoned attempt
+const REPORT_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000 // 6 hours — guards against re-running the exact same (profile, report, date range) twice in quick succession; daily cadence is well outside this window
 
 type ReportDef =
   | { type: 'spCampaigns'; source: string; table: string; batchTable: string; kind: null }
@@ -206,17 +225,105 @@ async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspace
   return { insertedCount: insertRows.length, updatedCount: updateRows.length }
 }
 
-async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspaceId: string, profileId: string, def: ReportDef, startDate: string, endDate: string) {
+/** Marks any "running" Ads refresh row older than STALE_RUN_MS as failed so it can never be mistaken for an active lock or an in-flight report worth reusing. Never touches Ads data tables, never deletes rows. */
+async function cleanupStaleRuns(admin: SupabaseClient): Promise<void> {
+  const cutoff = new Date(Date.now() - STALE_RUN_MS).toISOString()
+  const { data: staleRows } = await admin
+    .from('internal_data_refresh_runs')
+    .select('id')
+    .like('source', 'ads_%')
+    .eq('status', 'running')
+    .lt('started_at', cutoff)
+  if (!staleRows || staleRows.length === 0) return
+  await admin
+    .from('internal_data_refresh_runs')
+    .update({ status: 'failed', finished_at: new Date().toISOString(), error_message: 'Stale running report cleaned up before sync; no data imported.' })
+    .in('id', staleRows.map(r => r.id))
+  console.log(`Cleaned up ${staleRows.length} stale running refresh-run row(s) older than 2 hours.`)
+}
+
+/** True if a sync for this workspace+profile is already running (and not stale — cleanupStaleRuns must run first). */
+async function isSyncLocked(admin: SupabaseClient, workspaceId: string, profileId: string): Promise<boolean> {
+  const { data } = await admin
+    .from('internal_data_refresh_runs')
+    .select('id')
+    .like('source', 'ads_%')
+    .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .eq('status', 'running')
+    .limit(1)
+  return Boolean(data && data.length > 0)
+}
+
+type ReusableReport = { amazonReportId: string; alreadySucceeded: boolean }
+
+/** Looks for a recent attempt at the exact same (workspace, profile, report type, date range) to avoid creating a duplicate Amazon report job or re-importing data we already have. */
+async function findReusableReport(admin: SupabaseClient, requestKey: string, forceRefresh: boolean): Promise<ReusableReport | null> {
+  if (forceRefresh) return null
+  const cutoff = new Date(Date.now() - REPORT_REUSE_WINDOW_MS).toISOString()
+  const { data } = await admin
+    .from('internal_data_refresh_runs')
+    .select('status, amazon_report_id')
+    .eq('report_request_key', requestKey)
+    .gte('started_at', cutoff)
+    .not('amazon_report_id', 'is', null)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!data?.amazon_report_id) return null
+  return { amazonReportId: data.amazon_report_id as string, alreadySucceeded: data.status === 'success' }
+}
+
+type ReportOutcome = { source: string; status: 'success' | 'failed' | 'skipped' }
+
+async function syncOneReport(
+  admin: SupabaseClient,
+  ctx: AdsApiContext,
+  workspaceId: string,
+  profileId: string,
+  def: ReportDef,
+  startDate: string,
+  endDate: string,
+  reportTimeoutMs: number,
+  forceRefresh: boolean,
+): Promise<ReportOutcome> {
+  const requestKey = `${workspaceId}|${profileId}|${def.source}|${startDate}|${endDate}`
+  const reusable = await findReusableReport(admin, requestKey, forceRefresh)
+
+  if (reusable?.alreadySucceeded) {
+    console.log(`  ${def.source}: SKIPPED — already synced successfully for this exact range within the last 6h (use --force-refresh to redo).`)
+    await admin.from('internal_data_refresh_runs').insert({
+      workspace_id: workspaceId, profile_id: profileId, source: def.source, status: 'skipped',
+      date_from: startDate, date_to: endDate, finished_at: new Date().toISOString(),
+      report_request_key: requestKey,
+      error_message: 'Already synced recently for this exact date range; use --force-refresh to redo.',
+    })
+    return { source: def.source, status: 'skipped' }
+  }
+
   const { data: runRow } = await admin
     .from('internal_data_refresh_runs')
-    .insert({ workspace_id: workspaceId, profile_id: profileId, source: def.source, status: 'running', date_from: startDate, date_to: endDate })
+    .insert({ workspace_id: workspaceId, profile_id: profileId, source: def.source, status: 'running', date_from: startDate, date_to: endDate, report_request_key: requestKey })
     .select('id')
     .single()
   const runId = runRow?.id as string | undefined
 
   try {
-    const reportId = await requestAdsReport(ctx, def.type, startDate, endDate)
-    const downloadUrl = await waitForAdsReport(ctx, reportId)
+    let reportId: string
+    if (reusable) {
+      reportId = reusable.amazonReportId
+      console.log(`  ${def.source}: reusing in-flight Amazon report ${reportId} instead of requesting a new one.`)
+    } else {
+      reportId = await requestAdsReport(ctx, def.type, startDate, endDate)
+    }
+    if (runId) {
+      await admin.from('internal_data_refresh_runs').update({ amazon_report_id: reportId, amazon_report_status: 'PENDING', amazon_report_created_at: new Date().toISOString() }).eq('id', runId)
+    }
+
+    const downloadUrl = await waitForAdsReport(ctx, reportId, { maxWaitMs: reportTimeoutMs })
+    if (runId) {
+      await admin.from('internal_data_refresh_runs').update({ amazon_report_status: 'COMPLETED', amazon_report_completed_at: new Date().toISOString() }).eq('id', runId)
+    }
     const jsonRows = await downloadAdsReportRows(downloadUrl)
     const csv = jsonRowsToCsv(jsonRows)
 
@@ -326,6 +433,7 @@ async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspac
       .eq('id', runId)
 
     console.log(`  ${def.source}: fetched ${jsonRows.length}, inserted ${insertedCount}, updated ${updatedCount}, rejected ${rejectedCount}`)
+    return { source: def.source, status: 'success' }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     console.error(`  ${def.source}: FAILED — ${message}`)
@@ -335,7 +443,16 @@ async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspac
         .update({ status: 'failed', finished_at: new Date().toISOString(), error_message: message.slice(0, 2000) })
         .eq('id', runId)
     }
+    return { source: def.source, status: 'failed' }
   }
+}
+
+function printSummary(profileLabel: string, outcomes: ReportOutcome[]): boolean {
+  const succeeded = outcomes.filter(o => o.status === 'success').length
+  const skipped = outcomes.filter(o => o.status === 'skipped').length
+  const failed = outcomes.filter(o => o.status === 'failed').length
+  console.log(`  Summary (${profileLabel}): ${succeeded} succeeded, ${skipped} skipped, ${failed} failed — ${outcomes.map(o => `${o.source}=${o.status}`).join(', ')}`)
+  return failed > 0
 }
 
 /** Mirrors the RLS pattern used across internal_* tables: the workspace with an active/trial "Internal Tester" plan. */
@@ -357,6 +474,8 @@ async function main() {
   const days = args.has('days') ? Number(args.get('days')) : 7
   const endDate = args.get('to') ?? addDays(todayIso(), -1)
   const startDate = args.get('from') ?? addDays(endDate, -(Math.max(1, days) - 1))
+  const reportTimeoutMs = args.has('report-timeout-ms') ? Number(args.get('report-timeout-ms')) : 900_000
+  const forceRefresh = args.has('force-refresh')
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -367,7 +486,9 @@ async function main() {
   }
   const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } })
 
-  console.log(`Brahmastra Ads report sync — range ${startDate} to ${endDate} (read-only, no Amazon write calls)`)
+  console.log(`Brahmastra Ads report sync — range ${startDate} to ${endDate} (read-only, no Amazon write calls), report timeout ${reportTimeoutMs}ms${forceRefresh ? ', force-refresh' : ''}`)
+
+  await cleanupStaleRuns(admin)
 
   const { data: connections, error: connError } = await admin
     .from('amazon_ads_connections')
@@ -410,6 +531,11 @@ async function main() {
         continue
       }
 
+      if (await isSyncLocked(admin, workspaceId, selection.profileId)) {
+        console.log(`Workspace ${workspaceId}, profile ${selection.profileId}: Another Amazon Ads sync is already running for this profile. Skipping.`)
+        continue
+      }
+
       const profile = profiles.find(p => p.profile_id === selection.profileId)!
       const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? selection.profileId
 
@@ -426,9 +552,11 @@ async function main() {
 
       const ctx: AdsApiContext = { region: connection.region as string, accessToken, profileId: selection.profileId }
       console.log(`Workspace ${workspaceId}, profile ${selection.profileId} (${profileLabel}):`)
+      const outcomes: ReportOutcome[] = []
       for (const def of REPORT_DEFS) {
-        await syncOneReport(admin, ctx, workspaceId, selection.profileId, def, startDate, endDate)
+        outcomes.push(await syncOneReport(admin, ctx, workspaceId, selection.profileId, def, startDate, endDate, reportTimeoutMs, forceRefresh))
       }
+      if (printSummary(profileLabel, outcomes)) process.exitCode = 1
     }
     return
   }
@@ -450,6 +578,11 @@ async function main() {
     return
   }
 
+  if (await isSyncLocked(admin, workspaceId, directCreds.profileId)) {
+    console.log(`Workspace ${workspaceId}, profile ${directCreds.profileId}: Another Amazon Ads sync is already running for this profile. Skipping.`)
+    return
+  }
+
   let accessToken: string
   try {
     const refreshed = await refreshAdsAccessToken(directCreds.refreshToken, { clientId: directCreds.clientId, clientSecret: directCreds.clientSecret })
@@ -462,9 +595,11 @@ async function main() {
 
   const ctx: AdsApiContext = { region: directCreds.region, accessToken, profileId: directCreds.profileId, clientId: directCreds.clientId }
   console.log(`Workspace ${workspaceId}, profile ${directCreds.profileId}:`)
+  const outcomes: ReportOutcome[] = []
   for (const def of REPORT_DEFS) {
-    await syncOneReport(admin, ctx, workspaceId, directCreds.profileId, def, startDate, endDate)
+    outcomes.push(await syncOneReport(admin, ctx, workspaceId, directCreds.profileId, def, startDate, endDate, reportTimeoutMs, forceRefresh))
   }
+  if (printSummary(directCreds.profileId, outcomes)) process.exitCode = 1
 }
 
 main().catch(error => {
