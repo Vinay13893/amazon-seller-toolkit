@@ -101,6 +101,15 @@ type ChangeHistoryBatchRow = {
 
 type ChangeHistoryImportStatus = ChangeHistoryBatchRow | null
 
+type PaymentImportStatus = {
+  lastFileName: string
+  acceptedCount: number
+  rejectedCount: number
+  insertedCount: number
+  updatedCount: number
+  uploadedAt: string
+} | null
+
 type ControlPanelMeta = {
   mode: 'single' | 'compare'
   selectedProfileId: string
@@ -133,6 +142,7 @@ type ApiResponse = {
   goodWorkingRows: GoodWorkingRow[]
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic
+  paymentImportStatus: PaymentImportStatus
   latestCampaignUploadBatch: LatestCampaignUploadBatch
   deepDiagnostic: DeepDiagnostic
   latestDeepReportBatches: DeepReportBatch[]
@@ -250,7 +260,7 @@ export function EasyhomeDiagnosticDashboard() {
 
   const {
     controlPanel, findingsTable, goodWorkingRows,
-    diagnostic, campaignDiagnostic, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
+    diagnostic, campaignDiagnostic, paymentImportStatus, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
     changeHistoryImportStatus, changeHistoryBatches, changeHistorySummary, changeHistoryEvents,
     changeHistoryDayByDay, changeHistoryArchiveCoverage, changeHistoryChunkCoverage, changeHistoryCorrelationSummary,
     manualReviewCandidates, manualReviewCases,
@@ -371,7 +381,7 @@ export function EasyhomeDiagnosticDashboard() {
         )}
         {controlPanel.dataFreshness?.salesDataIncomplete && (
           <p className="text-sm text-amber-400 mt-2">
-            Sales/payment data incomplete for blended/total-sales metrics — selected range ends after the latest available payment-transaction date. Ads-only metrics above are still valid.
+            Total-sales/blended metrics may be incomplete until payment transactions are refreshed. Ads-only findings above are not affected.
           </p>
         )}
         {controlPanel.dataFreshness?.changeHistoryIncomplete && (
@@ -382,6 +392,18 @@ export function EasyhomeDiagnosticDashboard() {
         <p className="text-xs text-muted-foreground mt-2 italic">
           Order-level and geo demand metrics will use Amazon payment transaction reports as the source of truth for SKU/date/order/geo/fulfillment/returns where available. This is not yet auto-refreshed.
         </p>
+        {paymentImportStatus && (
+          <div className="mt-3 border-t border-border/60 pt-3">
+            <p className="text-xs font-semibold text-foreground mb-1">Payment Transaction Import</p>
+            <p className="text-xs text-muted-foreground">
+              Last file: {paymentImportStatus.lastFileName} · {paymentImportStatus.acceptedCount} accepted / {paymentImportStatus.rejectedCount} rejected ·{' '}
+              {paymentImportStatus.insertedCount} inserted / {paymentImportStatus.updatedCount} updated · uploaded {new Date(paymentImportStatus.uploadedAt).toLocaleString('en-IN')}
+            </p>
+            <p className="text-xs text-muted-foreground italic">
+              No buyer name, email, phone, address, or order ID is shown here — counts and dates only.
+            </p>
+          </div>
+        )}
       </div>
 
       <BrahmastraControlPanel

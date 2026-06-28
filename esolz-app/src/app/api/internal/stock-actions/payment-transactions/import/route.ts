@@ -13,6 +13,7 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 const TABLE = 'internal_payment_transactions'
+const BATCH_TABLE = 'internal_payment_transaction_upload_batches'
 const WRITE_CHUNK_SIZE = 500
 const SAFE_FILE_NAME = /^[\w.,() -]+\.csv$/i
 
@@ -191,12 +192,19 @@ export async function POST(request: Request) {
     )
   }
 
-  if (result.rejected.length > 0) {
+  const admin = createAdminClient()
+
+  // A handful of structurally-bad rows (missing date/type) must not block
+  // the rest of an otherwise-good file — proceed with whatever parsed
+  // cleanly and report the rejected count/reasons (row numbers only, no
+  // row content) so the gap is visible without being a hard stop.
+  if (result.accepted.length === 0) {
     return NextResponse.json({
       written: false,
       ...result.stats,
       insertedCount: 0,
       updatedCount: 0,
+      rejectedSample: result.rejected.slice(0, 10),
     })
   }
 
@@ -207,7 +215,27 @@ export async function POST(request: Request) {
   }
   const rows = [...dedupedRows.values()]
 
-  const admin = createAdminClient()
+  const { data: batch, error: batchError } = await admin
+    .from(BATCH_TABLE)
+    .insert({
+      workspace_id: workspaceId,
+      original_filename: fileName,
+      total_row_count: result.stats.totalRowCount,
+      accepted_count: result.stats.acceptedCount,
+      rejected_count: result.stats.rejectedCount,
+      date_range_start: result.stats.dateRangeStart,
+      date_range_end: result.stats.dateRangeEnd,
+      total_amount_sum: result.stats.totalAmountSum,
+    })
+    .select('id')
+    .single()
+  if (batchError || !batch) {
+    return NextResponse.json(
+      { error: 'Upload batch could not be recorded. Confirm migration 051 is applied.' },
+      { status: 503 },
+    )
+  }
+
   const { dateRangeStart, dateRangeEnd } = result.stats
 
   const EXISTING_PAGE_SIZE = 1000
@@ -282,11 +310,27 @@ export async function POST(request: Request) {
     }
   }
 
+  await admin
+    .from(BATCH_TABLE)
+    .update({ inserted_count: insertedCount, updated_count: updateRows.length, duplicate_skipped_count: duplicateSkippedCount })
+    .eq('id', batch.id)
+
+  const { data: latestRow } = await admin
+    .from(TABLE)
+    .select('transaction_date')
+    .eq('workspace_id', workspaceId)
+    .order('transaction_date', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const latestTransactionDate = ((latestRow?.transaction_date as string | null) ?? null)?.slice(0, 10) ?? null
+
   return NextResponse.json({
     written: true,
     ...result.stats,
     insertedCount,
     updatedCount: updateRows.length,
     duplicateSkippedCount,
+    rejectedSample: result.rejected.slice(0, 10),
+    latestTransactionDate,
   })
 }

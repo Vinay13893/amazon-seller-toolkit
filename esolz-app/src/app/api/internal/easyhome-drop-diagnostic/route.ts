@@ -503,6 +503,7 @@ export async function GET(request: Request) {
   // --- Phase 2A: Findings & Actions Table + Brahmastra Control Panel metadata ---
   const [
     { data: latestPaymentTxn },
+    { data: latestPaymentBatch },
     { data: latestCampaignRow },
     { data: latestAdvertisedProductRow },
     { data: latestTargetingRow },
@@ -510,6 +511,7 @@ export async function GET(request: Request) {
     { data: latestChangeEvent },
   ] = await Promise.all([
     supabase.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_payment_transaction_upload_batches').select('original_filename, accepted_count, rejected_count, inserted_count, updated_count, uploaded_at').eq('workspace_id', workspaceId).order('uploaded_at', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_ads_advertised_product_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_ads_targeting_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
@@ -583,6 +585,16 @@ export async function GET(request: Request) {
     goodWorkingRows,
     diagnostic,
     campaignDiagnostic,
+    paymentImportStatus: latestPaymentBatch
+      ? {
+        lastFileName: (latestPaymentBatch as { original_filename: string }).original_filename,
+        acceptedCount: (latestPaymentBatch as { accepted_count: number }).accepted_count,
+        rejectedCount: (latestPaymentBatch as { rejected_count: number }).rejected_count,
+        insertedCount: (latestPaymentBatch as { inserted_count: number }).inserted_count,
+        updatedCount: (latestPaymentBatch as { updated_count: number }).updated_count,
+        uploadedAt: (latestPaymentBatch as { uploaded_at: string }).uploaded_at,
+      }
+      : null,
     latestCampaignUploadBatch,
     deepDiagnostic,
     latestDeepReportBatches: latestDeepReportBatches ?? [],

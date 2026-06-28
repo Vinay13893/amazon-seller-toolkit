@@ -155,3 +155,37 @@ Verified against pack-of-4/2/1 examples. Formula itself was not modified in any 
 5. Build the actual Amazon Restock Recommendations report fetch — only after explicit approval (per AGENTS.md: do not create new Amazon reports unless specifically instructed).
 6. Verify the FC Allocation tab against real product/component data end-to-end.
 7. Do not move on to Keywords/Pincode/Brand Analytics/Ads work until replenishment numbers are trusted and verified by the user.
+
+## Brahmastra Ads Intelligence - Current State
+
+_Last updated: 2026-06-28. Covers Phase R1 (Ads sync reliability) and Phase R2 (payment transaction / sales refresh foundation)._
+
+### Amazon Ads daily refresh — reliable, production-ready
+
+- `scripts/sync-ads-reports.ts` runs on a Render cron job, syncing the single Brahmastra-selected Amazon Ads profile (`1119208106810251` — EMOUNT RETAIL) via `resolveBrahmastraProfile()`. It never loops over every connected profile.
+- Profile isolation: `internal_ads_campaign_daily_rows`, `internal_ads_advertised_product_daily_rows`, `internal_ads_targeting_daily_rows`, `internal_ads_search_term_daily_rows` all carry a `profile_id` column (migration 049), with dedupe unique indexes re-keyed to include it.
+- Reliability hardening (migration 050): report polling timeout raised to 15 minutes (was timing out at 3 minutes), each of the 4 reports runs independently (one failing never blocks the others), a per-workspace+profile concurrency lock prevents overlapping sync runs, stale `running` rows older than 2 hours are auto-cleaned, and re-syncing the same exact (profile, report type, date range) within 6 hours reuses/skips instead of creating a duplicate Amazon report job.
+- `scripts/audit-brahmastra-data-quality.ts` is a read-only, aggregate-only audit script (no PII, no raw search terms) verifying profile isolation, duplicate-free dedupe, and cross-table spend/sales variance — confirmed healthy as of this writing.
+- Brahmastra date-range UI (Single Range vs Compare mode) and the data-freshness gating logic were corrected so a lag in one data source (e.g. payment transactions) never hides or zeroes out metrics that depend on a different, fully-synced source (e.g. Ads reports) — see `dataFreshness.adsDataIncomplete` / `salesDataIncomplete` / `changeHistoryIncomplete` in the diagnostic API response.
+
+### Payment transaction / sales refresh foundation (Phase R2)
+
+- `internal_payment_transactions` (migration 033) already held clean, transaction-level data with a sound dedupe unique index (~90k rows, spanning Dec 2024 to present) — no buyer name/email/phone/address fields exist or were added; only `order_city`/`order_state`/`order_postal` geo aggregates and `order_id`.
+- **Auto-fetch from SP-API is not implemented and the exact Seller Central "Payment Transactions" (Transaction View) CSV export is not directly available as an SP-API report.** The closest SP-API equivalents — the Settlement Reports API and the Finances API — have different shapes/granularity and would need new credential scope plus a new parser; this was intentionally not built per the "don't invent an auto-fetch" instruction. **Manual CSV import remains the source of truth for now.**
+- Manual import (`/api/internal/stock-actions/payment-transactions/import`) improved: added `internal_payment_transaction_upload_batches` bookkeeping table (migration 051, mirrors the Ads upload-batch pattern — filename, row counts, date range, no row content); a handful of structurally-bad rows (missing date/type) no longer abort the whole import — accepted rows are still saved and the rejected count/row-numbers are reported; response now includes `latestTransactionDate`.
+- Added `internal_payment_sales_daily_summary` (migration 051) — an additive derived daily aggregate (workspace/marketplace/date/SKU/fulfillment-bucket → units sold, orders, gross/refund/net sales, returns, refunded units). Populated by `scripts/rebuild-payment-sales-daily-summary.ts` (read-only against Amazon; only reads/writes our own Supabase tables). **Nothing in the app reads this table yet** — it exists so blended ROAS/TACOS can be built on top of it later without re-deriving the aggregation logic.
+- Brahmastra dashboard now shows a small "Payment Transaction Import" status line (last filename, accepted/rejected, inserted/updated, upload timestamp) with an explicit no-PII note.
+
+### Explicitly NOT done yet (do not assume otherwise)
+
+- **Blended ROAS/TACOS is not implemented anywhere in the UI.** The daily sales aggregate is a foundation only.
+- **FC ledger reconciliation against payment transactions is not implemented.**
+- **Seller Central/payment-transaction auto-fetch is not implemented** — manual CSV import only, as explained above.
+- Replenishment formulas were not touched by any of this Ads/payment work.
+
+### PII safety rules (apply to all future Ads/payment work)
+
+- Never store or print buyer name, email, phone, or full street address — `internal_payment_transactions` has never had these columns.
+- Never print raw order IDs, raw transaction rows, raw search terms, tokens, or secrets in logs, scripts, or UI exports.
+- City/state/pincode aggregates are fine to expose; buyer identity is not.
+- Audit/diagnostic scripts must report aggregate counts only.
