@@ -152,8 +152,12 @@ type ApiResponse = {
     sourceLabels: Record<string, string>
   }
   sourceAccuracyAudit: {
-    ranges: { rangeA: DateRange; rangeB: DateRange; mode: 'single' | 'compare' }
+    ranges: { requestedRangeA: DateRange; requestedRangeB: DateRange | null; effectiveRangeA: DateRange; effectiveRangeB: DateRange; mode: 'single' | 'compare' }
     sourceOfTruth: Record<string, string>
+    latestAdsDate: string | null
+    latestSalesDate: string | null
+    blendedMetricsComplete: boolean
+    warnings: string[]
     rangeA: {
       settlementNetSales: number
       settlementRefunds: number
@@ -475,20 +479,45 @@ export function EasyhomeDiagnosticDashboard() {
             {controlPanel.mode === 'single' ? 'Selected range' : 'Range A vs Range B'}
           </span>
         </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+          <KpiCard label="Mode" value={sourceAccuracyAudit.ranges.mode} sub="Requested by Control Panel" />
+          <KpiCard
+            label="Requested Range A"
+            value={`${sourceAccuracyAudit.ranges.requestedRangeA.startDate} → ${sourceAccuracyAudit.ranges.requestedRangeA.endDate}`}
+            sub="From query params"
+          />
+          <KpiCard
+            label="Effective Range A"
+            value={`${sourceAccuracyAudit.ranges.effectiveRangeA.startDate} → ${sourceAccuracyAudit.ranges.effectiveRangeA.endDate}`}
+            sub="Actually used by API"
+          />
+          <KpiCard
+            label="Effective Range B"
+            value={`${sourceAccuracyAudit.ranges.effectiveRangeB.startDate} → ${sourceAccuracyAudit.ranges.effectiveRangeB.endDate}`}
+            sub="Actually used by API"
+          />
+          <KpiCard label="Latest Ads Date" value={sourceAccuracyAudit.latestAdsDate ?? '—'} sub="Amazon Ads Reports" />
+          <KpiCard label="Latest Payment Transaction Date" value={sourceAccuracyAudit.latestSalesDate ?? '—'} sub="Payment Transactions (settlement)" />
+          <KpiCard label="Blended metrics complete" value={sourceAccuracyAudit.blendedMetricsComplete ? 'Yes' : 'No'} sub="Both sources must be complete" />
+          <KpiCard label="Business Report" value="Not connected" sub="No sessions/page-views in this diagnostic" />
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <KpiCard label="Settlement Net Sales (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementNetSales)} sub="Payment Transactions" />
           <KpiCard label="Amazon Ads Spend (B)" value={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend)} sub="Campaign daily rows" />
-          <KpiCard label="Settlement Ad Charges (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementAdCharges)} sub="Audit only, not Ads KPI" />
-          <KpiCard label="Business Report" value="Not connected" sub="No sessions/page-views in this diagnostic" />
+          <KpiCard label="Settlement Ad Charges (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementAdCharges)} sub="Settlement Ad Charges — not used as campaign spend" />
+          <KpiCard label="Campaign vs Deep Report Spend Variance (B)" value={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend - sourceAccuracyAudit.rangeB.advertisedProductSpend)} sub="Campaign-level minus advertised-product-level" />
           {controlPanel.mode === 'compare' && (
             <>
               <KpiCard label="Settlement Net Sales (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementNetSales)} sub="Payment Transactions" />
               <KpiCard label="Amazon Ads Spend (A)" value={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend)} sub="Campaign daily rows" />
-              <KpiCard label="Settlement Ad Charges (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementAdCharges)} sub="Audit only, not Ads KPI" />
-              <KpiCard label="Deep Report Spend (B)" value={formatInr(sourceAccuracyAudit.rangeB.advertisedProductSpend)} sub="Advertised product rows" />
+              <KpiCard label="Settlement Ad Charges (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementAdCharges)} sub="Settlement Ad Charges — not used as campaign spend" />
+              <KpiCard label="Campaign vs Deep Report Spend Variance (A)" value={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend - sourceAccuracyAudit.rangeA.advertisedProductSpend)} sub="Campaign-level minus advertised-product-level" />
             </>
           )}
         </div>
+        {sourceAccuracyAudit.warnings.map((w, i) => (
+          <p key={i} className="text-xs text-amber-600 dark:text-amber-300 mt-3">{w}</p>
+        ))}
       </div>
 
       <BrahmastraControlPanel
@@ -604,7 +633,7 @@ export function EasyhomeDiagnosticDashboard() {
           )}
         </div>
         <p className="text-xs text-muted-foreground mb-4">
-          Total Sales/Refunds/Orders: Source: Payment Transactions · Ad Spend/Ad-attributed Sales: Source: Amazon Ads Reports · Blended ROAS/TACOS: Source: Amazon Ads Reports + Payment Transactions
+          Settlement Net Sales/Refunds/Orders: Source: Payment Transactions · Amazon Ads Spend/Amazon Ads Attributed Sales: Source: Amazon Ads Reports · Blended ROAS/TACOS: Settlement Net Sales (Payment Transactions) combined with Amazon Ads Spend (Amazon Ads Reports). Seller Central Business Report Ordered Product Sales is not connected yet and may differ from Settlement Net Sales.
         </p>
         {!blendedMetrics.complete && (
           <p className="text-xs text-amber-600 dark:text-amber-300 mb-3">
@@ -614,30 +643,30 @@ export function EasyhomeDiagnosticDashboard() {
         {controlPanel.mode === 'single' ? (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <KpiCard label="Settlement Net Sales" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Source: Payment Transactions" />
-            <KpiCard label="Gross Sales" value={formatInr(blendedMetrics.after.grossSales)} sub="Source: Payment Transactions" />
+            <KpiCard label="Settlement Gross Product Sales" value={formatInr(blendedMetrics.after.grossSales)} sub="Source: Payment Transactions" />
             <KpiCard label="Settlement Refunds" value={formatInr(blendedMetrics.after.refunds)} sub="Source: Payment Transactions" />
             <KpiCard label="Orders" value={blendedMetrics.after.totalOrders.toLocaleString('en-IN')} sub="Distinct orders · Payment Transactions" />
             <KpiCard label="Units" value={blendedMetrics.after.unitsSold.toLocaleString('en-IN')} sub={`${blendedMetrics.after.refundedUnits.toLocaleString('en-IN')} refunded`} />
-            <KpiCard label="Ad Spend" value={formatInr(blendedMetrics.after.adSpend)} sub="Source: Amazon Ads Reports" />
-            <KpiCard label="Ad-attributed Sales" value={formatInr(blendedMetrics.after.adSales)} sub="Source: Amazon Ads Reports" />
-            <KpiCard label="Ad ROAS" value={roasStr(blendedMetrics.after.adRoas)} sub="Ad Sales ÷ Ad Spend" />
-            <KpiCard label="Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Total Sales ÷ Ad Spend" />
-            <KpiCard label="TACOS / Blended ACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ad Spend ÷ Total Sales" />
-            <KpiCard label="Organic Estimate" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Total Sales − Ad Sales (estimate)" />
-            <KpiCard label="Ad Sales Share" value={pctStr(blendedMetrics.after.adSalesShare)} sub="Ad Sales ÷ Total Sales" />
+            <KpiCard label="Amazon Ads Spend" value={formatInr(blendedMetrics.after.adSpend)} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Amazon Ads Attributed Sales" value={formatInr(blendedMetrics.after.adSales)} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Ad ROAS" value={roasStr(blendedMetrics.after.adRoas)} sub="Amazon Ads Attributed Sales ÷ Amazon Ads Spend" />
+            <KpiCard label="Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Settlement Net Sales ÷ Amazon Ads Spend" />
+            <KpiCard label="TACOS / Blended ACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Amazon Ads Spend ÷ Settlement Net Sales" />
+            <KpiCard label="Organic Estimate" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Settlement Net Sales − Amazon Ads Attributed Sales (estimate)" />
+            <KpiCard label="Ad Sales Share" value={pctStr(blendedMetrics.after.adSalesShare)} sub="Amazon Ads Attributed Sales ÷ Settlement Net Sales" />
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <KpiCard label="Settlement Net Sales (A)" value={formatInr(blendedMetrics.before?.totalSalesNet ?? 0)} sub="Payment Transactions" />
             <KpiCard label="Settlement Net Sales (B)" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Transactions" />
-            <KpiCard label="Ad Spend (A)" value={formatInr(blendedMetrics.before?.adSpend ?? 0)} sub="Amazon Ads Reports" />
-            <KpiCard label="Ad Spend (B)" value={formatInr(blendedMetrics.after.adSpend)} sub="Amazon Ads Reports" />
-            <KpiCard label="Ad-attributed Sales (A)" value={formatInr(blendedMetrics.before?.adSales ?? 0)} sub="Amazon Ads Reports" />
-            <KpiCard label="Ad-attributed Sales (B)" value={formatInr(blendedMetrics.after.adSales)} sub="Amazon Ads Reports" />
-            <KpiCard label="Blended ROAS (A)" value={roasStr(blendedMetrics.before?.blendedRoas ?? null)} sub="Total Sales ÷ Ad Spend" />
-            <KpiCard label="Blended ROAS (B)" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Total Sales ÷ Ad Spend" />
-            <KpiCard label="TACOS (A)" value={pctStr(blendedMetrics.before?.tacos ?? null)} sub="Ad Spend ÷ Total Sales" />
-            <KpiCard label="TACOS (B)" value={pctStr(blendedMetrics.after.tacos)} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Amazon Ads Spend (A)" value={formatInr(blendedMetrics.before?.adSpend ?? 0)} sub="Amazon Ads Reports" />
+            <KpiCard label="Amazon Ads Spend (B)" value={formatInr(blendedMetrics.after.adSpend)} sub="Amazon Ads Reports" />
+            <KpiCard label="Amazon Ads Attributed Sales (A)" value={formatInr(blendedMetrics.before?.adSales ?? 0)} sub="Amazon Ads Reports" />
+            <KpiCard label="Amazon Ads Attributed Sales (B)" value={formatInr(blendedMetrics.after.adSales)} sub="Amazon Ads Reports" />
+            <KpiCard label="Blended ROAS (A)" value={roasStr(blendedMetrics.before?.blendedRoas ?? null)} sub="Settlement Net Sales ÷ Amazon Ads Spend" />
+            <KpiCard label="Blended ROAS (B)" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Settlement Net Sales ÷ Amazon Ads Spend" />
+            <KpiCard label="TACOS (A)" value={pctStr(blendedMetrics.before?.tacos ?? null)} sub="Amazon Ads Spend ÷ Settlement Net Sales" />
+            <KpiCard label="TACOS (B)" value={pctStr(blendedMetrics.after.tacos)} sub="Amazon Ads Spend ÷ Settlement Net Sales" />
             <KpiCard label="Organic Estimate (A)" value={formatInr(blendedMetrics.before?.organicEstimate ?? 0)} sub="Estimate" />
             <KpiCard label="Organic Estimate (B)" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Estimate" />
             <KpiCard label="Settlement Refunds (A)" value={formatInr(blendedMetrics.before?.refunds ?? 0)} sub="Payment Transactions" />

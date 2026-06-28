@@ -6,7 +6,7 @@
 // causal claim or an automated action.
 
 import type { ActionItemWithChanges } from './easyhome-change-history-diagnostic'
-import type { ActionIssueType, ActionStatus } from './easyhome-action-queue'
+import type { ActionEntityType, ActionIssueType, ActionStatus } from './easyhome-action-queue'
 import type { CampaignRow } from './easyhome-ads-campaign-diagnostic'
 import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyhome-ads-deep-diagnostic'
 import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
@@ -46,6 +46,7 @@ export type FindingRow = {
   campaignName: string | null
   adGroupName: string | null
   entityName: string
+  entityType: ActionEntityType
   issueType: FindingIssueLabel
   spendA: number | null
   spendB: number | null
@@ -366,6 +367,7 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
       campaignName: item.campaignName ?? item.relatedChanges.find(c => c.campaignName)?.campaignName ?? null,
       adGroupName: item.adGroupName ?? item.relatedChanges.find(c => c.adGroupName)?.adGroupName ?? null,
       entityName: entityDisplayLabel(item.entityName),
+      entityType: item.entityType,
       issueType,
       spendA: metrics.spendA,
       spendB: metrics.spendB,
@@ -577,6 +579,7 @@ export function buildSinglePeriodAbsoluteFindings(params: {
     campaignName: string | null
     adGroupName: string | null
     entityName: string
+    entityType: ActionEntityType
     spend: number
     sales: number
     acos: number | null
@@ -584,10 +587,10 @@ export function buildSinglePeriodAbsoluteFindings(params: {
   }
 
   const candidates: Candidate[] = [
-    ...params.campaignRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: null, entityName: entityDisplayLabel(r.campaignName), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
-    ...params.advertisedProductRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.advertisedSku), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
-    ...params.targetingRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
-    ...params.searchTermRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.searchTerm), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.campaignRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: null, entityName: entityDisplayLabel(r.campaignName), entityType: 'Campaign' as const, spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.advertisedProductRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.advertisedSku), entityType: 'SKU' as const, spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.targetingRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel), entityType: 'Target' as const, spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.searchTermRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.searchTerm), entityType: 'Search Term' as const, spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
   ]
 
   const rows: FindingRow[] = []
@@ -608,6 +611,7 @@ export function buildSinglePeriodAbsoluteFindings(params: {
       campaignName: c.campaignName,
       adGroupName: c.adGroupName,
       entityName: c.entityName,
+      entityType: c.entityType,
       issueType,
       spendA: c.spend,
       spendB: c.spend,

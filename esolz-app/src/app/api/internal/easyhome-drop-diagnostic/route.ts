@@ -609,14 +609,15 @@ export async function GET(request: Request) {
     before: mode === 'compare' ? blendedBefore : null,
     insights: mode === 'compare' && blendedDataComplete ? buildBlendedInsights(blendedBefore, blendedAfter) : [],
     sourceLabels: {
-      totalSales: 'Payment Transactions',
-      grossSales: 'Payment Transactions',
-      refunds: 'Payment Transactions',
-      orders: 'Payment Transactions (distinct order count)',
-      adSpend: 'Amazon Ads Reports',
-      adSales: 'Amazon Ads Reports',
-      blendedRoasTacos: 'Amazon Ads Reports + Payment Transactions',
-      organicEstimate: 'Total Sales − Ad-attributed Sales (estimate, not a direct Amazon metric)',
+      settlementNetSales: 'Payment Transactions (settlement)',
+      settlementGrossProductSales: 'Payment Transactions (settlement)',
+      settlementRefunds: 'Payment Transactions (settlement)',
+      orders: 'Payment Transactions (settlement, distinct order count)',
+      amazonAdsSpend: 'Amazon Ads Reports',
+      amazonAdsAttributedSales: 'Amazon Ads Reports',
+      blendedRoasTacos: 'Settlement Net Sales (Payment Transactions) combined with Amazon Ads Spend (Amazon Ads Reports)',
+      organicEstimate: 'Settlement Net Sales − Amazon Ads Attributed Sales (estimate, not a direct Amazon metric)',
+      businessReportOrderedProductSales: 'Not connected yet — may differ from Settlement Net Sales',
     },
   }
 
@@ -636,13 +637,21 @@ export async function GET(request: Request) {
   const searchTermRangeA = sumDeepRowsInRange(searchTermRows, rangeA)
   const searchTermRangeB = sumDeepRowsInRange(searchTermRows, rangeB)
   const sourceAccuracyAudit = {
-    ranges: { rangeA, rangeB, mode },
+    ranges: {
+      requestedRangeA, requestedRangeB, effectiveRangeA: rangeA, effectiveRangeB: rangeB, mode,
+    },
     sourceOfTruth: {
       settlementNetSales: 'internal_payment_transactions',
       amazonAdsSpend: 'internal_ads_campaign_daily_rows',
       amazonAdsDeepRows: 'internal_ads_advertised_product_daily_rows / internal_ads_targeting_daily_rows / internal_ads_search_term_daily_rows',
       businessReport: 'not_connected',
     },
+    latestAdsDate,
+    latestSalesDate,
+    blendedMetricsComplete: blendedDataComplete,
+    warnings: [
+      'Seller Central Business Report Ordered Product Sales is not connected yet and may differ from Settlement Net Sales.',
+    ],
     rangeA: {
       settlementNetSales: diagnostic.accountSummary.before.netSales,
       settlementRefunds: diagnostic.accountSummary.before.refundAmount,
