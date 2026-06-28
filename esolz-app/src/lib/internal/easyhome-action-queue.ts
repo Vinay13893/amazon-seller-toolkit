@@ -20,6 +20,8 @@ export type ActionIssueType =
 export type ActionDataSource = 'campaign' | 'advertised_product' | 'targeting' | 'search_term' | 'transaction'
 export type ActionStatus = 'Open' | 'Reviewing' | 'Done' | 'Ignored'
 
+type MappingHealthUnmappedRow = { name: string; totalSpend: number; totalSales: number; campaignName?: string | null; adGroupName?: string | null }
+
 export type ActionMetrics = {
   spend: number | null
   sales: number | null
@@ -103,9 +105,9 @@ function classifyLoser(deltaSpend: number, beforeAcos: number | null, afterAcos:
 }
 
 export function buildActionQueue(params: {
-  advertisedProduct: { topLosers: AdvertisedProductRow[]; trafficContinuedSalesCollapsed: AdvertisedProductRow[]; mappingHealth: { topUnmapped: Array<{ name: string; totalSpend: number; totalSales: number }> } } | null
-  targeting: { topLosers: TargetingRow[]; acosWorsenedSharply: TargetingRow[]; mappingHealth: { topUnmapped: Array<{ name: string; totalSpend: number; totalSales: number }> } } | null
-  searchTerm: { highSpendZeroOrdersAfter: SearchTermRow[]; spendUpSalesDown: SearchTermRow[]; goodBeforeBadAfter: SearchTermRow[]; mappingHealth: { topUnmapped: Array<{ name: string; totalSpend: number; totalSales: number }> } } | null
+  advertisedProduct: { topLosers: AdvertisedProductRow[]; trafficContinuedSalesCollapsed: AdvertisedProductRow[]; mappingHealth: { topUnmapped: MappingHealthUnmappedRow[] } } | null
+  targeting: { topLosers: TargetingRow[]; acosWorsenedSharply: TargetingRow[]; mappingHealth: { topUnmapped: MappingHealthUnmappedRow[] } } | null
+  searchTerm: { highSpendZeroOrdersAfter: SearchTermRow[]; spendUpSalesDown: SearchTermRow[]; goodBeforeBadAfter: SearchTermRow[]; mappingHealth: { topUnmapped: MappingHealthUnmappedRow[] } } | null
   campaignTable: CampaignRow[]
   campaignsWithSpendUpAndSalesDown: CampaignRow[]
   campaignTopUnmapped: Array<{ campaignName: string; totalSpend: number; totalSales: number }>
@@ -333,7 +335,7 @@ export function buildActionQueue(params: {
   }
   if (params.advertisedProduct) {
     for (const r of params.advertisedProduct.mappingHealth.topUnmapped) {
-      if (!stillUnmapped(r.name)) continue
+      if (!stillUnmapped(r.name, r.campaignName, r.adGroupName)) continue
       const combined = r.totalSpend + r.totalSales
       if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
       push({
@@ -342,6 +344,8 @@ export function buildActionQueue(params: {
         portfolio: 'Unmapped / Needs Review',
         entityType: 'Mapping',
         entityName: r.name,
+        campaignName: r.campaignName ?? null,
+        adGroupName: r.adGroupName ?? null,
         problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Advertised SKU "${r.name}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
         beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
         afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
@@ -353,7 +357,7 @@ export function buildActionQueue(params: {
   }
   if (params.targeting) {
     for (const r of params.targeting.mappingHealth.topUnmapped) {
-      if (!stillUnmapped(r.name)) continue
+      if (!stillUnmapped(r.name, r.campaignName, r.adGroupName)) continue
       const combined = r.totalSpend + r.totalSales
       if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
       push({
@@ -362,7 +366,9 @@ export function buildActionQueue(params: {
         portfolio: 'Unmapped / Needs Review',
         entityType: 'Mapping',
         entityName: r.name,
-        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Target "${r.name}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
+        campaignName: r.campaignName ?? null,
+        adGroupName: r.adGroupName ?? null,
+        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Target "${entityDisplayLabel(r.name)}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
         beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
         afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
         issueType: 'Mapping cleanup',
@@ -373,7 +379,7 @@ export function buildActionQueue(params: {
   }
   if (params.searchTerm) {
     for (const r of params.searchTerm.mappingHealth.topUnmapped) {
-      if (!stillUnmapped(r.name)) continue
+      if (!stillUnmapped(r.name, r.campaignName, r.adGroupName)) continue
       const combined = r.totalSpend + r.totalSales
       if (combined < MAPPING_MEANINGFUL_THRESHOLD) continue
       push({
@@ -382,7 +388,9 @@ export function buildActionQueue(params: {
         portfolio: 'Unmapped / Needs Review',
         entityType: 'Mapping',
         entityName: r.name,
-        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Search term "${r.name}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
+        campaignName: r.campaignName ?? null,
+        adGroupName: r.adGroupName ?? null,
+        problemSummary: `This SKU/campaign/target is not mapped to a known portfolio. Search term "${entityDisplayLabel(r.name)}" has spend ${inr(r.totalSpend)} and sales ${inr(r.totalSales)}.`,
         beforeMetrics: { spend: null, sales: null, acos: null, clicks: null, purchases: null },
         afterMetrics: { spend: round2(r.totalSpend), sales: round2(r.totalSales), acos: null, clicks: null, purchases: null },
         issueType: 'Mapping cleanup',

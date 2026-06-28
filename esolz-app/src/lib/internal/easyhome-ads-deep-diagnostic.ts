@@ -103,7 +103,7 @@ function aggregateBeforeAfter<TRow extends Metrics & { reportDate: string; portf
   })
 }
 
-function mappingHealthOf<TRow extends { portfolio: string; beforeSpend: number; afterSpend: number; beforeSales: number; afterSales: number }>(rows: TRow[], nameOf: (r: TRow) => string) {
+function mappingHealthOf<TRow extends { portfolio: string; beforeSpend: number; afterSpend: number; beforeSales: number; afterSales: number; campaignName?: string | null; adGroupName?: string | null }>(rows: TRow[], nameOf: (r: TRow) => string) {
   const unmapped = rows.filter(r => r.portfolio === 'Unmapped / Needs Review')
   return {
     totalAnalyzed: rows.length,
@@ -114,7 +114,13 @@ function mappingHealthOf<TRow extends { portfolio: string; beforeSpend: number; 
     topUnmapped: [...unmapped]
       .sort((a, b) => (b.beforeSpend + b.afterSpend) - (a.beforeSpend + a.afterSpend))
       .slice(0, 10)
-      .map(r => ({ name: nameOf(r), totalSpend: round2(r.beforeSpend + r.afterSpend), totalSales: round2(r.beforeSales + r.afterSales) })),
+      .map(r => ({
+        name: nameOf(r),
+        campaignName: r.campaignName ?? null,
+        adGroupName: r.adGroupName ?? null,
+        totalSpend: round2(r.beforeSpend + r.afterSpend),
+        totalSales: round2(r.beforeSales + r.afterSales),
+      })),
   }
 }
 

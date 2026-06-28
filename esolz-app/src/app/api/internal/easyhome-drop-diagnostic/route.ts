@@ -620,6 +620,51 @@ export async function GET(request: Request) {
     },
   }
 
+  function sumDeepRowsInRange(rows: Array<{ reportDate: string; spend: number; sales: number }>, range: DateRange) {
+    return rows
+      .filter(row => row.reportDate >= range.startDate && row.reportDate <= range.endDate)
+      .reduce((acc, row) => {
+        acc.spend += row.spend
+        acc.sales += row.sales
+        return acc
+      }, { spend: 0, sales: 0 })
+  }
+  const advertisedProductRangeA = sumDeepRowsInRange(advertisedProductRows, rangeA)
+  const advertisedProductRangeB = sumDeepRowsInRange(advertisedProductRows, rangeB)
+  const targetingRangeA = sumDeepRowsInRange(targetingRows, rangeA)
+  const targetingRangeB = sumDeepRowsInRange(targetingRows, rangeB)
+  const searchTermRangeA = sumDeepRowsInRange(searchTermRows, rangeA)
+  const searchTermRangeB = sumDeepRowsInRange(searchTermRows, rangeB)
+  const sourceAccuracyAudit = {
+    ranges: { rangeA, rangeB, mode },
+    sourceOfTruth: {
+      settlementNetSales: 'internal_payment_transactions',
+      amazonAdsSpend: 'internal_ads_campaign_daily_rows',
+      amazonAdsDeepRows: 'internal_ads_advertised_product_daily_rows / internal_ads_targeting_daily_rows / internal_ads_search_term_daily_rows',
+      businessReport: 'not_connected',
+    },
+    rangeA: {
+      settlementNetSales: diagnostic.accountSummary.before.netSales,
+      settlementRefunds: diagnostic.accountSummary.before.refundAmount,
+      settlementAdCharges: diagnostic.accountSummary.before.adSpend,
+      amazonAdsSpend: adTotals.beforeSpend,
+      amazonAdsSales: adTotals.beforeSales,
+      advertisedProductSpend: advertisedProductRangeA.spend,
+      targetingSpend: targetingRangeA.spend,
+      searchTermSpend: searchTermRangeA.spend,
+    },
+    rangeB: {
+      settlementNetSales: diagnostic.accountSummary.after.netSales,
+      settlementRefunds: diagnostic.accountSummary.after.refundAmount,
+      settlementAdCharges: diagnostic.accountSummary.after.adSpend,
+      amazonAdsSpend: adTotals.afterSpend,
+      amazonAdsSales: adTotals.afterSales,
+      advertisedProductSpend: advertisedProductRangeB.spend,
+      targetingSpend: targetingRangeB.spend,
+      searchTermSpend: searchTermRangeB.spend,
+    },
+  }
+
   // Findings and Good Working are built from Ads report tables only — gate
   // them on Ads completeness, not on payment-transaction (sales) lag.
   const findingsTable = buildFindingsTable(actionQueueWithChanges, {
@@ -676,6 +721,7 @@ export async function GET(request: Request) {
     topSpenders,
     topAdSalesGenerators,
     blendedMetrics,
+    sourceAccuracyAudit,
     diagnostic,
     campaignDiagnostic,
     paymentImportStatus: latestPaymentBatch

@@ -202,7 +202,7 @@ export function buildEasyhomeAdsCampaignDiagnostic(params: {
   }
 
   const byDate = new Map<string, { spend: number; sales: number }>()
-  for (const row of campaignRows) {
+  for (const row of [...beforeRows, ...afterRows]) {
     if (!byDate.has(row.reportDate)) byDate.set(row.reportDate, { spend: 0, sales: 0 })
     const bucket = byDate.get(row.reportDate)!
     bucket.spend += row.spend
@@ -266,7 +266,7 @@ export function buildEasyhomeAdsCampaignDiagnostic(params: {
       beforeMismatchPct,
       afterMismatchPct,
       warning: mismatchFlags.length > 0
-        ? `Imported campaign spend vs Seller Central "Ad" transactions mismatch: ${mismatchFlags.join('; ')}. This CSV may not cover all campaign types (e.g. Sponsored Brands/Display) or the date ranges may not fully overlap.`
+        ? `Amazon Ads report spend vs payment-transaction settlement Ad charges mismatch: ${mismatchFlags.join('; ')}. Settlement Ad charges are not used as ad spend KPIs; use this only as a source-accuracy cross-check.`
         : null,
     },
     hasCampaignData: true,

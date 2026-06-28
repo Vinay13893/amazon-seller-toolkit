@@ -435,11 +435,9 @@ function buildDiagnosticNotes(params: {
   const { before, after } = params.accountSummary
 
   const salesDeltaPct = pctChange(before.netSales / Math.max(before.dayCount, 1), after.netSales / Math.max(after.dayCount, 1))
-  const adDeltaPct = pctChange(before.adSpend / Math.max(before.dayCount, 1), after.adSpend / Math.max(after.dayCount, 1))
-  if (salesDeltaPct !== null && adDeltaPct !== null) {
+  if (salesDeltaPct !== null) {
     notes.push(
-      `Average daily net sales fell ${Math.abs(salesDeltaPct).toFixed(1)}% while average daily ad spend fell only `
-      + `${Math.abs(adDeltaPct).toFixed(1)}% — the drop is not explained by lower ad spend alone.`,
+      `Average daily settlement net sales ${salesDeltaPct >= 0 ? 'increased' : 'fell'} ${Math.abs(salesDeltaPct).toFixed(1)}% between the selected periods.`,
     )
   }
 
@@ -479,13 +477,13 @@ function buildDiagnosticNotes(params: {
 
 function buildDataGaps(rankingSignalCoverage: { beforeCount: number; afterCount: number; sufficientForTrend: boolean }): string[] {
   const gaps: string[] = [
-    'No Amazon Ads campaign-level data exists in the database (amazon_ads_connections/profiles/report_jobs are all empty) — ad spend here is an account-level aggregate from the Seller Central settlement feed and cannot be broken down by campaign, keyword, ACOS, CPC, CTR, or CVR.',
-    'Ad/ServiceFee/Adjustment rows in the transaction feed carry no SKU, so ad spend cannot be attributed to a category or SKU from this table either — only account-level ad spend is available.',
+    'Settlement sales/refunds/orders come from Payment Transactions. Amazon Ads spend, ad-attributed sales, ACOS, ROAS, campaign, target, and search-term metrics come from Amazon Ads report tables.',
+    'Ad/ServiceFee/Adjustment rows in the transaction feed are settlement charges only. They are shown as source-audit cross-checks and are not used as Brahmastra ad spend KPIs.',
     'Payment-transaction sales/units are SKU-level, not ASIN-level — internal_payment_transactions has no ASIN column.',
   ]
   if (!rankingSignalCoverage.sufficientForTrend) {
     gaps.push(`Keyword rank, BSR, buy-box, and pincode-availability tables have too few rows before/after 06-15 (keyword: ${rankingSignalCoverage.beforeCount} before / ${rankingSignalCoverage.afterCount} after) for a reliable trend — they are not used for quantitative comparison here.`)
   }
-  gaps.push('Local Amazon Ads Console campaign CSV exports exist on disk but are period-aggregate totals (not a daily time series) and have not been imported — see report notes.')
+  gaps.push('Business Report sessions/page-views are not connected to this diagnostic yet, so conversion-rate context is not shown.')
   return gaps
 }

@@ -151,6 +151,30 @@ type ApiResponse = {
     insights: string[]
     sourceLabels: Record<string, string>
   }
+  sourceAccuracyAudit: {
+    ranges: { rangeA: DateRange; rangeB: DateRange; mode: 'single' | 'compare' }
+    sourceOfTruth: Record<string, string>
+    rangeA: {
+      settlementNetSales: number
+      settlementRefunds: number
+      settlementAdCharges: number
+      amazonAdsSpend: number
+      amazonAdsSales: number
+      advertisedProductSpend: number
+      targetingSpend: number
+      searchTermSpend: number
+    }
+    rangeB: {
+      settlementNetSales: number
+      settlementRefunds: number
+      settlementAdCharges: number
+      amazonAdsSpend: number
+      amazonAdsSales: number
+      advertisedProductSpend: number
+      targetingSpend: number
+      searchTermSpend: number
+    }
+  }
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic
   paymentImportStatus: PaymentImportStatus
@@ -293,7 +317,7 @@ export function EasyhomeDiagnosticDashboard() {
 
   const {
     controlPanel, findingsTable, goodWorkingRows, topSpenders, topAdSalesGenerators, blendedMetrics,
-    diagnostic, campaignDiagnostic, paymentImportStatus, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
+    sourceAccuracyAudit, diagnostic, campaignDiagnostic, paymentImportStatus, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
     changeHistoryImportStatus, changeHistoryBatches, changeHistorySummary, changeHistoryEvents,
     changeHistoryDayByDay, changeHistoryArchiveCoverage, changeHistoryChunkCoverage, changeHistoryCorrelationSummary,
     manualReviewCandidates, manualReviewCases,
@@ -439,6 +463,34 @@ export function EasyhomeDiagnosticDashboard() {
         )}
       </div>
 
+      <div className="bg-card border border-border rounded-xl p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Data source accuracy audit</p>
+            <p className="text-xs text-muted-foreground">
+              Settlement net sales/refunds/orders: Payment Transactions. Amazon Ads spend/ad-attributed sales/ACOS/ROAS: Amazon Ads Reports. Business Report sessions/page-views: not connected.
+            </p>
+          </div>
+          <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+            {controlPanel.mode === 'single' ? 'Selected range' : 'Range A vs Range B'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <KpiCard label="Settlement Net Sales (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementNetSales)} sub="Payment Transactions" />
+          <KpiCard label="Amazon Ads Spend (B)" value={formatInr(sourceAccuracyAudit.rangeB.amazonAdsSpend)} sub="Campaign daily rows" />
+          <KpiCard label="Settlement Ad Charges (B)" value={formatInr(sourceAccuracyAudit.rangeB.settlementAdCharges)} sub="Audit only, not Ads KPI" />
+          <KpiCard label="Business Report" value="Not connected" sub="No sessions/page-views in this diagnostic" />
+          {controlPanel.mode === 'compare' && (
+            <>
+              <KpiCard label="Settlement Net Sales (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementNetSales)} sub="Payment Transactions" />
+              <KpiCard label="Amazon Ads Spend (A)" value={formatInr(sourceAccuracyAudit.rangeA.amazonAdsSpend)} sub="Campaign daily rows" />
+              <KpiCard label="Settlement Ad Charges (A)" value={formatInr(sourceAccuracyAudit.rangeA.settlementAdCharges)} sub="Audit only, not Ads KPI" />
+              <KpiCard label="Deep Report Spend (B)" value={formatInr(sourceAccuracyAudit.rangeB.advertisedProductSpend)} sub="Advertised product rows" />
+            </>
+          )}
+        </div>
+      </div>
+
       <BrahmastraControlPanel
         portfolios={portfolioOptions}
         campaigns={campaignOptions}
@@ -516,24 +568,24 @@ export function EasyhomeDiagnosticDashboard() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {controlPanel.mode === 'single' ? (
           <>
-            <KpiCard label="Total Sales / Day" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions" />
-            <KpiCard label="Ad Spend / Day (Payment Txn Est.)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions (Ad fee line items)" />
-            <KpiCard label="Blended Ad-to-Sales Ratio" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Settlement Net Sales / Day" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions" />
+            <KpiCard label="Amazon Ads Spend / Day" value={formatInr(blendedMetrics.after.adSpend / Math.max(after.dayCount, 1))} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Settlement Ad Charges" value={formatInr(after.adSpend)} sub="Audit only, not Ads KPI" />
             <KpiCard label="Orders" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units · Source: Payment Transactions`} />
-            <KpiCard label="Refunds" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders · Source: Payment Transactions`} />
+            <KpiCard label="Settlement Refunds" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders · Source: Payment Transactions`} />
           </>
         ) : (
           <>
-            <KpiCard label="Total Sales / Day (Range A)" value={formatInr(before.netSales / Math.max(before.dayCount, 1))} sub="Source: Payment Transactions" />
-            <KpiCard label="Total Sales / Day (Range B)" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions" />
-            <KpiCard label="Ad Spend / Day (Range A, Payment Txn Est.)" value={formatInr(before.adSpend / Math.max(before.dayCount, 1))} sub="Source: Payment Transactions (Ad fee line items)" />
-            <KpiCard label="Ad Spend / Day (Range B, Payment Txn Est.)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions (Ad fee line items)" />
-            <KpiCard label="Blended Ad-to-Sales Ratio (Range A)" value={before.adToSalesRatioPct !== null ? `${before.adToSalesRatioPct.toFixed(1)}%` : '—'} sub="Ad Spend ÷ Total Sales" />
-            <KpiCard label="Blended Ad-to-Sales Ratio (Range B)" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Settlement Net Sales / Day (Range A)" value={formatInr(before.netSales / Math.max(before.dayCount, 1))} sub="Source: Payment Transactions" />
+            <KpiCard label="Settlement Net Sales / Day (Range B)" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions" />
+            <KpiCard label="Amazon Ads Spend / Day (Range A)" value={formatInr((blendedMetrics.before?.adSpend ?? 0) / Math.max(before.dayCount, 1))} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Amazon Ads Spend / Day (Range B)" value={formatInr(blendedMetrics.after.adSpend / Math.max(after.dayCount, 1))} sub="Source: Amazon Ads Reports" />
+            <KpiCard label="Settlement Ad Charges (Range A)" value={formatInr(before.adSpend)} sub="Audit only, not Ads KPI" />
+            <KpiCard label="Settlement Ad Charges (Range B)" value={formatInr(after.adSpend)} sub="Audit only, not Ads KPI" />
             <KpiCard label="Orders (Range A)" value={before.orderCount.toLocaleString('en-IN')} sub={`${before.unitsOrdered.toLocaleString('en-IN')} units · Source: Payment Transactions`} />
             <KpiCard label="Orders (Range B)" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units · Source: Payment Transactions`} />
-            <KpiCard label="Refunds (Range A)" value={formatInr(before.refundAmount)} sub={`${before.refundCount} orders · Source: Payment Transactions`} />
-            <KpiCard label="Refunds (Range B)" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders · Source: Payment Transactions`} />
+            <KpiCard label="Settlement Refunds (Range A)" value={formatInr(before.refundAmount)} sub={`${before.refundCount} orders · Source: Payment Transactions`} />
+            <KpiCard label="Settlement Refunds (Range B)" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders · Source: Payment Transactions`} />
           </>
         )}
       </div>
@@ -561,9 +613,9 @@ export function EasyhomeDiagnosticDashboard() {
         )}
         {controlPanel.mode === 'single' ? (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <KpiCard label="Total Sales" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Source: Payment Transactions" />
+            <KpiCard label="Settlement Net Sales" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Source: Payment Transactions" />
             <KpiCard label="Gross Sales" value={formatInr(blendedMetrics.after.grossSales)} sub="Source: Payment Transactions" />
-            <KpiCard label="Refunds" value={formatInr(blendedMetrics.after.refunds)} sub="Source: Payment Transactions" />
+            <KpiCard label="Settlement Refunds" value={formatInr(blendedMetrics.after.refunds)} sub="Source: Payment Transactions" />
             <KpiCard label="Orders" value={blendedMetrics.after.totalOrders.toLocaleString('en-IN')} sub="Distinct orders · Payment Transactions" />
             <KpiCard label="Units" value={blendedMetrics.after.unitsSold.toLocaleString('en-IN')} sub={`${blendedMetrics.after.refundedUnits.toLocaleString('en-IN')} refunded`} />
             <KpiCard label="Ad Spend" value={formatInr(blendedMetrics.after.adSpend)} sub="Source: Amazon Ads Reports" />
@@ -576,8 +628,8 @@ export function EasyhomeDiagnosticDashboard() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <KpiCard label="Total Sales (A)" value={formatInr(blendedMetrics.before?.totalSalesNet ?? 0)} sub="Payment Transactions" />
-            <KpiCard label="Total Sales (B)" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Transactions" />
+            <KpiCard label="Settlement Net Sales (A)" value={formatInr(blendedMetrics.before?.totalSalesNet ?? 0)} sub="Payment Transactions" />
+            <KpiCard label="Settlement Net Sales (B)" value={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Transactions" />
             <KpiCard label="Ad Spend (A)" value={formatInr(blendedMetrics.before?.adSpend ?? 0)} sub="Amazon Ads Reports" />
             <KpiCard label="Ad Spend (B)" value={formatInr(blendedMetrics.after.adSpend)} sub="Amazon Ads Reports" />
             <KpiCard label="Ad-attributed Sales (A)" value={formatInr(blendedMetrics.before?.adSales ?? 0)} sub="Amazon Ads Reports" />
@@ -588,8 +640,8 @@ export function EasyhomeDiagnosticDashboard() {
             <KpiCard label="TACOS (B)" value={pctStr(blendedMetrics.after.tacos)} sub="Ad Spend ÷ Total Sales" />
             <KpiCard label="Organic Estimate (A)" value={formatInr(blendedMetrics.before?.organicEstimate ?? 0)} sub="Estimate" />
             <KpiCard label="Organic Estimate (B)" value={formatInr(blendedMetrics.after.organicEstimate)} sub="Estimate" />
-            <KpiCard label="Refunds (A)" value={formatInr(blendedMetrics.before?.refunds ?? 0)} sub="Payment Transactions" />
-            <KpiCard label="Refunds (B)" value={formatInr(blendedMetrics.after.refunds)} sub="Payment Transactions" />
+            <KpiCard label="Settlement Refunds (A)" value={formatInr(blendedMetrics.before?.refunds ?? 0)} sub="Payment Transactions" />
+            <KpiCard label="Settlement Refunds (B)" value={formatInr(blendedMetrics.after.refunds)} sub="Payment Transactions" />
             <KpiCard label="Orders (A)" value={(blendedMetrics.before?.totalOrders ?? 0).toLocaleString('en-IN')} sub="Distinct orders" />
             <KpiCard label="Orders (B)" value={blendedMetrics.after.totalOrders.toLocaleString('en-IN')} sub="Distinct orders" />
             <KpiCard label="Units (A)" value={(blendedMetrics.before?.unitsSold ?? 0).toLocaleString('en-IN')} sub="Payment Transactions" />
@@ -693,9 +745,9 @@ export function EasyhomeDiagnosticDashboard() {
         </ul>
       </div>
 
-      {/* Daily trend */}
+      {/* Settlement daily trend */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="text-sm font-bold text-foreground mb-4">Daily trend — sales vs ad spend</h2>
+        <h2 className="text-sm font-bold text-foreground mb-4">Daily settlement net sales</h2>
         <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={diagnostic.dailyTrend} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
@@ -703,8 +755,7 @@ export function EasyhomeDiagnosticDashboard() {
               <XAxis dataKey="date" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
               <Tooltip content={<ChartTooltip />} />
-              <Line type="monotone" dataKey="netSales" name="Net sales" stroke="#22c55e" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="adSpend" name="Ad spend" stroke="#f59e0b" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="netSales" name="Settlement net sales" stroke="#22c55e" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -713,7 +764,7 @@ export function EasyhomeDiagnosticDashboard() {
       {/* Category before/after */}
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
-          <TrendingDown className="w-4 h-4 text-red-400" /> Category (portfolio) — sales delta, most-dropped first
+          <TrendingDown className="w-4 h-4 text-red-400" /> Category (portfolio) - settlement net sales delta
         </h2>
         <div className="h-64 mb-4">
           <ResponsiveContainer width="100%" height="100%">
@@ -727,7 +778,7 @@ export function EasyhomeDiagnosticDashboard() {
           </ResponsiveContainer>
         </div>
         <DataTable
-          columns={['Portfolio', 'Range A', 'Range B', 'Δ Sales', 'Δ %', 'Range A Units', 'Range B Units', 'Range A Refund', 'Range B Refund']}
+          columns={['Portfolio', 'Range A Settlement Sales', 'Range B Settlement Sales', 'Sales Delta', 'Delta %', 'Range A Units', 'Range B Units', 'Range A Refund', 'Range B Refund']}
           rows={diagnostic.categoryTable.map(row => [
             portfolioDisplayLabel(row.portfolio),
             formatInr(row.beforeSales),
@@ -743,7 +794,7 @@ export function EasyhomeDiagnosticDashboard() {
       </div>
 
       {/* Top revenue losers */}
-      <SkuLoserTable title="Top 20 revenue losers (SKU)" rows={diagnostic.topRevenueLosers} metric="sales" />
+      <SkuLoserTable title="Top 20 settlement revenue losers (SKU)" rows={diagnostic.topRevenueLosers} metric="sales" />
 
       {/* Top unit losers */}
       <SkuLoserTable title="Top 20 unit/order losers (SKU)" rows={diagnostic.topUnitLosers} metric="units" />
@@ -766,7 +817,7 @@ export function EasyhomeDiagnosticDashboard() {
                 )}
               </div>
               <p className="text-sm text-muted-foreground">
-                Sales {formatInr(day.netSales)} · Ad spend {formatInr(day.adSpend)} · Refunds {formatInr(day.refundAmount)} · {day.rowCount} rows
+                Settlement sales {formatInr(day.netSales)} · Settlement Ad charges {formatInr(day.adSpend)} · Refunds {formatInr(day.refundAmount)} · {day.rowCount} rows
               </p>
               {day.topPortfolioDrops.length > 0 && (
                 <ul className="mt-2 text-xs text-muted-foreground space-y-1">
