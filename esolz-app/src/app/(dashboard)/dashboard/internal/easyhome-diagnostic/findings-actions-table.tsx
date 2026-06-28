@@ -152,7 +152,7 @@ function FindingRowItem({ r, mode }: { r: FindingRow; mode: 'single' | 'compare'
   )
 }
 
-export function FindingsActionsTable({ rows, mode = 'compare' }: { rows: FindingRow[]; mode?: 'single' | 'compare' }) {
+export function FindingsActionsTable({ rows, mode = 'compare', loadedRangeSuffix }: { rows: FindingRow[]; mode?: 'single' | 'compare'; loadedRangeSuffix?: string }) {
   const [portfolio, setPortfolio] = useState<string | 'All'>('All')
   const [issueType, setIssueType] = useState<FindingIssueLabel | 'All'>('All')
   const [priority, setPriority] = useState<string | 'All'>('All')
@@ -169,12 +169,15 @@ export function FindingsActionsTable({ rows, mode = 'compare' }: { rows: Finding
 
   const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(filtered)
 
+  // `rows` always comes from the loaded API response (never draft Control
+  // Panel inputs), so the export content is already loaded-data-only — the
+  // filename just needs to say so explicitly via the loaded range suffix.
   function downloadCsv() {
     const blob = new Blob([toFindingsCsv(filtered)], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `brahmastra_findings_actions_${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `brahmastra_findings_actions_${loadedRangeSuffix ?? new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -248,7 +251,7 @@ function summarizeGoodWorking(rows: GoodWorkingRow[]): { label: string; count: n
   ].filter(b => b.count > 0)
 }
 
-export function GoodWorkingTable({ rows, mode = 'compare' }: { rows: GoodWorkingRow[]; mode?: 'single' | 'compare' }) {
+export function GoodWorkingTable({ rows, mode = 'compare', loadedRangeSuffix }: { rows: GoodWorkingRow[]; mode?: 'single' | 'compare'; loadedRangeSuffix?: string }) {
   const { page, setPage, pageSize, setPageSize, pageRows: visible, totalPages, totalRows, startIndex, endIndex } = usePaginatedRows(rows)
   const labels = rangeLabels(mode)
   const summary = summarizeGoodWorking(rows)
@@ -258,7 +261,7 @@ export function GoodWorkingTable({ rows, mode = 'compare' }: { rows: GoodWorking
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `brahmastra_good_working_${new Date().toISOString().slice(0, 10)}.csv`
+    a.download = `brahmastra_good_working_${loadedRangeSuffix ?? new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
   }

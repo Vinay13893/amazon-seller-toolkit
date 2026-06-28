@@ -113,16 +113,24 @@ type PaymentImportStatus = {
 
 type ControlPanelMeta = {
   mode: 'single' | 'compare'
+  requestedMode: 'single' | 'compare'
+  effectiveMode: 'single' | 'compare'
   selectedProfileId: string
   selectedProfileName: string | null
   rangeA: DateRange
   rangeB: DateRange
+  effectiveRangeA: DateRange
+  effectiveRangeB: DateRange
   requestedRangeA: DateRange
+  requestedRangeB: DateRange | null
   portfolioFilter: string | null
   campaignFilter: string | null
   allowUnequalLengths: boolean
   daysInRangeA: number
   daysInRangeB: number
+  latestAdsDate: string | null
+  latestPaymentDate: string | null
+  loadedAt: string
   /** @deprecated use dataFreshness.adsDataIncomplete / salesDataIncomplete instead. */
   dataIncomplete: boolean
   dataFreshness?: {
@@ -210,8 +218,14 @@ function roasStr(value: number | null): string {
   return value === null ? '—' : `${value.toFixed(2)}x`
 }
 
-/** Generic CSV download for the smaller dashboard tables (Mapping health, Top spenders, Top ad sales generators) that don't already have their own export helper. */
-function downloadCsv(filenamePrefix: string, headers: string[], rows: Array<Array<string | number | null>>) {
+/**
+ * Generic CSV download for the smaller dashboard tables (Mapping health, Top
+ * spenders, Top ad sales generators) that don't already have their own
+ * export helper. `rangeSuffix` must be the loaded/applied range (never the
+ * draft Control Panel inputs), so a stale-but-not-yet-run date edit can
+ * never be implied by the exported filename.
+ */
+function downloadCsv(filenamePrefix: string, headers: string[], rows: Array<Array<string | number | null>>, rangeSuffix: string) {
   const esc = (v: unknown) => {
     const s = v === null || v === undefined ? '' : String(v)
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
@@ -221,7 +235,7 @@ function downloadCsv(filenamePrefix: string, headers: string[], rows: Array<Arra
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${filenamePrefix}_${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `${filenamePrefix}_${rangeSuffix}.csv`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -252,6 +266,32 @@ const DEFAULT_QUERY: ControlPanelQuery = {
   allowUnequalLengths: false,
 }
 
+/**
+ * Truth-lock check: the Control Panel's date/mode/filter inputs are local
+ * draft state that only reaches the API after "Run Analysis" is clicked.
+ * Comparing draft vs the currently-requested query is how the UI knows
+ * whether what's on screen still belongs to an older, already-applied
+ * selection — without this, a user can retype dates and stare at tables that
+ * still reflect the previous range with no indication anything is stale.
+ */
+function queriesEqual(a: ControlPanelQuery, b: ControlPanelQuery): boolean {
+  if (a.mode !== b.mode) return false
+  if (a.rangeA.startDate !== b.rangeA.startDate || a.rangeA.endDate !== b.rangeA.endDate) return false
+  if (a.mode === 'compare') {
+    if (a.rangeB.startDate !== b.rangeB.startDate || a.rangeB.endDate !== b.rangeB.endDate) return false
+    if (Boolean(a.allowUnequalLengths) !== Boolean(b.allowUnequalLengths)) return false
+  }
+  if ((a.portfolio ?? null) !== (b.portfolio ?? null)) return false
+  if ((a.campaign ?? null) !== (b.campaign ?? null)) return false
+  return true
+}
+
+function rangeLabel(query: ControlPanelQuery): string {
+  return query.mode === 'single'
+    ? `${query.rangeA.startDate} → ${query.rangeA.endDate}`
+    : `Range A ${query.rangeA.startDate} → ${query.rangeA.endDate}, Range B ${query.rangeB.startDate} → ${query.rangeB.endDate}`
+}
+
 function buildQueryString(query: ControlPanelQuery): string {
   const params = new URLSearchParams()
   params.set('mode', query.mode)
@@ -272,6 +312,13 @@ export function EasyhomeDiagnosticDashboard() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState<ControlPanelQuery>(DEFAULT_QUERY)
+  // Draft = whatever the Control Panel inputs currently show, even before
+  // "Run Analysis" is clicked. Loaded = the query that produced the `data`
+  // currently on screen. Tables only ever render `data`, so any gap between
+  // draft and loaded means the visible tables are stale relative to the inputs.
+  const [draftQuery, setDraftQuery] = useState<ControlPanelQuery>(DEFAULT_QUERY)
+  const [loadedQuery, setLoadedQuery] = useState<ControlPanelQuery>(DEFAULT_QUERY)
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null)
   // Declared unconditionally (rules of hooks) even though only used once data has loaded.
   const campaignTablePaging = usePaginatedRows(data?.campaignDiagnostic.campaignTable ?? [])
 
@@ -284,11 +331,13 @@ export function EasyhomeDiagnosticDashboard() {
         if (!res.ok) throw new Error((await res.json().catch(() => null))?.error ?? 'Failed to load diagnostic')
         return res.json() as Promise<ApiResponse>
       })
-      .then(json => { if (!cancelled) setData(json) })
+      .then(json => { if (!cancelled) { setData(json); setLoadedQuery(query); setLoadedAt(new Date()) } })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load diagnostic') })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [query])
+
+  const pendingChanges = !queriesEqual(draftQuery, query)
 
   // The Control Panel must always be visible — even on the very first load,
   // a failed fetch, or an invalid range — so the user can always adjust the
@@ -304,6 +353,8 @@ export function EasyhomeDiagnosticDashboard() {
           portfolios={[]}
           campaigns={[]}
           onRun={q => setQuery(q)}
+          onDraftChange={setDraftQuery}
+          isDirty={pendingChanges}
           onExportAll={() => {}}
           loading={loading}
         />
@@ -331,6 +382,8 @@ export function EasyhomeDiagnosticDashboard() {
   const portfolioOptions = [...new Set(campaignDiagnostic.campaignTable.map(c => c.portfolio))].sort()
   const campaignOptions = [...new Set(campaignDiagnostic.campaignTable.map(c => c.campaignName))].sort()
   const showJune15Label = usesJune15(controlPanel.rangeA, controlPanel.rangeB)
+  // Always the loaded/applied range — exports must never imply draft (not-yet-run) dates.
+  const loadedRangeSuffix = `${controlPanel.rangeA.startDate}_to_${controlPanel.rangeB.endDate}`
 
   function handleExportAll() {
     const csv = [
@@ -524,14 +577,41 @@ export function EasyhomeDiagnosticDashboard() {
         portfolios={portfolioOptions}
         campaigns={campaignOptions}
         onRun={q => setQuery(q)}
+        onDraftChange={setDraftQuery}
+        isDirty={pendingChanges}
         onExportAll={handleExportAll}
         loading={loading}
         dataFreshness={controlPanel.dataFreshness}
       />
 
+      {/* Currently loaded analysis — always visible so the user never has to guess
+          which range the tables/charts below actually belong to. */}
+      <div className="bg-card border border-border rounded-xl p-3 flex flex-wrap items-center gap-3">
+        <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+          Currently loaded analysis
+        </span>
+        <span className="text-xs text-foreground">
+          {controlPanel.mode === 'single' ? 'Single Range' : 'Compare'} · {rangeLabel(loadedQuery)}
+        </span>
+        {loadedAt && (
+          <span className="text-xs text-muted-foreground">Loaded at {loadedAt.toLocaleTimeString()}</span>
+        )}
+      </div>
+
+      {pendingChanges && (
+        <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 rounded-xl p-4">
+          <p className="text-sm font-bold text-amber-800 dark:text-amber-300 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" /> Date or filter changes are not applied yet. Click Run Analysis to refresh all tables and charts.
+          </p>
+          <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
+            Results below are still for the previously loaded analysis: {rangeLabel(loadedQuery)}.
+          </p>
+        </div>
+      )}
+
       {/* Findings & Actions Table — the main, easier-to-scan view above the raw sections */}
-      <GoodWorkingTable rows={goodWorkingRows} mode={controlPanel.mode} />
-      <FindingsActionsTable rows={findingsTable} mode={controlPanel.mode} />
+      <GoodWorkingTable rows={goodWorkingRows} mode={controlPanel.mode} loadedRangeSuffix={loadedRangeSuffix} />
+      <FindingsActionsTable rows={findingsTable} mode={controlPanel.mode} loadedRangeSuffix={loadedRangeSuffix} />
 
       {controlPanel.mode === 'single' && (topSpenders.length > 0 || topAdSalesGenerators.length > 0) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -547,6 +627,7 @@ export function EasyhomeDiagnosticDashboard() {
                     diagnostic.windows.afterStart, diagnostic.windows.afterEnd, controlPanel.mode, portfolioDisplayLabel(row.portfolio), row.campaignName,
                     row.afterSpend, row.afterSales, row.afterClicks, row.afterAcos, row.afterRoas, 'Amazon Ads Reports',
                   ]),
+                  loadedRangeSuffix,
                 )}
                 className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
               >
@@ -574,6 +655,7 @@ export function EasyhomeDiagnosticDashboard() {
                     diagnostic.windows.afterStart, diagnostic.windows.afterEnd, controlPanel.mode, portfolioDisplayLabel(row.portfolio), row.campaignName,
                     row.afterSales, row.afterSpend, row.afterClicks, row.afterAcos, row.afterRoas, 'Amazon Ads Reports',
                   ]),
+                  loadedRangeSuffix,
                 )}
                 className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
               >
@@ -703,6 +785,7 @@ export function EasyhomeDiagnosticDashboard() {
                 'brahmastra_unmapped_skus',
                 ['sku', 'range_a_sales', 'range_b_sales', 'total_sales'],
                 diagnostic.mappingHealth.topUnmappedSkus.map(row => [row.sku, row.beforeSales, row.afterSales, row.totalSales]),
+                loadedRangeSuffix,
               )}
               className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
             >

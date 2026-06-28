@@ -56,6 +56,8 @@ export function BrahmastraControlPanel({
   portfolios,
   campaigns,
   onRun,
+  onDraftChange,
+  isDirty,
   onExportAll,
   loading,
   dataFreshness,
@@ -63,6 +65,8 @@ export function BrahmastraControlPanel({
   portfolios: string[]
   campaigns: string[]
   onRun: (query: ControlPanelQuery) => void
+  onDraftChange?: (query: ControlPanelQuery) => void
+  isDirty?: boolean
   onExportAll: () => void
   loading: boolean
   dataFreshness?: { latestAdsDate: string | null; latestSalesDate: string | null }
@@ -85,6 +89,21 @@ export function BrahmastraControlPanel({
       setAllowUnequalLengths(Boolean(resolved.allowUnequalLengths))
     }
   }, [preset])
+
+  // Report every draft edit to the parent so it can tell whether what's on
+  // screen (loaded from the last "Run Analysis") still matches these inputs.
+  // This never auto-runs the query — it only powers the pending-changes
+  // warning/badge; Run Analysis is still required to actually refetch.
+  useEffect(() => {
+    onDraftChange?.({
+      mode,
+      rangeA,
+      rangeB,
+      portfolio: portfolio === 'All' ? null : portfolio,
+      campaign: campaign === 'All' ? null : campaign,
+      allowUnequalLengths,
+    })
+  }, [mode, rangeA, rangeB, portfolio, campaign, allowUnequalLengths, onDraftChange])
 
   const daysA = useMemo(() => (validateRange(rangeA).valid ? daysInRange(rangeA) : null), [rangeA])
   const daysB = useMemo(() => (mode === 'compare' && validateRange(rangeB).valid ? daysInRange(rangeB) : null), [mode, rangeB])
@@ -147,6 +166,11 @@ export function BrahmastraControlPanel({
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
           <CalendarRange className="w-4 h-4 text-primary" /> Brahmastra Control Panel
+          {isDirty && (
+            <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+              Pending changes
+            </span>
+          )}
         </h2>
         <div className="flex gap-2">
           {latestCompleteDate && (
@@ -170,7 +194,7 @@ export function BrahmastraControlPanel({
             type="button"
             onClick={handleRun}
             disabled={!validation.valid || loading}
-            className="inline-flex items-center gap-1 text-xs text-primary-foreground bg-primary rounded-md px-3 py-1 disabled:opacity-50"
+            className={`inline-flex items-center gap-1 text-xs font-semibold text-primary-foreground bg-primary rounded-md px-3 py-1 disabled:opacity-50 ${isDirty ? 'ring-2 ring-amber-400 ring-offset-1 animate-pulse' : ''}`}
           >
             <Play className="w-3 h-3" /> Run Analysis
           </button>
