@@ -89,9 +89,10 @@ const REPORT_DEFS: ReportDef[] = [
   { type: 'spSearchTerm', source: 'ads_search_term', table: 'internal_ads_search_term_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'search_term' },
 ]
 
-function campaignDailyRowFor(record: AdsCampaignDailyRecord, workspaceId: string, batchId: string) {
+function campaignDailyRowFor(record: AdsCampaignDailyRecord, workspaceId: string, profileId: string, batchId: string) {
   return {
     workspace_id: workspaceId,
+    profile_id: profileId,
     upload_batch_id: batchId,
     report_date: record.reportDate,
     campaign_name: record.campaignName,
@@ -122,9 +123,10 @@ function campaignDailyRowFor(record: AdsCampaignDailyRecord, workspaceId: string
   }
 }
 
-function deepReportRowFor(record: DeepReportRecord, kind: DeepReportKind, workspaceId: string, batchId: string, portfolio: string) {
+function deepReportRowFor(record: DeepReportRecord, kind: DeepReportKind, workspaceId: string, profileId: string, batchId: string, portfolio: string) {
   const base = {
     workspace_id: workspaceId,
+    profile_id: profileId,
     upload_batch_id: batchId,
     report_date: record.reportDate,
     campaign_name: record.campaignName,
@@ -162,8 +164,13 @@ function deepReportRowFor(record: DeepReportRecord, kind: DeepReportKind, worksp
   return { ...base, search_term: record.searchTerm, targeting: record.targeting }
 }
 
-/** Same dedupe-by-key insert/update split already used by the manual-upload import routes. */
-async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspaceId: string, rows: Array<Record<string, unknown>>): Promise<{ insertedCount: number; updatedCount: number }> {
+/**
+ * Same dedupe-by-key insert/update split already used by the manual-upload
+ * import routes. Scoped by profile_id (in addition to workspace_id) so a
+ * dedupe_key that happens to repeat across two different Ads profiles can
+ * never be mistaken for the same row.
+ */
+async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspaceId: string, profileId: string, rows: Array<Record<string, unknown>>): Promise<{ insertedCount: number; updatedCount: number }> {
   if (rows.length === 0) return { insertedCount: 0, updatedCount: 0 }
   const CHUNK = 500
   const PAGE = 1000
@@ -173,6 +180,7 @@ async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspace
       .from(table)
       .select('id, dedupe_key')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .range(page * PAGE, page * PAGE + PAGE - 1)
     if (error) throw new Error(`Reading existing ${table} rows failed: ${error.message}`)
     for (const row of pageRows ?? []) existingIdByKey.set(row.dedupe_key as string, row.id as string)
@@ -198,10 +206,10 @@ async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspace
   return { insertedCount: insertRows.length, updatedCount: updateRows.length }
 }
 
-async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspaceId: string, def: ReportDef, startDate: string, endDate: string) {
+async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspaceId: string, profileId: string, def: ReportDef, startDate: string, endDate: string) {
   const { data: runRow } = await admin
     .from('internal_data_refresh_runs')
-    .insert({ workspace_id: workspaceId, source: def.source, status: 'running', date_from: startDate, date_to: endDate })
+    .insert({ workspace_id: workspaceId, profile_id: profileId, source: def.source, status: 'running', date_from: startDate, date_to: endDate })
     .select('id')
     .single()
   const runId = runRow?.id as string | undefined
@@ -225,6 +233,7 @@ async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspac
           .from(def.batchTable)
           .insert({
             workspace_id: workspaceId,
+            profile_id: profileId,
             original_filename: `ads-api-auto-${def.source}-${startDate}-${endDate}`,
             report_date_start: result.stats.dateRangeStart,
             report_date_end: result.stats.dateRangeEnd,
@@ -242,10 +251,10 @@ async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspac
 
         const dedupedRows = new Map<string, ReturnType<typeof campaignDailyRowFor>>()
         for (const record of result.accepted) {
-          const row = campaignDailyRowFor(record, workspaceId, batch.id as string)
+          const row = campaignDailyRowFor(record, workspaceId, profileId, batch.id as string)
           dedupedRows.set(row.dedupe_key, row)
         }
-        const upsertResult = await upsertByDedupeKey(admin, def.table, workspaceId, [...dedupedRows.values()])
+        const upsertResult = await upsertByDedupeKey(admin, def.table, workspaceId, profileId, [...dedupedRows.values()])
         insertedCount = upsertResult.insertedCount
         updatedCount = upsertResult.updatedCount
         await admin.from(def.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
@@ -273,6 +282,7 @@ async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspac
           .from(def.batchTable)
           .insert({
             workspace_id: workspaceId,
+            profile_id: profileId,
             report_kind: def.kind,
             original_filename: `ads-api-auto-${def.source}-${startDate}-${endDate}`,
             report_date_start: result.stats.dateRangeStart,
@@ -293,10 +303,10 @@ async function syncOneReport(admin: SupabaseClient, ctx: AdsApiContext, workspac
 
         const dedupedRows = new Map<string, ReturnType<typeof deepReportRowFor>>()
         for (const { record, portfolio } of resolved) {
-          const row = deepReportRowFor(record, def.kind, workspaceId, batch.id as string, portfolio)
+          const row = deepReportRowFor(record, def.kind, workspaceId, profileId, batch.id as string, portfolio)
           dedupedRows.set(row.dedupe_key, row)
         }
-        const upsertResult = await upsertByDedupeKey(admin, def.table, workspaceId, [...dedupedRows.values()])
+        const upsertResult = await upsertByDedupeKey(admin, def.table, workspaceId, profileId, [...dedupedRows.values()])
         insertedCount = upsertResult.insertedCount
         updatedCount = upsertResult.updatedCount
         await admin.from(def.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
@@ -417,7 +427,7 @@ async function main() {
       const ctx: AdsApiContext = { region: connection.region as string, accessToken, profileId: selection.profileId }
       console.log(`Workspace ${workspaceId}, profile ${selection.profileId} (${profileLabel}):`)
       for (const def of REPORT_DEFS) {
-        await syncOneReport(admin, ctx, workspaceId, def, startDate, endDate)
+        await syncOneReport(admin, ctx, workspaceId, selection.profileId, def, startDate, endDate)
       }
     }
     return
@@ -453,7 +463,7 @@ async function main() {
   const ctx: AdsApiContext = { region: directCreds.region, accessToken, profileId: directCreds.profileId, clientId: directCreds.clientId }
   console.log(`Workspace ${workspaceId}, profile ${directCreds.profileId}:`)
   for (const def of REPORT_DEFS) {
-    await syncOneReport(admin, ctx, workspaceId, def, startDate, endDate)
+    await syncOneReport(admin, ctx, workspaceId, directCreds.profileId, def, startDate, endDate)
   }
 }
 

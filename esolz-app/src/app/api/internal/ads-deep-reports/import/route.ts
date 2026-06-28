@@ -9,6 +9,7 @@ import {
   type DeepReportRecord,
 } from '@/lib/internal/ads-deep-report-parser'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { resolveSelectedProfileForWorkspace } from '@/lib/internal/brahmastra-selected-profile'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -26,9 +27,10 @@ const TABLE_BY_KIND: Record<DeepReportKind, string> = {
 const DEFAULT_DEEP_REPORTS_DIR = 'C:\\Vinay\\Emount Profitability Calculator\\Campaigns Report'
 const deepReportsDir = resolve(process.env.ADS_DEEP_REPORTS_DIR ?? DEFAULT_DEEP_REPORTS_DIR)
 
-function baseRow(record: DeepReportRecord, workspaceId: string, batchId: string, portfolio: string) {
+function baseRow(record: DeepReportRecord, workspaceId: string, profileId: string, batchId: string, portfolio: string) {
   return {
     workspace_id: workspaceId,
+    profile_id: profileId,
     upload_batch_id: batchId,
     report_date: record.reportDate,
     campaign_name: record.campaignName,
@@ -53,8 +55,8 @@ function baseRow(record: DeepReportRecord, workspaceId: string, batchId: string,
   }
 }
 
-function toRowForKind(record: DeepReportRecord, kind: DeepReportKind, workspaceId: string, batchId: string, portfolio: string) {
-  const base = baseRow(record, workspaceId, batchId, portfolio)
+function toRowForKind(record: DeepReportRecord, kind: DeepReportKind, workspaceId: string, profileId: string, batchId: string, portfolio: string) {
+  const base = baseRow(record, workspaceId, profileId, batchId, portfolio)
   if (kind === 'advertised_product') {
     return { ...base, advertised_asin: record.advertisedAsin, advertised_sku: record.advertisedSku }
   }
@@ -118,6 +120,12 @@ export async function POST(request: Request) {
   const admin = createAdminClient()
   const table = TABLE_BY_KIND[reportKind]
 
+  const profileSelection = await resolveSelectedProfileForWorkspace(admin, workspaceId)
+  if (!profileSelection.ok) {
+    return NextResponse.json({ error: profileSelection.message }, { status: 409 })
+  }
+  const profileId = profileSelection.profileId
+
   // advertised_product rows need a SKU -> portfolio lookup the pure parser
   // doesn't have access to; resolve it here against internal_sku_cost_master.
   const costMasterCategoryBySkuNorm = new Map<string, string | null>()
@@ -143,6 +151,7 @@ export async function POST(request: Request) {
     .from(BATCH_TABLE)
     .insert({
       workspace_id: workspaceId,
+      profile_id: profileId,
       report_kind: reportKind,
       original_filename: fileName,
       report_date_start: result.stats.dateRangeStart,
@@ -169,7 +178,7 @@ export async function POST(request: Request) {
 
   const dedupedRows = new Map<string, ReturnType<typeof toRowForKind>>()
   for (const { record, portfolio } of resolvedRecords) {
-    const row = toRowForKind(record, reportKind, workspaceId, batch.id as string, portfolio)
+    const row = toRowForKind(record, reportKind, workspaceId, profileId, batch.id as string, portfolio)
     dedupedRows.set(row.dedupe_key, row)
   }
   const rows = [...dedupedRows.values()]
@@ -181,6 +190,7 @@ export async function POST(request: Request) {
       .from(table)
       .select('id, dedupe_key')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .range(page * EXISTING_PAGE_SIZE, page * EXISTING_PAGE_SIZE + EXISTING_PAGE_SIZE - 1)
     if (pageError) {
       return NextResponse.json({ error: `Existing ${reportKind} rows could not be read. Confirm migration 039 is applied.` }, { status: 503 })

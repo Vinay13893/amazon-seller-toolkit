@@ -53,6 +53,7 @@ import {
 } from '@/lib/internal/easyhome-manual-review-cases'
 import { createClient } from '@/lib/supabase/server'
 import { resolveEasyhomePortfolio } from '@/lib/internal/portfolio-labels'
+import { resolveSelectedProfileForWorkspace } from '@/lib/internal/brahmastra-selected-profile'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -153,6 +154,22 @@ export async function GET(request: Request) {
 
   const supabase = await createClient()
 
+  // Never silently read every profile's rows — Ads tables can carry data for
+  // multiple Amazon Ads profiles under the same connection. Block clearly if
+  // no single profile is selected/primary for Brahmastra.
+  const profileSelection = await resolveSelectedProfileForWorkspace(supabase, workspaceId)
+  if (!profileSelection.ok) {
+    return NextResponse.json({ error: 'No Amazon Ads profile selected for Brahmastra.' }, { status: 409 })
+  }
+  const profileId = profileSelection.profileId
+  const { data: selectedProfileRow } = await supabase
+    .from('amazon_ads_profiles')
+    .select('account_name, display_name')
+    .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .maybeSingle()
+  const selectedProfileName = (selectedProfileRow?.display_name as string | null) ?? (selectedProfileRow?.account_name as string | null) ?? null
+
   const transactions: PaymentTxnInput[] = []
   let limitReached = false
   for (let offset = 0; offset < MAX_ROWS; offset += PAGE_SIZE) {
@@ -233,6 +250,7 @@ export async function GET(request: Request) {
       .from('internal_ads_campaign_daily_rows')
       .select('report_date, campaign_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
@@ -253,6 +271,7 @@ export async function GET(request: Request) {
     .from('internal_ads_campaign_upload_batches')
     .select('original_filename, report_date_start, report_date_end, accepted_count, rejected_count, inserted_count, updated_count, total_spend, total_sales, campaign_count, unmapped_campaign_count, uploaded_at')
     .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
     .order('uploaded_at', { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -279,6 +298,7 @@ export async function GET(request: Request) {
       .from('internal_ads_advertised_product_daily_rows')
       .select('report_date, advertised_sku, advertised_asin, campaign_name, ad_group_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
@@ -304,6 +324,7 @@ export async function GET(request: Request) {
       .from('internal_ads_targeting_daily_rows')
       .select('report_date, keyword, targeting, match_type, campaign_name, ad_group_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
@@ -330,6 +351,7 @@ export async function GET(request: Request) {
       .from('internal_ads_search_term_daily_rows')
       .select('report_date, search_term, targeting, campaign_name, ad_group_name, easyhome_portfolio, impressions, clicks, spend, purchases, sales')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .gte('report_date', fetchFrom)
       .limit(50000)
     for (const row of data ?? []) {
@@ -353,6 +375,7 @@ export async function GET(request: Request) {
     .from('internal_ads_deep_report_upload_batches')
     .select('report_kind, original_filename, report_date_start, report_date_end, accepted_count, rejected_count, inserted_count, updated_count, total_spend, total_sales, total_purchases, campaign_count, unmapped_count, attribution_window_used, uploaded_at')
     .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
     .order('uploaded_at', { ascending: false })
     .limit(20)
 
@@ -487,10 +510,10 @@ export async function GET(request: Request) {
     { data: latestChangeEvent },
   ] = await Promise.all([
     supabase.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('internal_ads_advertised_product_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('internal_ads_targeting_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
-    supabase.from('internal_ads_search_term_daily_rows').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_advertised_product_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_targeting_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_search_term_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_ads_change_history_events').select('changed_at').eq('workspace_id', workspaceId).order('changed_at', { ascending: false }).limit(1).maybeSingle(),
   ])
   const latestSalesDate = dateOnly((latestPaymentTxn as { transaction_date?: string } | null)?.transaction_date ?? null)
@@ -542,6 +565,8 @@ export async function GET(request: Request) {
   return NextResponse.json({
     controlPanel: {
       mode,
+      selectedProfileId: profileId,
+      selectedProfileName,
       rangeA,
       rangeB,
       requestedRangeA,

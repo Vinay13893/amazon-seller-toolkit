@@ -7,6 +7,7 @@ import {
   type AdsCampaignDailyRecord,
 } from '@/lib/internal/ads-campaign-daily-parser'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { resolveSelectedProfileForWorkspace } from '@/lib/internal/brahmastra-selected-profile'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -24,6 +25,7 @@ const campaignsDir = resolve(process.env.ADS_CAMPAIGN_REPORTS_DIR ?? DEFAULT_CAM
 
 type NormalizedRow = {
   workspace_id: string
+  profile_id: string
   upload_batch_id: string
   report_date: string
   campaign_name: string
@@ -53,9 +55,10 @@ type NormalizedRow = {
   source: string
 }
 
-function toNormalizedRow(record: AdsCampaignDailyRecord, workspaceId: string, batchId: string): NormalizedRow {
+function toNormalizedRow(record: AdsCampaignDailyRecord, workspaceId: string, profileId: string, batchId: string): NormalizedRow {
   return {
     workspace_id: workspaceId,
+    profile_id: profileId,
     upload_batch_id: batchId,
     report_date: record.reportDate,
     campaign_name: record.campaignName,
@@ -145,10 +148,17 @@ export async function POST(request: Request) {
 
   const admin = createAdminClient()
 
+  const profileSelection = await resolveSelectedProfileForWorkspace(admin, workspaceId)
+  if (!profileSelection.ok) {
+    return NextResponse.json({ error: profileSelection.message }, { status: 409 })
+  }
+  const profileId = profileSelection.profileId
+
   const { data: batch, error: batchError } = await admin
     .from(BATCH_TABLE)
     .insert({
       workspace_id: workspaceId,
+      profile_id: profileId,
       original_filename: fileName,
       report_date_start: result.stats.dateRangeStart,
       report_date_end: result.stats.dateRangeEnd,
@@ -172,7 +182,7 @@ export async function POST(request: Request) {
 
   const dedupedRows = new Map<string, NormalizedRow>()
   for (const record of result.accepted) {
-    const normalized = toNormalizedRow(record, workspaceId, batch.id as string)
+    const normalized = toNormalizedRow(record, workspaceId, profileId, batch.id as string)
     dedupedRows.set(normalized.dedupe_key, normalized)
   }
   const rows = [...dedupedRows.values()]
@@ -184,6 +194,7 @@ export async function POST(request: Request) {
       .from(TABLE)
       .select('id, dedupe_key')
       .eq('workspace_id', workspaceId)
+      .eq('profile_id', profileId)
       .range(page * EXISTING_PAGE_SIZE, page * EXISTING_PAGE_SIZE + EXISTING_PAGE_SIZE - 1)
     if (pageError) {
       return NextResponse.json(

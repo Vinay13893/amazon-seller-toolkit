@@ -103,6 +103,8 @@ type ChangeHistoryImportStatus = ChangeHistoryBatchRow | null
 
 type ControlPanelMeta = {
   mode: 'single' | 'compare'
+  selectedProfileId: string
+  selectedProfileName: string | null
   rangeA: DateRange
   rangeB: DateRange
   requestedRangeA: DateRange
@@ -326,6 +328,33 @@ export function EasyhomeDiagnosticDashboard() {
           {' '}Read-only. Data through {diagnostic.windows.afterEnd} ({meta.transactionRowsFetched.toLocaleString('en-IN')} transaction rows).
         </p>
         {error && <p className="text-sm text-red-400 mt-1">{error}</p>}
+      </div>
+
+      {/* Data Quality indicator — Phase R1: at-a-glance trust signal before relying on Brahmastra numbers. */}
+      <div className="bg-card border border-border rounded-xl p-4">
+        {(() => {
+          const hasIssue = Boolean(controlPanel.dataFreshness?.adsDataIncomplete || controlPanel.dataFreshness?.salesDataIncomplete || controlPanel.dataFreshness?.changeHistoryIncomplete)
+          const status: 'Healthy' | 'Warning' | 'Blocked' = !controlPanel.selectedProfileId ? 'Blocked' : hasIssue ? 'Warning' : 'Healthy'
+          const colorClass = status === 'Healthy'
+            ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300'
+            : status === 'Warning'
+              ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
+              : 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'
+          return (
+            <div className="flex flex-wrap items-center gap-3">
+              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${colorClass}`}>
+                Data Quality: {status}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Profile: {controlPanel.selectedProfileName ?? controlPanel.selectedProfileId} ({controlPanel.selectedProfileId}) ·
+                {' '}Ads through {controlPanel.dataFreshness?.latestAdsDate ?? 'unknown'} ·
+                {' '}Sales through {controlPanel.dataFreshness?.latestSalesDate ?? 'unknown'} ·
+                {' '}Change History through {controlPanel.dataFreshness?.latestChangeHistoryDate ?? 'unknown'} ·
+                {' '}Profile isolation: scoped (Ads tables filtered by profile_id)
+              </span>
+            </div>
+          )
+        })()}
       </div>
 
       {/* Data freshness — always visible so "zero" never gets confused with "not imported yet".
