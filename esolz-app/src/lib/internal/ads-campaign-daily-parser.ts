@@ -118,7 +118,10 @@ const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
   { pattern: /papfoil|baking paper|parchment paper|butter paper|facial\s*box|facialbox|face\s*tissue|tissue\s*box/i, portfolio: PAPFOIL_PORTFOLIO },
   { pattern: /\b(sra|sra_)/i, portfolio: 'Sage Royal Ayurveda' },
   { pattern: /sage\s*royal\s*ayurveda/i, portfolio: 'Sage Royal Ayurveda' },
-  { pattern: /\b(eh_?boc|boc)\b|curtain/i, portfolio: 'Curtains' },
+  // \b alone doesn't create a boundary before "_" (it's a word character),
+  // so "EH_BOC_4x9_Maroon_P1" was falling through to Unmapped — same fix as
+  // the shared resolveEasyhomePortfolio rule in portfolio-labels.ts.
+  { pattern: /\b(eh_?boc|boc)(?:[_\s-]|$)|curtains?/i, portfolio: 'Curtains' },
   { pattern: /baby play mat|\bbpm\b/i, portfolio: 'BPM' },
   { pattern: /eva.*kids|kids.*mat|interlocking.*kids|kids.*interlocking/i, portfolio: 'EVA Kids' },
   { pattern: /anti.?slip|\basm\b|shelf liner/i, portfolio: 'ASM' },

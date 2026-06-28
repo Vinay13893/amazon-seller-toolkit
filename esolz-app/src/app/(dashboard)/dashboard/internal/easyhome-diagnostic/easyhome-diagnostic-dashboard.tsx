@@ -16,7 +16,7 @@ import { AlertTriangle, Loader2, TrendingDown, Megaphone } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { Badge } from '@/components/ui/badge'
 import type { EasyhomeDropDiagnostic } from '@/lib/internal/easyhome-drop-diagnostic'
-import type { EasyhomeAdsCampaignDiagnostic } from '@/lib/internal/easyhome-ads-campaign-diagnostic'
+import type { EasyhomeAdsCampaignDiagnostic, CampaignRow } from '@/lib/internal/easyhome-ads-campaign-diagnostic'
 import type {
   AdvertisedProductRow,
   SearchTermRow,
@@ -140,6 +140,8 @@ type ApiResponse = {
   controlPanel: ControlPanelMeta
   findingsTable: FindingRow[]
   goodWorkingRows: GoodWorkingRow[]
+  topSpenders: CampaignRow[]
+  topAdSalesGenerators: CampaignRow[]
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic
   paymentImportStatus: PaymentImportStatus
@@ -259,7 +261,7 @@ export function EasyhomeDiagnosticDashboard() {
   }
 
   const {
-    controlPanel, findingsTable, goodWorkingRows,
+    controlPanel, findingsTable, goodWorkingRows, topSpenders, topAdSalesGenerators,
     diagnostic, campaignDiagnostic, paymentImportStatus, deepDiagnostic, latestDeepReportBatches, actionQueue, actionQueueSummary,
     changeHistoryImportStatus, changeHistoryBatches, changeHistorySummary, changeHistoryEvents,
     changeHistoryDayByDay, changeHistoryArchiveCoverage, changeHistoryChunkCoverage, changeHistoryCorrelationSummary,
@@ -333,7 +335,7 @@ export function EasyhomeDiagnosticDashboard() {
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
           {controlPanel.mode === 'single'
-            ? <>Single Range: {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd} (auto-baseline Range A: {diagnostic.windows.beforeStart} → {diagnostic.windows.beforeEnd}).</>
+            ? <>Selected Range: {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd}. No baseline comparison — switch to Compare mode for movement vs another period.</>
             : <>Range A {diagnostic.windows.beforeStart} → {diagnostic.windows.beforeEnd} vs Range B {diagnostic.windows.afterStart} → {diagnostic.windows.afterEnd}.</>}
           {' '}Read-only. Data through {diagnostic.windows.afterEnd} ({meta.transactionRowsFetched.toLocaleString('en-IN')} transaction rows).
         </p>
@@ -419,19 +421,62 @@ export function EasyhomeDiagnosticDashboard() {
       <GoodWorkingTable rows={goodWorkingRows} mode={controlPanel.mode} />
       <FindingsActionsTable rows={findingsTable} mode={controlPanel.mode} />
 
-      {/* Account summary */}
+      {controlPanel.mode === 'single' && (topSpenders.length > 0 || topAdSalesGenerators.length > 0) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-bold text-foreground mb-1">Top spenders (selected period)</h2>
+            <p className="text-xs text-muted-foreground mb-3">Source: Amazon Ads Reports</p>
+            <DataTable
+              columns={['Campaign', 'Portfolio', 'Ad Spend', 'Ad-attributed Sales', 'ACOS']}
+              rows={topSpenders.map(row => [
+                row.campaignName, portfolioDisplayLabel(row.portfolio), formatInr(row.afterSpend), formatInr(row.afterSales),
+                row.afterAcos !== null ? `${row.afterAcos.toFixed(1)}%` : '—',
+              ])}
+            />
+          </div>
+          <div className="bg-card border border-border rounded-xl p-5">
+            <h2 className="text-sm font-bold text-foreground mb-1">Top ad sales generators (selected period)</h2>
+            <p className="text-xs text-muted-foreground mb-3">Source: Amazon Ads Reports</p>
+            <DataTable
+              columns={['Campaign', 'Portfolio', 'Ad-attributed Sales', 'Ad Spend', 'ROAS']}
+              rows={topAdSalesGenerators.map(row => [
+                row.campaignName, portfolioDisplayLabel(row.portfolio), formatInr(row.afterSales), formatInr(row.afterSpend),
+                row.afterRoas !== null ? `${row.afterRoas.toFixed(2)}x` : '—',
+              ])}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Account summary — labels state their data source explicitly so "sales" is never
+          ambiguous between total (payment transactions) and ad-attributed (Ads reports). */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="Sales / day (Range A)" value={formatInr(before.netSales / Math.max(before.dayCount, 1))} />
-        <KpiCard label="Sales / day (Range B)" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} />
-        <KpiCard label="Ad spend / day (Range A)" value={formatInr(before.adSpend / Math.max(before.dayCount, 1))} />
-        <KpiCard label="Ad spend / day (Range B)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} />
-        <KpiCard label="Ad-to-sales ratio (Range A)" value={before.adToSalesRatioPct !== null ? `${before.adToSalesRatioPct.toFixed(1)}%` : '—'} />
-        <KpiCard label="Ad-to-sales ratio (Range B)" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} />
-        <KpiCard label="Orders (Range A)" value={before.orderCount.toLocaleString('en-IN')} sub={`${before.unitsOrdered.toLocaleString('en-IN')} units`} />
-        <KpiCard label="Orders (Range B)" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units`} />
-        <KpiCard label="Refunds (Range A)" value={formatInr(before.refundAmount)} sub={`${before.refundCount} orders`} />
-        <KpiCard label="Refunds (Range B)" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders`} />
+        {controlPanel.mode === 'single' ? (
+          <>
+            <KpiCard label="Total Sales / Day" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions" />
+            <KpiCard label="Ad Spend / Day (Payment Txn Est.)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions (Ad fee line items)" />
+            <KpiCard label="Blended Ad-to-Sales Ratio" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Orders" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units · Source: Payment Transactions`} />
+            <KpiCard label="Refunds" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders · Source: Payment Transactions`} />
+          </>
+        ) : (
+          <>
+            <KpiCard label="Total Sales / Day (Range A)" value={formatInr(before.netSales / Math.max(before.dayCount, 1))} sub="Source: Payment Transactions" />
+            <KpiCard label="Total Sales / Day (Range B)" value={formatInr(after.netSales / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions" />
+            <KpiCard label="Ad Spend / Day (Range A, Payment Txn Est.)" value={formatInr(before.adSpend / Math.max(before.dayCount, 1))} sub="Source: Payment Transactions (Ad fee line items)" />
+            <KpiCard label="Ad Spend / Day (Range B, Payment Txn Est.)" value={formatInr(after.adSpend / Math.max(after.dayCount, 1))} sub="Source: Payment Transactions (Ad fee line items)" />
+            <KpiCard label="Blended Ad-to-Sales Ratio (Range A)" value={before.adToSalesRatioPct !== null ? `${before.adToSalesRatioPct.toFixed(1)}%` : '—'} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Blended Ad-to-Sales Ratio (Range B)" value={after.adToSalesRatioPct !== null ? `${after.adToSalesRatioPct.toFixed(1)}%` : '—'} sub="Ad Spend ÷ Total Sales" />
+            <KpiCard label="Orders (Range A)" value={before.orderCount.toLocaleString('en-IN')} sub={`${before.unitsOrdered.toLocaleString('en-IN')} units · Source: Payment Transactions`} />
+            <KpiCard label="Orders (Range B)" value={after.orderCount.toLocaleString('en-IN')} sub={`${after.unitsOrdered.toLocaleString('en-IN')} units · Source: Payment Transactions`} />
+            <KpiCard label="Refunds (Range A)" value={formatInr(before.refundAmount)} sub={`${before.refundCount} orders · Source: Payment Transactions`} />
+            <KpiCard label="Refunds (Range B)" value={formatInr(after.refundAmount)} sub={`${after.refundCount} orders · Source: Payment Transactions`} />
+          </>
+        )}
       </div>
+      <p className="text-xs text-muted-foreground -mt-2">
+        Ad-attributed Sales / Ad Spend figures in the Campaign and deep-report sections below come from Amazon Ads Reports, not payment transactions.
+      </p>
 
       {/* Mapping health */}
       <div className="bg-card border border-border rounded-xl p-5">

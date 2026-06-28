@@ -225,15 +225,6 @@ export function BrahmastraControlPanel({
           <span className="text-xs text-muted-foreground pb-1">{daysA !== null ? `${daysA} day(s)` : '—'}</span>
         </fieldset>
 
-        {mode === 'single' && validateRange(rangeA).valid && (
-          <fieldset className="flex items-end gap-2 border border-border/60 rounded-md p-2 opacity-80">
-            <legend className="text-xs text-muted-foreground px-1">Baseline / Previous Period</legend>
-            <span className="text-xs text-foreground pb-1">
-              {autoBaselineFor(rangeA).startDate} → {autoBaselineFor(rangeA).endDate}
-            </span>
-          </fieldset>
-        )}
-
         {mode === 'compare' && (
           <fieldset className="flex items-end gap-2 border border-border/60 rounded-md p-2">
             <legend className="text-xs text-muted-foreground px-1">Range B</legend>
@@ -258,7 +249,7 @@ export function BrahmastraControlPanel({
       )}
       {mode === 'single' && (
         <p className="text-xs text-muted-foreground mt-2">
-          Single Range compares your selected date range against the immediately previous period of equal length.
+          Single Range Analysis shows only the selected period — no baseline or previous-period comparison. Use Compare mode to measure movement between two periods.
         </p>
       )}
       {mode === 'compare' && (

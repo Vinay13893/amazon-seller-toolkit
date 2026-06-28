@@ -21,7 +21,10 @@ const UNMAPPED = 'Unmapped / Needs Review'
 
 const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
   { pattern: /\bsra(?:[_\s-]|$)|sage\s*royal\s*ayurveda/i, portfolio: 'Sage Royal Ayurveda' },
-  { pattern: /\b(eh_?boc|boc)\b|curtain/i, portfolio: 'Curtains' },
+  // \b alone doesn't create a boundary before "_" (it's a word character),
+  // so "EH_BOC_4x9_Maroon_P1" was falling through to Unmapped — match an
+  // explicit separator/end instead, same fix as the SRA rule above.
+  { pattern: /\b(eh_?boc|boc)(?:[_\s-]|$)|curtains?/i, portfolio: 'Curtains' },
   { pattern: /\b(wtc|spa-?wtc)\b|tank[_\s-]*cover|water\s*tank\s*cover|insulation\s*cover/i, portfolio: 'Water Tank Cover' },
   { pattern: /facial\s*box|facialbox|face\s*tissue|tissue\s*box|papfoil|baking\s*paper|parchment\s*paper|butter\s*paper/i, portfolio: 'Coze' },
   { pattern: /baby\s*play\s*mat|\bbpm\b/i, portfolio: 'BPM' },

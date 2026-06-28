@@ -26,6 +26,9 @@ export type FindingIssueLabel =
   | 'Budget/campaign review'
   | 'Mapping cleanup'
   | 'Data incomplete'
+  | 'High ACOS'
+  | 'Low ROAS'
+  | 'Spend with zero ad sales'
 
 export type FindingExplanation = {
   problem: string
@@ -281,6 +284,30 @@ const EXPLANATION_TEMPLATES: Record<FindingIssueLabel, FindingExplanation> = {
     expectedOutcome: 'Avoid false positives caused by incomplete data.',
     riskCaution: 'Do not make ad decisions from rows affected by incomplete range coverage.',
   },
+  'High ACOS': {
+    problem: 'ACOS in the selected period is high relative to a healthy range.',
+    whyItMatters: 'High ACOS means ad spend is consuming a large share of sales value for this entity.',
+    whatToCheckFirst: 'Check bid, targeting relevance, listing conversion, price, and competitor activity.',
+    recommendedManualAction: 'Review bid/targeting manually; do not cut spend blindly without checking listing health first.',
+    expectedOutcome: 'Improved ACOS once the root cause (bid, targeting, or listing) is addressed.',
+    riskCaution: 'A single period can be noisy for low-volume entities — confirm with more data before acting.',
+  },
+  'Low ROAS': {
+    problem: 'ROAS in the selected period is low relative to a healthy range.',
+    whyItMatters: 'Low ROAS means ad spend is generating little sales value back for this entity.',
+    whatToCheckFirst: 'Check targeting relevance, bid, listing conversion, price, and stock/buy-box status.',
+    recommendedManualAction: 'Review targeting/bid manually; confirm relevance before reducing spend.',
+    expectedOutcome: 'Improved ROAS once the root cause is addressed.',
+    riskCaution: 'A single period can be noisy for low-volume entities — confirm with more data before acting.',
+  },
+  'Spend with zero ad sales': {
+    problem: 'This entity spent on ads in the selected period but generated zero ad-attributed sales.',
+    whyItMatters: 'Spend with no sales return is a direct candidate for wasted budget.',
+    whatToCheckFirst: 'Check targeting relevance, match type, listing health, price, coupon, buy box, and stock.',
+    recommendedManualAction: 'Review for tighter targeting, negative, pause, or lower bid after confirming relevance.',
+    expectedOutcome: 'Lower wasted spend from traffic that is not converting.',
+    riskCaution: 'Do not cut strategically important or low-volume test terms without checking intent and sample size.',
+  },
 }
 
 const CHANGE_HISTORY_CORRELATED: Pick<FindingExplanation, 'whyItMatters' | 'recommendedManualAction' | 'riskCaution'> = {
@@ -381,7 +408,21 @@ type WinnerInput = {
   afterPurchases?: number
 }
 
-function goodReason(row: WinnerInput): string | null {
+function goodReason(row: WinnerInput, mode: 'single' | 'compare' = 'compare'): string | null {
+  // Single mode has no baseline at all (the caller passes the same period as
+  // both before/after), so every delta-based check below is mathematically
+  // inert (deltas are zero) — only the absolute/after-only checks can fire,
+  // which is exactly the "selected-period findings, not comparison" behavior
+  // single mode needs. We still special-case the labels so they never imply
+  // a baseline that doesn't exist.
+  if (mode === 'single') {
+    const convertingWell = (row.afterPurchases ?? 0) > 0 && (row.afterAcos === null || row.afterAcos <= 35)
+    const goodRoas = row.afterRoas !== null && row.afterRoas >= 3
+    if (convertingWell) return 'Good ROAS / converting well in selected period.'
+    if (goodRoas) return 'Good ROAS in selected period.'
+    return null
+  }
+
   // A true zero baseline (no spend, no sales) is not a "before vs after" comparison —
   // label it as new activity instead of misleadingly framing it as an improvement
   // over a baseline that never existed.
@@ -419,6 +460,7 @@ export function buildGoodWorkingRows(params: {
   advertisedProductRows: AdvertisedProductRow[]
   targetingRows: TargetingRow[]
   searchTermRows: SearchTermRow[]
+  mode?: 'single' | 'compare'
 }): GoodWorkingRow[] {
   const candidates: WinnerInput[] = [
     ...params.campaignRows.map(r => ({
@@ -491,7 +533,7 @@ export function buildGoodWorkingRows(params: {
   ]
 
   return candidates
-    .map(row => ({ row, reason: goodReason(row) }))
+    .map(row => ({ row, reason: goodReason(row, params.mode ?? 'compare') }))
     .filter((entry): entry is { row: WinnerInput; reason: string } => entry.reason !== null && entry.row.afterSales > 0)
     .sort((a, b) => impactScore(b.row) - impactScore(a.row))
     .slice(0, 40)
@@ -513,6 +555,82 @@ export function buildGoodWorkingRows(params: {
       roasB: entry.row.afterRoas,
       suggestedAction: goodAction(entry.row, entry.reason),
     }))
+}
+
+const HIGH_ACOS_THRESHOLD_PCT = 50
+const LOW_ROAS_THRESHOLD = 1
+
+/**
+ * Single Range mode has no baseline to compare against, so its problem
+ * findings come from absolute thresholds on the selected period alone —
+ * never from a before/after delta. Built separately from buildFindingsTable
+ * so Compare mode's delta-based catalog is never affected.
+ */
+export function buildSinglePeriodAbsoluteFindings(params: {
+  campaignRows: CampaignRow[]
+  advertisedProductRows: AdvertisedProductRow[]
+  targetingRows: TargetingRow[]
+  searchTermRows: SearchTermRow[]
+}): FindingRow[] {
+  type Candidate = {
+    portfolio: string
+    campaignName: string | null
+    adGroupName: string | null
+    entityName: string
+    spend: number
+    sales: number
+    acos: number | null
+    roas: number | null
+  }
+
+  const candidates: Candidate[] = [
+    ...params.campaignRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: null, entityName: entityDisplayLabel(r.campaignName), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.advertisedProductRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.advertisedSku), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.targetingRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+    ...params.searchTermRows.map(r => ({ portfolio: r.portfolio, campaignName: r.campaignName, adGroupName: r.adGroupName ?? null, entityName: entityDisplayLabel(r.searchTerm), spend: r.afterSpend, sales: r.afterSales, acos: r.afterAcos, roas: r.afterRoas })),
+  ]
+
+  const rows: FindingRow[] = []
+  for (const c of candidates) {
+    if (c.spend <= 0) continue
+    const isZeroAdSales = c.sales <= 0
+    const isHighAcos = !isZeroAdSales && c.acos !== null && c.acos > HIGH_ACOS_THRESHOLD_PCT
+    const isLowRoas = !isZeroAdSales && c.roas !== null && c.roas < LOW_ROAS_THRESHOLD
+    const issueType: FindingIssueLabel | null = isZeroAdSales ? 'Spend with zero ad sales' : isHighAcos ? 'High ACOS' : isLowRoas ? 'Low ROAS' : null
+    if (!issueType) continue
+
+    const metrics = { spendA: c.spend, spendB: c.spend, salesA: c.sales, salesB: c.sales, acosA: c.acos, acosB: c.acos }
+    const explanation = EXPLANATION_TEMPLATES[issueType]
+    rows.push({
+      actionKey: `single-period:${issueType}:${c.campaignName ?? ''}:${c.entityName}`,
+      priority: isZeroAdSales ? 'High' : isHighAcos ? 'Medium' : 'Low',
+      portfolio: resolveEasyhomePortfolio(c.portfolio, c.campaignName, c.adGroupName, c.entityName),
+      campaignName: c.campaignName,
+      adGroupName: c.adGroupName,
+      entityName: c.entityName,
+      issueType,
+      spendA: c.spend,
+      spendB: c.spend,
+      spendChange: 0,
+      salesA: c.sales,
+      salesB: c.sales,
+      salesChange: 0,
+      acosA: c.acos,
+      acosB: c.acos,
+      roasA: c.roas,
+      roasB: c.roas,
+      whatChanged: 'No change-history activity found near this period.',
+      problem: explanation.problem,
+      whyItMatters: explanation.whyItMatters,
+      evidence: evidenceOf(metrics),
+      whatToCheckFirst: explanation.whatToCheckFirst,
+      recommendedManualAction: explanation.recommendedManualAction,
+      expectedOutcome: explanation.expectedOutcome,
+      riskCaution: explanation.riskCaution,
+      reviewStatus: 'Open',
+    })
+  }
+  return rows
 }
 
 export type { ActionIssueType }

@@ -6,7 +6,6 @@ import {
   type PaymentTxnInput,
 } from '@/lib/internal/easyhome-drop-diagnostic'
 import {
-  autoBaselineFor,
   DEFAULT_RANGE_B,
   minStartDate,
   validateCompareRanges,
@@ -14,7 +13,7 @@ import {
   type AnalysisMode,
   type DateRange,
 } from '@/lib/internal/date-range'
-import { buildFindingsTable, buildGoodWorkingRows } from '@/lib/internal/easyhome-findings-table'
+import { buildFindingsTable, buildGoodWorkingRows, buildSinglePeriodAbsoluteFindings } from '@/lib/internal/easyhome-findings-table'
 import {
   buildEasyhomeAdsCampaignDiagnostic,
   type AdsCampaignRowInput,
@@ -134,11 +133,16 @@ export async function GET(request: Request) {
     }
     : null
 
-  // Single-range mode investigates one window; we silently diff it against the
-  // immediately preceding period of equal length so the existing delta-based
-  // issue detection (spend cut, efficiency collapse, ACOS worsened, etc.) still
-  // works. Range B in the response IS the user's selected window in this mode.
-  const rangeA: DateRange = mode === 'single' ? autoBaselineFor(requestedRangeA) : requestedRangeA
+  // Single-range mode analyzes ONLY the user-selected window — no auto-baseline
+  // comparison against a previous period (Compare mode exists for that).
+  // Internally this still calls the shared before/after diagnostic builders
+  // for code reuse, but with rangeA set equal to rangeB, so "before" and
+  // "after" are literally the same data: every delta-based comparison signal
+  // (spend cut, efficiency collapse, spend stopped, new-vs-baseline, etc.)
+  // is mathematically zero and never fires, while absolute/after-only signals
+  // (waste spend, high-spend-zero-orders, mapping cleanup, data incomplete)
+  // still work correctly as genuine single-period findings.
+  const rangeA: DateRange = requestedRangeA
   const rangeB: DateRange = mode === 'single' ? requestedRangeA : (requestedRangeB as DateRange)
 
   const rangeValidation = mode === 'single'
@@ -557,12 +561,33 @@ export async function GET(request: Request) {
     adsDataIncomplete,
     freshness: { latestAdsDate, latestSalesDate, selectedRangeEnd },
   })
+  // Single mode has no baseline, so its problem findings come from absolute
+  // thresholds on the selected period alone (High ACOS / Low ROAS / Spend
+  // with zero ad sales) rather than the delta-based catalog above, which is
+  // naturally near-empty here since rangeA === rangeB.
+  if (mode === 'single' && !adsDataIncomplete) {
+    findingsTable.push(...buildSinglePeriodAbsoluteFindings({
+      campaignRows: campaignDiagnostic.campaignTable,
+      advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
+      targetingRows: deepDiagnostic.targeting?.table ?? [],
+      searchTermRows: deepDiagnostic.searchTerm?.table ?? [],
+    }))
+  }
   const goodWorkingRows = adsDataIncomplete ? [] : buildGoodWorkingRows({
     campaignRows: campaignDiagnostic.campaignTable,
     advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
     targetingRows: deepDiagnostic.targeting?.table ?? [],
     searchTermRows: deepDiagnostic.searchTerm?.table ?? [],
+    mode,
   })
+  // Single mode: rank by absolute spend/sales (delta-based "top losers" below
+  // are meaningless when rangeA === rangeB, since every delta is zero).
+  const topSpenders = mode === 'single'
+    ? [...campaignDiagnostic.campaignTable].sort((a, b) => b.afterSpend - a.afterSpend).slice(0, 20)
+    : []
+  const topAdSalesGenerators = mode === 'single'
+    ? [...campaignDiagnostic.campaignTable].sort((a, b) => b.afterSales - a.afterSales).slice(0, 20)
+    : []
 
   return NextResponse.json({
     controlPanel: {
@@ -583,6 +608,8 @@ export async function GET(request: Request) {
     },
     findingsTable,
     goodWorkingRows,
+    topSpenders,
+    topAdSalesGenerators,
     diagnostic,
     campaignDiagnostic,
     paymentImportStatus: latestPaymentBatch

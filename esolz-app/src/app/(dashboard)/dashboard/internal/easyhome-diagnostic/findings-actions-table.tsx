@@ -21,9 +21,9 @@ const PRIORITY_BADGE: Record<string, 'destructive' | 'secondary' | 'outline'> = 
   High: 'destructive', Medium: 'secondary', Low: 'outline',
 }
 
-/** Single Range mode compares a user-picked window against an auto-computed baseline — label A/B accordingly so the table doesn't read like a generic "Range A/B" compare. */
+/** Compare mode shows Range A vs Range B movement. Single mode has no baseline at all — only the selected period's own metrics. */
 function rangeLabels(mode: 'single' | 'compare'): { a: string; b: string } {
-  return mode === 'single' ? { a: 'Baseline', b: 'Selected Range' } : { a: 'Range A', b: 'Range B' }
+  return mode === 'single' ? { a: 'Selected Period', b: 'Selected Period' } : { a: 'Range A', b: 'Range B' }
 }
 
 export function toFindingsCsv(rows: FindingRow[]): string {
@@ -115,16 +115,26 @@ function FindingRowItem({ r, mode }: { r: FindingRow; mode: 'single' | 'compare'
               <span className="font-semibold text-foreground">Ad Group:</span> {r.adGroupName ?? '—'}
               {' · '}<span className="font-semibold text-foreground">Change History Signal:</span> {r.whatChanged}
             </p>
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 text-xs">
-              <div><span className="text-muted-foreground">Spend ({labels.a})</span><div className="text-foreground font-medium">{inr(r.spendA)}</div></div>
-              <div><span className="text-muted-foreground">Spend ({labels.b})</span><div className="text-foreground font-medium">{inr(r.spendB)}</div></div>
-              <div><span className="text-muted-foreground">Sales ({labels.a})</span><div className="text-foreground font-medium">{inr(r.salesA)}</div></div>
-              <div><span className="text-muted-foreground">Sales ({labels.b})</span><div className="text-foreground font-medium">{inr(r.salesB)}</div></div>
-              <div><span className="text-muted-foreground">ACOS {labels.a}→{labels.b}</span><div className="text-foreground font-medium">{pct(r.acosA)} → {pct(r.acosB)}</div></div>
-              <div><span className="text-muted-foreground">ROAS {labels.a}→{labels.b}</span><div className="text-foreground font-medium">{roas(r.roasA)} → {roas(r.roasB)}</div></div>
-              <div><span className="text-muted-foreground">Sales Δ</span><div className="text-foreground font-medium">{inr(r.salesChange)}</div></div>
-              <div><span className="text-muted-foreground">Review status</span><div className="text-foreground font-medium">{r.reviewStatus}</div></div>
-            </div>
+            {mode === 'single' ? (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                <div><span className="text-muted-foreground">Ad Spend</span><div className="text-foreground font-medium">{inr(r.spendB)}</div></div>
+                <div><span className="text-muted-foreground">Ad-attributed Sales</span><div className="text-foreground font-medium">{inr(r.salesB)}</div></div>
+                <div><span className="text-muted-foreground">ACOS</span><div className="text-foreground font-medium">{pct(r.acosB)}</div></div>
+                <div><span className="text-muted-foreground">ROAS</span><div className="text-foreground font-medium">{roas(r.roasB)}</div></div>
+                <div className="col-span-2 md:col-span-4"><span className="text-muted-foreground">Review status</span><div className="text-foreground font-medium">{r.reviewStatus}</div></div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 text-xs">
+                <div><span className="text-muted-foreground">Spend ({labels.a})</span><div className="text-foreground font-medium">{inr(r.spendA)}</div></div>
+                <div><span className="text-muted-foreground">Spend ({labels.b})</span><div className="text-foreground font-medium">{inr(r.spendB)}</div></div>
+                <div><span className="text-muted-foreground">Sales ({labels.a})</span><div className="text-foreground font-medium">{inr(r.salesA)}</div></div>
+                <div><span className="text-muted-foreground">Sales ({labels.b})</span><div className="text-foreground font-medium">{inr(r.salesB)}</div></div>
+                <div><span className="text-muted-foreground">ACOS {labels.a}→{labels.b}</span><div className="text-foreground font-medium">{pct(r.acosA)} → {pct(r.acosB)}</div></div>
+                <div><span className="text-muted-foreground">ROAS {labels.a}→{labels.b}</span><div className="text-foreground font-medium">{roas(r.roasA)} → {roas(r.roasB)}</div></div>
+                <div><span className="text-muted-foreground">Sales Δ</span><div className="text-foreground font-medium">{inr(r.salesChange)}</div></div>
+                <div><span className="text-muted-foreground">Review status</span><div className="text-foreground font-medium">{r.reviewStatus}</div></div>
+              </div>
+            )}
           </td>
         </tr>
       )}
@@ -200,7 +210,9 @@ export function FindingsActionsTable({ rows, mode = 'compare' }: { rows: Finding
       <TablePaginationControls page={page} setPage={setPage} pageSize={pageSize} setPageSize={setPageSize} totalPages={totalPages} totalRows={totalRows} startIndex={startIndex} endIndex={endIndex} />
 
       <p className="text-xs text-muted-foreground mt-3">
-        {labels.a} vs {labels.b}, correlated with change-history events where available. Review manually; compare old vs current. Do not revert blindly.
+        {mode === 'single'
+          ? 'Selected period only — no baseline comparison. Correlated with change-history events where available.'
+          : `${labels.a} vs ${labels.b}, correlated with change-history events where available. Review manually; compare old vs current. Do not revert blindly.`}
       </p>
     </div>
   )
@@ -271,7 +283,10 @@ export function GoodWorkingTable({ rows, mode = 'compare' }: { rows: GoodWorking
             <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-border text-muted-foreground">
-                  {['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword / Target / SKU / Search Term', 'Why it is good', `Spend (${labels.a})`, `Spend (${labels.b})`, `Sales (${labels.a})`, `Sales (${labels.b})`, `ACOS ${labels.a} -> ${labels.b}`, `ROAS ${labels.a} -> ${labels.b}`, 'Suggested action'].map(h => (
+                  {(mode === 'single'
+                    ? ['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword / Target / SKU / Search Term', 'Why it is good', 'Ad Spend', 'Ad-attributed Sales', 'ACOS', 'ROAS', 'Suggested action']
+                    : ['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Keyword / Target / SKU / Search Term', 'Why it is good', `Spend (${labels.a})`, `Spend (${labels.b})`, `Sales (${labels.a})`, `Sales (${labels.b})`, `ACOS ${labels.a} -> ${labels.b}`, `ROAS ${labels.a} -> ${labels.b}`, 'Suggested action']
+                  ).map(h => (
                     <th key={h} className="text-left font-semibold py-2 px-2 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -285,12 +300,23 @@ export function GoodWorkingTable({ rows, mode = 'compare' }: { rows: GoodWorking
                     <td className="py-2 px-2 text-muted-foreground">{r.adGroupName ?? '—'}</td>
                     <td className="py-2 px-2 max-w-[180px] truncate text-foreground" title={r.entityName}>{r.entityName}</td>
                     <td className="py-2 px-2 max-w-[220px] text-muted-foreground">{r.whyGood}</td>
-                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendA)}</td>
-                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendB)}</td>
-                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesA)}</td>
-                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesB)}</td>
-                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{pct(r.acosA)} {'->'} {pct(r.acosB)}</td>
-                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{roas(r.roasA)} {'->'} {roas(r.roasB)}</td>
+                    {mode === 'single' ? (
+                      <>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendB)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesB)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{pct(r.acosB)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{roas(r.roasB)}</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendA)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.spendB)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesA)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{inr(r.salesB)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{pct(r.acosA)} {'->'} {pct(r.acosB)}</td>
+                        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{roas(r.roasA)} {'->'} {roas(r.roasB)}</td>
+                      </>
+                    )}
                     <td className="py-2 px-2 max-w-[240px] text-muted-foreground">{r.suggestedAction}</td>
                   </tr>
                 ))}
