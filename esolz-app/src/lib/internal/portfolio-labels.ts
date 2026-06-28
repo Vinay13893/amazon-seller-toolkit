@@ -34,10 +34,12 @@ const PORTFOLIO_RULES: Array<{ pattern: RegExp; portfolio: string }> = [
   // it as its own delimited token (not just a substring) to avoid false
   // positives on unrelated names that happen to contain "sb".
   { pattern: /storage\s*bags?|wardrobe|under\s*-?bed|\bsbin\b|(?:^|[_-])sb(?:[_-]|$)/i, portfolio: 'Storage Bags' },
-  // EH_SelfAdv_Rack_withHooks_* specifically — NOT EH_SelfAdv_Corner_*, which
-  // shares the cost-master category text "Self Adhesive Organiser" but is a
-  // different product the team hasn't asked to bucket here yet.
-  { pattern: /selfadv[_\s-]*rack|self\s*adhesive\s*rack|rack[_\s]*with[_\s]*hooks?|bathroom[_\s]*rack|bathroom[_\s]*shelf/i, portfolio: 'Bathroom Shelf' },
+  // All self-adhesive products (Corner, Sticker, Rack-with-hooks, Organiser/
+  // Organizer) belong to Bathroom Shelf — confirmed by the team; this was
+  // previously scoped to Rack-with-hooks only, which left Corner/Sticker
+  // variants unmapped.
+  { pattern: /selfadv|self[_\s]*adhesive|rack[_\s]*with[_\s]*hooks?|bathroom[_\s]*rack|bathroom[_\s]*shelf/i, portfolio: 'Bathroom Shelf' },
+  { pattern: /gulp[_\s-]*shaker/i, portfolio: 'Unifit' },
 ]
 
 const AUTO_TARGET_LABELS: Record<string, string> = {
