@@ -93,9 +93,13 @@ function findColumnIndex(header: string[], aliases: string[]): number {
 }
 
 /**
- * Handles both ISO (2026-06-08) and the Indian-export slash formats this
- * report commonly uses, including single-digit day/month without leading
- * zeros (e.g. "8/6/2026" as well as "08/06/2026").
+ * Handles ISO (2026-06-08) and the Indian-export slash formats this report
+ * commonly uses: single-digit day/month without leading zeros (e.g.
+ * "8/6/2026" as well as "08/06/2026"), and — seen in real exports where the
+ * same file switches format partway through — a 2-digit year ("13/06/26").
+ * 2-digit years are assumed to be 20xx, which is correct for this account's
+ * entire operating history and avoids the Y2K-style ambiguity a 19xx/20xx
+ * split would otherwise introduce.
  */
 function parseReportDate(value: string | undefined): string | null {
   const trimmed = value?.trim()
@@ -104,21 +108,35 @@ function parseReportDate(value: string | undefined): string | null {
   const iso = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)
   if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`
 
-  const slash = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
-  if (slash) {
-    const day = slash[1].padStart(2, '0')
-    const month = slash[2].padStart(2, '0')
-    return `${slash[3]}-${month}-${day}`
+  const slash4 = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (slash4) {
+    const day = slash4[1].padStart(2, '0')
+    const month = slash4[2].padStart(2, '0')
+    return `${slash4[3]}-${month}-${day}`
+  }
+
+  const slash2 = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/)
+  if (slash2) {
+    const day = slash2[1].padStart(2, '0')
+    const month = slash2[2].padStart(2, '0')
+    return `20${slash2[3]}-${month}-${day}`
   }
 
   const parsed = new Date(trimmed)
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 10) : null
 }
 
-/** Strips ₹/commas/% before parsing — Business Report exports currency as "₹1,20,463.50". */
+/**
+ * Strips currency symbols/commas/% before parsing. Whitelists digits, dot,
+ * and minus rather than blacklisting ₹/%/whitespace — some exports (encoding
+ * artifacts, copy-paste from a viewer that can't render ₹) substitute a
+ * stray "?" or other placeholder character for the currency symbol, and a
+ * blacklist-only strip would silently leave that character in front of the
+ * digits, making Number() return NaN and the value get zeroed out.
+ */
 function toNumberOrNull(value: string | undefined): number | null {
   if (value === undefined) return null
-  const cleaned = value.replace(/[₹,%\s]/g, '').trim()
+  const cleaned = value.replace(/[^0-9.\-]/g, '').trim()
   if (!cleaned) return null
   const parsed = Number(cleaned)
   return Number.isFinite(parsed) ? parsed : null
