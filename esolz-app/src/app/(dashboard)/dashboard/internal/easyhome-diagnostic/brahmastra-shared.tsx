@@ -148,10 +148,26 @@ export type BusinessReportRangeTotals = {
   rowCount: number
 }
 
+export type BusinessReportSyncStatus = {
+  status: 'running' | 'success' | 'partial_success' | 'failed' | 'skipped'
+  report_type: string | null
+  date_from: string | null
+  date_to: string | null
+  started_at: string
+  finished_at: string | null
+  rows_inserted: number
+  rows_updated: number
+  rows_rejected: number
+  error_message: string | null
+  marketplace_id: string | null
+} | null
+
 export type BusinessReport = {
   latestBusinessReportDate: string | null
   complete: boolean
+  /** Manual CSV upload — backup path only. Auto-sync (syncStatus) is primary. */
   importStatus: BusinessReportImportStatus
+  syncStatus: BusinessReportSyncStatus
   rangeA: BusinessReportRangeTotals
   rangeB: BusinessReportRangeTotals
 }

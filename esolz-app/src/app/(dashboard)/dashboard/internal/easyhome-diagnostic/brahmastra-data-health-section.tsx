@@ -161,6 +161,47 @@ export function PrimarySalesSourceBadge({ data }: { data: ApiResponse }) {
   )
 }
 
+/**
+ * Phase R8: SP-API auto-sync status — primary path. Manual CSV upload
+ * (below) remains available as a backup only; it is never removed.
+ */
+export function BusinessReportAutoSyncCard({ data }: { data: ApiResponse }) {
+  const sync = data.businessReport.syncStatus
+  const statusColor = sync?.status === 'success'
+    ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300'
+    : sync?.status === 'failed'
+      ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'
+      : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
+  const is403 = sync?.error_message?.includes('403') ?? false
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-bold text-foreground">Business Report Auto Sync</h2>
+        <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusColor}`}>
+          {sync?.status ?? 'Never run'}
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground mb-3">
+        Source: SP-API {sync?.report_type ?? 'GET_SALES_AND_TRAFFIC_REPORT'}. Manual CSV import below remains as backup only.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <KpiCard label="Last run" value={sync ? new Date(sync.started_at).toLocaleString('en-IN') : 'Never run'} sub={sync ? `${sync.date_from} → ${sync.date_to}` : 'No auto sync yet'} subWrap />
+        <KpiCard label="Latest API report date" value={data.businessReport.latestBusinessReportDate ?? '—'} sub="Business Reports" />
+        <KpiCard label="Rows inserted/updated" value={sync ? `${sync.rows_inserted} / ${sync.rows_updated}` : '—'} sub={sync?.rows_rejected ? `${sync.rows_rejected} rejected` : 'Rejected: 0'} />
+        <KpiCard label="Marketplace" value={sync?.marketplace_id ?? '—'} sub="SP-API" />
+      </div>
+      {sync?.error_message && (
+        <p className="text-xs text-red-500 dark:text-red-400 mt-3 break-words">
+          {is403
+            ? 'SP-API Brand Analytics role may be missing for GET_SALES_AND_TRAFFIC_REPORT.'
+            : sync.error_message}
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function BusinessReportImportPanel({ data, onImported }: { data: ApiResponse; onImported?: () => void }) {
   const { businessReport } = data
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -195,7 +236,10 @@ export function BusinessReportImportPanel({ data, onImported }: { data: ApiRespo
   return (
     <div className="bg-card border border-border rounded-xl p-5">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <h2 className="text-sm font-bold text-foreground">Business Report Import</h2>
+        <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+          Manual CSV import backup
+          <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">Backup only — Auto Sync above is primary</span>
+        </h2>
         <div>
           <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} disabled={uploading} />
           <button
@@ -209,7 +253,7 @@ export function BusinessReportImportPanel({ data, onImported }: { data: ApiRespo
         </div>
       </div>
       <p className="text-xs text-muted-foreground mb-3">
-        Source: Seller Central Business Reports → Sales and Traffic → By Date. This is Ordered Product Sales and can differ from Settlement Net Sales.
+        Source: Seller Central Business Reports → Sales and Traffic → By Date. This is Ordered Product Sales and can differ from Settlement Net Sales. Use this only if Auto Sync above is unavailable.
       </p>
       {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
       {result && (
@@ -420,6 +464,8 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
       </div>
 
       <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
+
+      <BusinessReportAutoSyncCard data={data} />
 
       <BusinessReportImportPanel data={data} onImported={onBusinessReportImported} />
 

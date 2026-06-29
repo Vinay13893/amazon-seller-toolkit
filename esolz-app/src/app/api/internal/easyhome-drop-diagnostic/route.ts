@@ -539,6 +539,7 @@ export async function GET(request: Request) {
     { data: latestChangeEvent },
     { data: latestBusinessReportRow },
     { data: latestBusinessReportBatch },
+    { data: latestBusinessReportSyncRun },
   ] = await Promise.all([
     supabase.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_payment_transaction_upload_batches').select('original_filename, accepted_count, rejected_count, inserted_count, updated_count, uploaded_at').eq('workspace_id', workspaceId).order('uploaded_at', { ascending: false }).limit(1).maybeSingle(),
@@ -549,6 +550,7 @@ export async function GET(request: Request) {
     supabase.from('internal_ads_change_history_events').select('changed_at').eq('workspace_id', workspaceId).order('changed_at', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_business_report_sales_traffic_daily').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     supabase.from('internal_business_report_upload_batches').select('filename, status, accepted_rows, rejected_rows, min_report_date, max_report_date, created_at, completed_at, error_summary').eq('workspace_id', workspaceId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_data_refresh_runs').select('status, report_type, date_from, date_to, started_at, finished_at, rows_inserted, rows_updated, rows_rejected, error_message, marketplace_id').eq('workspace_id', workspaceId).eq('source', 'business_report_sp_api').order('started_at', { ascending: false }).limit(1).maybeSingle(),
   ])
   const latestSalesDate = dateOnly((latestPaymentTxn as { transaction_date?: string } | null)?.transaction_date ?? null)
   const latestAdsTables: FreshnessTable[] = [
@@ -624,7 +626,9 @@ export async function GET(request: Request) {
   const businessReport = {
     latestBusinessReportDate,
     complete: businessReportComplete,
+    // Manual CSV upload remains a backup path — auto-sync (below) is primary.
     importStatus: latestBusinessReportBatch ?? null,
+    syncStatus: latestBusinessReportSyncRun ?? null,
     rangeA: sumBusinessReportRange(rangeA),
     rangeB: sumBusinessReportRange(rangeB),
   }
