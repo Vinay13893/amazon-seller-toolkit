@@ -53,7 +53,14 @@ import {
 import { createClient } from '@/lib/supabase/server'
 import { resolveEasyhomePortfolio } from '@/lib/internal/portfolio-labels'
 import { resolveSelectedProfileForWorkspace } from '@/lib/internal/brahmastra-selected-profile'
-import { computeBlendedMetrics, buildBlendedInsights, computeRoasTacos, type BlendedPeriodMetrics } from '@/lib/internal/easyhome-blended-metrics'
+import {
+  computeBlendedMetrics,
+  buildBlendedInsights,
+  computeBusinessReportBlended,
+  buildBusinessReportInsights,
+  buildSettlementVsBusinessReportNote,
+  type BlendedPeriodMetrics,
+} from '@/lib/internal/easyhome-blended-metrics'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -604,6 +611,15 @@ export async function GET(request: Request) {
       rowCount: rowsInRange.length,
     }
   }
+  // Daily series for the Trends chart's primary sales line — Business
+  // Report sourced, kept entirely separate from diagnostic.dailyTrend
+  // (Settlement-sourced); never merged into one series.
+  const businessReportDailyTrend = [...(businessReportRows ?? [])]
+    .sort((a, b) => (a.report_date as string).localeCompare(b.report_date as string))
+    .map(row => ({
+      date: row.report_date as string,
+      orderedProductSales: round2(Number(row.ordered_product_sales ?? 0)),
+    }))
   const businessReportComplete = !businessReportIncomplete && (businessReportRows ?? []).length > 0
   const businessReport = {
     latestBusinessReportDate,
@@ -627,18 +643,52 @@ export async function GET(request: Request) {
     { beforeSpend: 0, afterSpend: 0, beforeSales: 0, afterSales: 0 },
   )
 
-  // Business Report Blended ROAS/TACOS = Ordered Product Sales (Business
-  // Report, order-date based) ÷ Amazon Ads Spend — a SEPARATE metric from
-  // the Settlement-based blended figures below. Only computed when Business
+  // Business Report Blended ROAS/TACOS/Ad Sales Share/Organic Estimate =
+  // Ordered Product Sales (Business Report, order-date based) combined with
+  // Amazon Ads Spend/Attributed Sales — a SEPARATE metric set from the
+  // Settlement-based blended figures below. Only computed when Business
   // Report data actually exists for that range; never backfilled/faked.
+  const businessReportBlendedComplete = businessReportComplete && !adsDataIncomplete
+  const businessReportAfter = businessReport.rangeB.rowCount > 0
+    ? { orderedProductSales: businessReport.rangeB.orderedProductSales, adSpend: adTotals.afterSpend, adSales: adTotals.afterSales, ...computeBusinessReportBlended(businessReport.rangeB.orderedProductSales, adTotals.afterSpend, adTotals.afterSales) }
+    : null
+  const businessReportBefore = mode === 'compare' && businessReport.rangeA.rowCount > 0
+    ? { orderedProductSales: businessReport.rangeA.orderedProductSales, adSpend: adTotals.beforeSpend, adSales: adTotals.beforeSales, ...computeBusinessReportBlended(businessReport.rangeA.orderedProductSales, adTotals.beforeSpend, adTotals.beforeSales) }
+    : null
   const businessReportBlended = {
-    complete: businessReportComplete && !adsDataIncomplete,
-    after: businessReport.rangeB.rowCount > 0
-      ? { orderedProductSales: businessReport.rangeB.orderedProductSales, adSpend: adTotals.afterSpend, ...computeRoasTacos(businessReport.rangeB.orderedProductSales, adTotals.afterSpend) }
-      : null,
-    before: mode === 'compare' && businessReport.rangeA.rowCount > 0
-      ? { orderedProductSales: businessReport.rangeA.orderedProductSales, adSpend: adTotals.beforeSpend, ...computeRoasTacos(businessReport.rangeA.orderedProductSales, adTotals.beforeSpend) }
-      : null,
+    complete: businessReportBlendedComplete,
+    after: businessReportAfter,
+    before: businessReportBefore,
+    insights: mode === 'compare' && businessReportBlendedComplete && businessReportBefore && businessReportAfter
+      ? buildBusinessReportInsights(businessReportBefore, businessReportAfter)
+      : [],
+  }
+  // Source priority (Phase R7): Business Report Ordered Product Sales is the
+  // primary business-sales view whenever it's complete for the loaded
+  // range; otherwise the UI must fall back to Settlement Net Sales with an
+  // explicit warning, never silently substituting one for the other.
+  const primarySalesSource: 'business_report' | 'settlement_fallback' = businessReportComplete ? 'business_report' : 'settlement_fallback'
+  // Settlement vs Business Report reconciliation note — informational only,
+  // never implies the two numbers should match exactly.
+  const businessReportVsSettlement = {
+    rangeB: {
+      orderedProductSales: businessReport.rangeB.orderedProductSales,
+      settlementNetSales: diagnostic.accountSummary.after.netSales,
+      difference: round2(diagnostic.accountSummary.after.netSales - businessReport.rangeB.orderedProductSales),
+      differencePct: businessReport.rangeB.orderedProductSales > 0
+        ? round2(((diagnostic.accountSummary.after.netSales - businessReport.rangeB.orderedProductSales) / businessReport.rangeB.orderedProductSales) * 100)
+        : null,
+      note: buildSettlementVsBusinessReportNote(businessReport.rangeB.orderedProductSales, diagnostic.accountSummary.after.netSales),
+    },
+    rangeA: mode === 'compare' ? {
+      orderedProductSales: businessReport.rangeA.orderedProductSales,
+      settlementNetSales: diagnostic.accountSummary.before.netSales,
+      difference: round2(diagnostic.accountSummary.before.netSales - businessReport.rangeA.orderedProductSales),
+      differencePct: businessReport.rangeA.orderedProductSales > 0
+        ? round2(((diagnostic.accountSummary.before.netSales - businessReport.rangeA.orderedProductSales) / businessReport.rangeA.orderedProductSales) * 100)
+        : null,
+      note: buildSettlementVsBusinessReportNote(businessReport.rangeA.orderedProductSales, diagnostic.accountSummary.before.netSales),
+    } : null,
   }
 
   const blendedAfter: BlendedPeriodMetrics = computeBlendedMetrics({
@@ -803,6 +853,9 @@ export async function GET(request: Request) {
     blendedMetrics,
     businessReport,
     businessReportBlended,
+    businessReportDailyTrend,
+    businessReportVsSettlement,
+    primarySalesSource,
     sourceAccuracyAudit,
     diagnostic,
     campaignDiagnostic,

@@ -159,15 +159,34 @@ export type BusinessReport = {
 export type BusinessReportBlendedPeriod = {
   orderedProductSales: number
   adSpend: number
+  adSales: number
   roas: number | null
   tacos: number | null
+  adSalesShare: number | null
+  organicEstimate: number
 }
 
 export type BusinessReportBlended = {
   complete: boolean
   after: BusinessReportBlendedPeriod | null
   before: BusinessReportBlendedPeriod | null
+  insights: string[]
 }
+
+export type BusinessReportVsSettlementPeriod = {
+  orderedProductSales: number
+  settlementNetSales: number
+  difference: number
+  differencePct: number | null
+  note: string | null
+}
+
+export type BusinessReportVsSettlement = {
+  rangeB: BusinessReportVsSettlementPeriod
+  rangeA: BusinessReportVsSettlementPeriod | null
+}
+
+export type PrimarySalesSource = 'business_report' | 'settlement_fallback'
 
 export type SourceAccuracyAudit = {
   ranges: { requestedRangeA: DateRange; requestedRangeB: DateRange | null; effectiveRangeA: DateRange; effectiveRangeB: DateRange; mode: 'single' | 'compare' }
@@ -214,6 +233,9 @@ export type ApiResponse = {
   }
   businessReport: BusinessReport
   businessReportBlended: BusinessReportBlended
+  businessReportDailyTrend: Array<{ date: string; orderedProductSales: number }>
+  businessReportVsSettlement: BusinessReportVsSettlement
+  primarySalesSource: PrimarySalesSource
   sourceAccuracyAudit: SourceAccuracyAudit
   diagnostic: EasyhomeDropDiagnostic
   campaignDiagnostic: EasyhomeAdsCampaignDiagnostic

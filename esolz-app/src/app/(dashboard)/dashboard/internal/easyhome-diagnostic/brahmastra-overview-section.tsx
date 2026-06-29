@@ -6,7 +6,7 @@ import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { ApiResponse } from './brahmastra-shared'
 import { formatInr, formatInrCompact, pctStr, roasStr, rangeLabel, shortSourceLabel } from './brahmastra-shared'
 import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
-import { AccuracyAuditPanel, SourceComparisonCards } from './brahmastra-data-health-section'
+import { AccuracyAuditPanel, BusinessReportVsSettlementCard, PrimarySalesSourceBadge } from './brahmastra-data-health-section'
 
 /**
  * Overview is intentionally the only tab that carries the full Control
@@ -36,8 +36,10 @@ export function BrahmastraOverviewSection({
   loadedQuery: ControlPanelQuery
   loadedAt: Date | null
 }) {
-  const { controlPanel, sourceAccuracyAudit, blendedMetrics, actionQueue, diagnostic } = data
+  const { controlPanel, sourceAccuracyAudit, blendedMetrics, businessReportBlended, actionQueue, diagnostic } = data
   const { after } = diagnostic.accountSummary
+  const isBusinessReportPrimary = data.primarySalesSource === 'business_report'
+  const primaryInsights = isBusinessReportPrimary ? businessReportBlended.insights : blendedMetrics.insights
 
   const topActions = [...actionQueue]
     .sort((a, b) => (a.priority === 'High' ? 0 : a.priority === 'Medium' ? 1 : 2) - (b.priority === 'High' ? 0 : b.priority === 'Medium' ? 1 : 2))
@@ -83,33 +85,61 @@ export function BrahmastraOverviewSection({
 
       <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
 
-      <SourceComparisonCards data={data} />
+      <div className="flex items-center gap-2">
+        <PrimarySalesSourceBadge data={data} />
+      </div>
 
-      {/* Executive Summary / key KPI cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-        <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
-        <KpiCard label="Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub={shortSourceLabel('Source: Amazon Ads Reports')} subTitle="Source: Amazon Ads Reports" />
-        <KpiCard label="Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Net Sales ÷ Ads Spend" subTitle="Settlement Net Sales ÷ Amazon Ads Spend" />
-        <KpiCard label="TACOS / Blended ACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ads Spend ÷ Net Sales" subTitle="Amazon Ads Spend ÷ Settlement Net Sales" />
-        <KpiCard label="Ad Sales Share" value={pctStr(blendedMetrics.after.adSalesShare)} sub="Ads Sales ÷ Net Sales" subTitle="Amazon Ads Attributed Sales ÷ Settlement Net Sales" />
-        <KpiCard label="Organic Estimate" value={formatInrCompact(blendedMetrics.after.organicEstimate)} valueTitle={formatInr(blendedMetrics.after.organicEstimate)} sub="Estimate" subTitle="Estimate, not a direct Amazon metric" />
-        <KpiCard label="Orders" value={after.orderCount.toLocaleString('en-IN')} sub="Payment Txns" subTitle="Distinct orders · Payment Transactions" />
-        <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
+      {!isBusinessReportPrimary && (
+        <p className="text-sm text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl p-3">
+          Business Report data is missing for this range. Showing Settlement Net Sales view.
+        </p>
+      )}
+
+      {/* Primary business sales — Business Report Ordered Product Sales when complete for the loaded range. */}
+      {isBusinessReportPrimary && businessReportBlended.after && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <KpiCard label="Ordered Product Sales" value={formatInrCompact(businessReportBlended.after.orderedProductSales)} valueTitle={formatInr(businessReportBlended.after.orderedProductSales)} sub="Business Reports" />
+          <KpiCard label="Units Ordered" value={data.businessReport.rangeB.unitsOrdered.toLocaleString('en-IN')} sub="Business Reports" />
+          <KpiCard label="Total Order Items" value={data.businessReport.rangeB.totalOrderItems.toLocaleString('en-IN')} sub="Business Reports" />
+          <KpiCard label="Amazon Ads Spend" value={formatInrCompact(businessReportBlended.after.adSpend)} valueTitle={formatInr(businessReportBlended.after.adSpend)} sub={shortSourceLabel('Source: Amazon Ads Reports')} subTitle="Source: Amazon Ads Reports" />
+          <KpiCard label="Business Report Blended ROAS" value={roasStr(businessReportBlended.after.roas)} sub="Ordered Sales ÷ Ads Spend" subWrap />
+          <KpiCard label="Business Report TACOS" value={pctStr(businessReportBlended.after.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap subTitle="Amazon Ads Spend ÷ Ordered Product Sales" />
+          <KpiCard label="Business Report Ad Sales Share" value={pctStr(businessReportBlended.after.adSalesShare)} sub="Ads Sales ÷ Ordered Sales" subWrap />
+          <KpiCard label="Business Report Organic Estimate" value={formatInrCompact(businessReportBlended.after.organicEstimate)} valueTitle={formatInr(businessReportBlended.after.organicEstimate)} sub="Estimate" subTitle="Ordered Product Sales − Amazon Ads Attributed Sales (estimate)" />
+        </div>
+      )}
+
+      {/* Secondary / reconciliation — Settlement, kept separate from the primary view above. */}
+      <div>
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{isBusinessReportPrimary ? 'Secondary — Settlement (reconciliation)' : 'Settlement'}</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+          <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
+          <KpiCard label="Settlement Gross Product Sales" value={formatInrCompact(blendedMetrics.after.grossSales)} valueTitle={formatInr(blendedMetrics.after.grossSales)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
+          <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
+          <KpiCard label="Settlement Orders" value={after.orderCount.toLocaleString('en-IN')} sub="Payment Txns" subTitle="Distinct orders · Payment Transactions" />
+          {!isBusinessReportPrimary && (
+            <KpiCard label="Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub={shortSourceLabel('Source: Amazon Ads Reports')} subTitle="Source: Amazon Ads Reports" />
+          )}
+          <KpiCard label="Settlement Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Net Sales ÷ Ads Spend" subTitle="Settlement Net Sales ÷ Amazon Ads Spend" />
+          <KpiCard label="Settlement TACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ads Spend ÷ Net Sales" subTitle="Amazon Ads Spend ÷ Settlement Net Sales" />
+        </div>
       </div>
       {!blendedMetrics.complete && (
         <p className="text-xs text-amber-600 dark:text-amber-300">
-          Blended metrics above may be incomplete for the selected range until both Ads and payment-transaction data catch up. See Data Health &amp; Imports for details.
+          Settlement-based metrics above may be incomplete for the selected range until both Ads and payment-transaction data catch up. See Data Health &amp; Imports for details.
         </p>
       )}
+
+      <BusinessReportVsSettlementCard data={data} />
 
       {/* Top 3 insights */}
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="text-sm font-bold text-foreground mb-3">Top insights</h2>
-        {blendedMetrics.insights.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No compare-mode blended insights for this selection — switch to Compare mode, or see Trends &amp; Charts / Category Performance for more detail.</p>
+        {primaryInsights.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No compare-mode insights for this selection — switch to Compare mode, or see Trends &amp; Charts / Category Performance for more detail.</p>
         ) : (
           <ul className="space-y-1.5 text-xs text-muted-foreground">
-            {blendedMetrics.insights.slice(0, 3).map((note, i) => (
+            {primaryInsights.slice(0, 3).map((note, i) => (
               <li key={i} className="flex gap-2">
                 <span>•</span>
                 <span>{note}</span>

@@ -87,7 +87,10 @@ export function BrahmastraCategorySection({ data, loadedRangeSuffix }: { data: A
         <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
           <TrendingDown className="w-4 h-4 text-red-400" /> Category (portfolio) - settlement net sales delta
         </h2>
-        <p className="text-xs text-muted-foreground mb-4">Source: Payment Transactions (settlement), mapped by SKU/category.</p>
+        <p className="text-xs text-muted-foreground mb-1">Source: Payment Transactions (settlement), mapped by SKU/category.</p>
+        <p className="text-xs text-muted-foreground mb-4 italic">
+          Category sales use Settlement Net Sales by SKU/category. Business Report category split requires SKU-level Business Report import.
+        </p>
         <div className="h-64 mb-4">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={diagnostic.categoryTable} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>

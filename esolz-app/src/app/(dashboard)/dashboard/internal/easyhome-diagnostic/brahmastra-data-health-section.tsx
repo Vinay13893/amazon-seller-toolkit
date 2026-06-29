@@ -77,7 +77,7 @@ export function BusinessReportBlendedCards({ data }: { data: ApiResponse }) {
         )}
       </div>
       <p className="text-xs text-muted-foreground mb-4">
-        Ordered Product Sales: Source: Seller Central Business Reports (order-date based) · Amazon Ads Spend: Source: Amazon Ads Reports. This is separate from the Settlement-based Blended ROAS/TACOS shown above.
+        Ordered Product Sales: Source: Seller Central Business Reports (order-date based) · Amazon Ads Spend / Amazon Ads Attributed Sales: Source: Amazon Ads Reports. This is separate from the Settlement-based Blended ROAS/TACOS shown above.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         {businessReportBlended.after && (
@@ -85,6 +85,8 @@ export function BusinessReportBlendedCards({ data }: { data: ApiResponse }) {
             <KpiCard label={controlPanel.mode === 'compare' ? 'Ordered Product Sales (B)' : 'Ordered Product Sales'} value={formatInrCompact(businessReportBlended.after.orderedProductSales)} valueTitle={formatInr(businessReportBlended.after.orderedProductSales)} sub="Business Reports" />
             <KpiCard label={controlPanel.mode === 'compare' ? 'Business Report ROAS (B)' : 'Business Report ROAS'} value={roasStr(businessReportBlended.after.roas)} sub="Ordered Sales ÷ Ads Spend" subWrap />
             <KpiCard label={controlPanel.mode === 'compare' ? 'Business Report TACOS (B)' : 'Business Report TACOS'} value={pctStr(businessReportBlended.after.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap />
+            <KpiCard label={controlPanel.mode === 'compare' ? 'Ad Sales Share (B)' : 'Ad Sales Share'} value={pctStr(businessReportBlended.after.adSalesShare)} sub="Ads Sales ÷ Ordered Sales" subWrap />
+            <KpiCard label={controlPanel.mode === 'compare' ? 'Organic Estimate (B)' : 'Organic Estimate'} value={formatInrCompact(businessReportBlended.after.organicEstimate)} valueTitle={formatInr(businessReportBlended.after.organicEstimate)} sub="Estimate" subTitle="Ordered Product Sales − Amazon Ads Attributed Sales (estimate)" />
           </>
         )}
         {businessReportBlended.before && (
@@ -92,10 +94,70 @@ export function BusinessReportBlendedCards({ data }: { data: ApiResponse }) {
             <KpiCard label="Ordered Product Sales (A)" value={formatInrCompact(businessReportBlended.before.orderedProductSales)} valueTitle={formatInr(businessReportBlended.before.orderedProductSales)} sub="Business Reports" />
             <KpiCard label="Business Report ROAS (A)" value={roasStr(businessReportBlended.before.roas)} sub="Ordered Sales ÷ Ads Spend" subWrap />
             <KpiCard label="Business Report TACOS (A)" value={pctStr(businessReportBlended.before.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap />
+            <KpiCard label="Ad Sales Share (A)" value={pctStr(businessReportBlended.before.adSalesShare)} sub="Ads Sales ÷ Ordered Sales" subWrap />
+            <KpiCard label="Organic Estimate (A)" value={formatInrCompact(businessReportBlended.before.organicEstimate)} valueTitle={formatInr(businessReportBlended.before.organicEstimate)} sub="Estimate" subTitle="Ordered Product Sales − Amazon Ads Attributed Sales (estimate)" />
           </>
         )}
       </div>
+      {businessReportBlended.insights.length > 0 && (
+        <div className="mt-4 border-t border-border/60 pt-3">
+          <p className="text-xs font-semibold text-foreground mb-2">Business Report insights (correlation only — review manually, not a causal claim)</p>
+          <ul className="space-y-1.5 text-xs text-muted-foreground">
+            {businessReportBlended.insights.map((note, i) => (
+              <li key={i} className="flex gap-2">
+                <span>•</span>
+                <span>{note}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
+  )
+}
+
+/** Task D: explicit Business Report vs Settlement comparison card. */
+export function BusinessReportVsSettlementCard({ data }: { data: ApiResponse }) {
+  const { businessReportVsSettlement, controlPanel } = data
+  const period = businessReportVsSettlement.rangeB
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <h2 className="text-sm font-bold text-foreground mb-1">Business Report vs Settlement</h2>
+      <p className="text-xs text-muted-foreground mb-4">
+        Business Report is order-date based. Settlement is transaction/refund-date based.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <KpiCard label={controlPanel.mode === 'compare' ? 'Ordered Product Sales (B)' : 'Ordered Product Sales'} value={formatInrCompact(period.orderedProductSales)} valueTitle={formatInr(period.orderedProductSales)} sub="Business Reports" />
+        <KpiCard label={controlPanel.mode === 'compare' ? 'Settlement Net Sales (B)' : 'Settlement Net Sales'} value={formatInrCompact(period.settlementNetSales)} valueTitle={formatInr(period.settlementNetSales)} sub="Payment Txns" />
+        <KpiCard label="Difference" value={formatInrCompact(period.difference)} valueTitle={formatInr(period.difference)} sub="Settlement − Business Report" subWrap />
+        <KpiCard label="Difference %" value={period.differencePct !== null ? `${period.differencePct >= 0 ? '+' : ''}${period.differencePct.toFixed(1)}%` : '—'} sub="vs Ordered Product Sales" subWrap />
+      </div>
+      {controlPanel.mode === 'compare' && businessReportVsSettlement.rangeA && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mt-3">
+          <KpiCard label="Ordered Product Sales (A)" value={formatInrCompact(businessReportVsSettlement.rangeA.orderedProductSales)} valueTitle={formatInr(businessReportVsSettlement.rangeA.orderedProductSales)} sub="Business Reports" />
+          <KpiCard label="Settlement Net Sales (A)" value={formatInrCompact(businessReportVsSettlement.rangeA.settlementNetSales)} valueTitle={formatInr(businessReportVsSettlement.rangeA.settlementNetSales)} sub="Payment Txns" />
+          <KpiCard label="Difference (A)" value={formatInrCompact(businessReportVsSettlement.rangeA.difference)} valueTitle={formatInr(businessReportVsSettlement.rangeA.difference)} sub="Settlement − Business Report" subWrap />
+          <KpiCard label="Difference % (A)" value={businessReportVsSettlement.rangeA.differencePct !== null ? `${businessReportVsSettlement.rangeA.differencePct >= 0 ? '+' : ''}${businessReportVsSettlement.rangeA.differencePct.toFixed(1)}%` : '—'} sub="vs Ordered Product Sales" subWrap />
+        </div>
+      )}
+      {period.note && <p className="text-xs text-muted-foreground mt-3">{period.note}</p>}
+    </div>
+  )
+}
+
+/** Task G: which source is driving the "primary" sales view for the loaded range. */
+export function PrimarySalesSourceBadge({ data }: { data: ApiResponse }) {
+  const isBusinessReport = data.primarySalesSource === 'business_report'
+  return (
+    <span
+      className={
+        isBusinessReport
+          ? 'inline-flex items-center rounded-full border border-green-200 bg-green-50 px-2.5 py-1 text-xs font-semibold text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300'
+          : 'inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
+      }
+    >
+      Primary Sales Source: {isBusinessReport ? 'Business Report Ordered Product Sales' : 'Settlement fallback'}
+    </span>
   )
 }
 
@@ -350,6 +412,13 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
         )}
       </div>
 
+      <div className="bg-card border border-border rounded-xl p-4 flex flex-wrap items-center gap-3">
+        <PrimarySalesSourceBadge data={data} />
+        <span className="text-xs text-muted-foreground">
+          Latest Business Report date: {controlPanel.latestBusinessReportDate ?? '—'} · Latest payment date: {controlPanel.latestPaymentDate ?? '—'} · Latest Ads date: {controlPanel.latestAdsDate ?? '—'}
+        </span>
+      </div>
+
       <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
 
       <BusinessReportImportPanel data={data} onImported={onBusinessReportImported} />
@@ -357,6 +426,8 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
       <SourceComparisonCards data={data} />
 
       <BusinessReportBlendedCards data={data} />
+
+      <BusinessReportVsSettlementCard data={data} />
 
       <MappingHealthCard data={data} loadedRangeSuffix={loadedRangeSuffix} />
 

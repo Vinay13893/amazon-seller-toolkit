@@ -106,3 +106,70 @@ export function computeRoasTacos(sales: number, spend: number): RoasTacos {
     tacos: sales > 0 ? Math.round((spend / sales) * 10000) / 100 : null,
   }
 }
+
+export type BusinessReportBlendedMetrics = RoasTacos & {
+  adSalesShare: number | null
+  organicEstimate: number
+}
+
+/**
+ * Phase R7: full Business Report blended set (ROAS, TACOS, Ad Sales Share,
+ * Organic Estimate) — all denominated against Ordered Product Sales rather
+ * than Settlement Net Sales. Ad Sales Share/Organic Estimate mirror the
+ * Settlement-based versions in computeBlendedMetrics() but must stay a
+ * distinct computation since the denominator is a different number.
+ */
+export function computeBusinessReportBlended(orderedProductSales: number, adSpend: number, adSales: number): BusinessReportBlendedMetrics {
+  return {
+    ...computeRoasTacos(orderedProductSales, adSpend),
+    adSalesShare: orderedProductSales > 0 ? Math.round((adSales / orderedProductSales) * 10000) / 100 : null,
+    organicEstimate: Math.round(Math.max(orderedProductSales - adSales, 0) * 100) / 100,
+  }
+}
+
+type BusinessReportPeriod = { orderedProductSales: number; adSpend: number } & BusinessReportBlendedMetrics
+
+/**
+ * Phase R7: executive-insight commentary with Business Report Ordered
+ * Product Sales as the PRIMARY sales movement source (per the new source
+ * priority rules) — kept entirely separate from the Settlement-based
+ * buildBlendedInsights() above. Compare-mode only (no baseline in Single
+ * mode). Strictly correlation language, never "caused".
+ */
+export function buildBusinessReportInsights(before: BusinessReportPeriod, after: BusinessReportPeriod): string[] {
+  const notes: string[] = []
+  const salesFell = after.orderedProductSales < before.orderedProductSales
+  const adSpendFell = after.adSpend < before.adSpend
+  const tacosWorsened = before.tacos !== null && after.tacos !== null && after.tacos > before.tacos
+  const tacosImproved = before.tacos !== null && after.tacos !== null && after.tacos < before.tacos
+  const shareRose = before.adSalesShare !== null && after.adSalesShare !== null && after.adSalesShare > before.adSalesShare
+  const shareFell = before.adSalesShare !== null && after.adSalesShare !== null && after.adSalesShare < before.adSalesShare
+
+  if (salesFell && adSpendFell) {
+    notes.push('Ordered Product Sales fell while Amazon Ads Spend fell — correlated movement; review manually.')
+  }
+  if (tacosWorsened) {
+    notes.push('Business Report TACOS worsened — correlated with ad spend pressure increasing relative to Ordered Product Sales; review manually.')
+  } else if (tacosImproved) {
+    notes.push('Business Report TACOS improved — may indicate ad spend efficiency relative to Ordered Product Sales improved; review manually.')
+  }
+  if (shareRose) {
+    notes.push('Ad-attributed sales share increased against Ordered Product Sales — may indicate increased ad dependency; review manually.')
+  } else if (shareFell) {
+    notes.push('Ad-attributed sales share decreased against Ordered Product Sales — may indicate organic demand strengthened; review manually.')
+  }
+  return notes
+}
+
+/**
+ * Settlement/refund-side insight, kept separate from the Business-Report
+ * sales-movement insights above per the source-separation rule — never
+ * implies Settlement Net Sales and Ordered Product Sales are the same
+ * number, only reports how far apart they are.
+ */
+export function buildSettlementVsBusinessReportNote(orderedProductSales: number, settlementNetSales: number): string | null {
+  if (orderedProductSales <= 0) return null
+  const diffPct = ((settlementNetSales - orderedProductSales) / orderedProductSales) * 100
+  if (Math.abs(diffPct) < 0.05) return null
+  return `Settlement Net Sales differs from Ordered Product Sales by ${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(1)}% — expected, since Settlement is transaction/refund-date based and Ordered Product Sales is order-date based; review manually if the gap is larger than usual.`
+}
