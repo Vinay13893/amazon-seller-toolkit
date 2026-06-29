@@ -16,8 +16,32 @@
 // from the Ads Reporting API's PENDING/PROCESSING/COMPLETED/FAILED).
 
 import { getAmazonReport, type AmazonReportStatusResult } from '@/lib/amazon/reports'
+import { mapCostMasterCategoryToPortfolio } from '@/lib/internal/easyhome-drop-diagnostic'
+import { resolveEasyhomePortfolio } from '@/lib/internal/portfolio-labels'
 
 export const SALES_AND_TRAFFIC_REPORT_TYPE = 'GET_SALES_AND_TRAFFIC_REPORT'
+
+/**
+ * Phase R9: same two-tier resolution chain already used for payment/Ads SKU
+ * mapping (exact-match cost-master category dictionary first, then the
+ * shared regex resolver) — reused here rather than reimplemented, per the
+ * "always import the exact function the live code path uses" rule. The
+ * original Business Report sync (R8) called resolveEasyhomePortfolio()
+ * directly and skipped the cost-master exact-match step entirely, which is
+ * why EVA Kids/EVA Gym/ASM SKUs that already have a correct cost-master
+ * category came back "Unmapped / Needs Review" — fixed here.
+ */
+export function resolveBusinessReportSkuPortfolio(
+  costMasterCategory: string | null,
+  sku: string | null,
+  childAsin: string | null,
+  parentAsin: string | null,
+  productName: string | null = null,
+): string {
+  const fromCategory = mapCostMasterCategoryToPortfolio(costMasterCategory)
+  if (fromCategory !== 'Unmapped / Needs Review') return fromCategory
+  return resolveEasyhomePortfolio(null, sku, productName, childAsin, parentAsin)
+}
 
 export type MoneyAmount = { amount: number; currencyCode: string } | undefined
 

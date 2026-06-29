@@ -162,6 +162,26 @@ export type BusinessReportSyncStatus = {
   marketplace_id: string | null
 } | null
 
+export type BusinessReportSkuMapping = {
+  totalRows: number
+  mappedRows: number
+  unmappedRows: number
+  unmappedOrderedProductSales: number
+}
+
+export type BusinessReportCategoryRow = {
+  portfolio: string
+  beforeSales: number
+  afterSales: number
+  deltaSales: number
+  deltaSalesPct: number | null
+  beforeUnits: number
+  afterUnits: number
+  deltaUnits: number
+}
+
+export type CategoryPrimarySource = 'business_report_sku' | 'settlement_fallback'
+
 export type BusinessReport = {
   latestBusinessReportDate: string | null
   complete: boolean
@@ -170,6 +190,9 @@ export type BusinessReport = {
   syncStatus: BusinessReportSyncStatus
   rangeA: BusinessReportRangeTotals
   rangeB: BusinessReportRangeTotals
+  skuMapping: BusinessReportSkuMapping
+  categoryPrimarySource: CategoryPrimarySource
+  categoryTable: BusinessReportCategoryRow[]
 }
 
 export type BusinessReportBlendedPeriod = {

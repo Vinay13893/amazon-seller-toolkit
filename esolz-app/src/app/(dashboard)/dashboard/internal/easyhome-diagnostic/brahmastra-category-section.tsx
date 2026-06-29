@@ -16,8 +16,10 @@ import { ChartTooltip, DataTable, SkuLoserTable, downloadCsv, formatInr } from '
 import { usePaginatedRows, TablePaginationControls } from './table-pagination'
 
 export function BrahmastraCategorySection({ data, loadedRangeSuffix }: { data: ApiResponse; loadedRangeSuffix: string }) {
-  const { diagnostic, campaignDiagnostic, topSpenders, topAdSalesGenerators, deepDiagnostic, controlPanel } = data
+  const { diagnostic, campaignDiagnostic, topSpenders, topAdSalesGenerators, deepDiagnostic, controlPanel, businessReport } = data
   const campaignTablePaging = usePaginatedRows(campaignDiagnostic.campaignTable)
+  const isBusinessReportPrimary = businessReport.categoryPrimarySource === 'business_report_sku'
+  const { skuMapping } = businessReport
 
   return (
     <div className="space-y-6">
@@ -82,14 +84,53 @@ export function BrahmastraCategorySection({ data, loadedRangeSuffix }: { data: A
         </div>
       )}
 
+      {/* Business Report SKU category rollup — primary when sufficiently mapped */}
+      {skuMapping.totalRows > 0 && (
+        <div className="bg-card border border-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-1">
+            <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+              <TrendingDown className="w-4 h-4 text-red-400" /> Category (portfolio) — Business Report Ordered Product Sales
+            </h2>
+            {isBusinessReportPrimary && (
+              <span className="inline-flex items-center rounded-full border border-green-200 bg-green-50 px-2.5 py-0.5 text-xs font-semibold text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
+                Primary
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mb-1">Source: Seller Central Business Reports (SKU/ASIN), mapped by SKU.</p>
+          {!isBusinessReportPrimary && (
+            <p className="text-xs text-amber-600 dark:text-amber-300 mb-3">
+              Business Report SKU category mapping incomplete. {skuMapping.unmappedRows} row(s) / {formatInr(skuMapping.unmappedOrderedProductSales)} ordered sales unmapped. Settlement category table below remains the fallback.
+            </p>
+          )}
+          <DataTable
+            columns={['Portfolio', 'Range A Ordered Sales', 'Range B Ordered Sales', 'Sales Delta', 'Delta %', 'Range A Units', 'Range B Units']}
+            rows={businessReport.categoryTable.map(row => [
+              portfolioDisplayLabel(row.portfolio),
+              formatInr(row.beforeSales),
+              formatInr(row.afterSales),
+              formatInr(row.deltaSales),
+              row.deltaSalesPct !== null ? `${row.deltaSalesPct.toFixed(1)}%` : '—',
+              row.beforeUnits.toLocaleString('en-IN'),
+              row.afterUnits.toLocaleString('en-IN'),
+            ])}
+          />
+        </div>
+      )}
+
       {/* Category before/after */}
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
           <TrendingDown className="w-4 h-4 text-red-400" /> Category (portfolio) - settlement net sales delta
+          {isBusinessReportPrimary && (
+            <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs font-normal text-muted-foreground">Fallback / reconciliation</span>
+          )}
         </h2>
         <p className="text-xs text-muted-foreground mb-1">Source: Payment Transactions (settlement), mapped by SKU/category.</p>
         <p className="text-xs text-muted-foreground mb-4 italic">
-          Category sales use Settlement Net Sales by SKU/category. Business Report category split requires SKU-level Business Report import.
+          {skuMapping.totalRows > 0
+            ? 'Category sales here use Settlement Net Sales by SKU/category — kept as a fallback/reconciliation view alongside the Business Report SKU category table above.'
+            : 'Category sales use Settlement Net Sales by SKU/category. Business Report category split requires SKU-level Business Report data for this range.'}
         </p>
         <div className="h-64 mb-4">
           <ResponsiveContainer width="100%" height="100%">

@@ -202,6 +202,42 @@ export function BusinessReportAutoSyncCard({ data }: { data: ApiResponse }) {
   )
 }
 
+/**
+ * Phase R9: Business Report SKU/ASIN category mapping status for the
+ * loaded range — separate from the existing payment/Ads "Mapping health"
+ * card below, since this tracks a different source (Business Report SKU
+ * rows, synced via SP-API) with its own mapped/unmapped counts.
+ */
+export function BusinessReportSkuMappingCard({ data }: { data: ApiResponse }) {
+  const { skuMapping, categoryPrimarySource } = data.businessReport
+  const usingEstimate = categoryPrimarySource === 'settlement_fallback' && skuMapping.totalRows > 0
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <h2 className="text-sm font-bold text-foreground mb-1">Business Report SKU Mapping</h2>
+      <p className="text-xs text-muted-foreground mb-3">
+        Business Report SKU rows for the loaded range, mapped via the same cost-master/regex resolver used for payment and Ads SKU mapping.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <KpiCard label="SKU rows (loaded range)" value={skuMapping.totalRows.toLocaleString('en-IN')} sub="Business Reports" />
+        <KpiCard label="Mapped" value={skuMapping.mappedRows.toLocaleString('en-IN')} sub="Known portfolio" />
+        <KpiCard label="Unmapped" value={skuMapping.unmappedRows.toLocaleString('en-IN')} sub="Needs review" />
+        <KpiCard label="Unmapped Ordered Sales" value={formatInrCompact(skuMapping.unmappedOrderedProductSales)} valueTitle={formatInr(skuMapping.unmappedOrderedProductSales)} sub="Business Reports" />
+      </div>
+      {usingEstimate && (
+        <p className="text-xs text-amber-600 dark:text-amber-300 mt-3">
+          Category table is using Settlement-based mapped estimates because Business Report SKU mapping is not yet sufficient for this range.
+        </p>
+      )}
+      {skuMapping.unmappedRows > 0 && (
+        <p className="text-xs text-muted-foreground mt-2">
+          Run <code className="text-foreground">npx tsx scripts/export-business-report-sku-mapping-review.ts --date-start=&lt;start&gt; --date-end=&lt;end&gt;</code> to export unmapped rows to <code className="text-foreground">business-report-sku-mapping-review.xlsx</code> for manual review.
+        </p>
+      )}
+    </div>
+  )
+}
+
 export function BusinessReportImportPanel({ data, onImported }: { data: ApiResponse; onImported?: () => void }) {
   const { businessReport } = data
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -472,6 +508,8 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
       <SourceComparisonCards data={data} />
 
       <BusinessReportBlendedCards data={data} />
+
+      <BusinessReportSkuMappingCard data={data} />
 
       <BusinessReportVsSettlementCard data={data} />
 

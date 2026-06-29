@@ -623,6 +623,75 @@ export async function GET(request: Request) {
       orderedProductSales: round2(Number(row.ordered_product_sales ?? 0)),
     }))
   const businessReportComplete = !businessReportIncomplete && (businessReportRows ?? []).length > 0
+
+  // --- Phase R9: Business Report SKU/ASIN category mapping health for the
+  // loaded range. By-Date totals above never depend on this — mapping only
+  // affects whether Category Performance can safely use Business Report
+  // SKU data as a primary source instead of the Settlement/SKU fallback.
+  const { data: businessReportSkuRows } = await supabase
+    .from('internal_business_report_sku_sales_traffic')
+    .select('report_date, portfolio, ordered_product_sales, units_ordered')
+    .eq('workspace_id', workspaceId)
+    .gte('report_date', fetchFrom)
+    .lte('report_date', rangeB.endDate)
+    .limit(20000)
+  const skuRowsInLoadedRange = (businessReportSkuRows ?? []).filter(row => {
+    const d = row.report_date as string
+    return d >= rangeA.startDate && d <= rangeB.endDate
+  })
+  const skuUnmappedRows = skuRowsInLoadedRange.filter(r => r.portfolio === 'Unmapped / Needs Review')
+  const businessReportSkuMapping = {
+    totalRows: skuRowsInLoadedRange.length,
+    mappedRows: skuRowsInLoadedRange.length - skuUnmappedRows.length,
+    unmappedRows: skuUnmappedRows.length,
+    unmappedOrderedProductSales: round2(skuUnmappedRows.reduce((sum, r) => sum + Number(r.ordered_product_sales ?? 0), 0)),
+  }
+  // Category Performance can safely use Business Report SKU data as primary
+  // only when (a) the by-date source is complete for this range and (b) at
+  // least 95% of SKU rows are mapped to a known portfolio — an arbitrary
+  // small unmapped tail doesn't invalidate the category breakdown, but a
+  // large unmapped share would silently misrepresent it.
+  const skuMappingSufficient = businessReportSkuMapping.totalRows > 0
+    && (businessReportSkuMapping.mappedRows / businessReportSkuMapping.totalRows) >= 0.95
+  const categoryPrimarySource: 'business_report_sku' | 'settlement_fallback' = businessReportComplete && skuMappingSufficient ? 'business_report_sku' : 'settlement_fallback'
+
+  // Portfolio rollup from Business Report SKU data — mirrors the shape of
+  // diagnostic.categoryTable (Settlement-based) so the UI can render either
+  // with the same component, but computed from a completely separate source
+  // and never merged with it.
+  function sumBusinessReportCategoryRange(range: DateRange) {
+    const rowsInRange = (businessReportSkuRows ?? []).filter(row => {
+      const d = row.report_date as string
+      return d >= range.startDate && d <= range.endDate
+    })
+    const byPortfolio = new Map<string, { sales: number; units: number }>()
+    for (const row of rowsInRange) {
+      const portfolio = row.portfolio as string
+      if (!byPortfolio.has(portfolio)) byPortfolio.set(portfolio, { sales: 0, units: 0 })
+      const acc = byPortfolio.get(portfolio)!
+      acc.sales += Number(row.ordered_product_sales ?? 0)
+      acc.units += Number(row.units_ordered ?? 0)
+    }
+    return byPortfolio
+  }
+  const businessReportCategoryBefore = sumBusinessReportCategoryRange(rangeA)
+  const businessReportCategoryAfter = sumBusinessReportCategoryRange(rangeB)
+  const businessReportCategoryPortfolios = new Set([...businessReportCategoryBefore.keys(), ...businessReportCategoryAfter.keys()])
+  const businessReportCategoryTable = [...businessReportCategoryPortfolios].map(portfolio => {
+    const before = businessReportCategoryBefore.get(portfolio) ?? { sales: 0, units: 0 }
+    const after = businessReportCategoryAfter.get(portfolio) ?? { sales: 0, units: 0 }
+    return {
+      portfolio,
+      beforeSales: round2(before.sales),
+      afterSales: round2(after.sales),
+      deltaSales: round2(after.sales - before.sales),
+      deltaSalesPct: before.sales !== 0 ? round2(((after.sales - before.sales) / Math.abs(before.sales)) * 100) : null,
+      beforeUnits: before.units,
+      afterUnits: after.units,
+      deltaUnits: after.units - before.units,
+    }
+  }).sort((a, b) => a.deltaSales - b.deltaSales)
+
   const businessReport = {
     latestBusinessReportDate,
     complete: businessReportComplete,
@@ -631,6 +700,9 @@ export async function GET(request: Request) {
     syncStatus: latestBusinessReportSyncRun ?? null,
     rangeA: sumBusinessReportRange(rangeA),
     rangeB: sumBusinessReportRange(rangeB),
+    skuMapping: businessReportSkuMapping,
+    categoryPrimarySource,
+    categoryTable: businessReportCategoryTable,
   }
   // --- Phase R3: blended ROAS / TACOS ---
   // Ad Spend/Ad-attributed Sales here are summed from the Amazon Ads

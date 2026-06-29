@@ -42,10 +42,10 @@ import {
   SALES_AND_TRAFFIC_REPORT_TYPE,
   parseSalesAndTrafficReport,
   waitForSalesAndTrafficReport,
+  resolveBusinessReportSkuPortfolio,
   type SalesAndTrafficByDateRow,
   type SalesAndTrafficByAsinRow,
 } from '../src/lib/internal/business-report-sp-api-client'
-import { resolveEasyhomePortfolio } from '../src/lib/internal/portfolio-labels'
 
 try {
   const envText = readFileSync(resolve(process.cwd(), '.env.local'), 'utf8')
@@ -153,7 +153,7 @@ function byDateRow(row: SalesAndTrafficByDateRow, workspaceId: string, marketpla
 function skuRow(row: SalesAndTrafficByAsinRow, reportDate: string, workspaceId: string, marketplaceId: string, reportId: string, costMasterCategoryBySkuNorm: Map<string, string | null>) {
   const skuNorm = row.sku ? row.sku.toLocaleUpperCase('en-US') : null
   const category = skuNorm ? costMasterCategoryBySkuNorm.get(skuNorm) ?? null : null
-  const portfolio = resolveEasyhomePortfolio(null, category, row.sku, row.childAsin, row.parentAsin)
+  const portfolio = resolveBusinessReportSkuPortfolio(category, row.sku, row.childAsin, row.parentAsin)
   return {
     workspace_id: workspaceId,
     marketplace_id: marketplaceId,
