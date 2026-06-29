@@ -156,9 +156,20 @@ export function parseBusinessReportSalesTrafficCsv(csvText: string): BusinessRep
   const header = splitCsvLine(lines[0]).map(normalizeHeader)
   const dateIdx = findColumnIndex(header, DATE_ALIASES)
   if (dateIdx < 0) {
+    // The SKU/ASIN-level "Sales and Traffic by ASIN/SKU" report shares many
+    // column names with the by-date report but has no Date column — give a
+    // specific, actionable message instead of a generic parse failure so
+    // the user knows exactly which export to download instead.
+    const skuAsinMarkers = ['asin', 'sku', 'title']
+    const looksLikeSkuAsinReport = header.some(col => skuAsinMarkers.some(marker => col.includes(marker)))
     return {
       rows: [],
-      rejected: [{ row: 1, reason: 'No Date column found — expected the "Sales and Traffic by Date" report, not a period-aggregate export.' }],
+      rejected: [{
+        row: 1,
+        reason: looksLikeSkuAsinReport
+          ? 'This looks like a SKU/ASIN-level Business Report. For this import, please upload Business Reports → Sales and Traffic → By Date CSV.'
+          : 'No Date column found — expected the "Sales and Traffic by Date" report, not a period-aggregate export.',
+      }],
       minReportDate: null,
       maxReportDate: null,
     }
