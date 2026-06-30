@@ -1,32 +1,35 @@
 -- Phase R10.1: Brahmastra configurable action engine thresholds.
 -- Per-workspace, per-portfolio threshold table. The special portfolio
 -- '__global__' holds workspace-wide defaults applied when no category-specific
--- row exists for a given portfolio. Column defaults = current R10 hardcoded
--- values so behavior is identical to the deployed version until edited.
+-- row exists. Column defaults = current R10 hardcoded values so behavior is
+-- identical to the deployed version until the user edits values.
+--
+-- Column naming uses business-readable names (not internal engine names)
+-- so the Thresholds & Assumptions UI is self-explanatory.
 
 create table if not exists public.internal_brahmastra_thresholds (
   id uuid primary key default gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id) on delete cascade,
   portfolio text not null default '__global__',
-  -- Ads-level thresholds
-  waste_spend_min numeric not null default 300,
-  waste_roas_max numeric not null default 1.5,
+  -- Spend thresholds
+  waste_spend_threshold numeric not null default 300,
+  minimum_roas numeric not null default 1.5,
   min_clicks_for_waste integer not null default 5,
-  high_acos_pct numeric not null default 40,
-  high_acos_spend_min numeric not null default 100,
-  high_spend_low_roas_spend_min numeric not null default 500,
-  high_spend_low_roas_max numeric not null default 2,
-  protect_roas_min numeric not null default 4,
-  protect_acos_max numeric not null default 25,
-  protect_spend_min numeric not null default 100,
-  -- Category-level thresholds
-  high_tacos_pct numeric not null default 15,
-  high_tacos_min_ordered_sales numeric not null default 5000,
-  refund_rate_min_pct numeric not null default 20,
-  refund_min_amount numeric not null default 1000,
-  -- Good-working thresholds (used by engine Protect/Scale rules)
-  good_roas_min numeric not null default 2.5,
-  good_acos_max numeric not null default 40,
+  high_spend_threshold numeric not null default 500,
+  min_ad_spend_for_action numeric not null default 100,
+  -- ACOS / ROAS thresholds
+  max_acos_pct numeric not null default 40,
+  protect_roas numeric not null default 4,
+  protect_acos_pct numeric not null default 25,
+  good_roas numeric not null default 2.5,
+  -- TACOS / category thresholds
+  warning_tacos_pct numeric not null default 15,
+  critical_tacos_pct numeric not null default 25,
+  min_ordered_sales_for_category_action numeric not null default 5000,
+  -- Refund thresholds
+  refund_warning_pct numeric not null default 20,
+  high_refund_amount numeric not null default 1000,
+  -- Row management
   is_active boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),

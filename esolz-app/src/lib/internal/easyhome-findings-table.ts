@@ -770,12 +770,12 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     const t = resolveThresholds(r.portfolio, tMap, tGlobal)
 
     const isZeroSales = r.afterSales <= 0
-    const isWaste = r.afterSpend >= t.waste_spend_min && (isZeroSales || (r.afterRoas !== null && r.afterRoas < t.waste_roas_max))
-    const isHighAcos = !isZeroSales && !isWaste && r.afterAcos !== null && r.afterAcos > t.high_acos_pct && r.afterSpend >= t.high_acos_spend_min
-    const isHighSpendLowImpact = !isZeroSales && !isWaste && !isHighAcos && r.afterSpend >= t.high_spend_low_roas_spend_min && r.afterRoas !== null && r.afterRoas < t.high_spend_low_roas_max
-    const isProtect = !isWaste && r.afterSales > 0 && r.afterSpend >= t.protect_spend_min && (
-      (r.afterRoas !== null && r.afterRoas >= t.protect_roas_min) ||
-      (r.afterAcos !== null && r.afterAcos <= t.protect_acos_max)
+    const isWaste = r.afterSpend >= t.waste_spend_threshold && (isZeroSales || (r.afterRoas !== null && r.afterRoas < t.minimum_roas))
+    const isHighAcos = !isZeroSales && !isWaste && r.afterAcos !== null && r.afterAcos > t.max_acos_pct && r.afterSpend >= t.min_ad_spend_for_action
+    const isHighSpendLowImpact = !isZeroSales && !isWaste && !isHighAcos && r.afterSpend >= t.high_spend_threshold && r.afterRoas !== null && r.afterRoas < t.minimum_roas
+    const isProtect = !isWaste && r.afterSales > 0 && r.afterSpend >= t.min_ad_spend_for_action && (
+      (r.afterRoas !== null && r.afterRoas >= t.protect_roas) ||
+      (r.afterAcos !== null && r.afterAcos <= t.protect_acos_pct)
     )
 
     if (isWaste) {
@@ -788,7 +788,7 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     }
 
     if (isProtect) {
-      const whyGood = r.afterRoas !== null && r.afterRoas >= t.protect_roas_min
+      const whyGood = r.afterRoas !== null && r.afterRoas >= t.protect_roas
         ? `ROAS ${r.afterRoas.toFixed(2)}x — strong return in selected period. May indicate a protect/scale candidate.`
         : `ACOS ${r.afterAcos?.toFixed(1)}% — healthy efficiency in selected period. May indicate a protect/scale candidate.`
       gwCandidates.push({
@@ -814,9 +814,9 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
   // ── Search-term level: waste spend only (surgical targeting review) ─────
   for (const r of input.searchTermRows) {
     const tSt = resolveThresholds(r.portfolio, tMap, tGlobal)
-    if (r.afterSpend < tSt.waste_spend_min) continue
+    if (r.afterSpend < tSt.waste_spend_threshold) continue
     const isZeroSales = r.afterSales <= 0
-    const isWaste = isZeroSales || (r.afterRoas !== null && r.afterRoas < tSt.waste_roas_max)
+    const isWaste = isZeroSales || (r.afterRoas !== null && r.afterRoas < tSt.minimum_roas)
     if (!isWaste) continue
     const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName, r.adGroupName, r.searchTerm)
     const evid = `Ad Spend: ${inr(r.afterSpend)}, Ad-attributed Sales: ${inr(r.afterSales)}, ACOS: ${pctStr(r.afterAcos)}, Clicks: ${r.afterClicks}.`
@@ -837,14 +837,14 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
   for (const cat of input.businessReportCategoryTable) {
     const tCat = resolveThresholds(cat.portfolio, tMap, tGlobal)
     const orderedSales = cat.afterSales
-    if (orderedSales < tCat.high_tacos_min_ordered_sales) continue
+    if (orderedSales < tCat.min_ordered_sales_for_category_action) continue
     const adsSpend = adsSpendByPortfolio.get(cat.portfolio) ?? 0
     if (adsSpend <= 0) continue
     const tacos = (adsSpend / orderedSales) * 100
-    if (tacos < tCat.high_tacos_pct) continue
+    if (tacos < tCat.warning_tacos_pct) continue
     const portfolio = resolveEasyhomePortfolio(cat.portfolio)
     const evid = `Business Report Ordered Product Sales: ${inr(orderedSales)}. Amazon Ads Spend: ${inr(adsSpend)}. TACOS: ${tacos.toFixed(1)}%. Source: Business Reports + Ads Reports.`
-    const prio = tacos >= 30 ? 'High' : 'Medium'
+    const prio = tacos >= tCat.critical_tacos_pct ? 'High' : 'Medium'
     findings.push(makeSinglePeriodFinding(
       `sp-engine:high-tacos:Category:${cat.portfolio}`,
       prio, portfolio, 'Category', `Category: ${portfolioDisplayLabel(cat.portfolio)}`,
@@ -855,9 +855,9 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
 
   // ── Account-level: Refund Watch (Settlement) ─────────────────────────────
   const { netSales, refundAmount, grossSales } = input.settlementSummary
-  if (grossSales > 0 && refundAmount >= tGlobal.refund_min_amount) {
+  if (grossSales > 0 && refundAmount >= tGlobal.high_refund_amount) {
     const refundRate = (refundAmount / grossSales) * 100
-    if (refundRate >= tGlobal.refund_rate_min_pct) {
+    if (refundRate >= tGlobal.refund_warning_pct) {
       const evid = `Settlement Refunds: ${inr(refundAmount)}. Settlement Gross Sales: ${inr(grossSales)}. Refund rate: ${refundRate.toFixed(1)}%. Settlement Net Sales: ${inr(netSales)}. Source: Payment Transactions.`
       findings.push(makeSinglePeriodFinding(
         'sp-engine:refund-watch:Account',

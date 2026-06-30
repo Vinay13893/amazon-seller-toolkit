@@ -888,27 +888,25 @@ export async function GET(request: Request) {
     try {
       const { data: thresholdRows } = await supabase
         .from('internal_brahmastra_thresholds')
-        .select('portfolio, waste_spend_min, waste_roas_max, min_clicks_for_waste, high_acos_pct, high_acos_spend_min, high_spend_low_roas_spend_min, high_spend_low_roas_max, protect_roas_min, protect_acos_max, protect_spend_min, high_tacos_pct, high_tacos_min_ordered_sales, refund_rate_min_pct, refund_min_amount, good_roas_min, good_acos_max, is_active')
+        .select('portfolio, waste_spend_threshold, minimum_roas, min_clicks_for_waste, high_spend_threshold, min_ad_spend_for_action, max_acos_pct, protect_roas, protect_acos_pct, good_roas, warning_tacos_pct, critical_tacos_pct, min_ordered_sales_for_category_action, refund_warning_pct, high_refund_amount, is_active')
         .eq('workspace_id', workspaceId)
       if (thresholdRows && thresholdRows.length > 0) {
         const built = buildThresholdsMap(thresholdRows.map(r => ({
           portfolio: r.portfolio as string,
-          waste_spend_min: r.waste_spend_min != null ? Number(r.waste_spend_min) : undefined,
-          waste_roas_max: r.waste_roas_max != null ? Number(r.waste_roas_max) : undefined,
+          waste_spend_threshold: r.waste_spend_threshold != null ? Number(r.waste_spend_threshold) : undefined,
+          minimum_roas: r.minimum_roas != null ? Number(r.minimum_roas) : undefined,
           min_clicks_for_waste: r.min_clicks_for_waste != null ? Number(r.min_clicks_for_waste) : undefined,
-          high_acos_pct: r.high_acos_pct != null ? Number(r.high_acos_pct) : undefined,
-          high_acos_spend_min: r.high_acos_spend_min != null ? Number(r.high_acos_spend_min) : undefined,
-          high_spend_low_roas_spend_min: r.high_spend_low_roas_spend_min != null ? Number(r.high_spend_low_roas_spend_min) : undefined,
-          high_spend_low_roas_max: r.high_spend_low_roas_max != null ? Number(r.high_spend_low_roas_max) : undefined,
-          protect_roas_min: r.protect_roas_min != null ? Number(r.protect_roas_min) : undefined,
-          protect_acos_max: r.protect_acos_max != null ? Number(r.protect_acos_max) : undefined,
-          protect_spend_min: r.protect_spend_min != null ? Number(r.protect_spend_min) : undefined,
-          high_tacos_pct: r.high_tacos_pct != null ? Number(r.high_tacos_pct) : undefined,
-          high_tacos_min_ordered_sales: r.high_tacos_min_ordered_sales != null ? Number(r.high_tacos_min_ordered_sales) : undefined,
-          refund_rate_min_pct: r.refund_rate_min_pct != null ? Number(r.refund_rate_min_pct) : undefined,
-          refund_min_amount: r.refund_min_amount != null ? Number(r.refund_min_amount) : undefined,
-          good_roas_min: r.good_roas_min != null ? Number(r.good_roas_min) : undefined,
-          good_acos_max: r.good_acos_max != null ? Number(r.good_acos_max) : undefined,
+          high_spend_threshold: r.high_spend_threshold != null ? Number(r.high_spend_threshold) : undefined,
+          min_ad_spend_for_action: r.min_ad_spend_for_action != null ? Number(r.min_ad_spend_for_action) : undefined,
+          max_acos_pct: r.max_acos_pct != null ? Number(r.max_acos_pct) : undefined,
+          protect_roas: r.protect_roas != null ? Number(r.protect_roas) : undefined,
+          protect_acos_pct: r.protect_acos_pct != null ? Number(r.protect_acos_pct) : undefined,
+          good_roas: r.good_roas != null ? Number(r.good_roas) : undefined,
+          warning_tacos_pct: r.warning_tacos_pct != null ? Number(r.warning_tacos_pct) : undefined,
+          critical_tacos_pct: r.critical_tacos_pct != null ? Number(r.critical_tacos_pct) : undefined,
+          min_ordered_sales_for_category_action: r.min_ordered_sales_for_category_action != null ? Number(r.min_ordered_sales_for_category_action) : undefined,
+          refund_warning_pct: r.refund_warning_pct != null ? Number(r.refund_warning_pct) : undefined,
+          high_refund_amount: r.high_refund_amount != null ? Number(r.high_refund_amount) : undefined,
           is_active: Boolean(r.is_active),
         })))
         engineThresholdsMap = built.thresholdsMap
