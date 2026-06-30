@@ -832,13 +832,13 @@ export async function GET(request: Request) {
       settlementNetSales: 'internal_payment_transactions',
       amazonAdsSpend: 'internal_ads_campaign_daily_rows',
       amazonAdsDeepRows: 'internal_ads_advertised_product_daily_rows / internal_ads_targeting_daily_rows / internal_ads_search_term_daily_rows',
-      businessReport: 'not_connected',
+      businessReport: 'internal_business_report_sales_traffic_daily',
     },
     latestAdsDate,
     latestSalesDate,
     blendedMetricsComplete: blendedDataComplete,
     warnings: [
-      'Seller Central Business Report Ordered Product Sales is not connected yet and may differ from Settlement Net Sales.',
+      'Business Report Ordered Product Sales is connected through SP-API and is the primary sales source when complete. Settlement Net Sales remains separate for refund/settlement reconciliation and can differ by date.',
     ],
     rangeA: {
       settlementNetSales: diagnostic.accountSummary.before.netSales,

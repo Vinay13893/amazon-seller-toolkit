@@ -35,7 +35,7 @@ export function SourceComparisonCards({ data }: { data: ApiResponse }) {
           </>
         ) : (
           <div className="sm:col-span-2 lg:col-span-3 rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-            Business Report data not imported for this range. Import a CSV below to see Ordered Product Sales/Units/Order Items here.
+            No Business Report data available for this range from SP-API auto sync. Manual CSV import below can cover missing date ranges as backup.
           </div>
         )}
         <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Txns" subTitle="Payment Transactions (settlement/refund-date based)" />
@@ -62,7 +62,7 @@ export function BusinessReportBlendedCards({ data }: { data: ApiResponse }) {
     return (
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="text-sm font-bold text-foreground mb-1">Business Report Blended ROAS / TACOS</h2>
-        <p className="text-xs text-muted-foreground">Business Report data not imported for this range. Settlement-based Blended ROAS/TACOS above is unaffected.</p>
+        <p className="text-xs text-muted-foreground">No Business Report data available for this range. Settlement-based Blended ROAS/TACOS above is unaffected.</p>
       </div>
     )
   }
@@ -327,7 +327,7 @@ export function AccuracyAuditPanel({
         <div>
           <p className="text-sm font-semibold text-foreground">Data source accuracy audit</p>
           <p className="text-xs text-muted-foreground">
-            Settlement net sales/refunds/orders: Payment Transactions. Amazon Ads spend/ad-attributed sales/ACOS/ROAS: Amazon Ads Reports. Business Report sessions/page-views: not connected.
+            Settlement net sales/refunds/orders: Payment Transactions. Amazon Ads spend/ad-attributed sales/ACOS/ROAS: Amazon Ads Reports. Business Report Ordered Product Sales: SP-API (primary). Sessions/page-views: not in this diagnostic.
           </p>
         </div>
         <span className="inline-flex rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
@@ -357,7 +357,7 @@ export function AccuracyAuditPanel({
         <KpiCard label="Latest Ads Date" value={sourceAccuracyAudit.latestAdsDate ?? '—'} sub="Ads Reports" subTitle="Amazon Ads Reports" />
         <KpiCard label="Latest Payment Transaction Date" value={sourceAccuracyAudit.latestSalesDate ?? '—'} sub="Payment Txns" subTitle="Payment Transactions (settlement)" />
         <KpiCard label="Blended metrics complete" value={sourceAccuracyAudit.blendedMetricsComplete ? 'Yes' : 'No'} sub="Both sources required" subWrap />
-        <KpiCard label="Business Report" value="Not connected" sub="No sessions/page-views" subTitle="No sessions/page-views in this diagnostic" />
+        <KpiCard label="Business Report" value="SP-API Connected" sub="Ordered Product Sales" subTitle="Business Report Ordered Product Sales via SP-API — sessions/page-views not in this diagnostic" />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         <KpiCard label="Settlement Net Sales (B)" value={formatInrCompact(sourceAccuracyAudit.rangeB.settlementNetSales)} valueTitle={formatInr(sourceAccuracyAudit.rangeB.settlementNetSales)} sub="Payment Txns" subTitle="Payment Transactions" />
