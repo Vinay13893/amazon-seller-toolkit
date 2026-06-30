@@ -24,6 +24,7 @@ import { BrahmastraCategorySection } from './brahmastra-category-section'
 import { BrahmastraDataHealthSection } from './brahmastra-data-health-section'
 import { BrahmastraChangeHistorySection } from './brahmastra-change-history-section'
 import { BrahmastraSettingsMappingSection } from './brahmastra-settings-mapping-section'
+import { BrahmastraThresholdsSection } from './brahmastra-thresholds-section'
 import type { ExecutionSheetUpdate } from './manual-review-execution-sheet'
 
 function EasyhomeDiagnosticDashboardInner() {
@@ -217,6 +218,7 @@ function EasyhomeDiagnosticDashboardInner() {
           )}
           {view === 'change-history' && <BrahmastraChangeHistorySection data={data} />}
           {view === 'settings' && <BrahmastraSettingsMappingSection data={data} loadedRangeSuffix={loadedRangeSuffix} />}
+          {view === 'thresholds' && <BrahmastraThresholdsSection />}
         </>
       )}
     </div>

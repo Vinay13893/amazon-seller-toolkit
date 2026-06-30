@@ -10,6 +10,7 @@ import type { ActionEntityType, ActionIssueType, ActionStatus } from './easyhome
 import type { CampaignRow } from './easyhome-ads-campaign-diagnostic'
 import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyhome-ads-deep-diagnostic'
 import { entityDisplayLabel, portfolioDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
+import { SYSTEM_DEFAULT_THRESHOLDS, resolveThresholds, type ThresholdValues } from './brahmastra-thresholds'
 
 export type FindingIssueLabel =
   | 'Spend cut'
@@ -683,22 +684,8 @@ export type { ActionIssueType }
 
 // ── Single-Period Daily Action Engine ────────────────────────────────────────
 // Produces absolute-threshold findings and good-working rows for Single mode.
-// Requires no Range A / Range B comparison — all rules fire on selected-period
-// metrics alone so the output is meaningful for any single date window.
-
-const SP_WASTE_SPEND_MIN = 300
-const SP_WASTE_ROAS_MAX = 1.5
-const SP_HIGH_ACOS_PCT = 40
-const SP_HIGH_ACOS_SPEND_MIN = 100
-const SP_HIGH_SPEND_LOW_ROAS_SPEND_MIN = 500
-const SP_HIGH_SPEND_LOW_ROAS_MAX = 2
-const SP_PROTECT_ROAS_MIN = 4
-const SP_PROTECT_ACOS_MAX = 25
-const SP_PROTECT_SPEND_MIN = 100
-const SP_HIGH_TACOS_PCT = 15
-const SP_HIGH_TACOS_MIN_ORDERED_SALES = 5000
-const SP_REFUND_RATE_MIN_PCT = 20
-const SP_REFUND_MIN_AMOUNT = 1000
+// Thresholds are resolved per-portfolio from the DB (or fall back to
+// SYSTEM_DEFAULT_THRESHOLDS = R10 hardcoded values). No Range A/B needed.
 
 export type SinglePeriodActionEngineInput = {
   campaignRows: CampaignRow[]
@@ -707,6 +694,8 @@ export type SinglePeriodActionEngineInput = {
   searchTermRows: SearchTermRow[]
   businessReportCategoryTable: Array<{ portfolio: string; afterSales: number }>
   settlementSummary: { netSales: number; refundAmount: number; grossSales: number }
+  thresholdsMap?: Map<string, ThresholdValues>
+  globalThresholds?: ThresholdValues
 }
 
 function makeSinglePeriodFinding(
@@ -759,7 +748,9 @@ function makeSinglePeriodFinding(
 /**
  * Single-period Daily Action Engine: produces FindingRow[] and GoodWorkingRow[]
  * from absolute-threshold rules on the selected period only. No Range A/B needed.
- * Called in single mode instead of buildSinglePeriodAbsoluteFindings.
+ * Thresholds are resolved per-portfolio: thresholdsMap → globalThresholds →
+ * SYSTEM_DEFAULT_THRESHOLDS (= R10 hardcoded values, unchanged behavior when
+ * no DB row exists).
  */
 export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInput): {
   findings: FindingRow[]
@@ -767,6 +758,8 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
 } {
   const findings: FindingRow[] = []
   const gwCandidates: Omit<GoodWorkingRow, 'rank'>[] = []
+  const tMap = input.thresholdsMap ?? new Map<string, ThresholdValues>()
+  const tGlobal = input.globalThresholds ?? SYSTEM_DEFAULT_THRESHOLDS
 
   // ── Campaign-level rules ────────────────────────────────────────────────
   for (const r of input.campaignRows) {
@@ -774,14 +767,15 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     const evid = `Ad Spend: ${inr(r.afterSpend)}, Ad-attributed Sales: ${inr(r.afterSales)}, ACOS: ${pctStr(r.afterAcos)}, ROAS: ${r.afterRoas !== null ? `${r.afterRoas.toFixed(2)}x` : '—'}, Clicks: ${r.afterClicks}.`
     const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName)
     const key = `sp-engine:campaign:${r.campaignName}`
+    const t = resolveThresholds(r.portfolio, tMap, tGlobal)
 
     const isZeroSales = r.afterSales <= 0
-    const isWaste = r.afterSpend >= SP_WASTE_SPEND_MIN && (isZeroSales || (r.afterRoas !== null && r.afterRoas < SP_WASTE_ROAS_MAX))
-    const isHighAcos = !isZeroSales && !isWaste && r.afterAcos !== null && r.afterAcos > SP_HIGH_ACOS_PCT && r.afterSpend >= SP_HIGH_ACOS_SPEND_MIN
-    const isHighSpendLowImpact = !isZeroSales && !isWaste && !isHighAcos && r.afterSpend >= SP_HIGH_SPEND_LOW_ROAS_SPEND_MIN && r.afterRoas !== null && r.afterRoas < SP_HIGH_SPEND_LOW_ROAS_MAX
-    const isProtect = !isWaste && r.afterSales > 0 && r.afterSpend >= SP_PROTECT_SPEND_MIN && (
-      (r.afterRoas !== null && r.afterRoas >= SP_PROTECT_ROAS_MIN) ||
-      (r.afterAcos !== null && r.afterAcos <= SP_PROTECT_ACOS_MAX)
+    const isWaste = r.afterSpend >= t.waste_spend_min && (isZeroSales || (r.afterRoas !== null && r.afterRoas < t.waste_roas_max))
+    const isHighAcos = !isZeroSales && !isWaste && r.afterAcos !== null && r.afterAcos > t.high_acos_pct && r.afterSpend >= t.high_acos_spend_min
+    const isHighSpendLowImpact = !isZeroSales && !isWaste && !isHighAcos && r.afterSpend >= t.high_spend_low_roas_spend_min && r.afterRoas !== null && r.afterRoas < t.high_spend_low_roas_max
+    const isProtect = !isWaste && r.afterSales > 0 && r.afterSpend >= t.protect_spend_min && (
+      (r.afterRoas !== null && r.afterRoas >= t.protect_roas_min) ||
+      (r.afterAcos !== null && r.afterAcos <= t.protect_acos_max)
     )
 
     if (isWaste) {
@@ -794,7 +788,7 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     }
 
     if (isProtect) {
-      const whyGood = r.afterRoas !== null && r.afterRoas >= SP_PROTECT_ROAS_MIN
+      const whyGood = r.afterRoas !== null && r.afterRoas >= t.protect_roas_min
         ? `ROAS ${r.afterRoas.toFixed(2)}x — strong return in selected period. May indicate a protect/scale candidate.`
         : `ACOS ${r.afterAcos?.toFixed(1)}% — healthy efficiency in selected period. May indicate a protect/scale candidate.`
       gwCandidates.push({
@@ -819,9 +813,10 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
 
   // ── Search-term level: waste spend only (surgical targeting review) ─────
   for (const r of input.searchTermRows) {
-    if (r.afterSpend < SP_WASTE_SPEND_MIN) continue
+    const tSt = resolveThresholds(r.portfolio, tMap, tGlobal)
+    if (r.afterSpend < tSt.waste_spend_min) continue
     const isZeroSales = r.afterSales <= 0
-    const isWaste = isZeroSales || (r.afterRoas !== null && r.afterRoas < SP_WASTE_ROAS_MAX)
+    const isWaste = isZeroSales || (r.afterRoas !== null && r.afterRoas < tSt.waste_roas_max)
     if (!isWaste) continue
     const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName, r.adGroupName, r.searchTerm)
     const evid = `Ad Spend: ${inr(r.afterSpend)}, Ad-attributed Sales: ${inr(r.afterSales)}, ACOS: ${pctStr(r.afterAcos)}, Clicks: ${r.afterClicks}.`
@@ -840,12 +835,13 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     adsSpendByPortfolio.set(r.portfolio, (adsSpendByPortfolio.get(r.portfolio) ?? 0) + r.afterSpend)
   }
   for (const cat of input.businessReportCategoryTable) {
+    const tCat = resolveThresholds(cat.portfolio, tMap, tGlobal)
     const orderedSales = cat.afterSales
-    if (orderedSales < SP_HIGH_TACOS_MIN_ORDERED_SALES) continue
+    if (orderedSales < tCat.high_tacos_min_ordered_sales) continue
     const adsSpend = adsSpendByPortfolio.get(cat.portfolio) ?? 0
     if (adsSpend <= 0) continue
     const tacos = (adsSpend / orderedSales) * 100
-    if (tacos < SP_HIGH_TACOS_PCT) continue
+    if (tacos < tCat.high_tacos_pct) continue
     const portfolio = resolveEasyhomePortfolio(cat.portfolio)
     const evid = `Business Report Ordered Product Sales: ${inr(orderedSales)}. Amazon Ads Spend: ${inr(adsSpend)}. TACOS: ${tacos.toFixed(1)}%. Source: Business Reports + Ads Reports.`
     const prio = tacos >= 30 ? 'High' : 'Medium'
@@ -859,9 +855,9 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
 
   // ── Account-level: Refund Watch (Settlement) ─────────────────────────────
   const { netSales, refundAmount, grossSales } = input.settlementSummary
-  if (grossSales > 0 && refundAmount >= SP_REFUND_MIN_AMOUNT) {
+  if (grossSales > 0 && refundAmount >= tGlobal.refund_min_amount) {
     const refundRate = (refundAmount / grossSales) * 100
-    if (refundRate >= SP_REFUND_RATE_MIN_PCT) {
+    if (refundRate >= tGlobal.refund_rate_min_pct) {
       const evid = `Settlement Refunds: ${inr(refundAmount)}. Settlement Gross Sales: ${inr(grossSales)}. Refund rate: ${refundRate.toFixed(1)}%. Settlement Net Sales: ${inr(netSales)}. Source: Payment Transactions.`
       findings.push(makeSinglePeriodFinding(
         'sp-engine:refund-watch:Account',

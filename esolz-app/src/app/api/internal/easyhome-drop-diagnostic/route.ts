@@ -14,6 +14,7 @@ import {
   type DateRange,
 } from '@/lib/internal/date-range'
 import { buildFindingsTable, buildGoodWorkingRows, buildSinglePeriodActionEngine } from '@/lib/internal/easyhome-findings-table'
+import { buildThresholdsMap, SYSTEM_DEFAULT_THRESHOLDS } from '@/lib/internal/brahmastra-thresholds'
 import {
   buildEasyhomeAdsCampaignDiagnostic,
   type AdsCampaignRowInput,
@@ -878,8 +879,44 @@ export async function GET(request: Request) {
   // Single mode has no baseline — use the Daily Action Engine which produces
   // absolute-threshold findings (waste spend, high ACOS, high TACOS, refund
   // watch) and good-working rows (protect/scale candidates) without comparing
-  // Range A vs Range B. This replaces the old buildSinglePeriodAbsoluteFindings.
+  // Range A vs Range B. Thresholds are resolved per-portfolio from DB, falling
+  // back to SYSTEM_DEFAULT_THRESHOLDS (= R10 hardcoded values, identical behavior
+  // when no DB row exists).
   if (mode === 'single' && !adsDataIncomplete) {
+    let engineThresholdsMap = new Map<string, import('@/lib/internal/brahmastra-thresholds').ThresholdValues>()
+    let engineGlobalThresholds = SYSTEM_DEFAULT_THRESHOLDS
+    try {
+      const { data: thresholdRows } = await supabase
+        .from('internal_brahmastra_thresholds')
+        .select('portfolio, waste_spend_min, waste_roas_max, min_clicks_for_waste, high_acos_pct, high_acos_spend_min, high_spend_low_roas_spend_min, high_spend_low_roas_max, protect_roas_min, protect_acos_max, protect_spend_min, high_tacos_pct, high_tacos_min_ordered_sales, refund_rate_min_pct, refund_min_amount, good_roas_min, good_acos_max, is_active')
+        .eq('workspace_id', workspaceId)
+      if (thresholdRows && thresholdRows.length > 0) {
+        const built = buildThresholdsMap(thresholdRows.map(r => ({
+          portfolio: r.portfolio as string,
+          waste_spend_min: r.waste_spend_min != null ? Number(r.waste_spend_min) : undefined,
+          waste_roas_max: r.waste_roas_max != null ? Number(r.waste_roas_max) : undefined,
+          min_clicks_for_waste: r.min_clicks_for_waste != null ? Number(r.min_clicks_for_waste) : undefined,
+          high_acos_pct: r.high_acos_pct != null ? Number(r.high_acos_pct) : undefined,
+          high_acos_spend_min: r.high_acos_spend_min != null ? Number(r.high_acos_spend_min) : undefined,
+          high_spend_low_roas_spend_min: r.high_spend_low_roas_spend_min != null ? Number(r.high_spend_low_roas_spend_min) : undefined,
+          high_spend_low_roas_max: r.high_spend_low_roas_max != null ? Number(r.high_spend_low_roas_max) : undefined,
+          protect_roas_min: r.protect_roas_min != null ? Number(r.protect_roas_min) : undefined,
+          protect_acos_max: r.protect_acos_max != null ? Number(r.protect_acos_max) : undefined,
+          protect_spend_min: r.protect_spend_min != null ? Number(r.protect_spend_min) : undefined,
+          high_tacos_pct: r.high_tacos_pct != null ? Number(r.high_tacos_pct) : undefined,
+          high_tacos_min_ordered_sales: r.high_tacos_min_ordered_sales != null ? Number(r.high_tacos_min_ordered_sales) : undefined,
+          refund_rate_min_pct: r.refund_rate_min_pct != null ? Number(r.refund_rate_min_pct) : undefined,
+          refund_min_amount: r.refund_min_amount != null ? Number(r.refund_min_amount) : undefined,
+          good_roas_min: r.good_roas_min != null ? Number(r.good_roas_min) : undefined,
+          good_acos_max: r.good_acos_max != null ? Number(r.good_acos_max) : undefined,
+          is_active: Boolean(r.is_active),
+        })))
+        engineThresholdsMap = built.thresholdsMap
+        engineGlobalThresholds = built.globalThresholds
+      }
+    } catch {
+      // Table may not exist yet (migration pending) — silently use system defaults
+    }
     const singleEngine = buildSinglePeriodActionEngine({
       campaignRows: campaignDiagnostic.campaignTable,
       advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
@@ -891,6 +928,8 @@ export async function GET(request: Request) {
         refundAmount: diagnostic.accountSummary.after.refundAmount,
         grossSales: diagnostic.accountSummary.after.netSales + diagnostic.accountSummary.after.refundAmount,
       },
+      thresholdsMap: engineThresholdsMap,
+      globalThresholds: engineGlobalThresholds,
     })
     findingsTable.push(...singleEngine.findings)
     goodWorkingRows = [...goodWorkingRows, ...singleEngine.goodWorking]

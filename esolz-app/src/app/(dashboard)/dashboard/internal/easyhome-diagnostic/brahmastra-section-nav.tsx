@@ -16,6 +16,7 @@ export type BrahmastraView =
   | 'data-health'
   | 'change-history'
   | 'settings'
+  | 'thresholds'
 
 export const BRAHMASTRA_VIEWS: Array<{ id: BrahmastraView; label: string }> = [
   { id: 'overview', label: 'Overview' },
@@ -27,6 +28,7 @@ export const BRAHMASTRA_VIEWS: Array<{ id: BrahmastraView; label: string }> = [
   { id: 'data-health', label: 'Data Health & Imports' },
   { id: 'change-history', label: 'Change History' },
   { id: 'settings', label: 'Settings / Mapping' },
+  { id: 'thresholds', label: 'Thresholds & Assumptions' },
 ]
 
 export function isBrahmastraView(value: string | null): value is BrahmastraView {
