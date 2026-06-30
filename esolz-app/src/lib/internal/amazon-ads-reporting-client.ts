@@ -92,19 +92,21 @@ const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[
       'targeting', 'matchType', 'searchTerm', 'impressions', 'clicks', 'cost', 'purchases1d', 'sales1d', 'unitsSoldClicks1d',
     ],
   },
-  // Sponsored Display — campaign-level only. Uses 14d attribution window.
-  // Rows go into the same internal_ads_campaign_daily_rows table as SP so the
-  // top-level Brahmastra totals (spend, clicks, purchases, sales) match the
-  // Amazon Ads Console "All" campaign type view.
+  // Sponsored Display — campaign-level only. SD uses click-attribution column
+  // names (purchasesClicks, salesClicks, unitsSold) rather than the Nd suffix
+  // used by SP and SB. The parser handles these via PURCHASES_ALIASES /
+  // SALES_ALIASES. Rows go into internal_ads_campaign_daily_rows alongside SP
+  // so top-level totals match the Amazon Ads Console "All campaign types" view.
   sdCampaigns: {
     adProduct: 'SPONSORED_DISPLAY',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus',
-      'impressions', 'clicks', 'cost', 'purchases14d', 'sales14d', 'unitsSoldClicks14d',
+      'impressions', 'clicks', 'cost', 'purchasesClicks', 'salesClicks', 'unitsSold',
     ],
   },
-  // Sponsored Brands — campaign-level only. Uses 14d attribution window.
+  // Sponsored Brands — campaign-level only. Uses 14d attribution window with
+  // the same Nd column suffix as SP (purchases14d / sales14d / unitsSoldClicks14d).
   sbCampaigns: {
     adProduct: 'SPONSORED_BRANDS',
     groupBy: ['campaign'],

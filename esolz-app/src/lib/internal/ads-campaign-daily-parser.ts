@@ -69,10 +69,11 @@ const CLICKS_ALIASES = ['clicks']
 const CTR_ALIASES = ['ctr']
 const SPEND_ALIASES = ['total cost', 'spend', 'cost', 'total cost (converted)']
 const CPC_ALIASES = ['cpc', 'cpc (converted)']
-// purchasesNd are the Ads API v3 native field names (N-day attribution window).
-const PURCHASES_ALIASES = ['purchases', 'orders', '7 day total orders (#)', '14 day total orders (#)', 'total orders (#)', 'purchases1d', 'purchases7d', 'purchases14d']
-// salesNd are the Ads API v3 native field names (N-day attribution window).
-const SALES_ALIASES = ['sales', '14 day total sales', 'total sales', 'sales (converted)', '7 day total sales', 'sales1d', 'sales7d', 'sales14d']
+// purchasesNd are the Ads API v3 SP/SB field names (N-day attribution window).
+// purchasesClicks / purchasesViews are the SD API v3 field names (click/view attribution).
+const PURCHASES_ALIASES = ['purchases', 'orders', '7 day total orders (#)', '14 day total orders (#)', 'total orders (#)', 'purchases1d', 'purchases7d', 'purchases14d', 'purchasesclicks', 'purchasesviews']
+// salesNd are the Ads API v3 SP/SB field names. salesClicks / salesViews are SD field names.
+const SALES_ALIASES = ['sales', '14 day total sales', 'total sales', 'sales (converted)', '7 day total sales', 'sales1d', 'sales7d', 'sales14d', 'salesclicks', 'salesviews']
 const ACOS_ALIASES = ['acos']
 const ROAS_ALIASES = ['roas']
 const AD_GROUP_ALIASES = ['ad group', 'ad group name']
