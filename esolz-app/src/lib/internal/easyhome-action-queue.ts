@@ -9,7 +9,7 @@ import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyho
 import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type ActionPriority = 'High' | 'Medium' | 'Low'
-export type ActionEntityType = 'SKU' | 'Campaign' | 'Target' | 'Search Term' | 'Mapping'
+export type ActionEntityType = 'SKU' | 'Campaign' | 'Target' | 'Search Term' | 'Mapping' | 'Category' | 'Account'
 export type ActionIssueType =
   | 'Spend cut'
   | 'Efficiency collapse'

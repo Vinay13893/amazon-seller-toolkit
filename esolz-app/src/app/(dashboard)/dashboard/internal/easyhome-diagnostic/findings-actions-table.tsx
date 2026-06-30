@@ -213,6 +213,15 @@ export function FindingsActionsTable({ rows, mode = 'compare', loadedRangeSuffix
             </tr>
           </thead>
           <tbody>
+            {visible.length === 0 && (
+              <tr>
+                <td colSpan={9} className="py-8 text-center text-sm text-muted-foreground">
+                  {mode === 'single'
+                    ? 'No findings for this selected period under current thresholds. Try a longer date range, check data freshness, or review the Good Working tab for efficient spend.'
+                    : 'No findings match the current filters.'}
+                </td>
+              </tr>
+            )}
             {visible.map((r, i) => (
               <FindingRowItem key={`${r.actionKey}-${i}`} r={r} mode={mode} />
             ))}

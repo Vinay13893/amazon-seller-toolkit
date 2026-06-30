@@ -13,7 +13,7 @@ import {
   type AnalysisMode,
   type DateRange,
 } from '@/lib/internal/date-range'
-import { buildFindingsTable, buildGoodWorkingRows, buildSinglePeriodAbsoluteFindings } from '@/lib/internal/easyhome-findings-table'
+import { buildFindingsTable, buildGoodWorkingRows, buildSinglePeriodActionEngine } from '@/lib/internal/easyhome-findings-table'
 import {
   buildEasyhomeAdsCampaignDiagnostic,
   type AdsCampaignRowInput,
@@ -868,25 +868,33 @@ export async function GET(request: Request) {
     adsDataIncomplete,
     freshness: { latestAdsDate, latestSalesDate, selectedRangeEnd },
   })
-  // Single mode has no baseline, so its problem findings come from absolute
-  // thresholds on the selected period alone (High ACOS / Low ROAS / Spend
-  // with zero ad sales) rather than the delta-based catalog above, which is
-  // naturally near-empty here since rangeA === rangeB.
-  if (mode === 'single' && !adsDataIncomplete) {
-    findingsTable.push(...buildSinglePeriodAbsoluteFindings({
-      campaignRows: campaignDiagnostic.campaignTable,
-      advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
-      targetingRows: deepDiagnostic.targeting?.table ?? [],
-      searchTermRows: deepDiagnostic.searchTerm?.table ?? [],
-    }))
-  }
-  const goodWorkingRows = adsDataIncomplete ? [] : buildGoodWorkingRows({
+  let goodWorkingRows = adsDataIncomplete ? [] : buildGoodWorkingRows({
     campaignRows: campaignDiagnostic.campaignTable,
     advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
     targetingRows: deepDiagnostic.targeting?.table ?? [],
     searchTermRows: deepDiagnostic.searchTerm?.table ?? [],
     mode,
   })
+  // Single mode has no baseline — use the Daily Action Engine which produces
+  // absolute-threshold findings (waste spend, high ACOS, high TACOS, refund
+  // watch) and good-working rows (protect/scale candidates) without comparing
+  // Range A vs Range B. This replaces the old buildSinglePeriodAbsoluteFindings.
+  if (mode === 'single' && !adsDataIncomplete) {
+    const singleEngine = buildSinglePeriodActionEngine({
+      campaignRows: campaignDiagnostic.campaignTable,
+      advertisedProductRows: deepDiagnostic.advertisedProduct?.table ?? [],
+      targetingRows: deepDiagnostic.targeting?.table ?? [],
+      searchTermRows: deepDiagnostic.searchTerm?.table ?? [],
+      businessReportCategoryTable: businessReport.categoryTable,
+      settlementSummary: {
+        netSales: diagnostic.accountSummary.after.netSales,
+        refundAmount: diagnostic.accountSummary.after.refundAmount,
+        grossSales: diagnostic.accountSummary.after.netSales + diagnostic.accountSummary.after.refundAmount,
+      },
+    })
+    findingsTable.push(...singleEngine.findings)
+    goodWorkingRows = [...goodWorkingRows, ...singleEngine.goodWorking]
+  }
   // Single mode: rank by absolute spend/sales (delta-based "top losers" below
   // are meaningless when rangeA === rangeB, since every delta is zero).
   const topSpenders = mode === 'single'

@@ -9,7 +9,7 @@ import type { ActionItemWithChanges } from './easyhome-change-history-diagnostic
 import type { ActionEntityType, ActionIssueType, ActionStatus } from './easyhome-action-queue'
 import type { CampaignRow } from './easyhome-ads-campaign-diagnostic'
 import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyhome-ads-deep-diagnostic'
-import { entityDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
+import { entityDisplayLabel, portfolioDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
 
 export type FindingIssueLabel =
   | 'Spend cut'
@@ -29,6 +29,10 @@ export type FindingIssueLabel =
   | 'High ACOS'
   | 'Low ROAS'
   | 'Spend with zero ad sales'
+  | 'Protect / Scale Candidate'
+  | 'High TACOS Category'
+  | 'Refund Watch'
+  | 'High Spend Low Sales Impact'
 
 export type FindingExplanation = {
   problem: string
@@ -309,6 +313,38 @@ const EXPLANATION_TEMPLATES: Record<FindingIssueLabel, FindingExplanation> = {
     expectedOutcome: 'Lower wasted spend from traffic that is not converting.',
     riskCaution: 'Do not cut strategically important or low-volume test terms without checking intent and sample size.',
   },
+  'Protect / Scale Candidate': {
+    problem: 'This entity had strong ad-attributed sales with healthy efficiency in the selected period.',
+    whyItMatters: 'Efficient, converting spend may indicate a candidate for budget protection or controlled scaling.',
+    whatToCheckFirst: 'Check stock, buy box, listing health, and whether campaign budget is limiting reach.',
+    recommendedManualAction: 'Protect budget and consider controlled scaling if listing and stock are healthy.',
+    expectedOutcome: 'Maintaining or growing sales with healthy ROAS/ACOS.',
+    riskCaution: 'Do not scale without checking listing health, stock levels, and competitor activity. Review manually.',
+  },
+  'High TACOS Category': {
+    problem: 'Amazon Ads spend relative to Business Report Ordered Product Sales is high for this category in the selected period.',
+    whyItMatters: 'High TACOS may indicate over-reliance on ads or inefficient spend for this category.',
+    whatToCheckFirst: 'Check if ad spend is driving incremental ordered sales. Review targeting, bids, and listing conversion.',
+    recommendedManualAction: 'Review targeting and bids; consider whether organic conversion can be improved to lower ad dependency.',
+    expectedOutcome: 'Lower TACOS if spend is optimized or organic sales improve.',
+    riskCaution: 'A single period may be noisy — review TACOS trend over a longer window before major changes.',
+  },
+  'Refund Watch': {
+    problem: 'Settlement refunds are a high share of gross settlement sales in the selected period.',
+    whyItMatters: 'High refund rate may indicate product quality issues, listing expectation mismatch, or return patterns.',
+    whatToCheckFirst: 'Check product reviews, listing description accuracy, image quality, return reasons, and competitor pricing.',
+    recommendedManualAction: 'Review return reasons; address product/listing quality before scaling ad spend on affected categories.',
+    expectedOutcome: 'Lower refund rate if listing or product quality issues are identified and resolved.',
+    riskCaution: 'A single period can be noisy — confirm refund trend over a longer window before structural changes.',
+  },
+  'High Spend Low Sales Impact': {
+    problem: 'Significant ad spend was recorded in the selected period with relatively low ad-attributed sales.',
+    whyItMatters: 'High spend with low return may indicate inefficient targeting, poor listing conversion, or mismatched audience.',
+    whatToCheckFirst: 'Check search terms, targeting relevance, listing quality, price, coupon, and buy box status.',
+    recommendedManualAction: 'Review targeting and bid strategy; check listing conversion before continuing at current spend levels.',
+    expectedOutcome: 'Better ROAS if targeting and listing issues are addressed.',
+    riskCaution: 'Do not cut spend without checking whether ads are providing brand visibility benefits beyond attributed sales.',
+  },
 }
 
 const CHANGE_HISTORY_CORRELATED: Pick<FindingExplanation, 'whyItMatters' | 'recommendedManualAction' | 'riskCaution'> = {
@@ -418,10 +454,16 @@ function goodReason(row: WinnerInput, mode: 'single' | 'compare' = 'compare'): s
   // single mode needs. We still special-case the labels so they never imply
   // a baseline that doesn't exist.
   if (mode === 'single') {
-    const convertingWell = (row.afterPurchases ?? 0) > 0 && (row.afterAcos === null || row.afterAcos <= 35)
-    const goodRoas = row.afterRoas !== null && row.afterRoas >= 3
-    if (convertingWell) return 'Good ROAS / converting well in selected period.'
-    if (goodRoas) return 'Good ROAS in selected period.'
+    // Single mode has no baseline — only absolute selected-period thresholds.
+    // Thresholds are intentionally more lenient than compare mode to surface real candidates.
+    const goodAcos = row.afterAcos === null || row.afterAcos <= 40
+    const hasOrders = (row.afterPurchases ?? 0) > 0
+    const goodRoas = row.afterRoas !== null && row.afterRoas >= 2.5
+    const highSales = row.afterSales >= 500
+    if (hasOrders && goodAcos && goodRoas) return 'Strong ROAS with purchases recorded in selected period — protect/scale candidate.'
+    if (hasOrders && goodAcos) return 'Converting well in selected period (purchases recorded, ACOS healthy).'
+    if (goodRoas && highSales) return 'Good ROAS in selected period with meaningful ad-attributed sales.'
+    if (highSales && goodAcos) return 'High ad-attributed sales with healthy ACOS in selected period.'
     return null
   }
 
@@ -638,3 +680,209 @@ export function buildSinglePeriodAbsoluteFindings(params: {
 }
 
 export type { ActionIssueType }
+
+// ── Single-Period Daily Action Engine ────────────────────────────────────────
+// Produces absolute-threshold findings and good-working rows for Single mode.
+// Requires no Range A / Range B comparison — all rules fire on selected-period
+// metrics alone so the output is meaningful for any single date window.
+
+const SP_WASTE_SPEND_MIN = 300
+const SP_WASTE_ROAS_MAX = 1.5
+const SP_HIGH_ACOS_PCT = 40
+const SP_HIGH_ACOS_SPEND_MIN = 100
+const SP_HIGH_SPEND_LOW_ROAS_SPEND_MIN = 500
+const SP_HIGH_SPEND_LOW_ROAS_MAX = 2
+const SP_PROTECT_ROAS_MIN = 4
+const SP_PROTECT_ACOS_MAX = 25
+const SP_PROTECT_SPEND_MIN = 100
+const SP_HIGH_TACOS_PCT = 15
+const SP_HIGH_TACOS_MIN_ORDERED_SALES = 5000
+const SP_REFUND_RATE_MIN_PCT = 20
+const SP_REFUND_MIN_AMOUNT = 1000
+
+export type SinglePeriodActionEngineInput = {
+  campaignRows: CampaignRow[]
+  advertisedProductRows: AdvertisedProductRow[]
+  targetingRows: TargetingRow[]
+  searchTermRows: SearchTermRow[]
+  businessReportCategoryTable: Array<{ portfolio: string; afterSales: number }>
+  settlementSummary: { netSales: number; refundAmount: number; grossSales: number }
+}
+
+function makeSinglePeriodFinding(
+  actionKey: string,
+  priority: string,
+  portfolio: string,
+  entityType: ActionEntityType,
+  entityName: string,
+  campaignName: string | null,
+  adGroupName: string | null,
+  issueType: FindingIssueLabel,
+  spend: number | null,
+  sales: number | null,
+  acos: number | null,
+  roas: number | null,
+  evidenceStr: string,
+): FindingRow {
+  const template = EXPLANATION_TEMPLATES[issueType]
+  return {
+    actionKey,
+    priority,
+    portfolio,
+    campaignName,
+    adGroupName,
+    entityName,
+    entityType,
+    issueType,
+    spendA: spend,
+    spendB: spend,
+    spendChange: 0,
+    salesA: sales,
+    salesB: sales,
+    salesChange: 0,
+    acosA: acos,
+    acosB: acos,
+    roasA: roas,
+    roasB: roas,
+    whatChanged: 'No change-history baseline — single mode analysis.',
+    problem: template.problem,
+    whyItMatters: template.whyItMatters,
+    evidence: evidenceStr,
+    whatToCheckFirst: template.whatToCheckFirst,
+    recommendedManualAction: template.recommendedManualAction,
+    expectedOutcome: template.expectedOutcome,
+    riskCaution: template.riskCaution,
+    reviewStatus: 'Open',
+  }
+}
+
+/**
+ * Single-period Daily Action Engine: produces FindingRow[] and GoodWorkingRow[]
+ * from absolute-threshold rules on the selected period only. No Range A/B needed.
+ * Called in single mode instead of buildSinglePeriodAbsoluteFindings.
+ */
+export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInput): {
+  findings: FindingRow[]
+  goodWorking: GoodWorkingRow[]
+} {
+  const findings: FindingRow[] = []
+  const gwCandidates: Omit<GoodWorkingRow, 'rank'>[] = []
+
+  // ── Campaign-level rules ────────────────────────────────────────────────
+  for (const r of input.campaignRows) {
+    if (r.afterSpend <= 0) continue
+    const evid = `Ad Spend: ${inr(r.afterSpend)}, Ad-attributed Sales: ${inr(r.afterSales)}, ACOS: ${pctStr(r.afterAcos)}, ROAS: ${r.afterRoas !== null ? `${r.afterRoas.toFixed(2)}x` : '—'}, Clicks: ${r.afterClicks}.`
+    const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName)
+    const key = `sp-engine:campaign:${r.campaignName}`
+
+    const isZeroSales = r.afterSales <= 0
+    const isWaste = r.afterSpend >= SP_WASTE_SPEND_MIN && (isZeroSales || (r.afterRoas !== null && r.afterRoas < SP_WASTE_ROAS_MAX))
+    const isHighAcos = !isZeroSales && !isWaste && r.afterAcos !== null && r.afterAcos > SP_HIGH_ACOS_PCT && r.afterSpend >= SP_HIGH_ACOS_SPEND_MIN
+    const isHighSpendLowImpact = !isZeroSales && !isWaste && !isHighAcos && r.afterSpend >= SP_HIGH_SPEND_LOW_ROAS_SPEND_MIN && r.afterRoas !== null && r.afterRoas < SP_HIGH_SPEND_LOW_ROAS_MAX
+    const isProtect = !isWaste && r.afterSales > 0 && r.afterSpend >= SP_PROTECT_SPEND_MIN && (
+      (r.afterRoas !== null && r.afterRoas >= SP_PROTECT_ROAS_MIN) ||
+      (r.afterAcos !== null && r.afterAcos <= SP_PROTECT_ACOS_MAX)
+    )
+
+    if (isWaste) {
+      const prio = r.afterSpend >= 1000 ? 'High' : 'Medium'
+      findings.push(makeSinglePeriodFinding(`${key}:waste`, prio, portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, isZeroSales ? 'Spend with zero ad sales' : 'Waste spend', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid))
+    } else if (isHighAcos) {
+      findings.push(makeSinglePeriodFinding(`${key}:high-acos`, 'Medium', portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, 'High ACOS', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid))
+    } else if (isHighSpendLowImpact) {
+      findings.push(makeSinglePeriodFinding(`${key}:high-spend-low`, 'Medium', portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, 'High Spend Low Sales Impact', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid))
+    }
+
+    if (isProtect) {
+      const whyGood = r.afterRoas !== null && r.afterRoas >= SP_PROTECT_ROAS_MIN
+        ? `ROAS ${r.afterRoas.toFixed(2)}x — strong return in selected period. May indicate a protect/scale candidate.`
+        : `ACOS ${r.afterAcos?.toFixed(1)}% — healthy efficiency in selected period. May indicate a protect/scale candidate.`
+      gwCandidates.push({
+        portfolio,
+        campaignName: r.campaignName,
+        adGroupName: null,
+        entityName: entityDisplayLabel(r.campaignName),
+        entityType: 'Campaign',
+        whyGood,
+        spendA: r.afterSpend,
+        spendB: r.afterSpend,
+        salesA: r.afterSales,
+        salesB: r.afterSales,
+        acosA: r.afterAcos,
+        acosB: r.afterAcos,
+        roasA: r.afterRoas,
+        roasB: r.afterRoas,
+        suggestedAction: 'Protect budget and monitor for scaling if listing and stock are healthy.',
+      })
+    }
+  }
+
+  // ── Search-term level: waste spend only (surgical targeting review) ─────
+  for (const r of input.searchTermRows) {
+    if (r.afterSpend < SP_WASTE_SPEND_MIN) continue
+    const isZeroSales = r.afterSales <= 0
+    const isWaste = isZeroSales || (r.afterRoas !== null && r.afterRoas < SP_WASTE_ROAS_MAX)
+    if (!isWaste) continue
+    const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName, r.adGroupName, r.searchTerm)
+    const evid = `Ad Spend: ${inr(r.afterSpend)}, Ad-attributed Sales: ${inr(r.afterSales)}, ACOS: ${pctStr(r.afterAcos)}, Clicks: ${r.afterClicks}.`
+    findings.push(makeSinglePeriodFinding(
+      `sp-engine:search-term:${r.campaignName}:${r.searchTerm}:waste`,
+      r.afterSpend >= 1000 ? 'High' : 'Medium',
+      portfolio, 'Search Term', entityDisplayLabel(r.searchTerm), r.campaignName, r.adGroupName,
+      isZeroSales ? 'Spend with zero ad sales' : 'Waste spend',
+      r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid,
+    ))
+  }
+
+  // ── Category-level: High TACOS (Business Report + Ads) ──────────────────
+  const adsSpendByPortfolio = new Map<string, number>()
+  for (const r of input.campaignRows) {
+    adsSpendByPortfolio.set(r.portfolio, (adsSpendByPortfolio.get(r.portfolio) ?? 0) + r.afterSpend)
+  }
+  for (const cat of input.businessReportCategoryTable) {
+    const orderedSales = cat.afterSales
+    if (orderedSales < SP_HIGH_TACOS_MIN_ORDERED_SALES) continue
+    const adsSpend = adsSpendByPortfolio.get(cat.portfolio) ?? 0
+    if (adsSpend <= 0) continue
+    const tacos = (adsSpend / orderedSales) * 100
+    if (tacos < SP_HIGH_TACOS_PCT) continue
+    const portfolio = resolveEasyhomePortfolio(cat.portfolio)
+    const evid = `Business Report Ordered Product Sales: ${inr(orderedSales)}. Amazon Ads Spend: ${inr(adsSpend)}. TACOS: ${tacos.toFixed(1)}%. Source: Business Reports + Ads Reports.`
+    const prio = tacos >= 30 ? 'High' : 'Medium'
+    findings.push(makeSinglePeriodFinding(
+      `sp-engine:high-tacos:Category:${cat.portfolio}`,
+      prio, portfolio, 'Category', `Category: ${portfolioDisplayLabel(cat.portfolio)}`,
+      null, null, 'High TACOS Category', adsSpend, orderedSales, null,
+      orderedSales > 0 ? round2(orderedSales / adsSpend) : null, evid,
+    ))
+  }
+
+  // ── Account-level: Refund Watch (Settlement) ─────────────────────────────
+  const { netSales, refundAmount, grossSales } = input.settlementSummary
+  if (grossSales > 0 && refundAmount >= SP_REFUND_MIN_AMOUNT) {
+    const refundRate = (refundAmount / grossSales) * 100
+    if (refundRate >= SP_REFUND_RATE_MIN_PCT) {
+      const evid = `Settlement Refunds: ${inr(refundAmount)}. Settlement Gross Sales: ${inr(grossSales)}. Refund rate: ${refundRate.toFixed(1)}%. Settlement Net Sales: ${inr(netSales)}. Source: Payment Transactions.`
+      findings.push(makeSinglePeriodFinding(
+        'sp-engine:refund-watch:Account',
+        refundRate >= 30 ? 'High' : 'Medium',
+        'Unmapped / Needs Review', 'Account', 'Account — Settlement refunds',
+        null, null, 'Refund Watch', null, netSales, null, null, evid,
+      ))
+    }
+  }
+
+  // Sort findings: High → Medium → Low, then by spend descending
+  const priorityRank: Record<string, number> = { High: 0, Medium: 1, Low: 2 }
+  findings.sort((a, b) => {
+    const pr = (priorityRank[a.priority] ?? 3) - (priorityRank[b.priority] ?? 3)
+    if (pr !== 0) return pr
+    return (b.spendB ?? 0) - (a.spendB ?? 0)
+  })
+
+  const goodWorking: GoodWorkingRow[] = gwCandidates
+    .sort((a, b) => b.salesB - a.salesB)
+    .map((r, i) => ({ ...r, rank: i + 1 }))
+
+  return { findings, goodWorking }
+}

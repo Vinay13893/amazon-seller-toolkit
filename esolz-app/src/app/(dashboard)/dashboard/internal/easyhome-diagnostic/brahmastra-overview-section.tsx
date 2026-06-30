@@ -36,14 +36,20 @@ export function BrahmastraOverviewSection({
   loadedQuery: ControlPanelQuery
   loadedAt: Date | null
 }) {
-  const { controlPanel, sourceAccuracyAudit, blendedMetrics, businessReportBlended, actionQueue, diagnostic } = data
+  const { controlPanel, sourceAccuracyAudit, blendedMetrics, businessReportBlended, actionQueue, diagnostic, findingsTable, goodWorkingRows } = data
   const { after } = diagnostic.accountSummary
   const isBusinessReportPrimary = data.primarySalesSource === 'business_report'
   const primaryInsights = isBusinessReportPrimary ? businessReportBlended.insights : blendedMetrics.insights
+  const isSingle = controlPanel.mode === 'single'
 
-  const topActions = [...actionQueue]
-    .sort((a, b) => (a.priority === 'High' ? 0 : a.priority === 'Medium' ? 1 : 2) - (b.priority === 'High' ? 0 : b.priority === 'Medium' ? 1 : 2))
-    .slice(0, 5)
+  type TopActionItem = { actionKey: string; entityName: string; portfolio: string; priority: string }
+  const topActions: TopActionItem[] = isSingle
+    ? [...findingsTable]
+        .sort((a, b) => (a.priority === 'High' ? 0 : a.priority === 'Medium' ? 1 : 2) - (b.priority === 'High' ? 0 : b.priority === 'Medium' ? 1 : 2))
+        .slice(0, 5)
+    : [...actionQueue]
+        .sort((a, b) => (a.priority === 'High' ? 0 : a.priority === 'Medium' ? 1 : 2) - (b.priority === 'High' ? 0 : b.priority === 'Medium' ? 1 : 2))
+        .slice(0, 5)
 
   return (
     <div className="space-y-6">
@@ -132,33 +138,54 @@ export function BrahmastraOverviewSection({
 
       <BusinessReportVsSettlementCard data={data} />
 
-      {/* Top 3 insights */}
-      <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="text-sm font-bold text-foreground mb-3">Top insights</h2>
-        {primaryInsights.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No compare-mode insights for this selection — switch to Compare mode, or see Trends &amp; Charts / Category Performance for more detail.</p>
-        ) : (
-          <ul className="space-y-1.5 text-xs text-muted-foreground">
-            {primaryInsights.slice(0, 3).map((note, i) => (
-              <li key={i} className="flex gap-2">
-                <span>•</span>
-                <span>{note}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* Top 3 insights / single-mode daily action summary */}
+      {isSingle ? (
+        <div className="bg-card border border-border rounded-xl p-5">
+          <h2 className="text-sm font-bold text-foreground mb-3">Daily Action Summary — Selected Period</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <KpiCard label="High Priority" value={findingsTable.filter(f => f.priority === 'High').length.toString()} sub="Findings" />
+            <KpiCard label="Waste Spend" value={findingsTable.filter(f => f.issueType === 'Waste spend' || f.issueType === 'Spend with zero ad sales').length.toString()} sub="Candidates" />
+            <KpiCard label="Good Working" value={goodWorkingRows.length.toString()} sub="Efficient rows" />
+            <KpiCard label="Total Findings" value={findingsTable.length.toString()} sub="All priorities" />
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <Link href="/dashboard/internal/easyhome-diagnostic?view=findings" className="text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">See Findings →</Link>
+            <Link href="/dashboard/internal/easyhome-diagnostic?view=good-working" className="text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">See Good Working →</Link>
+            <Link href="/dashboard/internal/easyhome-diagnostic?view=actions" className="text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted">Actions tab →</Link>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-card border border-border rounded-xl p-5">
+          <h2 className="text-sm font-bold text-foreground mb-3">Top insights</h2>
+          {primaryInsights.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No compare-mode insights for this selection — switch to Compare mode, or see Trends &amp; Charts / Category Performance for more detail.</p>
+          ) : (
+            <ul className="space-y-1.5 text-xs text-muted-foreground">
+              {primaryInsights.slice(0, 3).map((note, i) => (
+                <li key={i} className="flex gap-2">
+                  <span>•</span>
+                  <span>{note}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
-      {/* Top 5 actions preview */}
+      {/* Top 5 actions / findings preview */}
       <div className="bg-card border border-border rounded-xl p-5">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-bold text-foreground">Top actions</h2>
-          <Link href="/dashboard/internal/easyhome-diagnostic?view=actions" className="text-xs text-primary underline hover:no-underline">
-            See all actions →
+          <h2 className="text-sm font-bold text-foreground">{isSingle ? 'Top findings (selected period)' : 'Top actions'}</h2>
+          <Link href={`/dashboard/internal/easyhome-diagnostic?view=${isSingle ? 'findings' : 'actions'}`} className="text-xs text-primary underline hover:no-underline">
+            {isSingle ? 'See all findings →' : 'See all actions →'}
           </Link>
         </div>
         {topActions.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No open action queue items for this selection.</p>
+          <p className="text-sm text-muted-foreground">
+            {isSingle
+              ? 'No findings for this selected period under current thresholds. Try a longer range or check data freshness.'
+              : 'No open action queue items for this selection.'}
+          </p>
         ) : (
           <ul className="space-y-2 text-sm text-foreground">
             {topActions.map(item => (

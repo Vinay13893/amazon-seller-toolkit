@@ -21,8 +21,9 @@ import { ChartTooltip, formatInr } from './brahmastra-shared'
  * tab's job is the daily time-series view of the same numbers.
  */
 export function BrahmastraTrendsSection({ data }: { data: ApiResponse }) {
-  const { diagnostic, campaignDiagnostic, businessReportDailyTrend, primarySalesSource } = data
+  const { diagnostic, campaignDiagnostic, businessReportDailyTrend, primarySalesSource, controlPanel } = data
   const isBusinessReportPrimary = primarySalesSource === 'business_report'
+  const isSingle = controlPanel.mode === 'single'
 
   // Daily Ads spend keyed by date, merged onto whichever sales series is
   // primary — Business Report Ordered Product Sales when complete for the
@@ -80,15 +81,20 @@ export function BrahmastraTrendsSection({ data }: { data: ApiResponse }) {
         </div>
       )}
 
-      {/* Outlier days */}
+      {/* Day breakdown — "outlier" language only in compare mode */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h2 className="text-sm font-bold text-foreground mb-4">Outlier day breakdown</h2>
+        <h2 className="text-sm font-bold text-foreground mb-1">
+          {isSingle ? 'Selected day settlement breakdown' : 'Outlier day breakdown'}
+        </h2>
+        {isSingle && (
+          <p className="text-xs text-muted-foreground mb-3">Settlement settlement totals by day for the selected period. Source: Payment Transactions.</p>
+        )}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {diagnostic.outlierDays.map(day => (
             <div key={day.date} className="border border-border rounded-lg p-4 min-w-0">
               <div className="flex items-center justify-between mb-2 gap-2">
                 <span className="font-semibold text-foreground">{day.date}</span>
-                {day.vsAfterPeriodAvgSalesPct !== null && (
+                {!isSingle && day.vsAfterPeriodAvgSalesPct !== null && (
                   <Badge variant={day.vsAfterPeriodAvgSalesPct < 0 ? 'destructive' : 'secondary'} className="whitespace-nowrap">
                     {day.vsAfterPeriodAvgSalesPct >= 0 ? '+' : ''}{day.vsAfterPeriodAvgSalesPct.toFixed(0)}% vs avg
                   </Badge>
@@ -101,7 +107,7 @@ export function BrahmastraTrendsSection({ data }: { data: ApiResponse }) {
                 <ul className="mt-2 text-xs text-muted-foreground space-y-1">
                   {day.topPortfolioDrops.map(p => (
                     <li key={p.portfolio} className="break-words">
-                      {portfolioDisplayLabel(p.portfolio)}: {p.dayShare.toFixed(1)}% of that day&apos;s sales vs {p.afterPeriodAvgShare.toFixed(1)}% of the after-period average
+                      {portfolioDisplayLabel(p.portfolio)}: {p.dayShare.toFixed(1)}% of {isSingle ? 'selected-period settlement sales' : `that day's sales vs ${p.afterPeriodAvgShare.toFixed(1)}% of the selected-range average`}
                     </li>
                   ))}
                 </ul>
