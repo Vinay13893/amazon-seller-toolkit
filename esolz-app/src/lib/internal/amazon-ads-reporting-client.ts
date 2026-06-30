@@ -97,22 +97,28 @@ const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[
   // used by SP and SB. The parser handles these via PURCHASES_ALIASES /
   // SALES_ALIASES. Rows go into internal_ads_campaign_daily_rows alongside SP
   // so top-level totals match the Amazon Ads Console "All campaign types" view.
+  // SD uses 'purchasesClicks' (click-attributed, 14d) and bare 'sales'
+  // (the aggregate sales column available in sdCampaigns). purchasesViews
+  // and salesViews are not available in sdCampaigns; any remaining gap
+  // vs the Console reflects view-through conversions not exposed at campaign
+  // granularity in the v3 API. unitsSold is click+view combined.
   sdCampaigns: {
     adProduct: 'SPONSORED_DISPLAY',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus',
-      'impressions', 'clicks', 'cost', 'purchasesClicks', 'salesClicks', 'unitsSold',
+      'impressions', 'clicks', 'cost', 'purchasesClicks', 'sales', 'unitsSold',
     ],
   },
-  // Sponsored Brands — campaign-level only. Uses 14d attribution window with
-  // the same Nd column suffix as SP (purchases14d / sales14d / unitsSoldClicks14d).
+  // Sponsored Brands — campaign-level only. SB uses bare 'purchases' and 'sales'
+  // column names (not the Nd-suffix format). The parser PURCHASES_ALIASES /
+  // SALES_ALIASES already include 'purchases' and 'sales' as the first aliases.
   sbCampaigns: {
     adProduct: 'SPONSORED_BRANDS',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus',
-      'impressions', 'clicks', 'cost', 'purchases14d', 'sales14d', 'unitsSoldClicks14d',
+      'impressions', 'clicks', 'cost', 'purchases', 'sales',
     ],
   },
 }

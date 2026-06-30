@@ -70,10 +70,13 @@ const CTR_ALIASES = ['ctr']
 const SPEND_ALIASES = ['total cost', 'spend', 'cost', 'total cost (converted)']
 const CPC_ALIASES = ['cpc', 'cpc (converted)']
 // purchasesNd are the Ads API v3 SP/SB field names (N-day attribution window).
-// purchasesClicks / purchasesViews are the SD API v3 field names (click/view attribution).
-const PURCHASES_ALIASES = ['purchases', 'orders', '7 day total orders (#)', '14 day total orders (#)', 'total orders (#)', 'purchases1d', 'purchases7d', 'purchases14d', 'purchasesclicks', 'purchasesviews']
+// purchasesClicks is the SD click-attributed column; purchasesViews is handled
+// separately via PURCHASES_VIEWS_ALIASES and summed with clicks in the row loop.
+const PURCHASES_ALIASES = ['purchases', 'orders', '7 day total orders (#)', '14 day total orders (#)', 'total orders (#)', 'purchases1d', 'purchases7d', 'purchases14d', 'purchasesclicks']
+const PURCHASES_VIEWS_ALIASES = ['purchasesviews']
 // salesNd are the Ads API v3 SP/SB field names. salesClicks / salesViews are SD field names.
-const SALES_ALIASES = ['sales', '14 day total sales', 'total sales', 'sales (converted)', '7 day total sales', 'sales1d', 'sales7d', 'sales14d', 'salesclicks', 'salesviews']
+const SALES_ALIASES = ['sales', '14 day total sales', 'total sales', 'sales (converted)', '7 day total sales', 'sales1d', 'sales7d', 'sales14d', 'salesclicks']
+const SALES_VIEWS_ALIASES = ['salesviews']
 const ACOS_ALIASES = ['acos']
 const ROAS_ALIASES = ['roas']
 const AD_GROUP_ALIASES = ['ad group', 'ad group name']
@@ -194,6 +197,8 @@ export function parseAdsCampaignDailyReport(csvText: string): AdsCampaignDailyPa
     spend: findColumnIndex(header, SPEND_ALIASES),
     cpc: findColumnIndex(header, CPC_ALIASES),
     purchases: findColumnIndex(header, PURCHASES_ALIASES),
+    purchasesViews: findColumnIndex(header, PURCHASES_VIEWS_ALIASES),
+    salesViews: findColumnIndex(header, SALES_VIEWS_ALIASES),
     sales: findColumnIndex(header, SALES_ALIASES),
     acos: findColumnIndex(header, ACOS_ALIASES),
     roas: findColumnIndex(header, ROAS_ALIASES),
@@ -237,8 +242,12 @@ export function parseAdsCampaignDailyReport(csvText: string): AdsCampaignDailyPa
     const impressions = Math.trunc(toNumber(cells[idx.impressions]))
     const clicks = Math.trunc(toNumber(cells[idx.clicks]))
     const spend = toNumber(cells[idx.spend])
+    // For SD: sum click-attributed + view-attributed to match Console totals.
+    // For SP/SB: purchasesViews/salesViews indices are -1, toNumber(undefined)=0.
     const purchases = Math.trunc(toNumber(cells[idx.purchases]))
+      + (idx.purchasesViews >= 0 ? Math.trunc(toNumber(cells[idx.purchasesViews])) : 0)
     const sales = toNumber(cells[idx.sales])
+      + (idx.salesViews >= 0 ? toNumber(cells[idx.salesViews]) : 0)
 
     const ctr = toNumberOrNull(cells[idx.ctr]) ?? (impressions > 0 ? (clicks / impressions) * 100 : null)
     const cpc = toNumberOrNull(cells[idx.cpc]) ?? (clicks > 0 ? spend / clicks : null)
