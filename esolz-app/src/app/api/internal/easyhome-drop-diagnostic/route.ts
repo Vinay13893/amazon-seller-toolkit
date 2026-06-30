@@ -805,7 +805,7 @@ export async function GET(request: Request) {
       amazonAdsAttributedSales: 'Amazon Ads Reports',
       blendedRoasTacos: 'Settlement Net Sales (Payment Transactions) combined with Amazon Ads Spend (Amazon Ads Reports)',
       organicEstimate: 'Settlement Net Sales − Amazon Ads Attributed Sales (estimate, not a direct Amazon metric)',
-      businessReportOrderedProductSales: 'Not connected yet — may differ from Settlement Net Sales',
+      businessReportOrderedProductSales: 'SP-API (internal_business_report_sales_traffic_daily) — primary when complete; can differ from Settlement Net Sales by date.',
     },
   }
 

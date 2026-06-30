@@ -244,7 +244,11 @@ export function buildEasyhomeDropDiagnostic(params: {
 
   const beforeRows = transactions.filter(r => inWindow(r.transactionDate, rangeA))
   const afterRows = transactions.filter(r => inWindow(r.transactionDate, rangeB))
-  const allRows = [...beforeRows, ...afterRows]
+  // In single mode rangeA === rangeB, so beforeRows and afterRows contain identical
+  // transactions. Concatenating them would double-count every row in buildDailyTrend
+  // and outlierDays, producing doubled settlement totals in the UI.
+  const isSingleMode = rangeA.startDate === rangeB.startDate && rangeA.endDate === rangeB.endDate
+  const allRows = isSingleMode ? afterRows : [...beforeRows, ...afterRows]
 
   const accountSummary = { before: summarizePeriod(beforeRows), after: summarizePeriod(afterRows) }
   const dailyTrend = buildDailyTrend(allRows)
@@ -391,13 +395,15 @@ export function buildEasyhomeDropDiagnostic(params: {
     totalSkusAnalyzed: skuTable.length,
     mappedSkuCount: skuTable.length - unmappedSkus.length,
     unmappedSkuCount: unmappedSkus.length,
-    unmappedRevenue: round2(unmappedSkus.reduce((sum, row) => sum + row.beforeSales + row.afterSales, 0)),
+    unmappedRevenue: round2(unmappedSkus.reduce((sum, row) => sum + (isSingleMode ? row.afterSales : row.beforeSales + row.afterSales), 0)),
     topUnmappedSkus: [...unmappedSkus]
-      .sort((a, b) => (b.beforeSales + b.afterSales) - (a.beforeSales + a.afterSales))
+      .sort((a, b) => isSingleMode
+        ? b.afterSales - a.afterSales
+        : (b.beforeSales + b.afterSales) - (a.beforeSales + a.afterSales))
       .slice(0, 10)
       .map(row => ({
         sku: row.sku,
-        totalSales: round2(row.beforeSales + row.afterSales),
+        totalSales: round2(isSingleMode ? row.afterSales : row.beforeSales + row.afterSales),
         beforeSales: row.beforeSales,
         afterSales: row.afterSales,
       })),
