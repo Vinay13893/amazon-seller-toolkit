@@ -1,9 +1,11 @@
-// Phase 2C.1: smallest-safe daily auto-refresh for the 4 Sponsored Products
-// reports Brahmastra reads (campaign / advertised product / targeting /
-// search term). Intended to run on Render as a scheduled cron job — NOT on
-// Vercel. Read-only against the Amazon Ads Reporting API: only ever creates
-// a report and reads it back. Never calls a write endpoint, never touches
-// bids/budgets/campaigns/keywords/targets.
+// Phase 2C.1 / R10.2: daily auto-refresh for Amazon Ads reports Brahmastra reads.
+// Syncs SP (Sponsored Products), SD (Sponsored Display), and SB (Sponsored Brands)
+// campaign-level reports plus the 3 SP deep reports (advertised product / targeting /
+// search term). SP+SD+SB campaign rows all go into internal_ads_campaign_daily_rows so
+// top-level totals match the Amazon Ads Console "All campaign types" view.
+// Intended to run on Render as a scheduled cron job — NOT on Vercel.
+// Read-only against the Amazon Ads Reporting API: only ever creates a report and reads
+// it back. Never calls a write endpoint, never touches bids/budgets/campaigns/keywords.
 //
 // Usage:
 //   npx tsx scripts/sync-ads-reports.ts                  # last 7 days (today excluded)
@@ -98,11 +100,18 @@ const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer
 const REPORT_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000 // 6 hours — guards against re-running the exact same (profile, report, date range) twice in quick succession; daily cadence is well outside this window
 
 type ReportDef =
-  | { type: 'spCampaigns'; source: string; table: string; batchTable: string; kind: null }
+  // Campaign-level reports: SP, SD, and SB all go into the same table so
+  // top-level totals match the Amazon Ads Console across all campaign types.
+  | { type: 'spCampaigns' | 'sdCampaigns' | 'sbCampaigns'; source: string; table: string; batchTable: string; kind: null }
+  // SP deep reports only (SD/SB don't offer equivalent granular breakdown APIs).
   | { type: AdsReportType; source: string; table: string; batchTable: string; kind: DeepReportKind }
 
 const REPORT_DEFS: ReportDef[] = [
+  // ── Campaign-level (SP + SD + SB) — all into internal_ads_campaign_daily_rows ──
   { type: 'spCampaigns', source: 'ads_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
+  { type: 'sdCampaigns', source: 'ads_sd_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
+  { type: 'sbCampaigns', source: 'ads_sb_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
+  // ── SP deep reports ──────────────────────────────────────────────────────────
   { type: 'spAdvertisedProduct', source: 'ads_advertised_product', table: 'internal_ads_advertised_product_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'advertised_product' },
   { type: 'spTargeting', source: 'ads_targeting', table: 'internal_ads_targeting_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'targeting' },
   { type: 'spSearchTerm', source: 'ads_search_term', table: 'internal_ads_search_term_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'search_term' },

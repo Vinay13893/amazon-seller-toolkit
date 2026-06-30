@@ -53,10 +53,14 @@ export async function refreshAdsAccessToken(
   return { accessToken: data.access_token, expiresIn: data.expires_in }
 }
 
-export type AdsReportType = 'spCampaigns' | 'spAdvertisedProduct' | 'spTargeting' | 'spSearchTerm'
+// Campaign-level report types (all go into internal_ads_campaign_daily_rows).
+// Deep-report types (spAdvertisedProduct, spTargeting, spSearchTerm) are SP-only
+// because SD/SB don't offer equivalent SKU/keyword/search-term breakdown APIs.
+export type AdsReportType = 'spCampaigns' | 'spAdvertisedProduct' | 'spTargeting' | 'spSearchTerm' | 'sdCampaigns' | 'sbCampaigns'
 
-const REPORT_CONFIG: Record<AdsReportType, { groupBy: string[]; columns: string[] }> = {
+const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[]; columns: string[] }> = {
   spCampaigns: {
+    adProduct: 'SPONSORED_PRODUCTS',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'campaignBudgetAmount',
@@ -64,6 +68,7 @@ const REPORT_CONFIG: Record<AdsReportType, { groupBy: string[]; columns: string[
     ],
   },
   spAdvertisedProduct: {
+    adProduct: 'SPONSORED_PRODUCTS',
     groupBy: ['advertiser'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'adGroupId', 'adGroupName',
@@ -71,6 +76,7 @@ const REPORT_CONFIG: Record<AdsReportType, { groupBy: string[]; columns: string[
     ],
   },
   spTargeting: {
+    adProduct: 'SPONSORED_PRODUCTS',
     groupBy: ['targeting'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'adGroupId', 'adGroupName',
@@ -79,10 +85,32 @@ const REPORT_CONFIG: Record<AdsReportType, { groupBy: string[]; columns: string[
     ],
   },
   spSearchTerm: {
+    adProduct: 'SPONSORED_PRODUCTS',
     groupBy: ['searchTerm'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'adGroupId', 'adGroupName',
       'targeting', 'matchType', 'searchTerm', 'impressions', 'clicks', 'cost', 'purchases1d', 'sales1d', 'unitsSoldClicks1d',
+    ],
+  },
+  // Sponsored Display — campaign-level only. Uses 14d attribution window.
+  // Rows go into the same internal_ads_campaign_daily_rows table as SP so the
+  // top-level Brahmastra totals (spend, clicks, purchases, sales) match the
+  // Amazon Ads Console "All" campaign type view.
+  sdCampaigns: {
+    adProduct: 'SPONSORED_DISPLAY',
+    groupBy: ['campaign'],
+    columns: [
+      'date', 'campaignId', 'campaignName', 'campaignStatus',
+      'impressions', 'clicks', 'cost', 'purchases14d', 'sales14d', 'unitsSoldClicks14d',
+    ],
+  },
+  // Sponsored Brands — campaign-level only. Uses 14d attribution window.
+  sbCampaigns: {
+    adProduct: 'SPONSORED_BRANDS',
+    groupBy: ['campaign'],
+    columns: [
+      'date', 'campaignId', 'campaignName', 'campaignStatus',
+      'impressions', 'clicks', 'cost', 'purchases14d', 'sales14d', 'unitsSoldClicks14d',
     ],
   },
 }
@@ -105,7 +133,7 @@ function authHeaders(ctx: AdsApiContext): HeadersInit {
   }
 }
 
-/** Requests a daily Sponsored Products report for [startDate, endDate] (inclusive, YYYY-MM-DD). Returns the Amazon reportId to poll. */
+/** Requests a daily Ads report for [startDate, endDate] (inclusive, YYYY-MM-DD). The adProduct (SP/SD/SB) is taken from the report config. Returns the Amazon reportId to poll. */
 export async function requestAdsReport(ctx: AdsApiContext, reportType: AdsReportType, startDate: string, endDate: string): Promise<string> {
   const config = REPORT_CONFIG[reportType]
   const res = await fetch(`${adsApiBaseUrl(ctx.region)}/reporting/reports`, {
@@ -116,7 +144,7 @@ export async function requestAdsReport(ctx: AdsApiContext, reportType: AdsReport
       startDate,
       endDate,
       configuration: {
-        adProduct: 'SPONSORED_PRODUCTS',
+        adProduct: config.adProduct,
         groupBy: config.groupBy,
         columns: config.columns,
         reportTypeId: reportType,
