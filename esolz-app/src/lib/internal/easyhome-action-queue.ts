@@ -36,6 +36,9 @@ export type ActionItem = {
   portfolio: string
   entityType: ActionEntityType
   entityName: string
+  // Raw match type from the targeting report (exact/phrase/broad/close-match/etc.).
+  // Null for non-targeting entity types (Campaign, SKU, SearchTerm, Mapping).
+  matchType: string | null
   // Used to link this item to Change History events (Phase 1E.2) — null
   // for items with no single owning campaign (e.g. SKU-level mapping gaps).
   campaignName: string | null
@@ -116,9 +119,9 @@ export function buildActionQueue(params: {
 }): ActionItem[] {
   const items: ActionItem[] = []
 
-  function push(item: Omit<ActionItem, 'status' | 'notes' | 'campaignName' | 'adGroupName'> & { campaignName?: string | null; adGroupName?: string | null }) {
+  function push(item: Omit<ActionItem, 'status' | 'notes' | 'campaignName' | 'adGroupName' | 'matchType'> & { campaignName?: string | null; adGroupName?: string | null; matchType?: string | null }) {
     const existing = params.existingStatuses.get(item.actionKey)
-    items.push({ campaignName: null, adGroupName: null, ...item, status: existing?.status ?? 'Open', notes: existing?.notes ?? null })
+    items.push({ campaignName: null, adGroupName: null, matchType: null, ...item, status: existing?.status ?? 'Open', notes: existing?.notes ?? null })
   }
 
   // --- SKU level (advertised product) ---
@@ -170,6 +173,7 @@ export function buildActionQueue(params: {
         portfolio: r.portfolio,
         entityType: 'Target',
         entityName: r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel,
+        matchType: r.matchType,
         campaignName: r.campaignName,
         adGroupName: r.adGroupName,
         problemSummary: `Target "${entityDisplayLabel(r.targetLabel)}" sales fell from ${inr(r.beforeSales)} to ${inr(r.afterSales)} (Δ${inr(r.deltaSales)}) on campaign "${r.campaignName}".`,
@@ -187,6 +191,7 @@ export function buildActionQueue(params: {
         portfolio: r.portfolio,
         entityType: 'Target',
         entityName: r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel,
+        matchType: r.matchType,
         campaignName: r.campaignName,
         adGroupName: r.adGroupName,
         problemSummary: `ACOS on "${entityDisplayLabel(r.targetLabel)}" worsened from ${r.beforeAcos?.toFixed(1)}% to ${r.afterAcos?.toFixed(1)}% — efficiency collapse correlated with the drop window.`,

@@ -28,8 +28,8 @@ function rangeLabels(mode: 'single' | 'compare'): { a: string; b: string } {
 
 export function toFindingsCsv(rows: FindingRow[]): string {
   const headers = [
-    'priority', 'portfolio', 'campaign', 'ad_group', 'entity_type', 'keyword_target_sku_search_term', 'issue_type',
-    'problem', 'why_it_matters', 'evidence', 'what_to_check_first',
+    'priority', 'portfolio', 'campaign', 'ad_group', 'entity_type', 'target_kind', 'match_type', 'keyword_target_sku_search_term', 'issue_type',
+    'problem', 'why_it_matters', 'evidence', 'threshold_evidence', 'what_to_check_first',
     'recommended_manual_action', 'expected_outcome', 'risk_caution',
     'spend_a', 'spend_b', 'spend_change', 'sales_a', 'sales_b', 'sales_change',
     'acos_a', 'acos_b', 'roas_a', 'roas_b', 'change_history_signal', 'review_status',
@@ -41,8 +41,8 @@ export function toFindingsCsv(rows: FindingRow[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, entityDetailCell(r.entityType, r.entityName), r.issueType,
-      r.problem, r.whyItMatters, r.evidence, r.whatToCheckFirst,
+      r.priority, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, r.targetKind, r.matchType, entityDetailCell(r.entityType, r.entityName), r.issueType,
+      r.problem, r.whyItMatters, r.evidence, r.thresholdEvidence, r.whatToCheckFirst,
       r.recommendedManualAction, r.expectedOutcome, r.riskCaution,
       r.spendA, r.spendB, r.spendChange, r.salesA, r.salesB, r.salesChange,
       r.acosA, r.acosB, r.roasA, r.roasB, r.whatChanged, r.reviewStatus,
@@ -53,7 +53,7 @@ export function toFindingsCsv(rows: FindingRow[]): string {
 
 export function toGoodWorkingCsv(rows: GoodWorkingRow[]): string {
   const headers = [
-    'rank', 'portfolio', 'campaign', 'ad_group', 'entity_type', 'keyword_target_sku_search_term',
+    'rank', 'portfolio', 'campaign', 'ad_group', 'entity_type', 'target_kind', 'match_type', 'keyword_target_sku_search_term',
     'why_it_is_good', 'spend_a', 'spend_b', 'sales_a', 'sales_b',
     'acos_a', 'acos_b', 'roas_a', 'roas_b', 'suggested_action',
   ]
@@ -64,7 +64,7 @@ export function toGoodWorkingCsv(rows: GoodWorkingRow[]): string {
   const lines = [headers.join(',')]
   for (const r of rows) {
     lines.push([
-      r.rank, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, entityDetailCell(r.entityType, r.entityName),
+      r.rank, portfolioDisplayLabel(r.portfolio), r.campaignName, r.adGroupName, r.entityType, r.targetKind, r.matchType, entityDetailCell(r.entityType, r.entityName),
       r.whyGood, r.spendA, r.spendB, r.salesA, r.salesB,
       r.acosA, r.acosB, r.roasA, r.roasB, r.suggestedAction,
     ].map(esc).join(','))
@@ -106,6 +106,8 @@ function FindingRowItem({ r, mode }: { r: FindingRow; mode: 'single' | 'compare'
         <td className="py-2 px-2 whitespace-nowrap text-foreground">{portfolioDisplayLabel(r.portfolio)}</td>
         <td className="py-2 px-2 max-w-[140px] truncate text-foreground" title={r.campaignName ?? ''}>{r.campaignName ?? '—'}</td>
         <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.entityType}</td>
+        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.targetKind ?? '—'}</td>
+        <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.matchType ?? '—'}</td>
         <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={entityDetailCell(r.entityType, r.entityName)}>{entityDetailCell(r.entityType, r.entityName)}</td>
         <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.issueType}</td>
         <td className="py-2 px-2 max-w-[220px] text-foreground">{r.problem}</td>
@@ -114,7 +116,7 @@ function FindingRowItem({ r, mode }: { r: FindingRow; mode: 'single' | 'compare'
       </tr>
       {expanded && (
         <tr className="border-b border-border/50 bg-muted/20">
-          <td colSpan={9} className="py-3 px-4">
+          <td colSpan={11} className="py-3 px-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
               <p className="text-xs text-foreground"><span className="font-semibold">Why it matters:</span> {r.whyItMatters}</p>
               <p className="text-xs text-foreground"><span className="font-semibold">What to check first:</span> {r.whatToCheckFirst}</p>
@@ -125,6 +127,11 @@ function FindingRowItem({ r, mode }: { r: FindingRow; mode: 'single' | 'compare'
               <span className="font-semibold text-foreground">Ad Group:</span> {r.adGroupName ?? '—'}
               {' · '}<span className="font-semibold text-foreground">Change History Signal:</span> {r.whatChanged}
             </p>
+            {r.thresholdEvidence && (
+              <p className="text-xs text-amber-300 mb-2">
+                <span className="font-semibold text-foreground">Threshold triggered:</span> {r.thresholdEvidence}
+              </p>
+            )}
             {mode === 'single' ? (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
                 <div><span className="text-muted-foreground">Ad Spend</span><div className="text-foreground font-medium">{inr(r.spendB)}</div></div>
@@ -207,7 +214,7 @@ export function FindingsActionsTable({ rows, mode = 'compare', loadedRangeSuffix
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border text-muted-foreground">
-              {['Priority', 'Portfolio', 'Campaign', 'Entity Type', 'Keyword / Target / SKU / Search Term', 'Issue Type', 'Problem', 'Evidence', 'Recommended Action'].map(h => (
+              {['Priority', 'Portfolio', 'Campaign', 'Entity Type', 'Target Kind', 'Match Type', 'Keyword / Target / SKU / Search Term', 'Issue Type', 'Problem', 'Evidence', 'Recommended Action'].map(h => (
                 <th key={h} className="text-left font-semibold py-2 px-2 whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -306,8 +313,8 @@ export function GoodWorkingTable({ rows, mode = 'compare', loadedRangeSuffix }: 
               <thead>
                 <tr className="border-b border-border text-muted-foreground">
                   {(mode === 'single'
-                    ? ['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Entity Type', 'Keyword / Target / SKU / Search Term', 'Why it is good', 'Ad Spend', 'Ad-attributed Sales', 'ACOS', 'ROAS', 'Suggested action']
-                    : ['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Entity Type', 'Keyword / Target / SKU / Search Term', 'Why it is good', `Spend (${labels.a})`, `Spend (${labels.b})`, `Sales (${labels.a})`, `Sales (${labels.b})`, `ACOS ${labels.a} -> ${labels.b}`, `ROAS ${labels.a} -> ${labels.b}`, 'Suggested action']
+                    ? ['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Entity Type', 'Target Kind', 'Match Type', 'Keyword / Target / SKU / Search Term', 'Why it is good', 'Ad Spend', 'Ad-attributed Sales', 'ACOS', 'ROAS', 'Suggested action']
+                    : ['Rank', 'Portfolio', 'Campaign', 'Ad Group', 'Entity Type', 'Target Kind', 'Match Type', 'Keyword / Target / SKU / Search Term', 'Why it is good', `Spend (${labels.a})`, `Spend (${labels.b})`, `Sales (${labels.a})`, `Sales (${labels.b})`, `ACOS ${labels.a} -> ${labels.b}`, `ROAS ${labels.a} -> ${labels.b}`, 'Suggested action']
                   ).map(h => (
                     <th key={h} className="text-left font-semibold py-2 px-2 whitespace-nowrap">{h}</th>
                   ))}
@@ -321,6 +328,8 @@ export function GoodWorkingTable({ rows, mode = 'compare', loadedRangeSuffix }: 
                     <td className="py-2 px-2 max-w-[160px] truncate text-foreground" title={r.campaignName ?? ''}>{r.campaignName ?? '—'}</td>
                     <td className="py-2 px-2 text-muted-foreground">{r.adGroupName ?? '—'}</td>
                     <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.entityType}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.targetKind ?? '—'}</td>
+                    <td className="py-2 px-2 whitespace-nowrap text-muted-foreground">{r.matchType ?? '—'}</td>
                     <td className="py-2 px-2 max-w-[180px] truncate text-foreground" title={entityDetailCell(r.entityType, r.entityName)}>{entityDetailCell(r.entityType, r.entityName)}</td>
                     <td className="py-2 px-2 max-w-[220px] text-muted-foreground">{r.whyGood}</td>
                     {mode === 'single' ? (

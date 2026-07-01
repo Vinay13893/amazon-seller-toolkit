@@ -6,7 +6,7 @@
 // causal claim or an automated action.
 
 import type { ActionItemWithChanges } from './easyhome-change-history-diagnostic'
-import type { ActionEntityType, ActionIssueType, ActionStatus } from './easyhome-action-queue'
+import type { ActionItem, ActionEntityType, ActionIssueType, ActionStatus } from './easyhome-action-queue'
 import type { CampaignRow } from './easyhome-ads-campaign-diagnostic'
 import type { AdvertisedProductRow, SearchTermRow, TargetingRow } from './easyhome-ads-deep-diagnostic'
 import { entityDisplayLabel, portfolioDisplayLabel, resolveEasyhomePortfolio } from './portfolio-labels'
@@ -52,6 +52,10 @@ export type FindingRow = {
   adGroupName: string | null
   entityName: string
   entityType: ActionEntityType
+  // Normalized classification added in R10.2
+  matchType: string | null       // 'Exact' | 'Phrase' | 'Broad' | 'Close match' | 'Loose match' | 'Substitutes' | 'Complements' | null
+  targetKind: string | null      // 'Campaign' | 'Manual keyword' | 'Auto target' | 'Product target' | 'Category target' | 'Search term' | 'Advertised SKU' | null
+  thresholdEvidence: string | null  // e.g. 'ACOS 48% above max 40% (system default)'
   issueType: FindingIssueLabel
   spendA: number | null
   spendB: number | null
@@ -81,6 +85,8 @@ export type GoodWorkingRow = {
   adGroupName: string | null
   entityName: string
   entityType: 'Campaign' | 'Keyword / Target' | 'SKU' | 'Search Term'
+  matchType: string | null
+  targetKind: string | null
   whyGood: string
   spendA: number
   spendB: number
@@ -105,6 +111,40 @@ function roasOf(spend: number | null, sales: number | null): number | null {
 function delta(a: number | null, b: number | null): number | null {
   if (a === null || b === null) return null
   return round2(b - a)
+}
+
+/** Normalize raw Amazon match type values to human-readable display labels. */
+function displayMatchType(raw: string | null): string | null {
+  if (!raw) return null
+  const mt = raw.toLowerCase().replace(/_/g, '-')
+  if (mt === 'exact') return 'Exact'
+  if (mt === 'phrase') return 'Phrase'
+  if (mt === 'broad') return 'Broad'
+  if (mt === 'close-match') return 'Close match'
+  if (mt === 'loose-match') return 'Loose match'
+  if (mt === 'substitutes') return 'Substitutes'
+  if (mt === 'complements') return 'Complements'
+  return raw
+}
+
+/** Derive a human-readable target kind from entity type + match type + entity name. */
+function resolveTargetKind(entityType: ActionEntityType, matchType: string | null, entityName: string): string | null {
+  if (entityType === 'Campaign') return 'Campaign'
+  if (entityType === 'SKU') return 'Advertised SKU'
+  if (entityType === 'Search Term') return 'Search term'
+  if (entityType === 'Category') return 'Category target'
+  if (entityType === 'Mapping' || entityType === 'Account') return null
+  // entityType === 'Target'
+  if (matchType) {
+    const mt = matchType.toLowerCase().replace(/_/g, '-')
+    if (mt === 'exact' || mt === 'phrase' || mt === 'broad') return 'Manual keyword'
+    if (mt === 'close-match' || mt === 'loose-match' || mt === 'substitutes' || mt === 'complements') return 'Auto target'
+  }
+  // Infer from target expression string
+  const lower = entityName.toLowerCase()
+  if (/asin\s*[=:]/.test(lower)) return 'Product target'
+  if (/category\s*[=:]/.test(lower)) return 'Category target'
+  return null
 }
 
 /** Maps metrics onto the Findings vocabulary the team asked for. Findings are Ads-only, so only Ads completeness can trigger 'Data incomplete' — payment-transaction lag must not. */
@@ -397,6 +437,7 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
       : noBaselineActivity
         ? noBaselineActivityEvidenceOf(metrics)
         : evidenceOf(metrics)
+    const rawMatchType = (item as ActionItem & { matchType?: string | null }).matchType ?? null
     return {
       actionKey: item.actionKey,
       priority: item.priority,
@@ -405,6 +446,9 @@ export function buildFindingsTable(actionQueue: ActionItemWithChanges[], options
       adGroupName: item.adGroupName ?? item.relatedChanges.find(c => c.adGroupName)?.adGroupName ?? null,
       entityName: entityDisplayLabel(item.entityName),
       entityType: item.entityType,
+      matchType: displayMatchType(rawMatchType),
+      targetKind: resolveTargetKind(item.entityType, rawMatchType, item.entityName),
+      thresholdEvidence: null,
       issueType,
       spendA: metrics.spendA,
       spendB: metrics.spendB,
@@ -435,6 +479,7 @@ type WinnerInput = {
   adGroupName?: string | null
   entityName: string
   entityType: GoodWorkingRow['entityType']
+  matchType?: string | null
   beforeSpend: number
   afterSpend: number
   beforeSales: number
@@ -547,6 +592,7 @@ export function buildGoodWorkingRows(params: {
       entityName: entityDisplayLabel(r.matchType ? `${r.targetLabel} (${r.matchType})` : r.targetLabel),
       adGroupName: r.adGroupName,
       entityType: 'Keyword / Target' as const,
+      matchType: r.matchType,
       beforeSpend: r.beforeSpend,
       afterSpend: r.afterSpend,
       beforeSales: r.beforeSales,
@@ -582,24 +628,34 @@ export function buildGoodWorkingRows(params: {
     .filter((entry): entry is { row: WinnerInput; reason: string } => entry.reason !== null && entry.row.afterSales > 0)
     .sort((a, b) => impactScore(b.row) - impactScore(a.row))
     .slice(0, 40)
-    .map((entry, index) => ({
-      rank: index + 1,
-      portfolio: resolveEasyhomePortfolio(entry.row.portfolio, entry.row.campaignName, entry.row.adGroupName, entry.row.entityName),
-      campaignName: entry.row.campaignName,
-      adGroupName: entry.row.adGroupName ?? null,
-      entityName: entry.row.entityName,
-      entityType: entry.row.entityType,
-      whyGood: entry.reason,
-      spendA: round2(entry.row.beforeSpend),
-      spendB: round2(entry.row.afterSpend),
-      salesA: round2(entry.row.beforeSales),
-      salesB: round2(entry.row.afterSales),
-      acosA: entry.row.beforeAcos,
-      acosB: entry.row.afterAcos,
-      roasA: entry.row.beforeRoas,
-      roasB: entry.row.afterRoas,
-      suggestedAction: goodAction(entry.row, entry.reason),
-    }))
+    .map((entry, index) => {
+      const rawMt = entry.row.matchType ?? null
+      const gwEntityType: ActionEntityType =
+        entry.row.entityType === 'Campaign' ? 'Campaign'
+          : entry.row.entityType === 'SKU' ? 'SKU'
+            : entry.row.entityType === 'Search Term' ? 'Search Term'
+              : 'Target'
+      return {
+        rank: index + 1,
+        portfolio: resolveEasyhomePortfolio(entry.row.portfolio, entry.row.campaignName, entry.row.adGroupName, entry.row.entityName),
+        campaignName: entry.row.campaignName,
+        adGroupName: entry.row.adGroupName ?? null,
+        entityName: entry.row.entityName,
+        entityType: entry.row.entityType,
+        matchType: displayMatchType(rawMt),
+        targetKind: resolveTargetKind(gwEntityType, rawMt, entry.row.entityName),
+        whyGood: entry.reason,
+        spendA: round2(entry.row.beforeSpend),
+        spendB: round2(entry.row.afterSpend),
+        salesA: round2(entry.row.beforeSales),
+        salesB: round2(entry.row.afterSales),
+        acosA: entry.row.beforeAcos,
+        acosB: entry.row.afterAcos,
+        roasA: entry.row.beforeRoas,
+        roasB: entry.row.afterRoas,
+        suggestedAction: goodAction(entry.row, entry.reason),
+      }
+    })
 }
 
 const HIGH_ACOS_THRESHOLD_PCT = 50
@@ -656,6 +712,9 @@ export function buildSinglePeriodAbsoluteFindings(params: {
       entityName: c.entityName,
       entityType: c.entityType,
       issueType,
+      matchType: null,
+      targetKind: resolveTargetKind(c.entityType, null, c.entityName),
+      thresholdEvidence: null,
       spendA: c.spend,
       spendB: c.spend,
       spendChange: 0,
@@ -712,6 +771,8 @@ function makeSinglePeriodFinding(
   acos: number | null,
   roas: number | null,
   evidenceStr: string,
+  thresholdEvidence: string | null = null,
+  matchType: string | null = null,
 ): FindingRow {
   const template = EXPLANATION_TEMPLATES[issueType]
   return {
@@ -722,6 +783,9 @@ function makeSinglePeriodFinding(
     adGroupName,
     entityName,
     entityType,
+    matchType,
+    targetKind: resolveTargetKind(entityType, matchType, entityName),
+    thresholdEvidence,
     issueType,
     spendA: spend,
     spendB: spend,
@@ -761,6 +825,10 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
   const tMap = input.thresholdsMap ?? new Map<string, ThresholdValues>()
   const tGlobal = input.globalThresholds ?? SYSTEM_DEFAULT_THRESHOLDS
 
+  function tSource(portfolioKey: string): string {
+    return tMap.has(portfolioKey) ? 'portfolio-specific' : tMap.has('__global__') ? 'global' : 'system default'
+  }
+
   // ── Campaign-level rules ────────────────────────────────────────────────
   for (const r of input.campaignRows) {
     if (r.afterSpend <= 0) continue
@@ -768,6 +836,7 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName)
     const key = `sp-engine:campaign:${r.campaignName}`
     const t = resolveThresholds(r.portfolio, tMap, tGlobal)
+    const src = tSource(r.portfolio)
 
     const isZeroSales = r.afterSales <= 0
     const isWaste = r.afterSpend >= t.waste_spend_threshold && (isZeroSales || (r.afterRoas !== null && r.afterRoas < t.minimum_roas))
@@ -780,11 +849,16 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
 
     if (isWaste) {
       const prio = r.afterSpend >= 1000 ? 'High' : 'Medium'
-      findings.push(makeSinglePeriodFinding(`${key}:waste`, prio, portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, isZeroSales ? 'Spend with zero ad sales' : 'Waste spend', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid))
+      const thr = isZeroSales
+        ? `Spend ${inr(r.afterSpend)} ≥ waste threshold ${inr(t.waste_spend_threshold)}; zero ad sales (${src})`
+        : `Spend ${inr(r.afterSpend)} ≥ waste threshold ${inr(t.waste_spend_threshold)}; ROAS ${r.afterRoas?.toFixed(2) ?? '—'}x < min ${t.minimum_roas}x (${src})`
+      findings.push(makeSinglePeriodFinding(`${key}:waste`, prio, portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, isZeroSales ? 'Spend with zero ad sales' : 'Waste spend', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid, thr))
     } else if (isHighAcos) {
-      findings.push(makeSinglePeriodFinding(`${key}:high-acos`, 'Medium', portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, 'High ACOS', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid))
+      const thr = `ACOS ${r.afterAcos?.toFixed(1) ?? '—'}% above max ${t.max_acos_pct}% (${src})`
+      findings.push(makeSinglePeriodFinding(`${key}:high-acos`, 'Medium', portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, 'High ACOS', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid, thr))
     } else if (isHighSpendLowImpact) {
-      findings.push(makeSinglePeriodFinding(`${key}:high-spend-low`, 'Medium', portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, 'High Spend Low Sales Impact', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid))
+      const thr = `Spend ${inr(r.afterSpend)} ≥ high-spend threshold ${inr(t.high_spend_threshold)}; ROAS ${r.afterRoas?.toFixed(2) ?? '—'}x < min ${t.minimum_roas}x (${src})`
+      findings.push(makeSinglePeriodFinding(`${key}:high-spend-low`, 'Medium', portfolio, 'Campaign', entityDisplayLabel(r.campaignName), r.campaignName, null, 'High Spend Low Sales Impact', r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid, thr))
     }
 
     if (isProtect) {
@@ -797,6 +871,8 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
         adGroupName: null,
         entityName: entityDisplayLabel(r.campaignName),
         entityType: 'Campaign',
+        matchType: null,
+        targetKind: 'Campaign',
         whyGood,
         spendA: r.afterSpend,
         spendB: r.afterSpend,
@@ -819,13 +895,17 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     const isWaste = isZeroSales || (r.afterRoas !== null && r.afterRoas < tSt.minimum_roas)
     if (!isWaste) continue
     const portfolio = resolveEasyhomePortfolio(r.portfolio, r.campaignName, r.adGroupName, r.searchTerm)
+    const src = tSource(r.portfolio)
     const evid = `Ad Spend: ${inr(r.afterSpend)}, Ad-attributed Sales: ${inr(r.afterSales)}, ACOS: ${pctStr(r.afterAcos)}, Clicks: ${r.afterClicks}.`
+    const thr = isZeroSales
+      ? `Spend ${inr(r.afterSpend)} ≥ waste threshold ${inr(tSt.waste_spend_threshold)}; zero ad sales (${src})`
+      : `Spend ${inr(r.afterSpend)} ≥ waste threshold ${inr(tSt.waste_spend_threshold)}; ROAS ${r.afterRoas?.toFixed(2) ?? '—'}x < min ${tSt.minimum_roas}x (${src})`
     findings.push(makeSinglePeriodFinding(
       `sp-engine:search-term:${r.campaignName}:${r.searchTerm}:waste`,
       r.afterSpend >= 1000 ? 'High' : 'Medium',
       portfolio, 'Search Term', entityDisplayLabel(r.searchTerm), r.campaignName, r.adGroupName,
       isZeroSales ? 'Spend with zero ad sales' : 'Waste spend',
-      r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid,
+      r.afterSpend, r.afterSales, r.afterAcos, r.afterRoas, evid, thr,
     ))
   }
 
@@ -843,13 +923,15 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     const tacos = (adsSpend / orderedSales) * 100
     if (tacos < tCat.warning_tacos_pct) continue
     const portfolio = resolveEasyhomePortfolio(cat.portfolio)
+    const catSrc = tSource(cat.portfolio)
     const evid = `Business Report Ordered Product Sales: ${inr(orderedSales)}. Amazon Ads Spend: ${inr(adsSpend)}. TACOS: ${tacos.toFixed(1)}%. Source: Business Reports + Ads Reports.`
+    const thr = `TACOS ${tacos.toFixed(1)}% ≥ warning ${tCat.warning_tacos_pct}% (${catSrc})`
     const prio = tacos >= tCat.critical_tacos_pct ? 'High' : 'Medium'
     findings.push(makeSinglePeriodFinding(
       `sp-engine:high-tacos:Category:${cat.portfolio}`,
       prio, portfolio, 'Category', `Category: ${portfolioDisplayLabel(cat.portfolio)}`,
       null, null, 'High TACOS Category', adsSpend, orderedSales, null,
-      orderedSales > 0 ? round2(orderedSales / adsSpend) : null, evid,
+      orderedSales > 0 ? round2(orderedSales / adsSpend) : null, evid, thr,
     ))
   }
 
@@ -859,11 +941,12 @@ export function buildSinglePeriodActionEngine(input: SinglePeriodActionEngineInp
     const refundRate = (refundAmount / grossSales) * 100
     if (refundRate >= tGlobal.refund_warning_pct) {
       const evid = `Settlement Refunds: ${inr(refundAmount)}. Settlement Gross Sales: ${inr(grossSales)}. Refund rate: ${refundRate.toFixed(1)}%. Settlement Net Sales: ${inr(netSales)}. Source: Payment Transactions.`
+      const thr = `Refund rate ${refundRate.toFixed(1)}% ≥ warning ${tGlobal.refund_warning_pct}% (system default)`
       findings.push(makeSinglePeriodFinding(
         'sp-engine:refund-watch:Account',
         refundRate >= 30 ? 'High' : 'Medium',
         'Unmapped / Needs Review', 'Account', 'Account — Settlement refunds',
-        null, null, 'Refund Watch', null, netSales, null, null, evid,
+        null, null, 'Refund Watch', null, netSales, null, null, evid, thr,
       ))
     }
   }
