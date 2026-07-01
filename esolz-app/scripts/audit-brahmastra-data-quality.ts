@@ -256,27 +256,41 @@ async function main() {
     .maybeSingle()
   const earliestDate = (earliestCampaign?.report_date as string | null) ?? null
 
-  const { data: allCampaignRows } = await admin
+  // Use exact counts + targeted queries instead of fetching all rows (Supabase default page cap is 1000)
+  const { count: totalCampaignCount } = await admin
     .from('internal_ads_campaign_daily_rows')
-    .select('report_date, campaign_name, spend, clicks, purchases, sales')
+    .select('*', { count: 'exact', head: true })
     .eq('workspace_id', workspaceId)
     .eq('profile_id', profileId)
-    .limit(200000)
 
-  const allRows = allCampaignRows ?? []
-  const uniqueDates = new Set(allRows.map(r => r.report_date as string))
-  const byAdProduct = { sp: { rows: 0, spend: 0, sales: 0, latestDate: null as string | null }, sd: { rows: 0, spend: 0, sales: 0, latestDate: null as string | null }, sb: { rows: 0, spend: 0, sales: 0, latestDate: null as string | null } }
-  for (const r of allRows) {
-    const name = (r.campaign_name as string | null) ?? ''
-    const date = (r.report_date as string | null) ?? ''
-    const spend = Number(r.spend ?? 0)
-    const sales = Number(r.sales ?? 0)
-    const key = name.startsWith('SD') ? 'sd' : (name.startsWith('SB') || name.startsWith('Sponsored Brands')) ? 'sb' : 'sp'
-    byAdProduct[key].rows += 1
-    byAdProduct[key].spend += spend
-    byAdProduct[key].sales += sales
-    if (!byAdProduct[key].latestDate || date > byAdProduct[key].latestDate!) byAdProduct[key].latestDate = date
+  // Unique dates: paginate report_date column
+  const allDates = new Set<string>()
+  for (let page = 0; ; page++) {
+    const { data: dateRows } = await admin.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).range(page * 1000, page * 1000 + 999)
+    for (const r of dateRows ?? []) allDates.add(r.report_date as string)
+    if (!dateRows || dateRows.length < 1000) break
   }
+
+  // SP/SD/SB breakdown via targeted paginated queries
+  async function sumCampaignType(filters: (q: ReturnType<typeof admin.from>) => ReturnType<typeof admin.from>) {
+    let rows = 0; let spend = 0; let sales = 0; let latestDate: string | null = null
+    for (let page = 0; ; page++) {
+      const q = admin.from('internal_ads_campaign_daily_rows').select('spend, sales, report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId)
+      const { data } = await (filters(q) as ReturnType<typeof admin.from>).range(page * 1000, page * 1000 + 999) as { data: Array<{ spend: unknown; sales: unknown; report_date: unknown }> | null }
+      for (const r of data ?? []) {
+        rows++; spend += Number(r.spend ?? 0); sales += Number(r.sales ?? 0)
+        const d = r.report_date as string
+        if (!latestDate || d > latestDate) latestDate = d
+      }
+      if (!data || data.length < 1000) break
+    }
+    return { rows, spend, sales, latestDate }
+  }
+  const [spStats, sdStats, sbStats] = await Promise.all([
+    sumCampaignType(q => (q as ReturnType<typeof admin.from>).not('campaign_name', 'ilike', 'SD%').not('campaign_name', 'ilike', 'SB%').not('campaign_name', 'ilike', 'Sponsored Brands%')),
+    sumCampaignType(q => (q as ReturnType<typeof admin.from>).ilike('campaign_name', 'SD%')),
+    sumCampaignType(q => (q as ReturnType<typeof admin.from>).or('campaign_name.ilike.SB%,campaign_name.ilike.Sponsored Brands%')),
+  ])
 
   const { data: lastSyncRun } = await admin
     .from('internal_data_refresh_runs')
@@ -299,11 +313,11 @@ async function main() {
 
   console.log(`  Earliest campaign date : ${earliestDate ?? 'none'}`)
   console.log(`  Latest campaign date   : ${latestAdsDates['internal_ads_campaign_daily_rows'] ?? 'none'}`)
-  console.log(`  Coverage (unique dates): ${uniqueDates.size} dates`)
-  console.log(`  Total campaign rows    : ${allRows.length}`)
-  console.log(`  SP rows/spend/sales    : ${byAdProduct.sp.rows} / ${fmtInr(byAdProduct.sp.spend)} / ${fmtInr(byAdProduct.sp.sales)} (latest: ${byAdProduct.sp.latestDate ?? 'none'})`)
-  console.log(`  SD rows/spend/sales    : ${byAdProduct.sd.rows} / ${fmtInr(byAdProduct.sd.spend)} / ${fmtInr(byAdProduct.sd.sales)} (latest: ${byAdProduct.sd.latestDate ?? 'none'})`)
-  console.log(`  SB rows/spend/sales    : ${byAdProduct.sb.rows} / ${fmtInr(byAdProduct.sb.spend)} / ${fmtInr(byAdProduct.sb.sales)} (latest: ${byAdProduct.sb.latestDate ?? 'none'})`)
+  console.log(`  Coverage (unique dates): ${allDates.size} dates`)
+  console.log(`  Total campaign rows    : ${totalCampaignCount ?? 0}`)
+  console.log(`  SP rows/spend/sales    : ${spStats.rows} / ${fmtInr(spStats.spend)} / ${fmtInr(spStats.sales)} (latest: ${spStats.latestDate ?? 'none'})`)
+  console.log(`  SD rows/spend/sales    : ${sdStats.rows} / ${fmtInr(sdStats.spend)} / ${fmtInr(sdStats.sales)} (latest: ${sdStats.latestDate ?? 'none'})`)
+  console.log(`  SB rows/spend/sales    : ${sbStats.rows} / ${fmtInr(sbStats.spend)} / ${fmtInr(sbStats.sales)} (latest: ${sbStats.latestDate ?? 'none'})`)
   console.log(`  Deep reports (total rows):`)
   console.log(`    advertised_product   : ${advProdCount ?? 0}`)
   console.log(`    targeting            : ${targetingCount ?? 0}`)
@@ -311,10 +325,16 @@ async function main() {
   console.log(`  Last ads sync run      : ${lastSyncRun ? `${lastSyncRun.source} status=${lastSyncRun.status} started_at=${(lastSyncRun.started_at as string).slice(0, 16)}` : 'none'}`)
   console.log(`  Failed sync run count  : ${failedCount ?? 0}`)
 
-  // 2026-06-15 spot check
+  // 2026-06-15 spot check — query directly to avoid page-cap skew
   console.log('\n[12] 2026-06-15 spot check (Console benchmarks: Spend ₹11,343.92 / Clicks 1,573 / Purchases 62 / Sales ₹64,474.75)')
-  const june15Rows = allRows.filter(r => r.report_date === '2026-06-15')
-  if (june15Rows.length === 0) {
+  const { data: june15Rows } = await admin
+    .from('internal_ads_campaign_daily_rows')
+    .select('spend, clicks, purchases, sales')
+    .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .eq('report_date', '2026-06-15')
+    .limit(2000)
+  if (!june15Rows || june15Rows.length === 0) {
     console.log('  No rows found for 2026-06-15.')
   } else {
     const j15 = june15Rows.reduce((acc, r) => ({ spend: acc.spend + Number(r.spend ?? 0), clicks: acc.clicks + Number(r.clicks ?? 0), purchases: acc.purchases + Number(r.purchases ?? 0), sales: acc.sales + Number(r.sales ?? 0) }), { spend: 0, clicks: 0, purchases: 0, sales: 0 })
