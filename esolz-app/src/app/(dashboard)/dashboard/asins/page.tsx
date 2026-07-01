@@ -46,6 +46,18 @@ interface AmazonListingSnapshot {
   availability_score: number | null
   scrape_status:      string | null
   checked_at:         string
+  last_attempted_at:  string | null
+  last_successful_price_checked_at: string | null
+  last_successful_bsr_checked_at: string | null
+  last_successful_pricing_checked_at: string | null
+  latest_failure_reason: string | null
+  next_retry_at: string | null
+  price_source_status: string
+  bsr_source_status: string
+  buy_box_source_status: string
+  availability_source_status: string
+  deal_tag_source_status: string
+  queue_status: string | null
 }
 
 interface AmazonListingItem {
@@ -71,6 +83,22 @@ interface ListingSyncSummary {
 
 const LISTINGS_PAGE_SIZE = 50
 
+interface CheckerSummary {
+  queued: number
+  processing: number
+  succeeded: number
+  failed: number
+  rateLimited: number
+  lastAttemptedAt: string | null
+  lastSuccessfulAt: string | null
+  nextRetryAt: string | null
+}
+
+function compactDateTime(value: string | null): string {
+  if (!value) return '—'
+  return new Date(value).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
 export default function AsinsPage() {
   const [activeAsinTab, setActiveAsinTab] = useState<AsinTab>('products')
   const [checkingNow, setCheckingNow] = useState(false)
@@ -90,6 +118,7 @@ export default function AsinsPage() {
   const [listingTotal, setListingTotal]             = useState(0)
   const [listingsHasMore, setListingsHasMore]       = useState(false)
   const [listingSync, setListingSync]               = useState<ListingSyncSummary | null>(null)
+  const [checkerSummary, setCheckerSummary]         = useState<CheckerSummary | null>(null)
   const [trackingFromListingAsin, setTrackingFromListingAsin] = useState<string | null>(null)
 
   function marketplaceFromMarketplaceId(marketplaceId: string): Marketplace {
@@ -128,6 +157,7 @@ export default function AsinsPage() {
         total?: number
         hasMore?: boolean
         sync?: ListingSyncSummary | null
+        checker?: CheckerSummary | null
       }
       if (listingsRes.ok) {
         const nextItems = listingData.items ?? []
@@ -135,6 +165,7 @@ export default function AsinsPage() {
         setListingTotal(listingData.total ?? 0)
         setListingsHasMore(Boolean(listingData.hasMore))
         setListingSync(listingData.sync ?? null)
+        setCheckerSummary(listingData.checker ?? null)
       }
     } catch {
       // non-fatal
@@ -181,29 +212,42 @@ export default function AsinsPage() {
     setCheckingNow(true)
     setCheckStatus('Queuing product checks…')
     try {
-      const enqueueRes = await fetch('/api/asins/jobs/enqueue', { method: 'POST' })
+      const enqueueRes = await fetch('/api/asins/jobs/enqueue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 5, force: true }),
+      })
       const enqueueData = await enqueueRes.json() as {
         enqueuedMyProducts?: number
         enqueuedCompetitors?: number
+        insertedCount?: number
+        warning?: string | null
+        detail?: string
         error?: string
       }
       if (!enqueueRes.ok) {
-        setCheckStatus(enqueueData.error ?? 'Could not queue product checks.')
+        setCheckStatus(enqueueData.detail ?? enqueueData.error ?? 'Could not queue product checks.')
         return
       }
 
-      setCheckStatus('Running queued checks…')
+      const queued = enqueueData.insertedCount ?? ((enqueueData.enqueuedMyProducts ?? 0) + (enqueueData.enqueuedCompetitors ?? 0))
+      setCheckStatus(
+        queued > 0
+          ? `Queued ${queued} product check${queued === 1 ? '' : 's'}; running first safe batch...`
+          : (enqueueData.warning ?? 'No new checks were due right now.'),
+      )
       const processRes = await fetch('/api/asins/jobs/process-next', { method: 'POST' })
       const processData = await processRes.json() as {
         claimed?: number
         completed?: number
         retried?: number
         failed?: number
+        pricingRateLimited?: number
         message?: string
       }
 
       if (!processRes.ok) {
-        setCheckStatus('Checks were queued, but could not run yet.')
+        setCheckStatus('Checks were queued, but the processor could not run yet. Queue status below will update after the next worker run.')
         return
       }
 
@@ -214,7 +258,7 @@ export default function AsinsPage() {
 
       const claimed = processData.claimed ?? 0
       if (claimed === 0) {
-        setCheckStatus('No checks were due right now.')
+        setCheckStatus('No checks were due right now. Existing queue/status is shown below.')
         return
       }
 
@@ -222,6 +266,7 @@ export default function AsinsPage() {
         `Checked ${processData.completed ?? 0} of ${claimed}` +
         (processData.retried ? `, ${processData.retried} retrying` : '') +
         (processData.failed ? `, ${processData.failed} failed` : '') +
+        (processData.pricingRateLimited ? `, ${processData.pricingRateLimited} rate-limited` : '') +
         '.',
       )
       await loadAmazonListings({ search: listingSearch })
@@ -539,7 +584,19 @@ export default function AsinsPage() {
       <>
       {/* ── My Products: missing-data explanation ── */}
       <div className="rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
-        Connect Amazon and run product checks to populate price, BSR, Buy Box, availability, and deal tag.
+        Product checks use SP-API Catalog for BSR and SP-API Product Pricing for price, Buy Box, and offer availability. Deal tag checking is not implemented yet.
+        {checkerSummary && (
+          <div className="mt-3 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 text-xs">
+            <div><span className="text-muted-foreground/70">Queued</span><p className="text-foreground font-medium">{checkerSummary.queued}</p></div>
+            <div><span className="text-muted-foreground/70">Processing</span><p className="text-foreground font-medium">{checkerSummary.processing}</p></div>
+            <div><span className="text-muted-foreground/70">Succeeded</span><p className="text-foreground font-medium">{checkerSummary.succeeded}</p></div>
+            <div><span className="text-muted-foreground/70">Failed</span><p className="text-foreground font-medium">{checkerSummary.failed}</p></div>
+            <div><span className="text-muted-foreground/70">Rate-limited</span><p className="text-foreground font-medium">{checkerSummary.rateLimited}</p></div>
+            <div><span className="text-muted-foreground/70">Last attempted</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.lastAttemptedAt)}</p></div>
+            <div><span className="text-muted-foreground/70">Last success</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.lastSuccessfulAt)}</p></div>
+            <div><span className="text-muted-foreground/70">Next retry</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.nextRetryAt)}</p></div>
+          </div>
+        )}
       </div>
 
       {/* ── My Products (connected Amazon account listings) ── */}
@@ -709,52 +766,64 @@ export default function AsinsPage() {
                       </td>
                       {(() => {
                         const snapshot = item.snapshot
-                        const pricingLabel = pricingUnavailableLabel(snapshot?.scrape_status)
                         const notChecked = <span className="text-xs text-muted-foreground/70 italic">Not checked yet</span>
+                        const sourceLine = (text: string | null | undefined, extra?: string | null) => (
+                          <p className="mt-1 text-[10px] leading-snug text-muted-foreground">{text}{extra ? ` · ${extra}` : ''}</p>
+                        )
 
                         return (
                           <>
                             {/* Price */}
                             <td className="px-4 py-3 text-xs">
-                              {!snapshot
-                                ? notChecked
-                                : pricingLabel
-                                  ? <span className="text-xs text-muted-foreground">{pricingLabel}</span>
-                                  : <span className="text-xs text-foreground">{formatPrice(snapshot.price, 'INR')}</span>}
+                              {!snapshot ? notChecked : (
+                                <>
+                                  <span className="text-xs text-foreground">{snapshot.price !== null ? formatPrice(snapshot.price, 'INR') : '—'}</span>
+                                  {sourceLine(snapshot.price_source_status, snapshot.last_successful_price_checked_at ? `last success ${compactDateTime(snapshot.last_successful_price_checked_at)}` : null)}
+                                  {snapshot.next_retry_at && sourceLine(`Retry scheduled ${compactDateTime(snapshot.next_retry_at)}`)}
+                                </>
+                              )}
                             </td>
                             {/* BSR */}
                             <td className="px-4 py-3 text-xs">
-                              {!snapshot
-                                ? notChecked
-                                : snapshot.bsr !== null
-                                  ? <span className="text-xs text-foreground">#{snapshot.bsr.toLocaleString('en-IN')}</span>
-                                  : <span className="text-xs text-muted-foreground">Unavailable from Catalog</span>}
+                              {!snapshot ? notChecked : (
+                                <>
+                                  <span className="text-xs text-foreground">{snapshot.bsr !== null ? `#${snapshot.bsr.toLocaleString('en-IN')}` : '—'}</span>
+                                  {sourceLine(snapshot.bsr_source_status, snapshot.last_successful_bsr_checked_at ? `last success ${compactDateTime(snapshot.last_successful_bsr_checked_at)}` : null)}
+                                </>
+                              )}
                             </td>
                             {/* Buy Box */}
                             <td className="px-4 py-3 text-xs">
-                              {!snapshot
-                                ? notChecked
-                                : pricingLabel
-                                  ? <span className="text-xs text-muted-foreground">{pricingLabel}</span>
-                                  : snapshot.buy_box_owner
-                                    ? <span className="text-xs text-foreground truncate max-w-[110px]" title={snapshot.buy_box_owner}>{snapshot.buy_box_owner}</span>
-                                    : <span className="text-xs text-muted-foreground">Suppressed</span>}
+                              {!snapshot ? notChecked : (
+                                <>
+                                  {snapshot.buy_box_owner ? (
+                                    <span className="text-xs text-foreground truncate max-w-[110px]" title={snapshot.buy_box_owner}>{snapshot.buy_box_owner}</span>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">{snapshot.buy_box_status === 'no_buybox' ? 'No Buy Box' : 'Seller unknown'}</span>
+                                  )}
+                                  {sourceLine(snapshot.buy_box_source_status, snapshot.last_successful_pricing_checked_at ? `last success ${compactDateTime(snapshot.last_successful_pricing_checked_at)}` : null)}
+                                </>
+                              )}
                             </td>
                             {/* Availability */}
                             <td className="px-4 py-3 text-xs">
-                              {!snapshot
-                                ? notChecked
-                                : snapshot.availability_score !== null
-                                  ? <span className="text-xs text-foreground">{snapshot.availability_score}%</span>
-                                  : <span className="text-xs text-muted-foreground">—</span>}
+                              {!snapshot ? notChecked : (
+                                <>
+                                  <span className="text-xs text-foreground">{snapshot.availability_score !== null ? `${snapshot.availability_score}%` : '—'}</span>
+                                  {sourceLine(snapshot.availability_source_status)}
+                                </>
+                              )}
                             </td>
                             {/* Deal Tag */}
-                            <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">Not available yet</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground/70 italic">{snapshot?.deal_tag_source_status ?? 'Deal checker not implemented yet'}</td>
                             {/* Last Checked */}
                             <td className="px-4 py-3 text-xs text-muted-foreground">
-                              {snapshot
-                                ? new Date(snapshot.checked_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-                                : 'Not checked yet'}
+                              {snapshot ? (
+                                <>
+                                  <p>Attempt: {compactDateTime(snapshot.last_attempted_at ?? snapshot.checked_at)}</p>
+                                  {snapshot.latest_failure_reason && <p className="text-[10px]">Latest: {pricingUnavailableLabel(snapshot.scrape_status) ?? snapshot.latest_failure_reason}</p>}
+                                </>
+                              ) : 'Not checked yet'}
                             </td>
                           </>
                         )

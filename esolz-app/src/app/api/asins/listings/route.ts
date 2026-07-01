@@ -5,12 +5,101 @@ export const runtime = 'nodejs'
 
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
+const JOB_TYPE = 'product_page_snapshot'
+const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+
+const RATE_LIMIT_REASONS = new Set([
+  'amazon_pricing_rate_limited',
+  'amazon_pricing_cooldown_active',
+  'SP-API pricing call failed with HTTP 429',
+])
 
 function safeSearch(value: string | null): string {
   return (value ?? '')
     .trim()
     .replace(/[^a-zA-Z0-9 ._-]/g, '')
     .slice(0, 100)
+}
+
+type ListingSnapshotRow = {
+  amazon_listing_item_id: string | null
+  price: number | null
+  bsr: number | null
+  buy_box_owner: string | null
+  buy_box_status: string | null
+  availability_score: number | null
+  scrape_status: string | null
+  checked_at: string
+}
+
+type CheckerJobRow = {
+  target_id: string
+  status: string
+  run_after: string | null
+  updated_at: string | null
+  completed_at: string | null
+  last_error_safe: string | null
+}
+
+function addMinutes(iso: string, minutes: number): string {
+  return new Date(new Date(iso).getTime() + minutes * 60 * 1000).toISOString()
+}
+
+function pricingStatusLabel(latest: ListingSnapshotRow | null, priceSnapshot: ListingSnapshotRow | null): string {
+  if (!latest) return 'Not checked yet'
+  if (latest.scrape_status === 'partial_pricing_rate_limited') {
+    return priceSnapshot?.price != null ? 'Latest attempt rate-limited; showing last successful price' : 'Pricing rate-limited'
+  }
+  if (latest.scrape_status === 'partial_pricing_unavailable') return 'Pricing unavailable from SP-API'
+  if (priceSnapshot?.price != null) return 'SP-API Product Pricing'
+  return 'No price from Pricing source'
+}
+
+function catalogStatusLabel(latest: ListingSnapshotRow | null, bsrSnapshot: ListingSnapshotRow | null): string {
+  if (!latest) return 'Not checked yet'
+  if (bsrSnapshot?.bsr != null) {
+    return latest.bsr == null && latest.checked_at !== bsrSnapshot.checked_at
+      ? 'Latest Catalog attempt had no BSR; showing last successful BSR'
+      : 'SP-API Catalog salesRanks'
+  }
+  if (latest.scrape_status === 'partial_catalog_unavailable') return 'Catalog source unavailable'
+  return 'BSR unavailable from Catalog source'
+}
+
+function buyBoxStatusLabel(latest: ListingSnapshotRow | null, pricingSnapshot: ListingSnapshotRow | null): string {
+  if (!latest) return 'Not checked yet'
+  if (latest.scrape_status === 'partial_pricing_rate_limited') {
+    return pricingSnapshot ? 'Latest attempt rate-limited; showing last successful Buy Box data' : 'Buy Box pricing source rate-limited'
+  }
+  if (latest.scrape_status === 'partial_pricing_unavailable') return 'Buy Box unavailable from Pricing source'
+  if (pricingSnapshot?.buy_box_status === 'won') return 'Our offer has Buy Box'
+  if (pricingSnapshot?.buy_box_status === 'lost') return 'Another seller has Buy Box'
+  if (pricingSnapshot?.buy_box_status === 'no_buybox') return 'No Buy Box data'
+  if (pricingSnapshot?.buy_box_status) return 'Buy Box seller unknown'
+  return 'No Buy Box data from Pricing source'
+}
+
+function availabilityStatusLabel(latest: ListingSnapshotRow | null, pricingSnapshot: ListingSnapshotRow | null): string {
+  if (!latest) return 'Not checked yet'
+  if (latest.scrape_status === 'partial_pricing_rate_limited') {
+    return pricingSnapshot?.availability_score != null ? 'Latest attempt rate-limited; showing last offer availability signal' : 'Availability source rate-limited'
+  }
+  if (pricingSnapshot?.availability_score != null) return 'Offer availability signal from Pricing source'
+  return 'Availability unavailable from current source'
+}
+
+function latestJobForTarget(jobs: CheckerJobRow[], targetId: string): CheckerJobRow | null {
+  const rows = jobs.filter(job => job.target_id === targetId)
+  return rows.sort((a, b) => new Date(b.updated_at ?? b.completed_at ?? 0).getTime() - new Date(a.updated_at ?? a.completed_at ?? 0).getTime())[0] ?? null
+}
+
+function nextRetryAt(job: CheckerJobRow | null): string | null {
+  if (!job) return null
+  if ((job.status === 'queued' || job.status === 'running') && job.run_after) return job.run_after
+  if (job.completed_at && RATE_LIMIT_REASONS.has(job.last_error_safe ?? '')) {
+    return addMinutes(job.completed_at, PRICING_RATE_LIMITED_RETRY_MINUTES)
+  }
+  return null
 }
 
 export async function GET(request: NextRequest) {
@@ -73,15 +162,8 @@ export async function GET(request: NextRequest) {
   }
 
   const listingIds = (data ?? []).map(row => row.id as string)
-  const latestSnapshotByListingId = new Map<string, {
-    price: number | null
-    bsr: number | null
-    buy_box_owner: string | null
-    buy_box_status: string | null
-    availability_score: number | null
-    scrape_status: string | null
-    checked_at: string
-  }>()
+  const snapshotsByListingId = new Map<string, ListingSnapshotRow[]>()
+  let listingJobs: CheckerJobRow[] = []
 
   if (listingIds.length > 0) {
     const { data: snapshots } = await supabase
@@ -92,8 +174,10 @@ export async function GET(request: NextRequest) {
 
     for (const snapshot of snapshots ?? []) {
       const listingId = snapshot.amazon_listing_item_id as string | null
-      if (!listingId || latestSnapshotByListingId.has(listingId)) continue
-      latestSnapshotByListingId.set(listingId, {
+      if (!listingId) continue
+      if (!snapshotsByListingId.has(listingId)) snapshotsByListingId.set(listingId, [])
+      snapshotsByListingId.get(listingId)?.push({
+        amazon_listing_item_id: listingId,
         price: snapshot.price as number | null,
         bsr: snapshot.bsr as number | null,
         buy_box_owner: snapshot.buy_box_owner as string | null,
@@ -103,12 +187,95 @@ export async function GET(request: NextRequest) {
         checked_at: snapshot.checked_at as string,
       })
     }
+
+    const { data: jobs } = await supabase
+      .from('background_jobs')
+      .select('target_id, status, run_after, updated_at, completed_at, last_error_safe')
+      .eq('workspace_id', membership.workspace_id)
+      .eq('job_type', JOB_TYPE)
+      .eq('target_type', 'my_product')
+      .in('target_id', listingIds)
+      .order('updated_at', { ascending: false })
+      .limit(1000)
+    listingJobs = (jobs ?? []) as CheckerJobRow[]
   }
 
   const items = (data ?? []).map(row => ({
     ...row,
-    snapshot: latestSnapshotByListingId.get(row.id as string) ?? null,
+    snapshot: (() => {
+      const listingId = row.id as string
+      const snapshots = (snapshotsByListingId.get(listingId) ?? [])
+        .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime())
+      const latest = snapshots[0] ?? null
+      const priceSnapshot = snapshots.find(snapshot => snapshot.price !== null) ?? null
+      const bsrSnapshot = snapshots.find(snapshot => snapshot.bsr !== null) ?? null
+      const pricingSnapshot = snapshots.find(snapshot =>
+        snapshot.price !== null ||
+        snapshot.buy_box_owner !== null ||
+        snapshot.buy_box_status !== null ||
+        snapshot.availability_score !== null
+      ) ?? null
+      const job = latestJobForTarget(listingJobs, listingId)
+
+      if (!latest && !job) return null
+
+      return {
+        price: priceSnapshot?.price ?? null,
+        bsr: bsrSnapshot?.bsr ?? null,
+        buy_box_owner: pricingSnapshot?.buy_box_owner ?? null,
+        buy_box_status: pricingSnapshot?.buy_box_status ?? null,
+        availability_score: pricingSnapshot?.availability_score ?? null,
+        scrape_status: latest?.scrape_status ?? null,
+        checked_at: latest?.checked_at ?? job?.updated_at ?? job?.completed_at ?? new Date(0).toISOString(),
+        last_attempted_at: latest?.checked_at ?? job?.updated_at ?? null,
+        last_successful_price_checked_at: priceSnapshot?.checked_at ?? null,
+        last_successful_bsr_checked_at: bsrSnapshot?.checked_at ?? null,
+        last_successful_pricing_checked_at: pricingSnapshot?.checked_at ?? null,
+        latest_failure_reason: job?.last_error_safe ?? null,
+        next_retry_at: nextRetryAt(job),
+        price_source_status: pricingStatusLabel(latest, priceSnapshot),
+        bsr_source_status: catalogStatusLabel(latest, bsrSnapshot),
+        buy_box_source_status: buyBoxStatusLabel(latest, pricingSnapshot),
+        availability_source_status: availabilityStatusLabel(latest, pricingSnapshot),
+        deal_tag_source_status: 'Deal checker not implemented yet',
+        queue_status: job?.status ?? null,
+      }
+    })(),
   }))
+
+  const { data: checkerJobs } = await supabase
+    .from('background_jobs')
+    .select('status, run_after, updated_at, completed_at, last_error_safe')
+    .eq('workspace_id', membership.workspace_id)
+    .eq('job_type', JOB_TYPE)
+    .order('updated_at', { ascending: false })
+    .limit(5000)
+
+  const checkerRows = (checkerJobs ?? []) as Array<Omit<CheckerJobRow, 'target_id'>>
+  const checkerSummary = checkerRows.reduce((acc, job) => {
+    if (job.status === 'queued') acc.queued += 1
+    if (job.status === 'running') acc.processing += 1
+    if (job.status === 'completed') acc.succeeded += 1
+    if (job.status === 'failed') acc.failed += 1
+    if (RATE_LIMIT_REASONS.has(job.last_error_safe ?? '')) acc.rateLimited += 1
+    const attemptedAt = job.updated_at ?? job.completed_at
+    if (attemptedAt && (!acc.lastAttemptedAt || attemptedAt > acc.lastAttemptedAt)) acc.lastAttemptedAt = attemptedAt
+    if (job.status === 'completed' && !job.last_error_safe && job.completed_at && (!acc.lastSuccessfulAt || job.completed_at > acc.lastSuccessfulAt)) {
+      acc.lastSuccessfulAt = job.completed_at
+    }
+    const retryAt = nextRetryAt(job as CheckerJobRow)
+    if (retryAt && (!acc.nextRetryAt || retryAt < acc.nextRetryAt)) acc.nextRetryAt = retryAt
+    return acc
+  }, {
+    queued: 0,
+    processing: 0,
+    succeeded: 0,
+    failed: 0,
+    rateLimited: 0,
+    lastAttemptedAt: null as string | null,
+    lastSuccessfulAt: null as string | null,
+    nextRetryAt: null as string | null,
+  })
 
   const { data: latestJob } = await supabase
     .from('amazon_sync_jobs')
@@ -126,6 +293,7 @@ export async function GET(request: NextRequest) {
     offset,
     limit,
     hasMore: offset + (data?.length ?? 0) < (count ?? 0),
+    checker: checkerSummary,
     sync: latestJob
       ? {
           status: latestJob.status,

@@ -12,6 +12,12 @@ const MAX_MY_PRODUCTS_PER_RUN = 100
 const MAX_COMPETITORS_PER_RUN = 100
 const MAX_WORKSPACES_PER_SYSTEM_RUN = 25
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
+const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+const RATE_LIMIT_REASONS = new Set([
+  'amazon_pricing_rate_limited',
+  'amazon_pricing_cooldown_active',
+  'SP-API pricing call failed with HTTP 429',
+])
 
 const MARKETPLACE_ID_BY_MARKETPLACE: Record<string, string> = {
   IN: 'A21TJRUUN4KGV',
@@ -43,6 +49,7 @@ async function buildCandidatesForWorkspace(
   workspaceId: string,
   remainingMyProducts: number,
   remainingCompetitors: number,
+  forceRefresh: boolean,
 ): Promise<WorkspaceCandidates | null> {
   const [listingsResult, trackedResult, activeJobsResult] = await Promise.all([
     admin
@@ -59,15 +66,17 @@ async function buildCandidatesForWorkspace(
       .limit(1000),
     admin
       .from('background_jobs')
-      .select('target_type, target_id, status, completed_at')
+      .select('target_type, target_id, status, completed_at, last_error_safe')
       .eq('workspace_id', workspaceId)
       .eq('job_type', JOB_TYPE)
+      .or(`status.in.(queued,running),and(status.in.(completed,failed),completed_at.gte.${new Date(Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000).toISOString()})`)
       .limit(2000),
   ])
 
   if (listingsResult.error || trackedResult.error || activeJobsResult.error) return null
 
   const cadenceCutoff = Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000
+  const rateLimitCutoff = Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000
   const skipKeys = new Set<string>()
   for (const job of activeJobsResult.data ?? []) {
     const key = `${job.target_type}:${job.target_id}`
@@ -75,8 +84,11 @@ async function buildCandidatesForWorkspace(
       skipKeys.add(key)
       continue
     }
+    if (forceRefresh) continue
     if ((job.status === 'completed' || job.status === 'failed') && job.completed_at) {
-      if (new Date(job.completed_at).getTime() > cadenceCutoff) skipKeys.add(key)
+      const completedAt = new Date(job.completed_at).getTime()
+      const cutoff = RATE_LIMIT_REASONS.has(String(job.last_error_safe ?? '')) ? rateLimitCutoff : cadenceCutoff
+      if (completedAt > cutoff) skipKeys.add(key)
     }
   }
 
@@ -125,6 +137,18 @@ export async function POST(request: Request) {
   }
 
   const admin = createAdminClient()
+  const url = new URL(request.url)
+  const requestedLimit = await request.json().catch(() => null) as { limit?: unknown; force?: unknown } | null
+  const queryLimit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+  const limitInput = typeof requestedLimit?.limit === 'number' && Number.isFinite(requestedLimit.limit)
+    ? requestedLimit.limit
+    : Number.isFinite(queryLimit)
+      ? queryLimit
+      : MAX_TOTAL_PER_RUN
+  const manualLimit = Number.isFinite(limitInput)
+    ? Math.max(1, Math.min(MAX_TOTAL_PER_RUN, Math.floor(limitInput)))
+    : MAX_TOTAL_PER_RUN
+  const forceRefresh = requestedLimit?.force === true || url.searchParams.get('force') === '1'
 
   const workspaceIds: string[] = []
   if (auth.mode === 'session') {
@@ -152,7 +176,7 @@ export async function POST(request: Request) {
 
   for (const workspaceId of workspaceIds) {
     if (remainingMyProducts <= 0 && remainingCompetitors <= 0) break
-    const result = await buildCandidatesForWorkspace(admin, workspaceId, remainingMyProducts, remainingCompetitors)
+    const result = await buildCandidatesForWorkspace(admin, workspaceId, remainingMyProducts, remainingCompetitors, forceRefresh)
     if (!result) continue
 
     totalActiveMyProducts += result.totalActiveMyProducts
@@ -164,8 +188,9 @@ export async function POST(request: Request) {
     }
   }
 
-  const jobsToInsert = allCandidates.slice(0, MAX_TOTAL_PER_RUN)
+  const jobsToInsert = allCandidates.slice(0, manualLimit)
   let insertedCount = 0
+  let insertWarning: string | null = null
   if (jobsToInsert.length > 0) {
     const { data: inserted, error: insertError } = await admin
       .from('background_jobs')
@@ -173,7 +198,23 @@ export async function POST(request: Request) {
       .select('id')
 
     if (insertError) {
-      return NextResponse.json({ error: 'Unable to enqueue checker jobs.' }, { status: 503 })
+      console.warn('[asin-jobs-enqueue] insert failed', {
+        code: insertError.code,
+        workspaceCount: workspaceIds.length,
+        candidateCount: allCandidates.length,
+        requestedJobCount: jobsToInsert.length,
+      })
+      if (insertError.code === '23505') {
+        insertWarning = 'Some checks were already queued; duplicates were skipped.'
+      } else {
+        return NextResponse.json(
+          {
+            error: 'Unable to enqueue checker jobs.',
+            detail: 'Queue insert failed safely. Try again shortly or contact support with the current time.',
+          },
+          { status: 503 },
+        )
+      }
     }
     insertedCount = inserted?.length ?? 0
   }
@@ -190,6 +231,7 @@ export async function POST(request: Request) {
     enqueuedMyProducts,
     enqueuedCompetitors,
     insertedCount,
+    warning: insertWarning,
     candidatesExceedingCap: Math.max(0, allCandidates.length - jobsToInsert.length),
   })
 }
