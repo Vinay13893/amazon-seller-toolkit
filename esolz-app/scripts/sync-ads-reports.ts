@@ -129,7 +129,13 @@ function deepReportDefs(): ReportDef[] {
 }
 
 const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer than this is a crashed/abandoned attempt
-const REPORT_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000 // 6 hours — guards against re-running the exact same (profile, report, date range) twice in quick succession; daily cadence is well outside this window
+// Two separate windows for the reuse logic:
+// SUCCESS_SKIP_MS  — skip re-importing if we already succeeded for this exact range recently (avoids double-work on back-to-back runs)
+// AMAZON_REPORT_RETENTION_MS — always reuse an existing Amazon report ID for the same range if one exists within Amazon's 30-day
+//   report retention window, even if our previous run timed out or failed. This means a timed-out run never wastes its Amazon report
+//   slot — the next run picks up the already-queued generation instead of submitting a duplicate request.
+const SUCCESS_SKIP_MS = 6 * 60 * 60 * 1000
+const AMAZON_REPORT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 type ReportDef =
   // Campaign-level reports: SP, SD, and SB all go into the same table so
@@ -298,21 +304,26 @@ async function isSyncLocked(admin: SupabaseClient, workspaceId: string, profileI
 
 type ReusableReport = { amazonReportId: string; alreadySucceeded: boolean }
 
-/** Looks for a recent attempt at the exact same (workspace, profile, report type, date range) to avoid creating a duplicate Amazon report job or re-importing data we already have. */
+/** Checks for an existing Amazon report ID for this exact (workspace, profile, report type, date range) before requesting a new one.
+ *  Always looks back up to Amazon's 30-day report retention window — a timed-out or failed run's report may have completed on
+ *  Amazon's side by the time we retry, so we reuse it rather than submitting a duplicate. Only skips (alreadySucceeded=true)
+ *  if the successful import is recent enough to avoid redundant re-imports on back-to-back manual runs. */
 async function findReusableReport(admin: SupabaseClient, requestKey: string, forceRefresh: boolean): Promise<ReusableReport | null> {
   if (forceRefresh) return null
-  const cutoff = new Date(Date.now() - REPORT_REUSE_WINDOW_MS).toISOString()
+  const retentionCutoff = new Date(Date.now() - AMAZON_REPORT_RETENTION_MS).toISOString()
+  const successCutoff = new Date(Date.now() - SUCCESS_SKIP_MS).toISOString()
   const { data } = await admin
     .from('internal_data_refresh_runs')
-    .select('status, amazon_report_id')
+    .select('status, amazon_report_id, started_at')
     .eq('report_request_key', requestKey)
-    .gte('started_at', cutoff)
+    .gte('started_at', retentionCutoff)
     .not('amazon_report_id', 'is', null)
     .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle()
   if (!data?.amazon_report_id) return null
-  return { amazonReportId: data.amazon_report_id as string, alreadySucceeded: data.status === 'success' }
+  const alreadySucceeded = data.status === 'success' && (data.started_at as string) >= successCutoff
+  return { amazonReportId: data.amazon_report_id as string, alreadySucceeded }
 }
 
 type ReportOutcome = { source: string; status: 'success' | 'failed' | 'skipped' }
@@ -353,7 +364,7 @@ async function syncOneReport(
     let reportId: string
     if (reusable) {
       reportId = reusable.amazonReportId
-      console.log(`  ${def.source}: reusing in-flight Amazon report ${reportId} instead of requesting a new one.`)
+      console.log(`  ${def.source}: reusing existing Amazon report ${reportId} (may already be completed on Amazon's side).`)
     } else {
       reportId = await requestAdsReport(ctx, def.type, startDate, endDate)
     }
@@ -506,6 +517,7 @@ async function runSyncForProfile(
   reportTimeoutMs: number,
   forceRefresh: boolean,
   bfOpts: BackfillOptions,
+  getAccessToken?: () => Promise<string>,
 ): Promise<boolean> {
   const outcomes: ReportOutcome[] = []
 
@@ -518,6 +530,15 @@ async function runSyncForProfile(
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]
+      if (getAccessToken) {
+        try {
+          ctx.accessToken = await getAccessToken()
+          console.log(`  [token refreshed for campaign chunk ${i + 1}/${chunks.length}]`)
+        } catch (err) {
+          console.error(`  Token refresh failed at campaign chunk ${i + 1}: ${err instanceof Error ? err.message : err} — aborting remaining chunks`)
+          break
+        }
+      }
       console.log(`\n  Campaign chunk ${i + 1}/${chunks.length}: ${chunk.from} → ${chunk.to}`)
       for (const def of campDefs) {
         outcomes.push(await syncOneReport(admin, ctx, workspaceId, profileId, def, chunk.from, chunk.to, reportTimeoutMs, forceRefresh))
@@ -527,6 +548,15 @@ async function runSyncForProfile(
     if (dDeepDefs.length > 0) {
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i]
+        if (getAccessToken) {
+          try {
+            ctx.accessToken = await getAccessToken()
+            console.log(`  [token refreshed for deep chunk ${i + 1}/${chunks.length}]`)
+          } catch (err) {
+            console.error(`  Token refresh failed at deep chunk ${i + 1}: ${err instanceof Error ? err.message : err} — aborting remaining chunks`)
+            break
+          }
+        }
         console.log(`\n  Deep chunk ${i + 1}/${chunks.length}: ${chunk.from} → ${chunk.to}`)
         for (const def of dDeepDefs) {
           outcomes.push(await syncOneReport(admin, ctx, workspaceId, profileId, def, chunk.from, chunk.to, reportTimeoutMs, forceRefresh))
@@ -651,8 +681,9 @@ async function main() {
       const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? selection.profileId
 
       let accessToken: string
+      let refreshToken: string
       try {
-        const refreshToken = decryptToken(connection.refresh_token_encrypted as string)
+        refreshToken = decryptToken(connection.refresh_token_encrypted as string)
         const refreshed = await refreshAdsAccessToken(refreshToken)
         accessToken = refreshed.accessToken
       } catch (error) {
@@ -661,9 +692,14 @@ async function main() {
         continue
       }
 
-      const ctx: AdsApiContext = { region: connection.region as string, accessToken, profileId: selection.profileId }
+      const region = connection.region as string
+      const getAccessToken = async () => {
+        const refreshed = await refreshAdsAccessToken(refreshToken)
+        return refreshed.accessToken
+      }
+      const ctx: AdsApiContext = { region, accessToken, profileId: selection.profileId }
       console.log(`Workspace ${workspaceId}, profile ${selection.profileId} (${profileLabel}):`)
-      if (await runSyncForProfile(admin, ctx, workspaceId, selection.profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts)) process.exitCode = 1
+      if (await runSyncForProfile(admin, ctx, workspaceId, selection.profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts, getAccessToken)) process.exitCode = 1
     }
     return
   }
@@ -700,9 +736,13 @@ async function main() {
     return
   }
 
+  const getAccessToken = async () => {
+    const refreshed = await refreshAdsAccessToken(directCreds.refreshToken, { clientId: directCreds.clientId, clientSecret: directCreds.clientSecret })
+    return refreshed.accessToken
+  }
   const ctx: AdsApiContext = { region: directCreds.region, accessToken, profileId: directCreds.profileId, clientId: directCreds.clientId }
   console.log(`Workspace ${workspaceId}, profile ${directCreds.profileId}:`)
-  if (await runSyncForProfile(admin, ctx, workspaceId, directCreds.profileId, directCreds.profileId, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts)) process.exitCode = 1
+  if (await runSyncForProfile(admin, ctx, workspaceId, directCreds.profileId, directCreds.profileId, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts, getAccessToken)) process.exitCode = 1
 }
 
 main().catch(error => {
