@@ -97,7 +97,9 @@ function nextRetryAt(job: CheckerJobRow | null): string | null {
   if (!job) return null
   if ((job.status === 'queued' || job.status === 'running') && job.run_after) return job.run_after
   if (job.completed_at && RATE_LIMIT_REASONS.has(job.last_error_safe ?? '')) {
-    return addMinutes(job.completed_at, PRICING_RATE_LIMITED_RETRY_MINUTES)
+    const retryAt = addMinutes(job.completed_at, PRICING_RATE_LIMITED_RETRY_MINUTES)
+    // Only return future retry times — past dates mean the job is already overdue for re-enqueue
+    if (retryAt > new Date().toISOString()) return retryAt
   }
   return null
 }
@@ -251,9 +253,14 @@ export async function GET(request: NextRequest) {
     .order('updated_at', { ascending: false })
     .limit(5000)
 
+  const checkerNow = new Date().toISOString()
   const checkerRows = (checkerJobs ?? []) as Array<Omit<CheckerJobRow, 'target_id'>>
   const checkerSummary = checkerRows.reduce((acc, job) => {
-    if (job.status === 'queued') acc.queued += 1
+    if (job.status === 'queued') {
+      acc.queued += 1
+      if (!job.run_after || job.run_after <= checkerNow) acc.queueDueNow += 1
+      else acc.queueWaiting += 1
+    }
     if (job.status === 'running') acc.processing += 1
     if (job.status === 'completed') acc.succeeded += 1
     if (job.status === 'failed') acc.failed += 1
@@ -268,6 +275,8 @@ export async function GET(request: NextRequest) {
     return acc
   }, {
     queued: 0,
+    queueDueNow: 0,
+    queueWaiting: 0,
     processing: 0,
     succeeded: 0,
     failed: 0,
@@ -276,6 +285,14 @@ export async function GET(request: NextRequest) {
     lastSuccessfulAt: null as string | null,
     nextRetryAt: null as string | null,
   })
+
+  const suggestedAction = (() => {
+    if (checkerSummary.processing > 0) return 'Processing active'
+    if (checkerSummary.queueDueNow > 0) return 'Cron not configured — start processor to clear queue'
+    if (checkerSummary.rateLimited > 0 && checkerSummary.queueWaiting > 0) return 'Pricing API cooldown active'
+    if (checkerSummary.queued === 0 && checkerSummary.succeeded > 0) return 'Queue healthy'
+    return null
+  })()
 
   const { data: latestJob } = await supabase
     .from('amazon_sync_jobs')
@@ -293,7 +310,7 @@ export async function GET(request: NextRequest) {
     offset,
     limit,
     hasMore: offset + (data?.length ?? 0) < (count ?? 0),
-    checker: checkerSummary,
+    checker: { ...checkerSummary, suggestedAction },
     sync: latestJob
       ? {
           status: latestJob.status,

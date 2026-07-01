@@ -85,6 +85,8 @@ const LISTINGS_PAGE_SIZE = 50
 
 interface CheckerSummary {
   queued: number
+  queueDueNow: number
+  queueWaiting: number
   processing: number
   succeeded: number
   failed: number
@@ -92,6 +94,7 @@ interface CheckerSummary {
   lastAttemptedAt: string | null
   lastSuccessfulAt: string | null
   nextRetryAt: string | null
+  suggestedAction: string | null
 }
 
 function compactDateTime(value: string | null): string {
@@ -586,15 +589,26 @@ export default function AsinsPage() {
       <div className="rounded-lg border border-dashed border-border bg-muted/20 p-4 text-sm text-muted-foreground">
         Product checks use SP-API Catalog for BSR and SP-API Product Pricing for price, Buy Box, and offer availability. Deal tag checking is not implemented yet.
         {checkerSummary && (
-          <div className="mt-3 grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 text-xs">
-            <div><span className="text-muted-foreground/70">Queued</span><p className="text-foreground font-medium">{checkerSummary.queued}</p></div>
-            <div><span className="text-muted-foreground/70">Processing</span><p className="text-foreground font-medium">{checkerSummary.processing}</p></div>
-            <div><span className="text-muted-foreground/70">Succeeded</span><p className="text-foreground font-medium">{checkerSummary.succeeded}</p></div>
-            <div><span className="text-muted-foreground/70">Failed</span><p className="text-foreground font-medium">{checkerSummary.failed}</p></div>
-            <div><span className="text-muted-foreground/70">Rate-limited</span><p className="text-foreground font-medium">{checkerSummary.rateLimited}</p></div>
-            <div><span className="text-muted-foreground/70">Last attempted</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.lastAttemptedAt)}</p></div>
-            <div><span className="text-muted-foreground/70">Last success</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.lastSuccessfulAt)}</p></div>
-            <div><span className="text-muted-foreground/70">Next retry</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.nextRetryAt)}</p></div>
+          <div className="mt-3 space-y-2">
+            <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-2 text-xs">
+              <div><span className="text-muted-foreground/70">Due now</span><p className="text-foreground font-medium">{checkerSummary.queueDueNow}</p></div>
+              <div><span className="text-muted-foreground/70">Waiting</span><p className="text-foreground font-medium">{checkerSummary.queueWaiting}</p></div>
+              <div><span className="text-muted-foreground/70">Processing</span><p className="text-foreground font-medium">{checkerSummary.processing}</p></div>
+              <div><span className="text-muted-foreground/70">Rate-limited</span><p className="text-foreground font-medium">{checkerSummary.rateLimited}</p></div>
+              <div><span className="text-muted-foreground/70">Succeeded</span><p className="text-foreground font-medium">{checkerSummary.succeeded}</p></div>
+              <div><span className="text-muted-foreground/70">Failed</span><p className="text-foreground font-medium">{checkerSummary.failed}</p></div>
+              <div><span className="text-muted-foreground/70">Last success</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.lastSuccessfulAt)}</p></div>
+              <div><span className="text-muted-foreground/70">Last attempted</span><p className="text-foreground font-medium">{compactDateTime(checkerSummary.lastAttemptedAt)}</p></div>
+              <div>
+                <span className="text-muted-foreground/70">{checkerSummary.queueDueNow > 0 ? 'Retry' : 'Next retry'}</span>
+                <p className="text-foreground font-medium">
+                  {checkerSummary.queueDueNow > 0 ? 'Due now' : compactDateTime(checkerSummary.nextRetryAt)}
+                </p>
+              </div>
+            </div>
+            {checkerSummary.suggestedAction && (
+              <p className="text-xs text-amber-400">{checkerSummary.suggestedAction}</p>
+            )}
           </div>
         )}
       </div>
