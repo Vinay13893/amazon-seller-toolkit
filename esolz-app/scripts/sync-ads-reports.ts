@@ -8,11 +8,17 @@
 // it back. Never calls a write endpoint, never touches bids/budgets/campaigns/keywords.
 //
 // Usage:
-//   npx tsx scripts/sync-ads-reports.ts                  # last 7 days (today excluded)
-//   npx tsx scripts/sync-ads-reports.ts --days=2         # last 2 days (manual test / backfill)
+//   npx tsx scripts/sync-ads-reports.ts                                     # last 7 days (today excluded)
+//   npx tsx scripts/sync-ads-reports.ts --days=2                            # last 2 days (manual test)
 //   npx tsx scripts/sync-ads-reports.ts --from=2026-06-20 --to=2026-06-25
-//   npx tsx scripts/sync-ads-reports.ts --report-timeout-ms=900000   # default; report polling ceiling
-//   npx tsx scripts/sync-ads-reports.ts --force-refresh  # bypass the recent-success skip
+//   npx tsx scripts/sync-ads-reports.ts --report-timeout-ms=900000          # default; report polling ceiling
+//   npx tsx scripts/sync-ads-reports.ts --force-refresh                     # bypass the recent-success skip
+//   npx tsx scripts/sync-ads-reports.ts --days=90 --backfill --chunk-days=7 --ad-products=SP,SD,SB
+//       Backfill mode: splits the full date range into --chunk-days-sized windows and
+//       runs campaign reports (SP/SD/SB) per chunk, then deep reports per chunk.
+//       Each chunk is idempotent (skip logic still applies unless --force-refresh).
+//       Failed chunks do not stop later chunks. --no-deep skips deep reports entirely.
+//   npx tsx scripts/sync-ads-reports.ts --days=14 --ad-products=SP,SD,SB   # rolling 14-day daily cron
 //
 // Required env vars (Render): NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 //
@@ -94,6 +100,32 @@ function addDays(iso: string, delta: number): string {
   const d = new Date(`${iso}T00:00:00Z`)
   d.setUTCDate(d.getUTCDate() + delta)
   return d.toISOString().slice(0, 10)
+}
+
+function dateChunks(startDate: string, endDate: string, chunkDays: number): Array<{ from: string; to: string }> {
+  const chunks: Array<{ from: string; to: string }> = []
+  let current = startDate
+  while (current <= endDate) {
+    const tentativeEnd = addDays(current, chunkDays - 1)
+    const to = tentativeEnd <= endDate ? tentativeEnd : endDate
+    chunks.push({ from: current, to })
+    current = addDays(to, 1)
+  }
+  return chunks
+}
+
+function campaignDefsFor(adProducts: string[]): ReportDef[] {
+  return REPORT_DEFS.filter(d => {
+    if (d.kind !== null) return false
+    if (d.type === 'spCampaigns') return adProducts.includes('SP')
+    if (d.type === 'sdCampaigns') return adProducts.includes('SD')
+    if (d.type === 'sbCampaigns') return adProducts.includes('SB')
+    return false
+  })
+}
+
+function deepReportDefs(): ReportDef[] {
+  return REPORT_DEFS.filter(d => d.kind !== null)
 }
 
 const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer than this is a crashed/abandoned attempt
@@ -456,6 +488,66 @@ async function syncOneReport(
   }
 }
 
+type BackfillOptions = {
+  backfill: boolean
+  chunkDays: number
+  adProducts: string[]
+  noDeep: boolean
+}
+
+async function runSyncForProfile(
+  admin: SupabaseClient,
+  ctx: AdsApiContext,
+  workspaceId: string,
+  profileId: string,
+  profileLabel: string,
+  startDate: string,
+  endDate: string,
+  reportTimeoutMs: number,
+  forceRefresh: boolean,
+  bfOpts: BackfillOptions,
+): Promise<boolean> {
+  const outcomes: ReportOutcome[] = []
+
+  if (bfOpts.backfill) {
+    const chunks = dateChunks(startDate, endDate, bfOpts.chunkDays)
+    const campDefs = campaignDefsFor(bfOpts.adProducts)
+    const dDeepDefs = bfOpts.noDeep ? [] : deepReportDefs()
+
+    console.log(`  Backfill mode: ${chunks.length} chunks × ${campDefs.length} campaign type(s)${dDeepDefs.length > 0 ? ` + ${dDeepDefs.length} deep report(s)` : ' (no-deep)'}`)
+
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]
+      console.log(`\n  Campaign chunk ${i + 1}/${chunks.length}: ${chunk.from} → ${chunk.to}`)
+      for (const def of campDefs) {
+        outcomes.push(await syncOneReport(admin, ctx, workspaceId, profileId, def, chunk.from, chunk.to, reportTimeoutMs, forceRefresh))
+      }
+    }
+
+    if (dDeepDefs.length > 0) {
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i]
+        console.log(`\n  Deep chunk ${i + 1}/${chunks.length}: ${chunk.from} → ${chunk.to}`)
+        for (const def of dDeepDefs) {
+          outcomes.push(await syncOneReport(admin, ctx, workspaceId, profileId, def, chunk.from, chunk.to, reportTimeoutMs, forceRefresh))
+        }
+      }
+    }
+  } else {
+    const defs = bfOpts.adProducts.length > 0
+      ? [
+          ...campaignDefsFor(bfOpts.adProducts),
+          ...(bfOpts.noDeep ? [] : deepReportDefs()),
+        ]
+      : REPORT_DEFS
+    for (const def of defs) {
+      outcomes.push(await syncOneReport(admin, ctx, workspaceId, profileId, def, startDate, endDate, reportTimeoutMs, forceRefresh))
+    }
+  }
+
+  return printSummary(profileLabel, outcomes)
+}
+
 function printSummary(profileLabel: string, outcomes: ReportOutcome[]): boolean {
   const succeeded = outcomes.filter(o => o.status === 'success').length
   const skipped = outcomes.filter(o => o.status === 'skipped').length
@@ -486,6 +578,15 @@ async function main() {
   const reportTimeoutMs = args.has('report-timeout-ms') ? Number(args.get('report-timeout-ms')) : 900_000
   const forceRefresh = args.has('force-refresh')
 
+  const backfill = args.has('backfill')
+  const chunkDays = args.has('chunk-days') ? Math.max(1, Number(args.get('chunk-days'))) : 7
+  const adProducts = args.has('ad-products')
+    ? (args.get('ad-products') ?? '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+    : []
+  const noDeep = args.has('no-deep')
+
+  const bfOpts: BackfillOptions = { backfill, chunkDays, adProducts, noDeep }
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!supabaseUrl || !serviceKey) {
@@ -495,7 +596,8 @@ async function main() {
   }
   const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } })
 
-  console.log(`Brahmastra Ads report sync — range ${startDate} to ${endDate} (read-only, no Amazon write calls), report timeout ${reportTimeoutMs}ms${forceRefresh ? ', force-refresh' : ''}`)
+  const modeLabel = backfill ? `, backfill chunk-days=${chunkDays} ad-products=${adProducts.length > 0 ? adProducts.join('+') : 'all'}${noDeep ? ' no-deep' : ''}` : ''
+  console.log(`Brahmastra Ads report sync — range ${startDate} to ${endDate} (read-only, no Amazon write calls), report timeout ${reportTimeoutMs}ms${forceRefresh ? ', force-refresh' : ''}${modeLabel}`)
 
   await cleanupStaleRuns(admin)
 
@@ -561,11 +663,7 @@ async function main() {
 
       const ctx: AdsApiContext = { region: connection.region as string, accessToken, profileId: selection.profileId }
       console.log(`Workspace ${workspaceId}, profile ${selection.profileId} (${profileLabel}):`)
-      const outcomes: ReportOutcome[] = []
-      for (const def of REPORT_DEFS) {
-        outcomes.push(await syncOneReport(admin, ctx, workspaceId, selection.profileId, def, startDate, endDate, reportTimeoutMs, forceRefresh))
-      }
-      if (printSummary(profileLabel, outcomes)) process.exitCode = 1
+      if (await runSyncForProfile(admin, ctx, workspaceId, selection.profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts)) process.exitCode = 1
     }
     return
   }
@@ -604,11 +702,7 @@ async function main() {
 
   const ctx: AdsApiContext = { region: directCreds.region, accessToken, profileId: directCreds.profileId, clientId: directCreds.clientId }
   console.log(`Workspace ${workspaceId}, profile ${directCreds.profileId}:`)
-  const outcomes: ReportOutcome[] = []
-  for (const def of REPORT_DEFS) {
-    outcomes.push(await syncOneReport(admin, ctx, workspaceId, directCreds.profileId, def, startDate, endDate, reportTimeoutMs, forceRefresh))
-  }
-  if (printSummary(directCreds.profileId, outcomes)) process.exitCode = 1
+  if (await runSyncForProfile(admin, ctx, workspaceId, directCreds.profileId, directCreds.profileId, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts)) process.exitCode = 1
 }
 
 main().catch(error => {

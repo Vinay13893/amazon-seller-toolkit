@@ -941,7 +941,59 @@ export async function GET(request: Request) {
     ? [...campaignDiagnostic.campaignTable].sort((a, b) => b.afterSales - a.afterSales).slice(0, 20)
     : []
 
+  // --- Amazon Ads Warehouse Health ---
+  const [
+    { data: earliestCampaignRow },
+    { count: totalCampaignCount },
+    { count: spCampaignCount },
+    { count: sdCampaignCount },
+    { count: sbCampaignCount },
+    { data: spLatestRow },
+    { data: sdLatestRow },
+    { data: sbLatestRow },
+    { data: lastAdsSyncRun },
+    { count: failedSyncCount },
+    { count: advProdTotalCount },
+    { count: targetingTotalCount },
+    { count: searchTermTotalCount },
+  ] = await Promise.all([
+    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: true }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_campaign_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
+    supabase.from('internal_ads_campaign_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId).not('campaign_name', 'ilike', 'SD%').not('campaign_name', 'ilike', 'SB%').not('campaign_name', 'ilike', 'Sponsored Brands%'),
+    supabase.from('internal_ads_campaign_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId).ilike('campaign_name', 'SD%'),
+    supabase.from('internal_ads_campaign_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId).or('campaign_name.ilike.SB%,campaign_name.ilike.Sponsored Brands%'),
+    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).not('campaign_name', 'ilike', 'SD%').not('campaign_name', 'ilike', 'SB%').not('campaign_name', 'ilike', 'Sponsored Brands%').order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).ilike('campaign_name', 'SD%').order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).or('campaign_name.ilike.SB%,campaign_name.ilike.Sponsored Brands%').order('report_date', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_data_refresh_runs').select('source, status, started_at, finished_at').eq('workspace_id', workspaceId).like('source', 'ads_%').order('started_at', { ascending: false }).limit(1).maybeSingle(),
+    supabase.from('internal_data_refresh_runs').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).like('source', 'ads_%').eq('status', 'failed'),
+    supabase.from('internal_ads_advertised_product_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
+    supabase.from('internal_ads_targeting_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
+    supabase.from('internal_ads_search_term_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
+  ])
+  const warehouseEarliestDate = dateOnly((earliestCampaignRow as { report_date?: string } | null)?.report_date ?? null)
+  const warehouseLatestDate = latestAdsDate
+  const warehouseCoverageDays = warehouseEarliestDate && warehouseLatestDate
+    ? Math.round((new Date(`${warehouseLatestDate}T00:00:00Z`).getTime() - new Date(`${warehouseEarliestDate}T00:00:00Z`).getTime()) / (1000 * 60 * 60 * 24)) + 1
+    : 0
+  const adsWarehouseHealth = {
+    earliestCampaignDate: warehouseEarliestDate,
+    latestCampaignDate: warehouseLatestDate,
+    coverageDays: warehouseCoverageDays,
+    spLatestDate: dateOnly((spLatestRow as { report_date?: string } | null)?.report_date ?? null),
+    sdLatestDate: dateOnly((sdLatestRow as { report_date?: string } | null)?.report_date ?? null),
+    sbLatestDate: dateOnly((sbLatestRow as { report_date?: string } | null)?.report_date ?? null),
+    campaignRows: { total: totalCampaignCount ?? 0, sp: spCampaignCount ?? 0, sd: sdCampaignCount ?? 0, sb: sbCampaignCount ?? 0 },
+    deepReportRows: { advertisedProduct: advProdTotalCount ?? 0, targeting: targetingTotalCount ?? 0, searchTerm: searchTermTotalCount ?? 0 },
+    lastSyncStatus: (lastAdsSyncRun as { status?: string } | null)?.status ?? null,
+    lastSyncStartedAt: (lastAdsSyncRun as { started_at?: string } | null)?.started_at ?? null,
+    lastSyncFinishedAt: (lastAdsSyncRun as { finished_at?: string } | null)?.finished_at ?? null,
+    lastSyncSource: (lastAdsSyncRun as { source?: string } | null)?.source ?? null,
+    failedSyncCount: failedSyncCount ?? 0,
+  }
+
   return NextResponse.json({
+    adsWarehouseHealth,
     controlPanel: {
       mode,
       requestedMode: mode,

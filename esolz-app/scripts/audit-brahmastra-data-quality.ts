@@ -244,6 +244,89 @@ async function main() {
     console.log('  Conclusion: Both Ads and Sales data are complete for this range.')
   }
 
+  // 11. Amazon Ads Warehouse — 90-day coverage and SP/SD/SB breakdown
+  console.log('\n[11] Amazon Ads Warehouse — coverage and SP/SD/SB breakdown')
+  const { data: earliestCampaign } = await admin
+    .from('internal_ads_campaign_daily_rows')
+    .select('report_date')
+    .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .order('report_date', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  const earliestDate = (earliestCampaign?.report_date as string | null) ?? null
+
+  const { data: allCampaignRows } = await admin
+    .from('internal_ads_campaign_daily_rows')
+    .select('report_date, campaign_name, spend, clicks, purchases, sales')
+    .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .limit(200000)
+
+  const allRows = allCampaignRows ?? []
+  const uniqueDates = new Set(allRows.map(r => r.report_date as string))
+  const byAdProduct = { sp: { rows: 0, spend: 0, sales: 0, latestDate: null as string | null }, sd: { rows: 0, spend: 0, sales: 0, latestDate: null as string | null }, sb: { rows: 0, spend: 0, sales: 0, latestDate: null as string | null } }
+  for (const r of allRows) {
+    const name = (r.campaign_name as string | null) ?? ''
+    const date = (r.report_date as string | null) ?? ''
+    const spend = Number(r.spend ?? 0)
+    const sales = Number(r.sales ?? 0)
+    const key = name.startsWith('SD') ? 'sd' : (name.startsWith('SB') || name.startsWith('Sponsored Brands')) ? 'sb' : 'sp'
+    byAdProduct[key].rows += 1
+    byAdProduct[key].spend += spend
+    byAdProduct[key].sales += sales
+    if (!byAdProduct[key].latestDate || date > byAdProduct[key].latestDate!) byAdProduct[key].latestDate = date
+  }
+
+  const { data: lastSyncRun } = await admin
+    .from('internal_data_refresh_runs')
+    .select('source, status, started_at, finished_at')
+    .eq('workspace_id', workspaceId)
+    .like('source', 'ads_%')
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  const { count: failedCount } = await admin
+    .from('internal_data_refresh_runs')
+    .select('*', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .like('source', 'ads_%')
+    .eq('status', 'failed')
+
+  const { count: advProdCount } = await admin.from('internal_ads_advertised_product_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId)
+  const { count: targetingCount } = await admin.from('internal_ads_targeting_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId)
+  const { count: searchTermCount } = await admin.from('internal_ads_search_term_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId)
+
+  console.log(`  Earliest campaign date : ${earliestDate ?? 'none'}`)
+  console.log(`  Latest campaign date   : ${latestAdsDates['internal_ads_campaign_daily_rows'] ?? 'none'}`)
+  console.log(`  Coverage (unique dates): ${uniqueDates.size} dates`)
+  console.log(`  Total campaign rows    : ${allRows.length}`)
+  console.log(`  SP rows/spend/sales    : ${byAdProduct.sp.rows} / ${fmtInr(byAdProduct.sp.spend)} / ${fmtInr(byAdProduct.sp.sales)} (latest: ${byAdProduct.sp.latestDate ?? 'none'})`)
+  console.log(`  SD rows/spend/sales    : ${byAdProduct.sd.rows} / ${fmtInr(byAdProduct.sd.spend)} / ${fmtInr(byAdProduct.sd.sales)} (latest: ${byAdProduct.sd.latestDate ?? 'none'})`)
+  console.log(`  SB rows/spend/sales    : ${byAdProduct.sb.rows} / ${fmtInr(byAdProduct.sb.spend)} / ${fmtInr(byAdProduct.sb.sales)} (latest: ${byAdProduct.sb.latestDate ?? 'none'})`)
+  console.log(`  Deep reports (total rows):`)
+  console.log(`    advertised_product   : ${advProdCount ?? 0}`)
+  console.log(`    targeting            : ${targetingCount ?? 0}`)
+  console.log(`    search_term          : ${searchTermCount ?? 0}`)
+  console.log(`  Last ads sync run      : ${lastSyncRun ? `${lastSyncRun.source} status=${lastSyncRun.status} started_at=${(lastSyncRun.started_at as string).slice(0, 16)}` : 'none'}`)
+  console.log(`  Failed sync run count  : ${failedCount ?? 0}`)
+
+  // 2026-06-15 spot check
+  console.log('\n[12] 2026-06-15 spot check (Console benchmarks: Spend ₹11,343.92 / Clicks 1,573 / Purchases 62 / Sales ₹64,474.75)')
+  const june15Rows = allRows.filter(r => r.report_date === '2026-06-15')
+  if (june15Rows.length === 0) {
+    console.log('  No rows found for 2026-06-15.')
+  } else {
+    const j15 = june15Rows.reduce((acc, r) => ({ spend: acc.spend + Number(r.spend ?? 0), clicks: acc.clicks + Number(r.clicks ?? 0), purchases: acc.purchases + Number(r.purchases ?? 0), sales: acc.sales + Number(r.sales ?? 0) }), { spend: 0, clicks: 0, purchases: 0, sales: 0 })
+    console.log(`  Rows       : ${june15Rows.length}`)
+    console.log(`  Spend      : ${fmtInr(j15.spend)} (gap: ${fmtInr(11343.92 - j15.spend)})`)
+    console.log(`  Clicks     : ${j15.clicks} (gap: ${1573 - j15.clicks})`)
+    console.log(`  API Purchases: ${j15.purchases} (console 62; gap ${62 - j15.purchases} = SD view-through not in API)`)
+    console.log(`  API Ad Sales : ${fmtInr(j15.sales)} (console ₹64,474.75; gap ${fmtInr(64474.75 - j15.sales)} = SD view-through not in API)`)
+    console.log(`  Note: Spend and Clicks match console. Purchases/Sales gap is SD view-through conversions`)
+    console.log(`        not exposed at campaign granularity in sdCampaigns v3 API — Amazon API limitation.`)
+  }
+
   console.log('\n' + '='.repeat(70))
   console.log('Audit complete. No Amazon Ads API calls were made; no rows were written.')
 }

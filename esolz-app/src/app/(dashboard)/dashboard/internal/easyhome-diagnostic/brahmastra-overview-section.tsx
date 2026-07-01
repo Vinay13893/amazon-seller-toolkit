@@ -107,11 +107,12 @@ export function BrahmastraOverviewSection({
           <KpiCard label="Ordered Product Sales" value={formatInrCompact(businessReportBlended.after.orderedProductSales)} valueTitle={formatInr(businessReportBlended.after.orderedProductSales)} sub="Business Reports" />
           <KpiCard label="Units Ordered" value={data.businessReport.rangeB.unitsOrdered.toLocaleString('en-IN')} sub="Business Reports" />
           <KpiCard label="Total Order Items" value={data.businessReport.rangeB.totalOrderItems.toLocaleString('en-IN')} sub="Business Reports" />
-          <KpiCard label="Amazon Ads Spend" value={formatInrCompact(businessReportBlended.after.adSpend)} valueTitle={formatInr(businessReportBlended.after.adSpend)} sub={shortSourceLabel('Source: Amazon Ads Reports')} subTitle="Source: Amazon Ads Reports" />
+          <KpiCard label="Total Amazon Ads Spend" value={formatInrCompact(businessReportBlended.after.adSpend)} valueTitle={formatInr(businessReportBlended.after.adSpend)} sub={shortSourceLabel('SP + SD + SB campaign reports')} subTitle="Source: SP + SD + SB campaign reports — matches Amazon Ads Console spend" />
           <KpiCard label="Business Report Blended ROAS" value={roasStr(businessReportBlended.after.roas)} sub="Ordered Sales ÷ Ads Spend" subWrap />
-          <KpiCard label="Business Report TACOS" value={pctStr(businessReportBlended.after.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap subTitle="Amazon Ads Spend ÷ Ordered Product Sales" />
-          <KpiCard label="Business Report Ad Sales Share" value={pctStr(businessReportBlended.after.adSalesShare)} sub="Ads Sales ÷ Ordered Sales" subWrap />
-          <KpiCard label="Business Report Organic Estimate" value={formatInrCompact(businessReportBlended.after.organicEstimate)} valueTitle={formatInr(businessReportBlended.after.organicEstimate)} sub="Estimate" subTitle="Ordered Product Sales − Amazon Ads Attributed Sales (estimate)" />
+          <KpiCard label="Business Report TACOS" value={pctStr(businessReportBlended.after.tacos)} sub="Ads Spend ÷ Ordered Sales" subWrap subTitle="Total Amazon Ads Spend ÷ Business Report Ordered Product Sales" />
+          <KpiCard label="API Attributed Ad Sales" value={formatInrCompact(businessReportBlended.after.adSales)} valueTitle={formatInr(businessReportBlended.after.adSales)} sub="API click-attributed" subTitle="Amazon Ads API campaign reports — may exclude SD view-through conversions" />
+          <KpiCard label="Business Report Ad Sales Share" value={pctStr(businessReportBlended.after.adSalesShare)} sub="API Ad Sales ÷ Ordered Sales" subWrap />
+          <KpiCard label="Business Report Organic Estimate" value={formatInrCompact(businessReportBlended.after.organicEstimate)} valueTitle={formatInr(businessReportBlended.after.organicEstimate)} sub="Estimate" subTitle="Ordered Product Sales − API Attributed Ad Sales (estimate)" />
         </div>
       )}
 
@@ -124,7 +125,7 @@ export function BrahmastraOverviewSection({
           <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
           <KpiCard label="Settlement Orders" value={after.orderCount.toLocaleString('en-IN')} sub="Payment Txns" subTitle="Distinct orders · Payment Transactions" />
           {!isBusinessReportPrimary && (
-            <KpiCard label="Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub={shortSourceLabel('Source: Amazon Ads Reports')} subTitle="Source: Amazon Ads Reports" />
+            <KpiCard label="Total Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub={shortSourceLabel('SP + SD + SB campaign reports')} subTitle="Source: SP + SD + SB campaign reports — matches Amazon Ads Console spend" />
           )}
           <KpiCard label="Settlement Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Net Sales ÷ Ads Spend" subTitle="Settlement Net Sales ÷ Amazon Ads Spend" />
           <KpiCard label="Settlement TACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ads Spend ÷ Net Sales" subTitle="Amazon Ads Spend ÷ Settlement Net Sales" />

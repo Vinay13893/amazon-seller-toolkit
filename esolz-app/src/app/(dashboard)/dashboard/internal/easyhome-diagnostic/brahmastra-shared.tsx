@@ -227,6 +227,22 @@ export type BusinessReportVsSettlement = {
 
 export type PrimarySalesSource = 'business_report' | 'settlement_fallback'
 
+export type AdsWarehouseHealth = {
+  earliestCampaignDate: string | null
+  latestCampaignDate: string | null
+  coverageDays: number
+  spLatestDate: string | null
+  sdLatestDate: string | null
+  sbLatestDate: string | null
+  campaignRows: { total: number; sp: number; sd: number; sb: number }
+  deepReportRows: { advertisedProduct: number; targeting: number; searchTerm: number }
+  lastSyncStatus: string | null
+  lastSyncStartedAt: string | null
+  lastSyncFinishedAt: string | null
+  lastSyncSource: string | null
+  failedSyncCount: number
+}
+
 export type SourceAccuracyAudit = {
   ranges: { requestedRangeA: DateRange; requestedRangeB: DateRange | null; effectiveRangeA: DateRange; effectiveRangeB: DateRange; mode: 'single' | 'compare' }
   sourceOfTruth: Record<string, string>
@@ -257,6 +273,7 @@ export type SourceAccuracyAudit = {
 }
 
 export type ApiResponse = {
+  adsWarehouseHealth: AdsWarehouseHealth
   controlPanel: ControlPanelMeta
   findingsTable: FindingRow[]
   goodWorkingRows: GoodWorkingRow[]

@@ -1,10 +1,10 @@
 'use client'
 
 import { useRef, useState } from 'react'
-import { AlertTriangle, Megaphone, Upload } from 'lucide-react'
+import { AlertTriangle, Database, Megaphone, Upload } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
-import type { ApiResponse, ControlPanelMeta, SourceAccuracyAudit } from './brahmastra-shared'
+import type { ApiResponse, AdsWarehouseHealth, ControlPanelMeta, SourceAccuracyAudit } from './brahmastra-shared'
 import { DataTable, downloadCsv, formatInr, formatInrCompact, roasStr, pctStr } from './brahmastra-shared'
 
 /**
@@ -40,8 +40,8 @@ export function SourceComparisonCards({ data }: { data: ApiResponse }) {
         )}
         <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub="Payment Txns" subTitle="Payment Transactions (settlement/refund-date based)" />
         <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub="Payment Txns" subTitle="Payment Transactions" />
-        <KpiCard label="Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub="Ads Reports" subTitle="Amazon Ads Reports" />
-        <KpiCard label="Amazon Ads Attributed Sales" value={formatInrCompact(blendedMetrics.after.adSales)} valueTitle={formatInr(blendedMetrics.after.adSales)} sub="Ads Reports" subTitle="Amazon Ads Reports" />
+        <KpiCard label="Total Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub="SP + SD + SB campaign reports" subTitle="Source: SP + SD + SB campaign reports — matches Amazon Ads Console spend" />
+        <KpiCard label="API Attributed Ad Sales" value={formatInrCompact(blendedMetrics.after.adSales)} valueTitle={formatInr(blendedMetrics.after.adSales)} sub="API click-attributed only" subTitle="Amazon Ads API campaign reports — may exclude SD view-through conversions" />
       </div>
       {controlPanel.mode === 'compare' && (
         <p className="text-xs text-muted-foreground mt-3">Range A figures are available in the Accuracy Audit panel above; this comparison shows Range B (or the selected single range).</p>
@@ -422,11 +422,61 @@ export function MappingHealthCard({ data, loadedRangeSuffix }: { data: ApiRespon
   )
 }
 
+export function AmazonAdsWarehouseCard({ health }: { health: AdsWarehouseHealth }) {
+  const statusColor = health.lastSyncStatus === 'success'
+    ? 'border-green-200 bg-green-50 text-green-700 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300'
+    : health.lastSyncStatus === 'failed'
+      ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'
+      : 'border-border bg-muted text-muted-foreground'
+
+  return (
+    <div className="bg-card border border-border rounded-xl p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
+          <Database className="w-4 h-4 text-primary" /> Amazon Ads Warehouse
+        </h2>
+        {health.lastSyncStatus && (
+          <span className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusColor}`}>
+            Last sync: {health.lastSyncStatus}
+          </span>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground mb-3">
+        Ad Sales from API may exclude Sponsored Display view-through conversions. Ads Spend and Clicks are campaign-report totals (SP + SD + SB).
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-4">
+        <KpiCard label="Earliest campaign date" value={health.earliestCampaignDate ?? '—'} sub="Warehouse start" />
+        <KpiCard label="Latest campaign date" value={health.latestCampaignDate ?? '—'} sub="Warehouse end" />
+        <KpiCard label="Coverage days" value={health.coverageDays > 0 ? health.coverageDays.toString() : '—'} sub="Earliest → Latest" subWrap />
+        <KpiCard label="Total campaign rows" value={health.campaignRows.total.toLocaleString('en-IN')} sub="SP + SD + SB" />
+        <KpiCard label="SP latest date" value={health.spLatestDate ?? '—'} sub="Sponsored Products" />
+        <KpiCard label="SD latest date" value={health.sdLatestDate ?? '—'} sub="Sponsored Display" />
+        <KpiCard label="SB latest date" value={health.sbLatestDate ?? '—'} sub="Sponsored Brands" />
+        <KpiCard label="Failed sync count" value={health.failedSyncCount.toString()} sub="All-time ads runs" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-4">
+        <KpiCard label="SP campaign rows" value={health.campaignRows.sp.toLocaleString('en-IN')} sub="Sponsored Products" />
+        <KpiCard label="SD campaign rows" value={health.campaignRows.sd.toLocaleString('en-IN')} sub="Sponsored Display" />
+        <KpiCard label="SB campaign rows" value={health.campaignRows.sb.toLocaleString('en-IN')} sub="Sponsored Brands" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+        <KpiCard label="Advertised product rows" value={health.deepReportRows.advertisedProduct.toLocaleString('en-IN')} sub="Deep report (SP only)" />
+        <KpiCard label="Targeting rows" value={health.deepReportRows.targeting.toLocaleString('en-IN')} sub="Deep report (SP only)" />
+        <KpiCard label="Search term rows" value={health.deepReportRows.searchTerm.toLocaleString('en-IN')} sub="Deep report (SP only)" />
+        {health.lastSyncStartedAt && (
+          <KpiCard label="Last sync run" value={new Date(health.lastSyncStartedAt).toLocaleString('en-IN')} sub={health.lastSyncSource ?? 'ads sync'} subWrap />
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusinessReportImported }: { data: ApiResponse; loadedRangeSuffix: string; onBusinessReportImported?: () => void }) {
-  const { controlPanel, sourceAccuracyAudit, paymentImportStatus, campaignDiagnostic, latestCampaignUploadBatch, latestDeepReportBatches, deepDiagnostic } = data
+  const { controlPanel, sourceAccuracyAudit, paymentImportStatus, campaignDiagnostic, latestCampaignUploadBatch, latestDeepReportBatches, deepDiagnostic, adsWarehouseHealth } = data
 
   return (
     <div className="space-y-6">
+      <AmazonAdsWarehouseCard health={adsWarehouseHealth} />
       {/* Data Quality indicator */}
       <div className="bg-card border border-border rounded-xl p-4">
         {(() => {
