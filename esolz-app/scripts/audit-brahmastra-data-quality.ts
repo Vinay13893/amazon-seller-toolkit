@@ -272,11 +272,12 @@ async function main() {
   }
 
   // SP/SD/SB breakdown via targeted paginated queries
-  async function sumCampaignType(filters: (q: ReturnType<typeof admin.from>) => ReturnType<typeof admin.from>) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function sumCampaignType(filters: (q: any) => any) {
     let rows = 0; let spend = 0; let sales = 0; let latestDate: string | null = null
     for (let page = 0; ; page++) {
       const q = admin.from('internal_ads_campaign_daily_rows').select('spend, sales, report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId)
-      const { data } = await (filters(q) as ReturnType<typeof admin.from>).range(page * 1000, page * 1000 + 999) as { data: Array<{ spend: unknown; sales: unknown; report_date: unknown }> | null }
+      const { data } = await filters(q).range(page * 1000, page * 1000 + 999) as { data: Array<{ spend: unknown; sales: unknown; report_date: unknown }> | null }
       for (const r of data ?? []) {
         rows++; spend += Number(r.spend ?? 0); sales += Number(r.sales ?? 0)
         const d = r.report_date as string
@@ -287,9 +288,9 @@ async function main() {
     return { rows, spend, sales, latestDate }
   }
   const [spStats, sdStats, sbStats] = await Promise.all([
-    sumCampaignType(q => (q as ReturnType<typeof admin.from>).not('campaign_name', 'ilike', 'SD%').not('campaign_name', 'ilike', 'SB%').not('campaign_name', 'ilike', 'Sponsored Brands%')),
-    sumCampaignType(q => (q as ReturnType<typeof admin.from>).ilike('campaign_name', 'SD%')),
-    sumCampaignType(q => (q as ReturnType<typeof admin.from>).or('campaign_name.ilike.SB%,campaign_name.ilike.Sponsored Brands%')),
+    sumCampaignType(q => q.not('campaign_name', 'ilike', 'SD%').not('campaign_name', 'ilike', 'SB%').not('campaign_name', 'ilike', 'Sponsored Brands%')),
+    sumCampaignType(q => q.ilike('campaign_name', 'SD%')),
+    sumCampaignType(q => q.or('campaign_name.ilike.SB%,campaign_name.ilike.Sponsored Brands%')),
   ])
 
   const { data: lastSyncRun } = await admin
