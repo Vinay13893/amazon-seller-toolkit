@@ -12,7 +12,10 @@ const MAX_MY_PRODUCTS_PER_RUN = 100
 const MAX_COMPETITORS_PER_RUN = 100
 const MAX_WORKSPACES_PER_SYSTEM_RUN = 25
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
-const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+// Jobs completed with a pricing rate-limit/cooldown reason become eligible
+// for re-enqueue only after this delay (R11.1b: was 30 min, which caused
+// ~1,000 catalog-only checks/day while Pricing stayed throttled).
+const PRICING_COOLDOWN_RETRY_MINUTES = 4 * 60
 const RATE_LIMIT_REASONS = new Set([
   'amazon_pricing_rate_limited',
   'amazon_pricing_cooldown_active',
@@ -76,7 +79,7 @@ async function buildCandidatesForWorkspace(
   if (listingsResult.error || trackedResult.error || activeJobsResult.error) return null
 
   const cadenceCutoff = Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000
-  const rateLimitCutoff = Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000
+  const rateLimitCutoff = Date.now() - PRICING_COOLDOWN_RETRY_MINUTES * 60 * 1000
   const skipKeys = new Set<string>()
   for (const job of activeJobsResult.data ?? []) {
     const key = `${job.target_type}:${job.target_id}`

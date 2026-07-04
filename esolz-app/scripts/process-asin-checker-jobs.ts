@@ -22,7 +22,12 @@ import { getItemOffersForAsin, type BuyBoxOfferStatus } from '@/lib/amazon/prici
 const JOB_TYPE = 'product_page_snapshot'
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
 const DEFAULT_CADENCE_HOURS = 24
-const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+// Fresh-429-evidence window for the global Pricing cooldown gate (short so
+// pricing attempts resume regularly).
+const PRICING_COOLDOWN_WINDOW_MINUTES = 30
+// Retry/re-enqueue delay for jobs that hit or were skipped by Pricing
+// cooldown (R11.1b: was 30 min → caused catalog-only churn).
+const PRICING_COOLDOWN_RETRY_MINUTES = 4 * 60
 const PRICING_UNAVAILABLE_RETRY_MINUTES = 24 * 60
 const CATALOG_NOT_FOUND_RETRY_MINUTES = 24 * 60
 const RETRY_DELAY_MINUTES = 30
@@ -156,7 +161,7 @@ async function enqueueNewJobs(): Promise<{ enqueued: number; workspaces: number 
   if (!connections || connections.length === 0) return { enqueued: 0, workspaces: 0 }
 
   const cadenceCutoff = new Date(Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000).toISOString()
-  const rateLimitCutoff = new Date(Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000).toISOString()
+  const rateLimitCutoff = new Date(Date.now() - PRICING_COOLDOWN_RETRY_MINUTES * 60 * 1000).toISOString()
 
   type NewJob = {
     workspace_id: string
@@ -285,7 +290,7 @@ async function loadConnection(workspaceId: string): Promise<WorkspaceConnection 
 }
 
 async function isPricingCoolingDown(): Promise<boolean> {
-  const cutoff = new Date(Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000).toISOString()
+  const cutoff = new Date(Date.now() - PRICING_COOLDOWN_WINDOW_MINUTES * 60 * 1000).toISOString()
   let cooldownQuery = admin
     .from('background_jobs')
     .select('id')
@@ -428,7 +433,7 @@ async function main() {
 
     if (!catalogResult && !offersResult) {
       const canRetry = job.attempt_count + 1 < job.max_attempts
-      const retryDelay = offersIsRateLimited ? PRICING_RATE_LIMITED_RETRY_MINUTES
+      const retryDelay = offersIsRateLimited ? PRICING_COOLDOWN_RETRY_MINUTES
         : offersIsUnavailable ? PRICING_UNAVAILABLE_RETRY_MINUTES
         : catalogIsNotFound ? CATALOG_NOT_FOUND_RETRY_MINUTES
         : RETRY_DELAY_MINUTES
