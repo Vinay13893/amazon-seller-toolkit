@@ -13,7 +13,14 @@ const JOB_TYPE = 'product_page_snapshot'
 const SESSION_BATCH_SIZE = 5
 const SYSTEM_BATCH_SIZE = 5
 const RETRY_DELAY_MINUTES = 30
-const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+// Window of "fresh 429 evidence" that keeps the global Pricing gate closed.
+// Short on purpose: pricing attempts resume ~every 30 min so full successes
+// still trickle in.
+const PRICING_COOLDOWN_WINDOW_MINUTES = 30
+// How long a job that hit (or was skipped by) Pricing cooldown waits before
+// it may be retried/re-enqueued. Long on purpose: prevents catalog-only churn
+// (R11.1b). Normal stale-data cadence stays 24h.
+const PRICING_COOLDOWN_RETRY_MINUTES = 4 * 60
 const PRICING_UNAVAILABLE_RETRY_MINUTES = 24 * 60
 const CATALOG_NOT_FOUND_RETRY_MINUTES = 24 * 60
 const WORKER_ID_SESSION = 'nextjs-app-manual'
@@ -64,7 +71,7 @@ const COOLDOWN_ACTIVE_REASON = 'amazon_pricing_cooldown_active'
  * count as fresh evidence and the cooldown window can actually expire.
  */
 async function isPricingCoolingDown(admin: ReturnType<typeof createAdminClient>): Promise<boolean> {
-  const cutoff = new Date(Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000).toISOString()
+  const cutoff = new Date(Date.now() - PRICING_COOLDOWN_WINDOW_MINUTES * 60 * 1000).toISOString()
   const { data } = await admin
     .from('background_jobs')
     .select('id')
@@ -268,7 +275,7 @@ export async function POST(request: Request) {
       const canRetry = job.attempt_count + 1 < job.max_attempts
       const nextStatus = canRetry ? 'queued' : 'failed'
       const retryDelayMinutes = offersIsRateLimited
-        ? PRICING_RATE_LIMITED_RETRY_MINUTES
+        ? PRICING_COOLDOWN_RETRY_MINUTES
         : offersIsUnavailable
           ? PRICING_UNAVAILABLE_RETRY_MINUTES
           : catalogIsNotFound
