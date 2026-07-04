@@ -23,6 +23,11 @@ export type BuyBoxOfferStatus =
   | 'partial_success'
   | 'failed'
 
+export interface PricingSalesRanking {
+  category_id: string
+  rank: number
+}
+
 export interface ItemOffersNormalized {
   asin: string
   marketplace_id: string
@@ -36,6 +41,11 @@ export interface ItemOffersNormalized {
   lowest_price_currency: string | null
   your_offer_price: number | null
   buy_box_fulfillment: string | null
+  // Summary.ListPrice (MRP) — official discount-signal source (R11.2).
+  list_price: number | null
+  list_price_currency: string | null
+  // Summary.SalesRankings — official BSR fallback when Catalog has no ranks.
+  sales_rankings: PricingSalesRanking[]
   offers_raw: unknown[]
   summary_raw: Record<string, unknown> | null
   raw: Record<string, unknown>
@@ -119,6 +129,15 @@ function parsePricingPayload(params: {
   const buyBoxPrice = bbPriceMoney.amount ?? winningCombinedPrice
   const buyBoxCurrency = bbPriceMoney.currency ?? winningListingPrice.currency
 
+  const listPriceMoney = parseMoney(summary?.ListPrice)
+
+  const salesRankings: PricingSalesRanking[] = []
+  for (const ranking of asRecordArray(summary?.SalesRankings)) {
+    const categoryId = typeof ranking.ProductCategoryId === 'string' ? ranking.ProductCategoryId : null
+    const rank = toNumber(ranking.Rank)
+    if (categoryId && rank !== null) salesRankings.push({ category_id: categoryId, rank })
+  }
+
   const totalOfferCount = toNumber(summary?.TotalOfferCount) ?? sumOfferCounts(summary?.NumberOfOffers)
   const buyBoxEligibleOffers = sumOfferCounts(summary?.BuyBoxEligibleOffers)
 
@@ -161,6 +180,9 @@ function parsePricingPayload(params: {
     lowest_price_currency: lowPriceMoney.currency,
     your_offer_price: ourListingPrice.amount,
     buy_box_fulfillment: buyBoxFulfillment,
+    list_price: listPriceMoney.amount,
+    list_price_currency: listPriceMoney.currency,
+    sales_rankings: salesRankings,
     offers_raw: offers,
     summary_raw: summary,
     raw: params.payload,
