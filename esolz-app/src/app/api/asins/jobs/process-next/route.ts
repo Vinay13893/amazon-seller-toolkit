@@ -319,12 +319,39 @@ export async function POST(request: Request) {
             ? 'partial_pricing_unavailable'
             : 'partial_catalog_unavailable'
 
+    // R11.2: BSR from Catalog (primary) with Pricing Summary.SalesRankings as
+    // official fallback; discount signal from Summary.ListPrice vs live price.
+    const pricingRankings = offersResult?.sales_rankings ?? []
+    const catalogRanks = catalogResult?.bsr_ranks ?? []
+    const bsrValue = catalogResult?.bsr ?? pricingRankings[0]?.rank ?? null
+    const bsrCategory = catalogResult?.bsr_category ?? pricingRankings[0]?.category_id ?? null
+    const bsrSource = catalogResult?.bsr != null
+      ? 'spapi_catalog'
+      : pricingRankings.length > 0
+        ? 'spapi_pricing_summary'
+        : null
+    const bsrRanksJson = catalogRanks.length > 0
+      ? catalogRanks
+      : pricingRankings.length > 0
+        ? pricingRankings
+        : null
+    const livePrice = offersResult?.buy_box_price ?? offersResult?.your_offer_price ?? null
+    const listPrice = offersResult?.list_price ?? null
+    const discountPercent = listPrice !== null && livePrice !== null && listPrice > 0 && livePrice < listPrice
+      ? Math.round(((listPrice - livePrice) / listPrice) * 1000) / 10
+      : null
+
     const snapshotPayload = {
       workspace_id: job.workspace_id,
       tracked_asin_id: job.target_type === 'competitor_asin' ? job.target_id : null,
       amazon_listing_item_id: job.target_type === 'my_product' ? job.target_id : null,
-      bsr: catalogResult?.bsr ?? null,
-      price: offersResult?.buy_box_price ?? offersResult?.your_offer_price ?? null,
+      bsr: bsrValue,
+      bsr_category: bsrCategory,
+      bsr_source: bsrSource,
+      bsr_ranks: bsrRanksJson,
+      price: livePrice,
+      list_price: listPrice,
+      discount_percent: discountPercent,
       rating: null,
       review_count: null,
       buy_box_owner: offersResult?.buy_box_owner ?? null,

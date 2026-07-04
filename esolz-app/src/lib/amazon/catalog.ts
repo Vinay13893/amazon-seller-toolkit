@@ -16,6 +16,13 @@ const MARKETPLACE_ENDPOINTS: Record<string, string> = {
   A1PA6795UKMFR9: SPAPI_EU_ENDPOINT, // Amazon Germany
 }
 
+export interface CatalogRankEntry {
+  category: string | null
+  category_id: string | null
+  rank: number
+  rank_type: 'display_group' | 'classification'
+}
+
 export interface CatalogItemNormalized {
   asin: string
   title: string | null
@@ -24,6 +31,7 @@ export interface CatalogItemNormalized {
   category: string | null
   bsr: number | null
   bsr_category: string | null
+  bsr_ranks: CatalogRankEntry[]
 }
 
 interface CatalogItemsResponse {
@@ -120,26 +128,59 @@ function extractCatalogMeta(item: Record<string, unknown>, marketplaceId: string
     productTypes[0]?.displayName,
   )
 
-  let bsr: number | null = null
-  let bsrCategory: string | null = null
-  for (const rank of salesRanks) {
-    const rawRank = rank.rank ?? rank.salesRank ?? rank.rankNumber
-    const parsedRank = typeof rawRank === 'number'
-      ? rawRank
-      : typeof rawRank === 'string'
-        ? Number.parseInt(rawRank, 10)
-        : null
-    if (parsedRank !== null && Number.isFinite(parsedRank)) {
-      bsr = parsedRank
-      bsrCategory = firstString(
-        rank.classificationName,
-        rank.displayName,
-        rank.title,
-        rank.name,
-      )
-      break
+  // Catalog Items 2022-04-01 nests ranks inside displayGroupRanks /
+  // classificationRanks per marketplace record; the rank is NOT on the
+  // top-level salesRanks entry (R11.2: this was why stored BSR was ~always null).
+  const parseRankNumber = (value: unknown): number | null => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string') {
+      const parsed = Number.parseInt(value, 10)
+      return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+  }
+
+  const bsrRanks: CatalogRankEntry[] = []
+  for (const marketRank of salesRanks) {
+    for (const dg of asRecordArray(marketRank.displayGroupRanks)) {
+      const rank = parseRankNumber(dg.rank)
+      if (rank !== null) {
+        bsrRanks.push({
+          category: firstString(dg.title, dg.displayName),
+          category_id: firstString(dg.websiteDisplayGroup),
+          rank,
+          rank_type: 'display_group',
+        })
+      }
+    }
+    for (const cl of asRecordArray(marketRank.classificationRanks)) {
+      const rank = parseRankNumber(cl.rank)
+      if (rank !== null) {
+        bsrRanks.push({
+          category: firstString(cl.title, cl.displayName),
+          category_id: firstString(cl.classificationId),
+          rank,
+          rank_type: 'classification',
+        })
+      }
+    }
+    // Legacy shape fallback (rank directly on the record).
+    const legacyRank = parseRankNumber(marketRank.rank ?? marketRank.salesRank ?? marketRank.rankNumber)
+    if (legacyRank !== null) {
+      bsrRanks.push({
+        category: firstString(marketRank.classificationName, marketRank.displayName, marketRank.title, marketRank.name),
+        category_id: null,
+        rank: legacyRank,
+        rank_type: 'classification',
+      })
     }
   }
+
+  // Main BSR = top-level display-group rank (e.g. "Home & Kitchen"),
+  // falling back to the first classification rank.
+  const mainRank = bsrRanks.find(r => r.rank_type === 'display_group') ?? bsrRanks[0] ?? null
+  const bsr: number | null = mainRank?.rank ?? null
+  const bsrCategory: string | null = mainRank?.category ?? null
 
   return {
     title,
@@ -148,6 +189,7 @@ function extractCatalogMeta(item: Record<string, unknown>, marketplaceId: string
     category,
     bsr,
     bsr_category: bsrCategory,
+    bsr_ranks: bsrRanks,
   }
 }
 
@@ -203,5 +245,6 @@ export async function getCatalogItemForAsin(params: {
     category: normalized.category,
     bsr: normalized.bsr,
     bsr_category: normalized.bsr_category,
+    bsr_ranks: normalized.bsr_ranks,
   }
 }
