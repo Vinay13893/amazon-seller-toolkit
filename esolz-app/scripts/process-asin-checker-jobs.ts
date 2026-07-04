@@ -1,6 +1,8 @@
 // scripts/process-asin-checker-jobs.ts
-// Render cron command: npx tsx scripts/process-asin-checker-jobs.ts --limit=10 --max-runtime-ms=240000
-// Render cron schedule: 0 STAR/2 * * *  (every 2 hours; drop to every 4h if Pricing API stays throttled)
+// Render cron command: npx tsx scripts/process-asin-checker-jobs.ts --workspace-id=<uuid> --limit=10 --max-runtime-ms=240000
+// Render cron schedule: 0 STAR/4 * * *  (every 4 hours while Pricing API stays throttled)
+// --workspace-id scopes enqueue + processing + stuck cleanup + cooldown check to one
+// workspace. Omit it (manual admin use) to run across all active workspaces.
 //
 // Phases per run:
 //   1. Reset stale "running" jobs (stuck > STUCK_JOB_TIMEOUT_MINUTES)
@@ -52,8 +54,16 @@ function getIntArg(name: string, defaultVal: number): number {
   return Number.isFinite(parsed) ? parsed : defaultVal
 }
 
+function getStrArg(name: string): string | null {
+  const prefix = `--${name}=`
+  const found = args.find(a => a.startsWith(prefix))
+  const value = found ? found.slice(prefix.length).trim() : ''
+  return value.length > 0 ? value : null
+}
+
 const LIMIT = getIntArg('limit', 10)
 const MAX_RUNTIME_MS = getIntArg('max-runtime-ms', 240000)
+const WORKSPACE_ID = getStrArg('workspace-id')
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -101,13 +111,14 @@ function availabilityScore(status: BuyBoxOfferStatus | 'unavailable'): number | 
 
 async function cleanupStuckJobs(): Promise<number> {
   const cutoff = new Date(Date.now() - STUCK_JOB_TIMEOUT_MINUTES * 60 * 1000).toISOString()
-  const { data: stuck } = await admin
+  let stuckQuery = admin
     .from('background_jobs')
     .select('id, attempt_count, max_attempts')
     .eq('job_type', JOB_TYPE)
     .eq('status', 'running')
     .lt('locked_at', cutoff)
-    .limit(50)
+  if (WORKSPACE_ID) stuckQuery = stuckQuery.eq('workspace_id', WORKSPACE_ID)
+  const { data: stuck } = await stuckQuery.limit(50)
 
   if (!stuck || stuck.length === 0) return 0
 
@@ -135,11 +146,12 @@ async function cleanupStuckJobs(): Promise<number> {
 // ── Phase 2: Enqueue new / overdue jobs ───────────────────────────────────────
 
 async function enqueueNewJobs(): Promise<{ enqueued: number; workspaces: number }> {
-  const { data: connections } = await admin
+  let connectionsQuery = admin
     .from('amazon_connections')
     .select('workspace_id')
     .eq('status', 'active')
-    .limit(MAX_WORKSPACES)
+  if (WORKSPACE_ID) connectionsQuery = connectionsQuery.eq('workspace_id', WORKSPACE_ID)
+  const { data: connections } = await connectionsQuery.limit(MAX_WORKSPACES)
 
   if (!connections || connections.length === 0) return { enqueued: 0, workspaces: 0 }
 
@@ -274,14 +286,14 @@ async function loadConnection(workspaceId: string): Promise<WorkspaceConnection 
 
 async function isPricingCoolingDown(): Promise<boolean> {
   const cutoff = new Date(Date.now() - PRICING_RATE_LIMITED_RETRY_MINUTES * 60 * 1000).toISOString()
-  const { data } = await admin
+  let cooldownQuery = admin
     .from('background_jobs')
     .select('id')
     .eq('job_type', JOB_TYPE)
     .eq('last_error_safe', RATE_LIMIT_REASON)
     .gte('updated_at', cutoff)
-    .limit(1)
-    .maybeSingle()
+  if (WORKSPACE_ID) cooldownQuery = cooldownQuery.eq('workspace_id', WORKSPACE_ID)
+  const { data } = await cooldownQuery.limit(1).maybeSingle()
   return Boolean(data)
 }
 
@@ -289,7 +301,7 @@ async function isPricingCoolingDown(): Promise<boolean> {
 
 async function main() {
   const startTime = Date.now()
-  console.log(`[asin-checker] Starting — limit=${LIMIT} max-runtime=${MAX_RUNTIME_MS}ms`)
+  console.log(`[asin-checker] Starting — limit=${LIMIT} max-runtime=${MAX_RUNTIME_MS}ms workspaceScoped=${Boolean(WORKSPACE_ID)}`)
 
   // Phase 1
   const stuckReset = await cleanupStuckJobs()
@@ -329,12 +341,14 @@ async function main() {
       break
     }
 
-    const { data: dueJob, error: dueError } = await admin
+    let dueQuery = admin
       .from('background_jobs')
       .select('id, workspace_id, target_type, target_id, marketplace_id, attempt_count, max_attempts, payload_json')
       .eq('job_type', JOB_TYPE)
       .eq('status', 'queued')
       .lte('run_after', new Date().toISOString())
+    if (WORKSPACE_ID) dueQuery = dueQuery.eq('workspace_id', WORKSPACE_ID)
+    const { data: dueJob, error: dueError } = await dueQuery
       .order('priority', { ascending: false })
       .order('created_at', { ascending: true })
       .limit(1)
@@ -497,6 +511,7 @@ async function main() {
     processed, completed, partialCatalog,
     pricingRateLimited, pricingUnavailable, catalogNotFound,
     retried, failed, skippedNoConn,
+    workspaceScoped: Boolean(WORKSPACE_ID),
     pricingCooldownActiveAtEnd: pricingCooldownActive,
     elapsedMs: Date.now() - startTime,
   }
