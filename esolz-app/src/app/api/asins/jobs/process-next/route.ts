@@ -21,6 +21,9 @@ const PRICING_COOLDOWN_WINDOW_MINUTES = 30
 // it may be retried/re-enqueued. Long on purpose: prevents catalog-only churn
 // (R11.1b). Normal stale-data cadence stays 24h.
 const PRICING_COOLDOWN_RETRY_MINUTES = 4 * 60
+const REPEATED_PRICING_COOLDOWN_RETRY_MINUTES = 24 * 60
+const REPEATED_COOLDOWN_LOOKBACK_HOURS = 24
+const REPEATED_COOLDOWN_THRESHOLD = 3
 const PRICING_UNAVAILABLE_RETRY_MINUTES = 24 * 60
 const CATALOG_NOT_FOUND_RETRY_MINUTES = 24 * 60
 const WORKER_ID_SESSION = 'nextjs-app-manual'
@@ -43,6 +46,11 @@ type WorkspaceConnection = {
   sellingPartnerId: string | null
 }
 
+type RecentSnapshotRow = {
+  scrape_status: string | null
+  checked_at: string
+}
+
 function safeErrorMessage(value: unknown): string {
   const text = value instanceof Error ? value.message : String(value)
   return text.replace(/https?:\/\/\S+/g, '[redacted_url]').slice(0, 180)
@@ -59,6 +67,7 @@ function classifyPricingError(message: string | null): PricingErrorClass | null 
 
 const RATE_LIMIT_REASON = 'amazon_pricing_rate_limited'
 const COOLDOWN_ACTIVE_REASON = 'amazon_pricing_cooldown_active'
+const COOLDOWN_BACKOFF_REASONS = new Set([RATE_LIMIT_REASON, COOLDOWN_ACTIVE_REASON])
 
 /**
  * Amazon Pricing throttling is account/app-wide, not per-ASIN. Rather than
@@ -81,6 +90,59 @@ async function isPricingCoolingDown(admin: ReturnType<typeof createAdminClient>)
     .limit(1)
     .maybeSingle()
   return Boolean(data)
+}
+
+async function pricingCooldownBackoff(
+  admin: ReturnType<typeof createAdminClient>,
+  job: BackgroundJobRow,
+): Promise<{ minutes: number; repeated: boolean }> {
+  const cutoff = new Date(Date.now() - REPEATED_COOLDOWN_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString()
+  const snapshotTargetColumn = job.target_type === 'my_product' ? 'amazon_listing_item_id' : 'tracked_asin_id'
+  const [jobsResult, snapshotsResult] = await Promise.all([
+    admin
+      .from('background_jobs')
+      .select('last_error_safe, completed_at')
+      .eq('workspace_id', job.workspace_id)
+      .eq('job_type', JOB_TYPE)
+      .eq('target_type', job.target_type)
+      .eq('target_id', job.target_id)
+      .not('completed_at', 'is', null)
+      .gte('completed_at', cutoff)
+      .order('completed_at', { ascending: false })
+      .limit(REPEATED_COOLDOWN_THRESHOLD - 1),
+    admin
+      .from('asin_snapshots')
+      .select('scrape_status, checked_at')
+      .eq('workspace_id', job.workspace_id)
+      .eq(snapshotTargetColumn, job.target_id)
+      .gte('checked_at', cutoff)
+      .order('checked_at', { ascending: false })
+      .limit(REPEATED_COOLDOWN_THRESHOLD),
+  ])
+
+  if (jobsResult.error || snapshotsResult.error) {
+    console.warn('[asin-jobs-process-next] repeated cooldown lookup failed', {
+      jobsCode: jobsResult.error?.code,
+      snapshotsCode: snapshotsResult.error?.code,
+    })
+    return { minutes: PRICING_COOLDOWN_RETRY_MINUTES, repeated: false }
+  }
+
+  const recentJobs = jobsResult.data ?? []
+  const repeatedJobs = recentJobs.length >= REPEATED_COOLDOWN_THRESHOLD - 1 &&
+    recentJobs.every(row => COOLDOWN_BACKOFF_REASONS.has(String(row.last_error_safe ?? '')))
+
+  const recentSnapshots = ((snapshotsResult.data ?? []) as RecentSnapshotRow[])
+    .slice(0, REPEATED_COOLDOWN_THRESHOLD)
+  const repeatedSnapshots = recentSnapshots.length >= REPEATED_COOLDOWN_THRESHOLD &&
+    recentSnapshots.every(row => row.scrape_status === 'partial_pricing_rate_limited')
+
+  const repeated = repeatedJobs || repeatedSnapshots
+
+  return {
+    minutes: repeated ? REPEATED_PRICING_COOLDOWN_RETRY_MINUTES : PRICING_COOLDOWN_RETRY_MINUTES,
+    repeated,
+  }
 }
 
 function availabilityScoreFor(status: BuyBoxOfferStatus | 'unavailable'): number | null {
@@ -157,6 +219,9 @@ export async function POST(request: Request) {
   let pricingRateLimited = 0
   let pricingUnavailable = 0
   let catalogNotFound = 0
+  let repeatedCooldownBackoffApplied = 0
+  let fourHourRetry = 0
+  let twentyFourHourRetry = 0
   let retried = 0
   let failed = 0
   let skippedNoConnection = 0
@@ -274,8 +339,11 @@ export async function POST(request: Request) {
     if (!catalogResult && !offersResult) {
       const canRetry = job.attempt_count + 1 < job.max_attempts
       const nextStatus = canRetry ? 'queued' : 'failed'
+      const cooldownBackoff = offersIsRateLimited
+        ? await pricingCooldownBackoff(admin, job)
+        : null
       const retryDelayMinutes = offersIsRateLimited
-        ? PRICING_COOLDOWN_RETRY_MINUTES
+        ? cooldownBackoff?.minutes ?? PRICING_COOLDOWN_RETRY_MINUTES
         : offersIsUnavailable
           ? PRICING_UNAVAILABLE_RETRY_MINUTES
           : catalogIsNotFound
@@ -302,6 +370,9 @@ export async function POST(request: Request) {
         .eq('id', job.id)
 
       if (offersIsRateLimited) pricingRateLimited += 1
+      if (offersIsRateLimited && cooldownBackoff?.repeated) repeatedCooldownBackoffApplied += 1
+      if (offersIsRateLimited && cooldownBackoff?.repeated) twentyFourHourRetry += 1
+      else if (offersIsRateLimited) fourHourRetry += 1
       else if (offersIsUnavailable) pricingUnavailable += 1
       else if (catalogIsNotFound) catalogNotFound += 1
       else if (canRetry) retried += 1
@@ -390,6 +461,9 @@ export async function POST(request: Request) {
         : scrapeStatus === 'partial_pricing_unavailable'
           ? 'amazon_pricing_unavailable'
           : (catalogError ?? null)
+    const completedCooldownBackoff = completedReasonSafe && COOLDOWN_BACKOFF_REASONS.has(completedReasonSafe)
+      ? await pricingCooldownBackoff(admin, job)
+      : null
 
     await admin
       .from('background_jobs')
@@ -409,6 +483,12 @@ export async function POST(request: Request) {
       if (pricingSkippedThisJob) pricingSkippedCooldown += 1
       else if (offersIsRateLimited) pricingRateLimited += 1
       else if (offersIsUnavailable) pricingUnavailable += 1
+      if (completedCooldownBackoff?.repeated) {
+        repeatedCooldownBackoffApplied += 1
+        twentyFourHourRetry += 1
+      } else if (completedCooldownBackoff) {
+        fourHourRetry += 1
+      }
     }
   }
 
@@ -422,6 +502,9 @@ export async function POST(request: Request) {
     pricingRateLimited,
     pricingUnavailable,
     catalogNotFound,
+    repeatedCooldownBackoffApplied,
+    fourHourRetry,
+    twentyFourHourRetry,
     retried,
     failed,
     skippedNoConnection,

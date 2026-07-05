@@ -28,6 +28,9 @@ const PRICING_COOLDOWN_WINDOW_MINUTES = 30
 // Retry/re-enqueue delay for jobs that hit or were skipped by Pricing
 // cooldown (R11.1b: was 30 min → caused catalog-only churn).
 const PRICING_COOLDOWN_RETRY_MINUTES = 4 * 60
+const REPEATED_PRICING_COOLDOWN_RETRY_MINUTES = 24 * 60
+const REPEATED_COOLDOWN_LOOKBACK_HOURS = 24
+const REPEATED_COOLDOWN_THRESHOLD = 3
 const PRICING_UNAVAILABLE_RETRY_MINUTES = 24 * 60
 const CATALOG_NOT_FOUND_RETRY_MINUTES = 24 * 60
 const RETRY_DELAY_MINUTES = 30
@@ -35,11 +38,64 @@ const STUCK_JOB_TIMEOUT_MINUTES = 10
 const MAX_WORKSPACES = 25
 const RATE_LIMIT_REASON = 'amazon_pricing_rate_limited'
 const COOLDOWN_ACTIVE_REASON = 'amazon_pricing_cooldown_active'
+const COOLDOWN_BACKOFF_REASONS = new Set([RATE_LIMIT_REASON, COOLDOWN_ACTIVE_REASON])
 const RATE_LIMIT_REASONS = new Set([
   'amazon_pricing_rate_limited',
   'amazon_pricing_cooldown_active',
   'SP-API pricing call failed with HTTP 429',
 ])
+
+type RecentJobRow = {
+  target_type: string
+  target_id: string
+  status: string
+  completed_at: string | null
+  last_error_safe: string | null
+}
+
+type RecentSnapshotRow = {
+  amazon_listing_item_id?: string | null
+  tracked_asin_id?: string | null
+  scrape_status: string | null
+  checked_at: string
+}
+
+function isCooldownReason(reason: string | null | undefined): boolean {
+  return RATE_LIMIT_REASONS.has(String(reason ?? ''))
+}
+
+function isRepeatedCooldown(rows: RecentJobRow[], nowMs: number): boolean {
+  const lookbackCutoff = nowMs - REPEATED_COOLDOWN_LOOKBACK_HOURS * 60 * 60 * 1000
+  const recent = rows
+    .filter(row => row.completed_at && new Date(row.completed_at).getTime() >= lookbackCutoff)
+    .sort((a, b) => new Date(b.completed_at ?? 0).getTime() - new Date(a.completed_at ?? 0).getTime())
+    .slice(0, REPEATED_COOLDOWN_THRESHOLD)
+
+  return recent.length >= REPEATED_COOLDOWN_THRESHOLD &&
+    recent.every(row => isCooldownReason(row.last_error_safe))
+}
+
+function snapshotKey(row: RecentSnapshotRow): string | null {
+  if (row.amazon_listing_item_id) return `my_product:${row.amazon_listing_item_id}`
+  if (row.tracked_asin_id) return `competitor_asin:${row.tracked_asin_id}`
+  return null
+}
+
+function snapshotCooldownBackoff(rows: RecentSnapshotRow[], nowMs: number): { checkedAt: number; repeated: boolean } | null {
+  const lookbackCutoff = nowMs - REPEATED_COOLDOWN_LOOKBACK_HOURS * 60 * 60 * 1000
+  const recent = rows
+    .filter(row => row.checked_at && new Date(row.checked_at).getTime() >= lookbackCutoff)
+    .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime())
+    .slice(0, REPEATED_COOLDOWN_THRESHOLD)
+
+  if (recent.length === 0 || recent[0].scrape_status !== 'partial_pricing_rate_limited') return null
+
+  return {
+    checkedAt: new Date(recent[0].checked_at).getTime(),
+    repeated: recent.length >= REPEATED_COOLDOWN_THRESHOLD &&
+      recent.every(row => row.scrape_status === 'partial_pricing_rate_limited'),
+  }
+}
 const MARKETPLACE_ID_BY_MARKETPLACE: Record<string, string> = {
   IN: 'A21TJRUUN4KGV',
   US: 'ATVPDKIKX0DER',
@@ -160,8 +216,11 @@ async function enqueueNewJobs(): Promise<{ enqueued: number; workspaces: number 
 
   if (!connections || connections.length === 0) return { enqueued: 0, workspaces: 0 }
 
-  const cadenceCutoff = new Date(Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000).toISOString()
-  const rateLimitCutoff = new Date(Date.now() - PRICING_COOLDOWN_RETRY_MINUTES * 60 * 1000).toISOString()
+  const nowMs = Date.now()
+  const cadenceCutoff = new Date(nowMs - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000).toISOString()
+  const rateLimitCutoff = new Date(nowMs - PRICING_COOLDOWN_RETRY_MINUTES * 60 * 1000).toISOString()
+  const repeatedRateLimitCutoff = new Date(nowMs - REPEATED_PRICING_COOLDOWN_RETRY_MINUTES * 60 * 1000).toISOString()
+  const repeatedLookbackIso = new Date(nowMs - REPEATED_COOLDOWN_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString()
 
   type NewJob = {
     workspace_id: string
@@ -177,7 +236,7 @@ async function enqueueNewJobs(): Promise<{ enqueued: number; workspaces: number 
   for (const conn of connections) {
     const workspaceId = conn.workspace_id as string
 
-    const [listingsResult, trackedResult, activeJobsResult] = await Promise.all([
+    const [listingsResult, trackedResult, activeJobsResult, recentSnapshotsResult] = await Promise.all([
       admin
         .from('amazon_listing_items')
         .select('id, asin, marketplace_id')
@@ -197,19 +256,67 @@ async function enqueueNewJobs(): Promise<{ enqueued: number; workspaces: number 
         .eq('job_type', JOB_TYPE)
         .or(`status.in.(queued,running),and(status.in.(completed,failed),completed_at.gte.${cadenceCutoff})`)
         .limit(2000),
+      admin
+        .from('asin_snapshots')
+        .select('amazon_listing_item_id, tracked_asin_id, scrape_status, checked_at')
+        .eq('workspace_id', workspaceId)
+        .eq('scrape_status', 'partial_pricing_rate_limited')
+        .gte('checked_at', repeatedLookbackIso)
+        .order('checked_at', { ascending: false })
+        .limit(5000),
     ])
 
+    if (listingsResult.error || trackedResult.error || activeJobsResult.error || recentSnapshotsResult.error) {
+      console.warn('[asin-checker] Enqueue read error', {
+        listingsCode: listingsResult.error?.code,
+        trackedCode: trackedResult.error?.code,
+        activeJobsCode: activeJobsResult.error?.code,
+        recentSnapshotsCode: recentSnapshotsResult.error?.code,
+      })
+      continue
+    }
+
     const skipKeys = new Set<string>()
-    for (const job of activeJobsResult.data ?? []) {
+    const terminalJobsByKey = new Map<string, RecentJobRow[]>()
+    const snapshotsByKey = new Map<string, RecentSnapshotRow[]>()
+    for (const snapshot of (recentSnapshotsResult.data ?? []) as RecentSnapshotRow[]) {
+      const key = snapshotKey(snapshot)
+      if (!key) continue
+      const rows = snapshotsByKey.get(key) ?? []
+      rows.push(snapshot)
+      snapshotsByKey.set(key, rows)
+    }
+    for (const job of (activeJobsResult.data ?? []) as RecentJobRow[]) {
       const key = `${job.target_type}:${job.target_id}`
       if (job.status === 'queued' || job.status === 'running') {
         skipKeys.add(key)
         continue
       }
       if ((job.status === 'completed' || job.status === 'failed') && job.completed_at) {
-        const cutoff = RATE_LIMIT_REASONS.has(String(job.last_error_safe ?? '')) ? rateLimitCutoff : cadenceCutoff
-        if ((job.completed_at as string) > cutoff) skipKeys.add(key)
+        const rows = terminalJobsByKey.get(key) ?? []
+        rows.push(job)
+        terminalJobsByKey.set(key, rows)
       }
+    }
+
+    for (const [key, rows] of terminalJobsByKey.entries()) {
+      const sorted = rows.sort((a, b) => new Date(b.completed_at ?? 0).getTime() - new Date(a.completed_at ?? 0).getTime())
+      const latest = sorted[0]
+      if (!latest?.completed_at) continue
+      const cutoff = isCooldownReason(latest.last_error_safe)
+        ? isRepeatedCooldown(sorted, nowMs)
+          ? repeatedRateLimitCutoff
+          : rateLimitCutoff
+        : cadenceCutoff
+      if (latest.completed_at > cutoff) skipKeys.add(key)
+    }
+
+    for (const [key, rows] of snapshotsByKey.entries()) {
+      if (skipKeys.has(key)) continue
+      const backoff = snapshotCooldownBackoff(rows, nowMs)
+      if (!backoff) continue
+      const cutoff = backoff.repeated ? repeatedRateLimitCutoff : rateLimitCutoff
+      if (backoff.checkedAt > new Date(cutoff).getTime()) skipKeys.add(key)
     }
 
     for (const listing of listingsResult.data ?? []) {
@@ -302,6 +409,56 @@ async function isPricingCoolingDown(): Promise<boolean> {
   return Boolean(data)
 }
 
+async function pricingCooldownBackoff(job: BackgroundJobRow): Promise<{ minutes: number; repeated: boolean }> {
+  const cutoff = new Date(Date.now() - REPEATED_COOLDOWN_LOOKBACK_HOURS * 60 * 60 * 1000).toISOString()
+  const snapshotTargetColumn = job.target_type === 'my_product' ? 'amazon_listing_item_id' : 'tracked_asin_id'
+  const [jobsResult, snapshotsResult] = await Promise.all([
+    admin
+      .from('background_jobs')
+      .select('last_error_safe, completed_at')
+      .eq('workspace_id', job.workspace_id)
+      .eq('job_type', JOB_TYPE)
+      .eq('target_type', job.target_type)
+      .eq('target_id', job.target_id)
+      .not('completed_at', 'is', null)
+      .gte('completed_at', cutoff)
+      .order('completed_at', { ascending: false })
+      .limit(REPEATED_COOLDOWN_THRESHOLD - 1),
+    admin
+      .from('asin_snapshots')
+      .select('scrape_status, checked_at')
+      .eq('workspace_id', job.workspace_id)
+      .eq(snapshotTargetColumn, job.target_id)
+      .gte('checked_at', cutoff)
+      .order('checked_at', { ascending: false })
+      .limit(REPEATED_COOLDOWN_THRESHOLD),
+  ])
+
+  if (jobsResult.error || snapshotsResult.error) {
+    console.warn('[asin-checker] repeated cooldown lookup failed', {
+      jobsCode: jobsResult.error?.code,
+      snapshotsCode: snapshotsResult.error?.code,
+    })
+    return { minutes: PRICING_COOLDOWN_RETRY_MINUTES, repeated: false }
+  }
+
+  const recentJobs = jobsResult.data ?? []
+  const repeatedJobs = recentJobs.length >= REPEATED_COOLDOWN_THRESHOLD - 1 &&
+    recentJobs.every(row => COOLDOWN_BACKOFF_REASONS.has(String(row.last_error_safe ?? '')))
+
+  const recentSnapshots = ((snapshotsResult.data ?? []) as RecentSnapshotRow[])
+    .slice(0, REPEATED_COOLDOWN_THRESHOLD)
+  const repeatedSnapshots = recentSnapshots.length >= REPEATED_COOLDOWN_THRESHOLD &&
+    recentSnapshots.every(row => row.scrape_status === 'partial_pricing_rate_limited')
+
+  const repeated = repeatedJobs || repeatedSnapshots
+
+  return {
+    minutes: repeated ? REPEATED_PRICING_COOLDOWN_RETRY_MINUTES : PRICING_COOLDOWN_RETRY_MINUTES,
+    repeated,
+  }
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -336,6 +493,9 @@ async function main() {
   let pricingRateLimited = 0
   let pricingUnavailable = 0
   let catalogNotFound = 0
+  let repeatedCooldownBackoffApplied = 0
+  let fourHourRetry = 0
+  let twentyFourHourRetry = 0
   let retried = 0
   let failed = 0
   let skippedNoConn = 0
@@ -433,7 +593,11 @@ async function main() {
 
     if (!catalogResult && !offersResult) {
       const canRetry = job.attempt_count + 1 < job.max_attempts
-      const retryDelay = offersIsRateLimited ? PRICING_COOLDOWN_RETRY_MINUTES
+      const cooldownBackoff = offersIsRateLimited
+        ? await pricingCooldownBackoff(job)
+        : null
+      const retryDelay = offersIsRateLimited
+        ? cooldownBackoff?.minutes ?? PRICING_COOLDOWN_RETRY_MINUTES
         : offersIsUnavailable ? PRICING_UNAVAILABLE_RETRY_MINUTES
         : catalogIsNotFound ? CATALOG_NOT_FOUND_RETRY_MINUTES
         : RETRY_DELAY_MINUTES
@@ -449,7 +613,16 @@ async function main() {
         completed_at: canRetry ? null : checkedAt,
       }).eq('id', job.id)
 
-      if (offersIsRateLimited) { pricingRateLimited++; break }
+      if (offersIsRateLimited) {
+        pricingRateLimited++
+        if (cooldownBackoff?.repeated) {
+          repeatedCooldownBackoffApplied++
+          twentyFourHourRetry++
+        } else {
+          fourHourRetry++
+        }
+        break
+      }
       else if (offersIsUnavailable) pricingUnavailable++
       else if (catalogIsNotFound) catalogNotFound++
       else if (canRetry) retried++
@@ -524,6 +697,9 @@ async function main() {
       : scrapeStatus === 'partial_pricing_rate_limited' ? RATE_LIMIT_REASON
       : scrapeStatus === 'partial_pricing_unavailable' ? 'amazon_pricing_unavailable'
       : (catalogError ?? null)
+    const completedCooldownBackoff = completedReason && COOLDOWN_BACKOFF_REASONS.has(completedReason)
+      ? await pricingCooldownBackoff(job)
+      : null
 
     await admin.from('background_jobs').update({
       status: 'completed', last_error_safe: completedReason,
@@ -534,6 +710,12 @@ async function main() {
       completed++
     } else {
       partialCatalog++
+      if (completedCooldownBackoff?.repeated) {
+        repeatedCooldownBackoffApplied++
+        twentyFourHourRetry++
+      } else if (completedCooldownBackoff) {
+        fourHourRetry++
+      }
       if (offersIsRateLimited) { pricingRateLimited++; break }
     }
   }
@@ -542,6 +724,7 @@ async function main() {
     stuckReset, enqueued, workspaces,
     processed, completed, partialCatalog,
     pricingRateLimited, pricingUnavailable, catalogNotFound,
+    repeatedCooldownBackoffApplied, fourHourRetry, twentyFourHourRetry,
     retried, failed, skippedNoConn,
     workspaceScoped: Boolean(WORKSPACE_ID),
     pricingCooldownActiveAtEnd: pricingCooldownActive,
