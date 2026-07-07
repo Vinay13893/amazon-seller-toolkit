@@ -241,6 +241,12 @@ export type AdsWarehouseHealth = {
   lastSyncFinishedAt: string | null
   lastSyncSource: string | null
   failedSyncCount: number
+  /** latestCampaignDate is more than 2 days behind today (UTC) — independent of any user-selected range. */
+  staleDaysThresholdExceeded: boolean
+  /** Count of ads_% refresh runs in the last 3 days whose error_message indicates an invalid/expired LWA token (HTTP 401). */
+  recentAuthFailureCount: number
+  /** Count of ads_% refresh runs in the last 3 days whose error_message indicates throttling (HTTP 429). */
+  recentThrottleFailureCount: number
 }
 
 export type SourceAccuracyAudit = {
