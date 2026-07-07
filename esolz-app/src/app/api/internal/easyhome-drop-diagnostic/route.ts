@@ -956,6 +956,7 @@ export async function GET(request: Request) {
     { count: advProdTotalCount },
     { count: targetingTotalCount },
     { count: searchTermTotalCount },
+    { data: recentAdsFailures },
   ] = await Promise.all([
     supabase.from('internal_ads_campaign_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: true }).limit(1).maybeSingle(),
     supabase.from('internal_ads_campaign_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
@@ -970,12 +971,20 @@ export async function GET(request: Request) {
     supabase.from('internal_ads_advertised_product_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
     supabase.from('internal_ads_targeting_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
     supabase.from('internal_ads_search_term_daily_rows').select('*', { count: 'exact', head: true }).eq('workspace_id', workspaceId).eq('profile_id', profileId),
+    supabase.from('internal_data_refresh_runs').select('error_message').eq('workspace_id', workspaceId).like('source', 'ads_%').eq('status', 'failed').gte('started_at', new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString()).not('error_message', 'is', null).limit(500),
   ])
   const warehouseEarliestDate = dateOnly((earliestCampaignRow as { report_date?: string } | null)?.report_date ?? null)
   const warehouseLatestDate = latestAdsDate
   const warehouseCoverageDays = warehouseEarliestDate && warehouseLatestDate
     ? Math.round((new Date(`${warehouseLatestDate}T00:00:00Z`).getTime() - new Date(`${warehouseEarliestDate}T00:00:00Z`).getTime()) / (1000 * 60 * 60 * 24)) + 1
     : 0
+  // Absolute staleness — independent of whatever date range the user has selected — so a
+  // dashboard left open on an old range can't hide a sync that's actually stopped working.
+  const staleDaysThresholdExceeded = !warehouseLatestDate
+    || Math.round((Date.now() - new Date(`${warehouseLatestDate}T00:00:00Z`).getTime()) / (1000 * 60 * 60 * 24)) > 2
+  const recentAdsFailureMessages = (recentAdsFailures ?? []).map(row => (row as { error_message?: string }).error_message ?? '')
+  const recentAuthFailureCount = recentAdsFailureMessages.filter(msg => msg.includes('401') || /invalid.*token/i.test(msg)).length
+  const recentThrottleFailureCount = recentAdsFailureMessages.filter(msg => msg.includes('429')).length
   const adsWarehouseHealth = {
     earliestCampaignDate: warehouseEarliestDate,
     latestCampaignDate: warehouseLatestDate,
@@ -990,6 +999,9 @@ export async function GET(request: Request) {
     lastSyncFinishedAt: (lastAdsSyncRun as { finished_at?: string } | null)?.finished_at ?? null,
     lastSyncSource: (lastAdsSyncRun as { source?: string } | null)?.source ?? null,
     failedSyncCount: failedSyncCount ?? 0,
+    staleDaysThresholdExceeded,
+    recentAuthFailureCount,
+    recentThrottleFailureCount,
   }
 
   return NextResponse.json({

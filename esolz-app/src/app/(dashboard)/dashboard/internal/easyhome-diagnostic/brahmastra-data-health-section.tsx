@@ -428,6 +428,7 @@ export function AmazonAdsWarehouseCard({ health }: { health: AdsWarehouseHealth 
     : health.lastSyncStatus === 'failed'
       ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300'
       : 'border-border bg-muted text-muted-foreground'
+  const hasHealthAlert = health.staleDaysThresholdExceeded || health.recentAuthFailureCount > 0 || health.recentThrottleFailureCount > 0
 
   return (
     <div className="bg-card border border-border rounded-xl p-5">
@@ -441,6 +442,16 @@ export function AmazonAdsWarehouseCard({ health }: { health: AdsWarehouseHealth 
           </span>
         )}
       </div>
+      {hasHealthAlert && (
+        <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300 px-3 py-2 mb-3 text-xs">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>
+            {health.staleDaysThresholdExceeded && `Ads data is more than 2 days stale (latest: ${health.latestCampaignDate ?? 'none'}). `}
+            {health.recentAuthFailureCount > 0 && `${health.recentAuthFailureCount} Amazon Ads auth failure(s) (invalid/expired token) in the last 3 days — reconnect the Ads account. `}
+            {health.recentThrottleFailureCount > 0 && `${health.recentThrottleFailureCount} Amazon Ads throttling (429) failure(s) in the last 3 days.`}
+          </span>
+        </div>
+      )}
       <p className="text-xs text-muted-foreground mb-3">
         Ad Sales from API may exclude Sponsored Display view-through conversions. Ads Spend and Clicks are campaign-report totals (SP + SD + SB).
       </p>
@@ -453,6 +464,8 @@ export function AmazonAdsWarehouseCard({ health }: { health: AdsWarehouseHealth 
         <KpiCard label="SD latest date" value={health.sdLatestDate ?? '—'} sub="Sponsored Display" />
         <KpiCard label="SB latest date" value={health.sbLatestDate ?? '—'} sub="Sponsored Brands" />
         <KpiCard label="Failed sync count" value={health.failedSyncCount.toString()} sub="All-time ads runs" />
+        <KpiCard label="Auth failures (3d)" value={health.recentAuthFailureCount.toString()} sub="Invalid/expired LWA token" />
+        <KpiCard label="Throttle failures (3d)" value={health.recentThrottleFailureCount.toString()} sub="HTTP 429" />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 mb-4">
         <KpiCard label="SP campaign rows" value={health.campaignRows.sp.toLocaleString('en-IN')} sub="Sponsored Products" />
