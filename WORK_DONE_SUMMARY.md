@@ -197,3 +197,41 @@ _Last updated: 2026-06-28. Covers Phase R1 (Ads sync reliability) and Phase R2 (
 - **Total Sales source = payment transactions.** Top account-summary cards now read "Total Sales / Day" with an explicit "Source: Payment Transactions" sub-label, so they're never confused with ad-attributed sales.
 - **Ad-attributed sales/spend source = Amazon Ads reports.** Campaign/deep-report sections and single-mode Top Spenders/Top Ad Sales Generators tables are labeled "Source: Amazon Ads Reports". The top-level "Ad Spend / Day" card is relabeled "(Payment Txn Est.)" with source "Payment Transactions (Ad fee line items)" because that specific figure has always come from the settlement report's `Ad` category, not the Ads Reporting API — it was the source of the original confusion and is now labeled honestly rather than mislabeled as an Ads-report number.
 - **BOC maps to Curtains.** Root cause: `\b(eh_?boc|boc)\b` never matched names like `EH_BOC_4x9_Maroon_P1` because `\b` does not create a boundary before `_` (underscore is a word character in regex terms) — the rule silently failed for every BOC SKU/campaign without a space or hyphen after "BOC". Fixed in both places this pattern was duplicated: `src/lib/internal/portfolio-labels.ts` (`resolveEasyhomePortfolio`, used everywhere) and `src/lib/internal/ads-campaign-daily-parser.ts` (`mapCampaignNameToPortfolio` fallback, used by the advertised-product/targeting/search-term deep-report parser). Confirmed via direct DB check: `EH_BOC_4x9_Maroon_P1` has no `internal_sku_cost_master` entry (only the `_P2` variant does), so it depended entirely on this regex fallback and was landing in "Unmapped / Needs Review" with its real revenue hidden from the Curtains portfolio.
+
+## Ads Warehouse Trailing-14-Day Re-upsert Correctness Check (2026-07-08)
+
+_Build item #2 from `APPROVED_BACKLOG.md` — the gate that must be green before Ads Bleed (build item #3) can start. Docs-only specs (`PRODUCT_STRATEGY_90_DAY.md`, `DAILY_TOP_5_ACTION_ENGINE_SPEC.md`, `APPROVED_BACKLOG.md`) called for this; it did not exist before this session — only a 30-day Amazon-report-reuse cache existed (R10.3), which is a different concern (avoiding duplicate Amazon report requests) from verifying the warehouse itself re-upserts correctly._
+
+**Files changed:**
+- `scripts/audit-ads-reupsert-correctness.ts` (new, read-only script — this is the only file changed)
+
+**What was verified (audit, not a code change):**
+- **Tables:** `internal_ads_campaign_daily_rows` (SP+SD+SB campaign rows, split by `campaign_name` prefix), `internal_ads_advertised_product_daily_rows`, `internal_ads_targeting_daily_rows`, `internal_ads_search_term_daily_rows`.
+- **Real conflict key** (confirmed against migration 049, not the earlier 038/039 version): DB unique index on `(workspace_id, profile_id, dedupe_key)` on all 4 tables. `dedupe_key` = `[reportDate, campaignId||campaignName, adGroup, targeting/keyword/searchTerm, matchType, sku, asin].join('|')`, normalized (trim+uppercase) — built in `ads-campaign-daily-parser.ts` / `ads-deep-report-parser.ts`.
+- **Re-upsert mechanism:** `upsertByDedupeKey()` in `scripts/sync-ads-reports.ts` is an application-level split (select existing `(id, dedupe_key)` for the workspace+profile → new key = INSERT, existing key = UPDATE by id) — not a native `ON CONFLICT`. The DB unique index is the backstop if that logic has a bug.
+- **`reportId` vs `report_document_id`:** the Amazon Ads Reporting API v3 only has `reportId` (an async report-generation job id, polled via `GET /reporting/reports/{reportId}`, then a one-time presigned `url`) — there is no separate "document id" in this API. It's stored only on `internal_data_refresh_runs.amazon_report_id` (used for report-reuse — see `findReusableReport()`), never on the ads row tables. (The unrelated SP-API Reports flow used by `scripts/sync-business-reports.ts` for Business Reports does use a `reportDocumentId` — different API, out of scope here.) Live read-only query confirmed report-reuse is working: one failed run retried with the *same* `amazon_report_id` instead of requesting a new one.
+- **Checks run** (trailing 14 days, workspace/profile-scoped): (1) duplicate `(workspace_id, profile_id, dedupe_key)` groups, (2) % of rows ≥3 days old showing `updated_at > created_at` (evidence a later sync actually touched them, threshold 90%), (3) row-count-by-report-date gaps/outliers, (4) sync-run window overlap evidence (is the nightly re-upsert really re-covering the trailing window, or was it a one-time backfill).
+
+**Real result from this run** (workspace `55a321c9-…`, profile `1119208106810251`, window 2026-06-24→2026-07-08):
+- **No duplicate rows anywhere** — 0 duplicate groups across all 4 tables. The dedupe mechanism is not leaking duplicates.
+- **Sync overlap: PASS** — all 6 Ads sources show repeat coverage of the trailing window (confirms nightly re-upsert is genuinely happening, not a one-off backfill).
+- `internal_ads_campaign_daily_rows`: PASS (95.6% re-upsert evidence, no row-count issues).
+- `internal_ads_advertised_product_daily_rows`: PASS (100% re-upsert evidence).
+- `internal_ads_targeting_daily_rows`: **WARN** — 91.6% re-upsert evidence (just above threshold) but a **zero-row gap on 2026-07-07** (matches a known timeout failure seen in `internal_data_refresh_runs` that day).
+- `internal_ads_search_term_daily_rows`: **WARN** — only **68.5%** re-upsert evidence (below the 90% threshold) and the same **zero-row gap on 2026-07-07** (matches a known 401 auth failure that day).
+- **OVERALL STATUS: WARN.**
+
+**How to run:**
+```
+cd esolz-app
+npx tsx scripts/audit-ads-reupsert-correctness.ts
+# optional: npx tsx scripts/audit-ads-reupsert-correctness.ts --workspaceId=<uuid> --days=14
+```
+Requires `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (same as the existing `audit-brahmastra-data-quality.ts`). Read-only: no writes to any table, no Amazon Ads API calls, no RLS changes.
+
+**Remaining risks:**
+- Search-term (and to a lesser extent targeting) re-upsert reliability is genuinely weak — this is very likely the same intermittent 401/timeout pattern already tracked in Sync Health (search-term is the largest/slowest report and the one most often seen failing in `internal_data_refresh_runs`). This check does not fix that reliability issue — it only confirms it's real and quantifies it.
+- This script verifies re-upsert *evidence* from Postgres timestamps (`updated_at` vs `created_at`), not a live diff against a fresh Amazon API pull. `APPROVED_BACKLOG.md`'s gate literally describes "compares warehouse vs fresh API pull for 3 random days" — a live-API version would be a stronger check but requires calling the Ads Reporting API (still read-only against Amazon, but a real API call with quota/timing cost) and was intentionally left out of this smallest-safe-version to stay pure-DB-read and avoid triggering the same timeout/rate-limit issues this check is trying to detect.
+- The exact Render cron schedule/`--days=` value actually configured in production could not be confirmed from this repo (no `render.yaml` or doc references it) — this check verifies from the data itself rather than trusting a config value that can't be seen from here.
+
+**Is Ads Bleed unblocked?** **Still blocked.** Overall status is WARN, not PASS — search-term re-upsert reliability (68.5%, threshold 90%) and the 2026-07-07 gap on both targeting and search-term mean the trailing-14-day window cannot yet be trusted end-to-end. Per the locked build order this gate needs "green 7 consecutive days" before Ads Bleed starts; today is one data point, and it's a WARN. Recommended next step: investigate why search-term/targeting syncs fail more often than the other 4 sources (likely report size/duration, since search-term reports are typically the largest), then re-run this check daily until it's green for a week.
