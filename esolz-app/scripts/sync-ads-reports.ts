@@ -137,23 +137,71 @@ const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer
 const SUCCESS_SKIP_MS = 6 * 60 * 60 * 1000
 const AMAZON_REPORT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
+// SD campaign report generation has been observed timing out right at the
+// default 900s polling ceiling (2026-07-07 incident). This is a per-report-
+// type override, not a global increase — every other report type keeps the
+// default reportTimeoutMs, so this doesn't change polling frequency or add
+// any extra requests, only how long we're willing to wait for this one
+// report before giving up.
+const SD_CAMPAIGN_TIMEOUT_MS = 1_500_000 // 25 min (default is 15 min)
+
+// Bounded retry-with-backoff for HTTP 429 on report *creation* only — the
+// exact failure mode observed on ads_sb_campaign_daily (2026-07-07). Any
+// other error is not retried here. Capped at REPORT_CREATE_MAX_ATTEMPTS
+// total attempts so a persistent 429 fails cleanly instead of looping.
+const REPORT_CREATE_MAX_ATTEMPTS = 3
+const REPORT_CREATE_BACKOFF_MS = [30_000, 90_000]
+
 type ReportDef =
   // Campaign-level reports: SP, SD, and SB all go into the same table so
   // top-level totals match the Amazon Ads Console across all campaign types.
-  | { type: 'spCampaigns' | 'sdCampaigns' | 'sbCampaigns'; source: string; table: string; batchTable: string; kind: null }
+  | { type: 'spCampaigns' | 'sdCampaigns' | 'sbCampaigns'; source: string; table: string; batchTable: string; kind: null; timeoutMs?: number }
   // SP deep reports only (SD/SB don't offer equivalent granular breakdown APIs).
-  | { type: AdsReportType; source: string; table: string; batchTable: string; kind: DeepReportKind }
+  | { type: AdsReportType; source: string; table: string; batchTable: string; kind: DeepReportKind; timeoutMs?: number }
 
 const REPORT_DEFS: ReportDef[] = [
   // ── Campaign-level (SP + SD + SB) — all into internal_ads_campaign_daily_rows ──
   { type: 'spCampaigns', source: 'ads_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
-  { type: 'sdCampaigns', source: 'ads_sd_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
+  { type: 'sdCampaigns', source: 'ads_sd_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null, timeoutMs: SD_CAMPAIGN_TIMEOUT_MS },
   { type: 'sbCampaigns', source: 'ads_sb_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
   // ── SP deep reports ──────────────────────────────────────────────────────────
   { type: 'spAdvertisedProduct', source: 'ads_advertised_product', table: 'internal_ads_advertised_product_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'advertised_product' },
   { type: 'spTargeting', source: 'ads_targeting', table: 'internal_ads_targeting_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'targeting' },
   { type: 'spSearchTerm', source: 'ads_search_term', table: 'internal_ads_search_term_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'search_term' },
 ]
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isRateLimitedError(message: string): boolean {
+  return message.includes('429') || message.toLowerCase().includes('throttl')
+}
+
+/**
+ * Wraps requestAdsReport with bounded retry-with-backoff, isolated per
+ * report (a retry here never affects any other report type's own attempt).
+ * Only HTTP 429 is retried — any other error (auth, malformed request,
+ * etc.) surfaces immediately to the existing per-report failure handling.
+ */
+async function requestAdsReportWithRetry(ctx: AdsApiContext, reportType: AdsReportType, startDate: string, endDate: string, source: string): Promise<string> {
+  for (let attempt = 1; attempt <= REPORT_CREATE_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await requestAdsReport(ctx, reportType, startDate, endDate)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const isLastAttempt = attempt === REPORT_CREATE_MAX_ATTEMPTS
+      if (!isRateLimitedError(message) || isLastAttempt) {
+        if (attempt > 1) console.log(`  ${source}: giving up after ${attempt} attempt(s) creating report for ${startDate}..${endDate} — ${message}`)
+        throw err
+      }
+      const backoffMs = REPORT_CREATE_BACKOFF_MS[attempt - 1]
+      console.log(`  ${source}: rate limited (429) creating report for ${startDate}..${endDate} (attempt ${attempt}/${REPORT_CREATE_MAX_ATTEMPTS}) — backing off ${backoffMs}ms before retry`)
+      await sleep(backoffMs)
+    }
+  }
+  throw new Error(`${source}: report creation retry loop exited unexpectedly`)
+}
 
 function campaignDailyRowFor(record: AdsCampaignDailyRecord, workspaceId: string, profileId: string, batchId: string) {
   return {
@@ -366,13 +414,15 @@ async function syncOneReport(
       reportId = reusable.amazonReportId
       console.log(`  ${def.source}: reusing existing Amazon report ${reportId} (may already be completed on Amazon's side).`)
     } else {
-      reportId = await requestAdsReport(ctx, def.type, startDate, endDate)
+      reportId = await requestAdsReportWithRetry(ctx, def.type, startDate, endDate, def.source)
     }
     if (runId) {
       await admin.from('internal_data_refresh_runs').update({ amazon_report_id: reportId, amazon_report_status: 'PENDING', amazon_report_created_at: new Date().toISOString() }).eq('id', runId)
     }
 
-    const downloadUrl = await waitForAdsReport(ctx, reportId, { maxWaitMs: reportTimeoutMs })
+    const effectiveTimeoutMs = def.timeoutMs ?? reportTimeoutMs
+    console.log(`  ${def.source}: waiting up to ${effectiveTimeoutMs}ms for report ${reportId} (window ${startDate}..${endDate})`)
+    const downloadUrl = await waitForAdsReport(ctx, reportId, { maxWaitMs: effectiveTimeoutMs })
     if (runId) {
       await admin.from('internal_data_refresh_runs').update({ amazon_report_status: 'COMPLETED', amazon_report_completed_at: new Date().toISOString() }).eq('id', runId)
     }

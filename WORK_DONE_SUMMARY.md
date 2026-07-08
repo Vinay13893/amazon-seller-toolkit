@@ -276,3 +276,28 @@ _Approved, tightly-scoped fix for the search_term root cause above. Does not tou
 **On "confirm search_term no longer gets 401 due to token expiry":** this could not be verified empirically in this session, by design — doing so would require actually running `sync-ads-reports.ts` for real (a live Amazon Ads API call plus writes to the ads warehouse tables), which conflicts with this task's explicit "do not mutate production data" constraint. What *was* verified is a **code-level guarantee**: the refresh now happens immediately before each report request, so the specific failure mode observed (token issued once, still in use ~1h+ later) cannot recur regardless of how long earlier reports in the run take. Empirical confirmation requires the next real nightly cron run after this PR is merged and deployed, then re-running `audit-ads-reupsert-correctness.ts` — recommend checking again in 24–48h and expecting `ads_search_term`'s re-upsert-evidence ratio to climb toward the other sources' 90%+ levels within a few days as more of the trailing window gets successfully re-touched.
 
 **Ads Bleed status:** still blocked. This fix addresses one of the two WARN causes; `ads_targeting`'s Amazon-side timeout is untouched by design (per this task's scope) and will need its own decision (raise `reportTimeoutMs`, or accept it as a self-healing gap) before the gate can go green for the required 7 consecutive days.
+
+## Data Accuracy Sprint: 2026-07-07 Ads Spend Reconciliation + SD/SB Sync Reliability Fix (2026-07-08)
+
+_Read-only reconciliation found the July 7 Ads Spend gap (Seller Central ₹15,252.80 vs Brahmastra ₹14,098.70, ~₹1,154) was caused entirely by missing SD/SB campaign rows for that date — not a dashboard, duplicate-row, profile-filter, or category-mapping bug. `ads_sd_campaign_daily` failed with a 900s report-generation timeout; `ads_sb_campaign_daily` failed with HTTP 429 (throttled)._
+
+**File changed:** `scripts/sync-ads-reports.ts` — 1 file, 55 insertions / 5 deletions. No other files touched; no UI, RLS, OAuth/token, profile-selection, Business Report, or payment/replenishment changes.
+
+**Fix:**
+- Added `requestAdsReportWithRetry()`: bounded retry-with-backoff (max 3 attempts, 30s then 90s backoff) specifically for HTTP 429 on report *creation* — isolated per report, any non-429 error surfaces immediately as before.
+- Added a per-report-type `timeoutMs` override on `ReportDef`, set only for `sdCampaigns` (25 min vs the 15 min global default) — every other report type's timeout is unchanged, so this doesn't add polling frequency or risk anywhere else.
+- Added logging for report type, date window, effective timeout, retry attempt number, and backoff duration.
+- Upsert/dedupe logic (`upsertByDedupeKey`) untouched — same conflict key, same insert/update split.
+
+**Validation (live, explicitly approved — real Amazon API calls + real writes, scoped to 2026-07-07, SD+SB campaign only, `--no-deep`):**
+- `ads_sd_campaign_daily`: **succeeded** — waited within the new 25-min ceiling, fetched 43 rows, 41 distinct rows landed in `internal_ads_campaign_daily_rows` for 2026-07-07 (dedupe collapsed a couple of same-key rows within the batch, as designed).
+- `ads_sb_campaign_daily`: **still failed** — HTTP 429 on all 3 attempts (initial + 2 backoff retries). The retry logic worked exactly as designed (bounded, clear per-attempt logging, no infinite loop) but Amazon's throttle on this report type persisted past the 30s/90s backoff window. Per the stop condition, this was reported rather than retried further or looped.
+- DB re-check after fix: SD = ₹1,119.50 (41 rows, 41 distinct keys, single profile `1119208106810251`), SP = ₹14,103.59 (123 rows — a small natural increase from a background scheduled sync unrelated to this fix), SB = still ₹0.
+- **Total campaign spend for 2026-07-07: ₹15,223.09** (was ₹14,098.70) — gap to Seller Central's ₹15,252.80 narrowed from **~₹1,154 to ~₹29.71** (99.3% closed). The small residual is most likely SB's still-missing spend (SB averaged ~₹118/day on a comparable prior day) plus normal late-attribution movement.
+- No duplicates: confirmed (rows = distinct dedupe_key count in every table checked). Profile: confirmed single profile (`1119208106810251`) throughout.
+
+**Remaining/open:**
+- SB campaign spend for 2026-07-07 is still not synced — Amazon's 429 throttle on this report type outlasted the current backoff window. Needs either a longer/delayed manual retry, or a decision on whether to extend backoff further (would need approval — not done here to respect the "do not loop forever" stop condition).
+- tsc/build both pass.
+
+**Tests run:** `npx tsc --noEmit` — pass. `npm run build` — pass.
