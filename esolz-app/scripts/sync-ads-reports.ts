@@ -570,7 +570,20 @@ async function runSyncForProfile(
           ...(bfOpts.noDeep ? [] : deepReportDefs()),
         ]
       : REPORT_DEFS
+    // Same per-request refresh the backfill path already does above — a
+    // single token fetched once at script start can expire before later
+    // reports run (campaign reports alone can take ~1h+ on this account),
+    // so the report that happens to run last (search_term) was seeing
+    // frequent 401s that had nothing to do with its own data/size.
     for (const def of defs) {
+      if (getAccessToken) {
+        try {
+          ctx.accessToken = await getAccessToken()
+        } catch (err) {
+          console.error(`  Token refresh failed before ${def.source}: ${err instanceof Error ? err.message : err} — aborting remaining reports`)
+          break
+        }
+      }
       outcomes.push(await syncOneReport(admin, ctx, workspaceId, profileId, def, startDate, endDate, reportTimeoutMs, forceRefresh))
     }
   }

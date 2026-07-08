@@ -257,3 +257,22 @@ _Investigation only — no code changed, no data mutated, no RLS/UI touched. Thi
 **Should PR #9 be merged as a diagnostic tool despite WARN?** **Yes.** A WARN here is the check working correctly — it surfaced a real, previously-invisible reliability gap with root-cause-level clarity. The script is read-only/diagnostic-only; merging it does not touch Ads Bleed logic, does not change sync behavior, and gives every future run of this check the same visibility.
 
 **Is a fix needed before Ads Bleed?** **Yes, at least for the search_term token-refresh bug.** Recommended (not yet implemented — needs explicit approval since it touches the protected Ads sync script): add the same per-report `ctx.accessToken = await getAccessToken()` refresh the backfill path already does, to the non-backfill path in `runSyncForProfile`, before each `syncOneReport` call (or at minimum before the deep-report calls, which run last). The `ads_targeting` timeout is lower urgency — it's Amazon-side variability, not a deterministic bug, and the rolling-window re-sync will eventually catch up on retry; consider raising `reportTimeoutMs` or accepting occasional single-day gaps that self-heal within the 14-day window once the token bug is fixed.
+
+### Follow-up: token-refresh fix implemented (2026-07-08)
+
+_Approved, tightly-scoped fix for the search_term root cause above. Does not touch the ads_targeting timeout (documented as a separate, Amazon-side issue, not fixed here) — do not conflate the two._
+
+**File changed:** `scripts/sync-ads-reports.ts` — 1 file, 13 lines added, 0 removed.
+
+**What changed:** the non-backfill (`else`) branch of `runSyncForProfile` now refreshes `ctx.accessToken` via `getAccessToken()` immediately before every `syncOneReport` call, exactly mirroring the pattern the backfill branch already used per date-chunk. On refresh failure, remaining reports for that run are aborted (same behavior as the backfill path) rather than proceeding with a token known to be bad. No other logic changed — report order, timeouts, dedupe/upsert logic, RLS, and UI are all untouched.
+
+**Why this fixes the root cause:** the 401s were happening because a single token fetched once at script start could still be in use ~1h+ later when `search_term` (last in `REPORT_DEFS`) finally ran, since campaign reports ahead of it can take that long. With a fresh refresh immediately before each report's create → poll → download sequence, no report ever uses a token older than the time it takes to do its own single request — eliminating the staleness window regardless of how long earlier reports in the same run took.
+
+**Tests run:**
+- `npx tsc --noEmit` — pass
+- `npm run build` — pass
+- `npx tsx scripts/audit-ads-reupsert-correctness.ts` (read-only, re-run after the fix) — **identical result to before the fix** (search_term still 68.5%, same 2026-07-07 gap). This is expected, not a fix failure: the check reflects *historical* sync-run data, and no real sync has executed with the fixed code yet — a code change alone cannot retroactively change past `internal_data_refresh_runs` rows.
+
+**On "confirm search_term no longer gets 401 due to token expiry":** this could not be verified empirically in this session, by design — doing so would require actually running `sync-ads-reports.ts` for real (a live Amazon Ads API call plus writes to the ads warehouse tables), which conflicts with this task's explicit "do not mutate production data" constraint. What *was* verified is a **code-level guarantee**: the refresh now happens immediately before each report request, so the specific failure mode observed (token issued once, still in use ~1h+ later) cannot recur regardless of how long earlier reports in the run take. Empirical confirmation requires the next real nightly cron run after this PR is merged and deployed, then re-running `audit-ads-reupsert-correctness.ts` — recommend checking again in 24–48h and expecting `ads_search_term`'s re-upsert-evidence ratio to climb toward the other sources' 90%+ levels within a few days as more of the trailing window gets successfully re-touched.
+
+**Ads Bleed status:** still blocked. This fix addresses one of the two WARN causes; `ads_targeting`'s Amazon-side timeout is untouched by design (per this task's scope) and will need its own decision (raise `reportTimeoutMs`, or accept it as a self-healing gap) before the gate can go green for the required 7 consecutive days.
