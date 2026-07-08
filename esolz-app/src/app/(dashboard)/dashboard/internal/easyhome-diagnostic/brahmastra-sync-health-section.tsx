@@ -58,6 +58,12 @@ export function BrahmastraSyncHealthSection() {
     )
   }
 
+  // Non-blocking warnings (e.g. Settlement running long on its natural lag)
+  // must never make an otherwise-healthy panel look broken — they're shown
+  // as "healthy with a warning" rather than folded into the same red/amber
+  // "don't trust this" banner used for sources that actually block actions.
+  const nonBlockingWarnings = health.sources.filter(s => s.status !== 'healthy' && !s.blocksActions)
+
   return (
     <div className="bg-card border border-border rounded-xl p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -73,10 +79,19 @@ export function BrahmastraSyncHealthSection() {
           <span>Do not trust action recommendations until every required source below is healthy.</span>
         </div>
       )}
-      {health.overallTrustworthy && (
+      {health.overallTrustworthy && nonBlockingWarnings.length === 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 p-3 mb-3 text-sm text-green-700 dark:text-green-300">
           <ShieldCheck className="w-4 h-4 flex-shrink-0 mt-0.5" />
           <span>All required sources are healthy.</span>
+        </div>
+      )}
+      {health.overallTrustworthy && nonBlockingWarnings.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-green-500/30 bg-green-500/10 p-3 mb-3 text-sm text-green-700 dark:text-green-300">
+          <ShieldCheck className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <span>
+            Healthy — {nonBlockingWarnings.length} warning{nonBlockingWarnings.length > 1 ? 's' : ''}: {nonBlockingWarnings.map(s => s.label).join(', ')}.
+            {' '}This does not block action recommendations.
+          </span>
         </div>
       )}
 

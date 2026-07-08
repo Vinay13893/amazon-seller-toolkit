@@ -266,7 +266,7 @@ export async function buildBrahmastraDataHealth(
       message = `ASIN pricing/availability is stale — last successful snapshot was ${Math.round(ageHours)}h ago (threshold ${ASIN_STALE_AFTER_HOURS}h).`
     } else if (isRateLimitWarning) {
       status = 'rate_limited'
-      message = `ASIN pricing is rate-limited; ${Math.round(problemRatio * 100)}% of the last ${recentStatuses.length} snapshots were incomplete. Using last successful price/BSR where available.`
+      message = `ASIN pricing is rate-limited; ${Math.round(problemRatio * 100)}% of the last ${recentStatuses.length} snapshots were incomplete. Using last successful price/BSR/Buy Box/availability where available — no data is being lost, only refreshed less often.`
     } else {
       status = 'healthy'
       message = `ASIN pricing/availability is current — last successful snapshot ${Math.round(ageHours ?? 0)}h ago.`
