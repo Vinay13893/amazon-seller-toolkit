@@ -21,7 +21,13 @@ import {
   scrapingJobStatusRequestSchema,
   scrapingRunNextRequestSchema,
 } from './scraping/queue'
-import { startProductPageSnapshotOrchestrator } from './automation/productPageOrchestrator'
+// productPageOrchestrator is intentionally NOT started anymore. Its 3-minute
+// loop only pinged Vercel's /api/asins/jobs/enqueue and /api/asins/jobs/process-next
+// routes, which do all the real work via Amazon SP-API. That responsibility now
+// runs on a native Vercel Cron Job (esolz-app/vercel.json ->
+// /api/cron/asins/process-product-snapshots, every 2 hours), so this Render
+// worker no longer needs to drive that cadence. The file itself is left in
+// place, unused, in case we ever need to restore it.
 
 dotenv.config()
 
@@ -245,5 +251,4 @@ app.use((_req: Request, res: Response) => {
 app.listen(port, () => {
   console.log(`[checker-worker] listening on port ${port}`)
   console.log('[checker-worker] route enabled: POST /brand-analytics/status')
-  startProductPageSnapshotOrchestrator()
 })
