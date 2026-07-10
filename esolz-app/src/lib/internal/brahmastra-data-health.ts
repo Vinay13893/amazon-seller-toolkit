@@ -16,7 +16,14 @@ export type SourceHealthStatus =
   | 'rate_limited'
   | 'not_configured'
 
-export type SourceKey = 'ads' | 'business_report' | 'settlement' | 'asin_checker'
+export type SourceKey =
+  | 'ads'
+  | 'business_report'
+  | 'settlement'
+  | 'asin_checker'
+  | 'buybox'
+  | 'keyword_rank'
+  | 'pincode'
 
 export type SourceHealth = {
   source: SourceKey
@@ -47,6 +54,26 @@ export function isSourceTrustworthy(status: SourceHealthStatus): boolean {
   return status === 'healthy'
 }
 
+/**
+ * Seller-facing 4-word status vocabulary (Healthy / Delayed / Degraded /
+ * Unavailable), mapped from the underlying SourceHealthStatus. Purely a
+ * display-layer convenience — the underlying status type is unchanged so
+ * computeOverallLevel() and every existing caller keep working as-is.
+ */
+export type SellerFacingStatusLabel = 'Healthy' | 'Delayed' | 'Degraded' | 'Unavailable'
+
+export function sellerFacingStatusLabel(status: SourceHealthStatus): SellerFacingStatusLabel {
+  switch (status) {
+    case 'healthy': return 'Healthy'
+    case 'stale': return 'Delayed'
+    case 'rate_limited': return 'Degraded'
+    case 'failed':
+    case 'auth_required':
+    case 'not_configured':
+      return 'Unavailable'
+  }
+}
+
 function computeOverallLevel(sources: SourceHealth[]): OverallHealthLevel {
   const blocking = sources.filter(s => s.blocksActions)
   if (blocking.some(s => s.status === 'failed' || s.status === 'auth_required')) return 'critical'
@@ -63,6 +90,21 @@ const ASIN_RECENT_SNAPSHOT_SAMPLE = 20
 const ASIN_PROBLEM_SNAPSHOT_WARN_RATIO = 0.5
 const MAX_LISTING_IDS_SCANNED = 5000
 const ADS_RUN_HISTORY_SCAN = 200
+
+// On-demand snapshot sources (Buy Box, Keyword Rank, Pincode) have no
+// scheduled sync/cron and no internal_data_refresh_runs rows — they are
+// only ever written when a human clicks a per-ASIN "Refresh" button. Their
+// staleness thresholds are therefore hours-since-last-CONFIRMED-check, not
+// day-granularity like the batch-synced sources above. Defaults below match
+// the values verified against real production data before this change:
+// Buy Box/keyword/pincode all sat 200-950+ hours stale at time of writing,
+// so "stale" is the expected default state for a workspace that hasn't
+// clicked refresh recently — this is real signal, not a bug to hide.
+const BUYBOX_STALE_AFTER_HOURS = 24
+const KEYWORD_RANK_STALE_AFTER_HOURS = 48
+const PINCODE_STALE_AFTER_HOURS = 48
+const ON_DEMAND_RECENT_SAMPLE = 20
+const ON_DEMAND_PROBLEM_WARN_RATIO = 0.5
 
 // Amazon Ads sync writes one internal_data_refresh_runs row per report type,
 // not one row per "Ads sync". A single flaky/rate-limited report type must
@@ -262,6 +304,73 @@ function evaluateAdsSource(params: {
   }
 }
 
+/**
+ * Shared evaluator for the three on-demand, button-triggered snapshot
+ * sources (Buy Box, Keyword Rank, Pincode). Each has no cron/run-history
+ * table — "health" is derived entirely from the snapshot rows themselves:
+ * how long ago the latest CONFIRMED (non-ambiguous) check happened, and
+ * what fraction of a recent sample came back incomplete/unconfirmed.
+ */
+function evaluateOnDemandSnapshotSource(params: {
+  source: SourceKey
+  label: string
+  latestConfirmedAt: string | null
+  /** Newest-first sample; true = confirmed/complete result, false = incomplete/unconfirmed/failed. */
+  recentConfirmedFlags: boolean[]
+  staleAfterHours: number
+  nowMs: number
+  pausedMessage: string
+  notConfiguredMessage: string
+  extraDetails?: string[]
+}): SourceHealth {
+  const {
+    source, label, latestConfirmedAt, recentConfirmedFlags, staleAfterHours, nowMs,
+    pausedMessage, notConfiguredMessage, extraDetails,
+  } = params
+
+  const hasAnyRows = recentConfirmedFlags.length > 0
+  const ageHours = hoursAgo(latestConfirmedAt, nowMs)
+  const problemCount = recentConfirmedFlags.filter(ok => !ok).length
+  const problemRatio = recentConfirmedFlags.length > 0 ? problemCount / recentConfirmedFlags.length : 0
+  const isDegraded = recentConfirmedFlags.length > 0 && problemRatio > ON_DEMAND_PROBLEM_WARN_RATIO
+
+  let status: SourceHealthStatus
+  let message: string
+
+  if (!hasAnyRows || !latestConfirmedAt) {
+    // No rows at all, or rows exist but none ever produced a confirmed
+    // result — both are "nothing trustworthy to show yet" from a trust
+    // standpoint, so both map to the same not_configured bucket.
+    status = 'not_configured'
+    message = notConfiguredMessage
+  } else if (ageHours !== null && ageHours > staleAfterHours) {
+    status = 'stale'
+    message = pausedMessage
+  } else if (isDegraded) {
+    status = 'rate_limited'
+    message = `${label} checks are running, but ${Math.round(problemRatio * 100)}% of the last ${recentConfirmedFlags.length} checks came back incomplete or unconfirmed. The last confirmed result is still shown — nothing is being lost, only refreshed less reliably.`
+  } else {
+    status = 'healthy'
+    message = `${label} data is current — last confirmed check ${Math.round(ageHours ?? 0)}h ago.`
+  }
+
+  return {
+    source,
+    label,
+    status,
+    latestDate: latestConfirmedAt,
+    lastRunStatus: null,
+    lastRunAt: null,
+    blocksActions: status !== 'healthy',
+    message,
+    details: [
+      `Last confirmed check: ${latestConfirmedAt ? new Date(latestConfirmedAt).toISOString() : 'never'}`,
+      `${recentConfirmedFlags.length} recent check${recentConfirmedFlags.length === 1 ? '' : 's'} sampled; ${problemCount} incomplete or unconfirmed.`,
+      ...(extraDetails ?? []),
+    ],
+  }
+}
+
 export async function buildBrahmastraDataHealth(
   admin: SupabaseClient,
   workspaceId: string,
@@ -278,6 +387,13 @@ export async function buildBrahmastraDataHealth(
     lastBusinessReportRunResult,
     settlementDateResult,
     listingIdsResult,
+    buyboxLatestConfirmedResult,
+    buyboxRecentSampleResult,
+    keywordLatestConfirmedResult,
+    keywordRecentSampleResult,
+    trackedKeywordCountResult,
+    pincodeLatestConfirmedResult,
+    pincodeRecentSampleResult,
   ] = await Promise.all([
     profileId
       ? Promise.all([
@@ -292,6 +408,21 @@ export async function buildBrahmastraDataHealth(
     admin.from('internal_data_refresh_runs').select('status, started_at, finished_at, error_message').eq('workspace_id', workspaceId).eq('source', 'business_report_sp_api').order('started_at', { ascending: false }).limit(1).maybeSingle(),
     admin.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
     admin.from('amazon_listing_items').select('id').eq('workspace_id', workspaceId).limit(MAX_LISTING_IDS_SCANNED),
+    // Buy Box: confirmed = buy_box_status in ('won','lost') — 'unknown' /
+    // 'no_buybox' / 'partial_success' are real Amazon Product Pricing
+    // responses but don't confirm Buy Box ownership either way.
+    admin.from('buybox_snapshots').select('checked_at').eq('workspace_id', workspaceId).in('buy_box_status', ['won', 'lost']).order('checked_at', { ascending: false }).limit(1).maybeSingle(),
+    admin.from('buybox_snapshots').select('buy_box_status').eq('workspace_id', workspaceId).order('checked_at', { ascending: false }).limit(ON_DEMAND_RECENT_SAMPLE),
+    // Keyword rank: confirmed = scrape_status = 'success' (checker-worker's
+    // own success sentinel — 'failed' / 'checker_unavailable' are the two
+    // known incomplete outcomes, mirroring the ASIN checker pattern above).
+    admin.from('keyword_rank_snapshots').select('checked_at').eq('workspace_id', workspaceId).eq('scrape_status', 'success').order('checked_at', { ascending: false }).limit(1).maybeSingle(),
+    admin.from('keyword_rank_snapshots').select('scrape_status').eq('workspace_id', workspaceId).order('checked_at', { ascending: false }).limit(ON_DEMAND_RECENT_SAMPLE),
+    admin.from('tracked_keywords').select('id').eq('workspace_id', workspaceId).limit(MAX_LISTING_IDS_SCANNED),
+    // Pincode: confirmed = available IS NOT NULL (a failed check stores
+    // available=null with a synthetic "Check failed: ..." delivery_promise).
+    admin.from('pincode_checks').select('checked_at').eq('workspace_id', workspaceId).not('available', 'is', null).order('checked_at', { ascending: false }).limit(1).maybeSingle(),
+    admin.from('pincode_checks').select('available').eq('workspace_id', workspaceId).order('checked_at', { ascending: false }).limit(ON_DEMAND_RECENT_SAMPLE),
   ])
 
   const adsDates = (adsDateRows as { data: { report_date?: string } | null }[]).map(r => r.data?.report_date ?? null).filter((d): d is string => Boolean(d))
@@ -423,7 +554,59 @@ export async function buildBrahmastraDataHealth(
     }
   }
 
-  const sources = [ads, businessReport, settlement, asinChecker]
+  // ── Buy Box, Keyword Rank, Pincode: on-demand snapshot sources ──────────
+  // None of these three have a cron or a run-history table today — they are
+  // only ever written when a human clicks a per-ASIN "Refresh" button, so
+  // "stale" is their expected everyday state, not necessarily a problem.
+  // Reporting that honestly (rather than skipping these sources, as before
+  // this change) is exactly what lets future Brahmastra cards built on top
+  // of them suppress instead of guessing.
+
+  const buyboxLatestConfirmed = (buyboxLatestConfirmedResult.data as { checked_at?: string } | null)?.checked_at ?? null
+  const buyboxRecentFlags = ((buyboxRecentSampleResult.data ?? []) as { buy_box_status: string | null }[])
+    .map(r => r.buy_box_status === 'won' || r.buy_box_status === 'lost')
+  const buybox = evaluateOnDemandSnapshotSource({
+    source: 'buybox',
+    label: 'Buy Box',
+    latestConfirmedAt: buyboxLatestConfirmed,
+    recentConfirmedFlags: buyboxRecentFlags,
+    staleAfterHours: BUYBOX_STALE_AFTER_HOURS,
+    nowMs,
+    pausedMessage: 'Buy Box recommendations are paused until fresh Buy Box data is available.',
+    notConfiguredMessage: 'No confirmed Buy Box checks have been run yet for this workspace.',
+  })
+
+  const keywordLatestConfirmed = (keywordLatestConfirmedResult.data as { checked_at?: string } | null)?.checked_at ?? null
+  const keywordRecentFlags = ((keywordRecentSampleResult.data ?? []) as { scrape_status: string | null }[])
+    .map(r => r.scrape_status === 'success')
+  const trackedKeywordCount = ((trackedKeywordCountResult.data ?? []) as { id: string }[]).length
+  const keywordRank = evaluateOnDemandSnapshotSource({
+    source: 'keyword_rank',
+    label: 'Keyword Rank',
+    latestConfirmedAt: keywordLatestConfirmed,
+    recentConfirmedFlags: keywordRecentFlags,
+    staleAfterHours: KEYWORD_RANK_STALE_AFTER_HOURS,
+    nowMs,
+    pausedMessage: 'Keyword movement cards are paused until fresh rank data is available.',
+    notConfiguredMessage: 'No confirmed keyword rank checks have been run yet for this workspace.',
+    extraDetails: [`${trackedKeywordCount} tracked keyword${trackedKeywordCount === 1 ? '' : 's'} for this workspace.`],
+  })
+
+  const pincodeLatestConfirmed = (pincodeLatestConfirmedResult.data as { checked_at?: string } | null)?.checked_at ?? null
+  const pincodeRecentFlags = ((pincodeRecentSampleResult.data ?? []) as { available: boolean | null }[])
+    .map(r => r.available !== null)
+  const pincode = evaluateOnDemandSnapshotSource({
+    source: 'pincode',
+    label: 'Pincode Availability',
+    latestConfirmedAt: pincodeLatestConfirmed,
+    recentConfirmedFlags: pincodeRecentFlags,
+    staleAfterHours: PINCODE_STALE_AFTER_HOURS,
+    nowMs,
+    pausedMessage: 'Availability recommendations are paused until fresh pincode checks are available.',
+    notConfiguredMessage: 'No confirmed pincode checks have been run yet for this workspace.',
+  })
+
+  const sources = [ads, businessReport, settlement, asinChecker, buybox, keywordRank, pincode]
   const overallLevel = computeOverallLevel(sources)
 
   return {
