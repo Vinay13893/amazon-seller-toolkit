@@ -91,20 +91,40 @@ const ASIN_PROBLEM_SNAPSHOT_WARN_RATIO = 0.5
 const MAX_LISTING_IDS_SCANNED = 5000
 const ADS_RUN_HISTORY_SCAN = 200
 
-// On-demand snapshot sources (Buy Box, Keyword Rank, Pincode) have no
-// scheduled sync/cron and no internal_data_refresh_runs rows — they are
-// only ever written when a human clicks a per-ASIN "Refresh" button. Their
-// staleness thresholds are therefore hours-since-last-CONFIRMED-check, not
+// On-demand snapshot sources (Keyword Rank, Pincode) have no scheduled
+// sync/cron and no internal_data_refresh_runs rows — they are only ever
+// written when a human clicks a per-ASIN "Refresh" button. Their staleness
+// thresholds are therefore hours-since-last-CONFIRMED-check, not
 // day-granularity like the batch-synced sources above. Defaults below match
 // the values verified against real production data before this change:
-// Buy Box/keyword/pincode all sat 200-950+ hours stale at time of writing,
-// so "stale" is the expected default state for a workspace that hasn't
-// clicked refresh recently — this is real signal, not a bug to hide.
-const BUYBOX_STALE_AFTER_HOURS = 24
+// keyword/pincode sat 200-950+ hours stale at time of writing, so "stale"
+// is the expected default state for a workspace that hasn't clicked
+// refresh recently — this is real signal, not a bug to hide.
+//
+// Buy Box is intentionally NOT part of this on-demand pattern (see
+// evaluateBuyBoxCoverageSource below). It is derived from the automated
+// asin_snapshots pipeline (SP-API Pricing, ~2h cadence via
+// /api/cron/asins/process-product-snapshots) instead of buybox_snapshots,
+// the old per-ASIN manual-click table, which was found to cover only 2/19
+// tracked ASINs and was 25+ days stale. buybox_snapshots is retained as a
+// manual deep-check detail table only — it no longer feeds Sync Health.
 const KEYWORD_RANK_STALE_AFTER_HOURS = 48
 const PINCODE_STALE_AFTER_HOURS = 48
 const ON_DEMAND_RECENT_SAMPLE = 20
 const ON_DEMAND_PROBLEM_WARN_RATIO = 0.5
+
+// Buy Box coverage thresholds — see evaluateBuyBoxCoverageSource(). Amazon
+// Pricing throttling (PRICING_COOLDOWN_RETRY_MINUTES in
+// esolz-app/src/app/api/asins/jobs/process-next/route.ts) means confirmed
+// (won/lost) Buy Box reads trickle in far slower than the underlying
+// pipeline's 2h cadence, so pipeline-aliveness freshness (ASIN_STALE_AFTER_HOURS)
+// would be far too strict a bar for *confirmed coverage* specifically.
+const BUYBOX_CONFIRMED_WINDOW_HOURS = 24 * 7
+// Verified against live production data 2026-07-10: 254/485 ASINs (52%)
+// have ever had a confirmed read, but only 103/485 (21%) within 7 days.
+// 30% is a deliberately conservative bar so today's real ~21% coverage
+// reports honestly as Degraded rather than Healthy.
+const BUYBOX_MIN_CONFIRMED_COVERAGE_PCT = 30
 
 // Amazon Ads sync writes one internal_data_refresh_runs row per report type,
 // not one row per "Ads sync". A single flaky/rate-limited report type must
@@ -371,6 +391,89 @@ function evaluateOnDemandSnapshotSource(params: {
   }
 }
 
+/**
+ * Buy Box health, derived from the automated asin_snapshots pipeline
+ * instead of the old per-ASIN manual-click buybox_snapshots table (see
+ * comment above BUYBOX_CONFIRMED_WINDOW_HOURS for why). Deliberately
+ * distinguishes two different failure modes so the message never overstates
+ * trust:
+ *   1. Pipeline freshness — is the automated pipeline running at all
+ *      (reuses the ASIN Checker's own "last successful check" signal,
+ *      since both read the same asin_snapshots rows).
+ *   2. Confirmed Buy Box coverage — of the ASINs the pipeline covers, how
+ *      many have an actual won/lost result recently, vs. still "unknown"
+ *      because Amazon's Pricing API throttled that check cycle. A fresh
+ *      pipeline row does NOT mean a confirmed Buy Box result — most rows
+ *      are 'unknown' by design under throttling, so coverage is reported
+ *      separately and a low-coverage workspace is marked Degraded rather
+ *      than Healthy, even when the pipeline itself is running on schedule.
+ * Future Buy Box Loss action cards must only fire for ASINs with a fresh
+ * confirmed result — never inferred from "unknown".
+ */
+function evaluateBuyBoxCoverageSource(params: {
+  totalRelevantAsins: number
+  pipelineLatestAt: string | null
+  confirmedLatestAt: string | null
+  confirmedRecentCount: number
+  nowMs: number
+}): SourceHealth {
+  const { totalRelevantAsins, pipelineLatestAt, confirmedLatestAt, confirmedRecentCount, nowMs } = params
+  const label = 'Buy Box'
+  const windowDays = Math.round(BUYBOX_CONFIRMED_WINDOW_HOURS / 24)
+
+  if (totalRelevantAsins === 0) {
+    return {
+      source: 'buybox',
+      label,
+      status: 'not_configured',
+      latestDate: null,
+      lastRunStatus: null,
+      lastRunAt: null,
+      blocksActions: true,
+      message: 'No products are being tracked yet for this workspace.',
+      details: ['No ASINs are set up for Buy Box checking yet.'],
+    }
+  }
+
+  const pipelineAgeHours = hoursAgo(pipelineLatestAt, nowMs)
+  const coveragePct = totalRelevantAsins > 0 ? Math.round((confirmedRecentCount / totalRelevantAsins) * 100) : 0
+  const unknownCount = Math.max(0, totalRelevantAsins - confirmedRecentCount)
+
+  let status: SourceHealthStatus
+  let message: string
+
+  if (!pipelineLatestAt || (pipelineAgeHours !== null && pipelineAgeHours > ASIN_STALE_AFTER_HOURS)) {
+    // Same underlying pipeline as ASIN Checker — if it isn't running, Buy
+    // Box must independently refuse to claim freshness it doesn't have.
+    status = 'stale'
+    message = 'Buy Box monitoring is paused because the underlying product data pipeline hasn\'t run recently.'
+  } else if (!confirmedLatestAt || coveragePct < BUYBOX_MIN_CONFIRMED_COVERAGE_PCT) {
+    status = 'rate_limited'
+    message = 'Buy Box monitoring is running, but confirmed Buy Box coverage is limited because Amazon Pricing checks are throttled. Buy Box recommendation cards will stay paused until enough ASINs have fresh confirmed data.'
+  } else {
+    status = 'healthy'
+    message = `Buy Box data is current — ${confirmedRecentCount} of ${totalRelevantAsins} tracked products (${coveragePct}%) have a confirmed Buy Box result in the last ${windowDays} days.`
+  }
+
+  return {
+    source: 'buybox',
+    label,
+    status,
+    latestDate: confirmedLatestAt,
+    lastRunStatus: null,
+    lastRunAt: null,
+    blocksActions: status !== 'healthy',
+    message,
+    details: [
+      `Pipeline last ran: ${pipelineLatestAt ? new Date(pipelineLatestAt).toISOString() : 'never'}`,
+      `Last confirmed Buy Box check: ${confirmedLatestAt ? new Date(confirmedLatestAt).toISOString() : 'never'}`,
+      `${confirmedRecentCount} of ${totalRelevantAsins} tracked products (${coveragePct}%) confirmed won/lost in the last ${windowDays} days.`,
+      `${unknownCount} product${unknownCount === 1 ? '' : 's'} still unknown/unconfirmed — this reflects Amazon Pricing throttling, not a broken scheduler.`,
+      'Buy Box Loss action cards are only shown for products with a fresh confirmed result — never inferred from "unknown".',
+    ],
+  }
+}
+
 export async function buildBrahmastraDataHealth(
   admin: SupabaseClient,
   workspaceId: string,
@@ -387,8 +490,6 @@ export async function buildBrahmastraDataHealth(
     lastBusinessReportRunResult,
     settlementDateResult,
     listingIdsResult,
-    buyboxLatestConfirmedResult,
-    buyboxRecentSampleResult,
     keywordLatestConfirmedResult,
     keywordRecentSampleResult,
     trackedKeywordCountResult,
@@ -408,11 +509,6 @@ export async function buildBrahmastraDataHealth(
     admin.from('internal_data_refresh_runs').select('status, started_at, finished_at, error_message').eq('workspace_id', workspaceId).eq('source', 'business_report_sp_api').order('started_at', { ascending: false }).limit(1).maybeSingle(),
     admin.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
     admin.from('amazon_listing_items').select('id').eq('workspace_id', workspaceId).limit(MAX_LISTING_IDS_SCANNED),
-    // Buy Box: confirmed = buy_box_status in ('won','lost') — 'unknown' /
-    // 'no_buybox' / 'partial_success' are real Amazon Product Pricing
-    // responses but don't confirm Buy Box ownership either way.
-    admin.from('buybox_snapshots').select('checked_at').eq('workspace_id', workspaceId).in('buy_box_status', ['won', 'lost']).order('checked_at', { ascending: false }).limit(1).maybeSingle(),
-    admin.from('buybox_snapshots').select('buy_box_status').eq('workspace_id', workspaceId).order('checked_at', { ascending: false }).limit(ON_DEMAND_RECENT_SAMPLE),
     // Keyword rank: confirmed = scrape_status = 'success' (checker-worker's
     // own success sentinel — 'failed' / 'checker_unavailable' are the two
     // known incomplete outcomes, mirroring the ASIN checker pattern above).
@@ -498,6 +594,7 @@ export async function buildBrahmastraDataHealth(
   // existing pagination convention used elsewhere in this codebase).
   const listingIds = ((listingIdsResult.data ?? []) as { id: string }[]).map(row => row.id)
   let asinChecker: SourceHealth
+  let buybox: SourceHealth
   if (listingIds.length === 0) {
     asinChecker = {
       source: 'asin_checker',
@@ -510,10 +607,23 @@ export async function buildBrahmastraDataHealth(
       message: 'No products are being tracked yet for this workspace.',
       details: ['No ASINs are set up for price/availability checking yet.'],
     }
+    buybox = evaluateBuyBoxCoverageSource({
+      totalRelevantAsins: 0,
+      pipelineLatestAt: null,
+      confirmedLatestAt: null,
+      confirmedRecentCount: 0,
+      nowMs,
+    })
   } else {
-    const [latestSuccessResult, recentSnapshotsResult] = await Promise.all([
+    const buyboxConfirmedSinceIso = new Date(nowMs - BUYBOX_CONFIRMED_WINDOW_HOURS * 60 * 60 * 1000).toISOString()
+    const [latestSuccessResult, recentSnapshotsResult, buyboxConfirmedLatestResult, buyboxConfirmedRecentRowsResult] = await Promise.all([
       admin.from('asin_snapshots').select('checked_at').in('amazon_listing_item_id', listingIds).eq('scrape_status', 'success').order('checked_at', { ascending: false }).limit(1).maybeSingle(),
       admin.from('asin_snapshots').select('scrape_status').in('amazon_listing_item_id', listingIds).order('checked_at', { ascending: false }).limit(ASIN_RECENT_SNAPSHOT_SAMPLE),
+      // Buy Box confirmed = buy_box_status in ('won','lost') — 'unknown' is
+      // the expected majority outcome under Amazon Pricing throttling, not
+      // a confirmed non-result, so it must never count as "fresh" here.
+      admin.from('asin_snapshots').select('checked_at').in('amazon_listing_item_id', listingIds).in('buy_box_status', ['won', 'lost']).order('checked_at', { ascending: false }).limit(1).maybeSingle(),
+      admin.from('asin_snapshots').select('amazon_listing_item_id').in('amazon_listing_item_id', listingIds).in('buy_box_status', ['won', 'lost']).gte('checked_at', buyboxConfirmedSinceIso).limit(MAX_LISTING_IDS_SCANNED),
     ])
     const latestSuccessAt = (latestSuccessResult.data as { checked_at?: string } | null)?.checked_at ?? null
     const ageHours = hoursAgo(latestSuccessAt, nowMs)
@@ -552,29 +662,34 @@ export async function buildBrahmastraDataHealth(
         `${recentStatuses.length} recent checks sampled; ${problemCount} were incomplete (rate-limited or unavailable).`,
       ],
     }
+
+    const buyboxConfirmedLatestAt = (buyboxConfirmedLatestResult.data as { checked_at?: string } | null)?.checked_at ?? null
+    const buyboxConfirmedRecentCount = new Set(
+      ((buyboxConfirmedRecentRowsResult.data ?? []) as { amazon_listing_item_id: string | null }[])
+        .map(r => r.amazon_listing_item_id)
+        .filter((id): id is string => Boolean(id)),
+    ).size
+
+    buybox = evaluateBuyBoxCoverageSource({
+      totalRelevantAsins: listingIds.length,
+      // Buy Box shares the ASIN Checker's own pipeline-aliveness signal —
+      // both read the same asin_snapshots rows, so a second freshness query
+      // would be a redundant duplicate of work already done above.
+      pipelineLatestAt: latestSuccessAt,
+      confirmedLatestAt: buyboxConfirmedLatestAt,
+      confirmedRecentCount: buyboxConfirmedRecentCount,
+      nowMs,
+    })
   }
 
-  // ── Buy Box, Keyword Rank, Pincode: on-demand snapshot sources ──────────
-  // None of these three have a cron or a run-history table today — they are
-  // only ever written when a human clicks a per-ASIN "Refresh" button, so
-  // "stale" is their expected everyday state, not necessarily a problem.
-  // Reporting that honestly (rather than skipping these sources, as before
-  // this change) is exactly what lets future Brahmastra cards built on top
-  // of them suppress instead of guessing.
-
-  const buyboxLatestConfirmed = (buyboxLatestConfirmedResult.data as { checked_at?: string } | null)?.checked_at ?? null
-  const buyboxRecentFlags = ((buyboxRecentSampleResult.data ?? []) as { buy_box_status: string | null }[])
-    .map(r => r.buy_box_status === 'won' || r.buy_box_status === 'lost')
-  const buybox = evaluateOnDemandSnapshotSource({
-    source: 'buybox',
-    label: 'Buy Box',
-    latestConfirmedAt: buyboxLatestConfirmed,
-    recentConfirmedFlags: buyboxRecentFlags,
-    staleAfterHours: BUYBOX_STALE_AFTER_HOURS,
-    nowMs,
-    pausedMessage: 'Buy Box recommendations are paused until fresh Buy Box data is available.',
-    notConfiguredMessage: 'No confirmed Buy Box checks have been run yet for this workspace.',
-  })
+  // ── Keyword Rank, Pincode: on-demand snapshot sources ───────────────────
+  // Neither has a cron or a run-history table today — they are only ever
+  // written when a human clicks a per-ASIN "Refresh" button, so "stale" is
+  // their expected everyday state, not necessarily a problem. Reporting
+  // that honestly is exactly what lets future Brahmastra cards built on
+  // top of them suppress instead of guessing. (Buy Box is computed earlier,
+  // alongside ASIN Checker, since both read the same asin_snapshots rows —
+  // see evaluateBuyBoxCoverageSource above.)
 
   const keywordLatestConfirmed = (keywordLatestConfirmedResult.data as { checked_at?: string } | null)?.checked_at ?? null
   const keywordRecentFlags = ((keywordRecentSampleResult.data ?? []) as { scrape_status: string | null }[])
