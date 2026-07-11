@@ -540,10 +540,48 @@ Every session must begin by checking:
 
 ## 15. Track ASIN Archive/Reinsert Fix
 
-**Status:** Code complete, tested, committed on a dedicated branch, PR open against `master`. Not merged/deployed.
+**Status:** ✅ Merged to `master` and **promoted to production**. Founder-approved production verification
+complete via read-only evidence; live mutation testing (add/restore/already-active flows) not performed — no
+credentials/authenticated session available and no approved test ASIN/fixture was provided (see below).
 **Branch:** `fix/track-asin-restore` (separate clean worktree from `origin/master`, not the dirty
 `intern/asins-page-work` checkout).
-**PR:** [#18](https://github.com/Vinay13893/amazon-seller-toolkit/pull/18) — `Fix Track ASIN restore after archive`. Open against `master`, not merged.
+**PR:** [#18](https://github.com/Vinay13893/amazon-seller-toolkit/pull/18) — `Fix Track ASIN restore after archive`. **Merged** into `master` at `2026-07-11T08:01:14Z`.
+**Merge commit:** `3fa72fa222a61e16b778905980f6ef7f814f787f` ("Merge pull request #18 from
+Vinay13893/fix/track-asin-restore"). Diff against pre-merge master (`b363746`) confirmed exactly 3 files
+changed: `esolz-app/src/lib/supabase/asins.ts`, `esolz-app/scripts/test-track-asin.ts`,
+`BRAHMASTRA_MASTER_TRACKER.md`.
+
+### Deployment status
+
+- **Vercel build:** `dpl_8TC7jbay4jue1XUX8X1WifRw19GW` for commit `3fa72fa` — `readyState: READY` (build
+  succeeded).
+- **Production promotion:** ✅ Done via `vercel promote dpl_8TC7jbay4jue1XUX8X1WifRw19GW` (existing local
+  Vercel CLI session already authenticated as the founder; no tokens created/exposed). Vercel recorded this as
+  a promote action (`action: promote`, `originalDeploymentId: dpl_8TC7jbay4jue1XUX8X1WifRw19GW`) that produced
+  production deployment **`dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA`**, commit `3fa72fa222a61e16b778905980f6ef7f814f787f`,
+  `readyState: READY`, `target: production`. Confirmed via `get_project`: production alias
+  `esolz-app.vercel.app` now resolves to this deployment (previously `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b`, PR #15).
+  **Production URL:** https://esolz-app.vercel.app
+
+### Production verification
+
+- **Read-only evidence:** deployed commit (`3fa72fa`) is byte-identical to the commit that passed all 5
+  targeted tests and a clean `tsc`/`eslint` pass pre-merge — no drift between tested and deployed code. Vercel
+  build completed with no compile errors. `get_runtime_errors` (last 30 min, routes
+  `/api/asins/listings`, `/api/asins/jobs/enqueue`, `/api/asins/jobs/process-next`) shows only 2 pre-existing
+  error groups (`amazon-pricing` 400, `amazon-catalog` 404 — both intentional classified-failure logging from
+  `pricing.ts`/`catalog.ts`, first seen 2026-06-21, attributed to the *previous* deployment
+  `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b`), and nothing new or Track-ASIN-related.
+- **Live mutation testing not performed.** No authenticated session/credentials to the production app were
+  available in this session, and touching auth/tokens is out of scope. No "approved safe test ASIN" or test
+  workspace was supplied. Per the fallback instruction given for this task, these three flows were **not**
+  exercised live and remain unverified end-to-end in production:
+  - adding a genuinely new ASIN
+  - re-adding a previously archived ASIN (confirming same row id / `asin_snapshots` history preserved, no
+    duplicate row)
+  - adding an already-active ASIN (confirming no duplicate row)
+  An `internal-test-entitlement.ts` designated test account (`test2026@sociomonkey.com`) exists in the
+  codebase for exactly this kind of QA, but no credentials for it were available this session.
 
 ### Root cause
 
@@ -582,6 +620,8 @@ concurrent duplicate attempt (no duplicate row created), invalid ASIN (rejected 
   (`esolz-app/supabase/migrations/007_amazon_account_data_foundation.sql:93-95`) — but no archive/soft-delete
   path was found in the code reviewed for that table, so this specific failure mode is `tracked_asins`-specific
   today. Flagged for awareness only; not in scope for this fix and no evidence it's currently reachable.
+- **ASIN snapshot cron verification/throughput measurement (§4/§13) remains pending**, independent of this fix.
+  This PR did not touch the cron, `/enqueue`, or `/process-next` routes and does not change that work's status.
 
 ---
 
