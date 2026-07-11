@@ -540,10 +540,24 @@ Every session must begin by checking:
 
 ## 15. Track ASIN Archive/Reinsert Fix
 
-**Status:** Code complete, tested, committed on a dedicated branch, PR open against `master`. Not merged/deployed.
+**Status:** ✅ Merged to `master`. Vercel build succeeded. **Production promotion pending founder approval** —
+not promoted.
 **Branch:** `fix/track-asin-restore` (separate clean worktree from `origin/master`, not the dirty
 `intern/asins-page-work` checkout).
-**PR:** [#18](https://github.com/Vinay13893/amazon-seller-toolkit/pull/18) — `Fix Track ASIN restore after archive`. Open against `master`, not merged.
+**PR:** [#18](https://github.com/Vinay13893/amazon-seller-toolkit/pull/18) — `Fix Track ASIN restore after archive`. **Merged** into `master` at `2026-07-11T08:01:14Z`.
+**Merge commit:** `3fa72fa222a61e16b778905980f6ef7f814f787f` ("Merge pull request #18 from
+Vinay13893/fix/track-asin-restore"). Diff against pre-merge master (`b363746`) confirmed exactly 3 files
+changed: `esolz-app/src/lib/supabase/asins.ts`, `esolz-app/scripts/test-track-asin.ts`,
+`BRAHMASTRA_MASTER_TRACKER.md`.
+
+### Deployment status
+
+- **Vercel build:** `dpl_8TC7jbay4jue1XUX8X1WifRw19GW` for commit `3fa72fa` — `readyState: READY` (build
+  succeeded). `target: null`, aliased only to `esolz-app-git-master-vinay13893s-projects.vercel.app` (the
+  master branch-preview alias).
+- **Production promotion:** **Not done.** Production alias `esolz-app.vercel.app` still points to
+  `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b` (PR #15, commit `1e829b6`). This fix is **pending separate founder
+  approval** before promotion — do not promote until explicitly instructed.
 
 ### Root cause
 
