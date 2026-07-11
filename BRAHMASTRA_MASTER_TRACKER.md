@@ -788,16 +788,19 @@ cron is `10:00` UTC, next Render cron is `12:00` UTC — neither had fired as of
 runtime logs for the last 24h show **zero `502`/`503` responses** anywhere (the PR #15 loud-failure path has not
 been triggered since promotion) and no cron activity outside the already-documented `08:00` cycle.
 
-### Root cause classification (superseded — see D.2 below for the current view)
+### Root cause classification — FINAL (resolved in D.4, after D.2's timestamp cross-check)
 
 ~~**Primary: B — Render is (at least partially) updated, but stale `running` jobs have no working reclaim.**~~
-This was written without Render dashboard access. **§D.2 below (founder-supplied Render dashboard evidence)
-confirms Render is active/current and its logs report a stuck-reset event — but direct Supabase re-verification
-in the same session found the specific 10 stuck rows unchanged and zero occurrences ever of the reclaim
-function's own success marker.** The classification is revised in D.2, not simply overwritten here, so the
-reconciliation is visible. **A remains ruled out** (checker-worker's boot loop conclusively disabled, direct
-commit evidence, unaffected by the new evidence). **C remains confirmed true** (Vercel and Render both actively
-draining the same queue). **D remains ruled out.**
+This was written without Render dashboard access. **A is ruled out** (checker-worker's `productPageOrchestrator`
+boot loop conclusively disabled, direct commit evidence, `b5e13dc`/PR #12). **C is confirmed true** (Vercel and
+Render both actively draining the same queue on overlapping schedules — real, ongoing, but not itself harmful
+since claims are atomic). **B, refined and now resolved (D.4):** Render's `cleanupStuckJobs()` reclaim
+mechanism **does run every cron cycle and correctly identifies the same 10 real stuck rows each time** — but its
+per-row `UPDATE` has no error/result check, so it logs `Stuck reset: 10` believing it succeeded while the write
+never actually persists. Confirmed by cross-referencing two independent `Stuck reset: 10` log events
+(2026-07-11, `04:01` and `08:00` UTC) against exact-timestamp Supabase queries: in both windows, the only rows
+actually touched were unrelated fresh (`attempt_count=1`) jobs completing normally — not the 10 stuck rows,
+which remain untouched through both events. **D is ruled out.** **E not needed.**
 
 ### D.2 Founder-supplied Render dashboard evidence (2026-07-11, later same day) — correction and reconciliation
 
@@ -835,12 +838,62 @@ counter regardless, so it *logs* success without the write taking effect. **Not 
 the exact timestamp of the `Stuck reset: 10` log line to cross-reference against these rows' `locked_at`/
 `updated_at`, which requires further Render log access beyond this round's screenshots.
 
-**Revised classification:** **A false (confirmed unchanged). C true (confirmed unchanged) — dual uncoordinated
-workers, real and ongoing.** B is **downgraded from "confirmed" to "unresolved, evidence conflicts"**: Render is
-demonstrably active/current/on `master` and *reports* reclaim activity, but the persistent 10 rows and the
-absent success marker mean the reclaim mechanism's effectiveness on these specific rows is not yet proven either
-way. **Per explicit instruction, no manual reclaim SQL was run** — the discrepancy is left open rather than
-resolved by force.
+**Revised classification (superseded by D.4 below — resolved, not just "downgraded"):** see D.4.
+
+### D.4 Timestamp cross-check (2026-07-11, later same day) — discrepancy resolved
+
+**Founder supplied the exact Render log timestamps (IST) for two `Stuck reset: 10` events. Converted to UTC
+(IST = UTC+5:30) and cross-checked against Supabase, read-only, no SQL mutations, no rows changed:**
+
+| Render event (IST) | UTC | Render's own JSON summary |
+|---|---|---|
+| 1 — `09:31:13 AM` reset line, `09:31:19 AM` summary | **≈04:01:13–04:01:19** | `stuckReset:10, processed:3, completed:2, partialCatalog:1, pricingRateLimited:1, failed:0` |
+| 2 — `01:30:54 PM` reset line, `01:31:08 PM` summary | **≈08:00:54–08:01:08** | `stuckReset:10, processed:10, completed:10, failed:0` |
+
+**Supabase, `updated_at` in each exact window:**
+- Window 1 (04:00:30–04:02:00 UTC): **exactly 3 rows touched**, all `created_at=2026-07-09 20:01:05` (one
+  original batch), all `attempt_count=1` (first attempt — never previously stuck), 2 completed clean + 1
+  completed with `amazon_pricing_rate_limited` — an exact match to Render's own `processed:3/completed:2/
+  pricingRateLimited:1`.
+- Window 2 (08:00:30–08:02:00 UTC): **exactly 10 rows touched**, same `created_at=2026-07-09 20:01:05` cohort,
+  all `attempt_count=1`, all completed clean, `last_error_safe=null` — an exact match to Render's own
+  `processed:10/completed:10`. (These are the same 10 rows already reconciled against the Vercel side in D.1's
+  original `08:00` hour analysis.)
+
+**None of the known 10 stuck job IDs appear in either window** — their `updated_at`/`locked_at` remain at their
+original claim times (`2026-07-09 16:01` through `2026-07-10 20:01`), unchanged through both reset events and
+through now. **Zero rows anywhere carry `last_error_safe='stale processing reset'`, at either timestamp or
+ever.**
+
+**Answers:**
+1. **Did the same 10 stuck job IDs change at either timestamp? No.**
+2. **Were 10 different jobs reset at either timestamp? No** — the rows written in both windows were fresh,
+   `attempt_count=1` jobs undergoing ordinary claim→complete processing, not resets of anything.
+3. **Any rows marked `stale processing reset` around those times? No — none, ever, anywhere in the table.**
+4. **Did status/locked_by/locked_at/attempt_count change for the stuck rows at those times? No.**
+5. **Is `stuckReset:10` possibly logged before confirming DB persistence? Yes — this is now the best-supported
+   explanation.** `cleanupStuckJobs()`'s per-row `.update(...)` call has no error/result check
+   (`esolz-app/scripts/process-asin-checker-jobs.ts`), so its counter increments once per stuck row *found*,
+   regardless of whether that row's UPDATE actually persists. Both events report exactly **10** — matching the
+   exact, unchanging count of real stuck rows in the table at both points in time, days apart. The function is
+   correctly *finding* the same 10 stuck rows every cron cycle and *believes* it fixed them, but the write is
+   not landing.
+6. **Is Render definitely connected to the same Supabase DB as Vercel? Yes** — Render's self-reported
+   `processed`/`completed`/`pricingRateLimited` counts for both events match Supabase row-for-row, down to the
+   same `created_at` batch and sub-second completion timestamps. This could not coincidentally match a
+   different database.
+7. **Were rows reset and then immediately reclaimed again? No evidence of this** — the rows touched in both
+   windows were fresh first-attempt jobs, not previously-stuck rows cycling through reset→reclaim.
+8. **Did new jobs enter `running`/`locked_by='render-cron'` at those times? Transiently, yes** (implied by the
+   atomic claim pattern for the 3 and 10 jobs actually processed) but not persistently — all are `completed`
+   with `locked_by=NULL` now, which is expected/correct, not the stuck-job phenomenon.
+
+**Resolution:** hypothesis (b) from D.2 is now well-supported and hypothesis (a) is not — **this is not a fresh
+recurrence of a different batch; it is the same 10 rows being rediscovered and "reset" (log-wise) every cron
+cycle without the fix ever taking effect in the database**, most likely because the reclaim loop's per-row
+update has no verification step. **The discrepancy is resolved: Render's cleanup-log line is not reliable
+evidence that the DB was actually fixed.** This is a real, still-open code-level bug in
+`cleanupStuckJobs()` (not touched — no code changed this round, per instruction).
 
 ### D.3 Combined throughput measurement, last ~22–48h (read-only)
 
@@ -885,16 +938,20 @@ finding worth sitting with before assuming Render is net-additive today. Before 
    ambiguous would remove the only mechanism (however uncertain) currently touching those rows at all.
 No batch size or cadence change was made this round, per instruction.
 
-### Cheapest safe fix (unchanged from D.1 — still proposed, still not implemented, explicitly not run this round)
+### Cheapest safe fix (proposed — still not implemented; SQL still not run, per instruction)
 
-1. **Surgical, lowest-risk (not run — explicitly declined this round pending D.2 resolution):** a one-time
-   `UPDATE background_jobs SET status='failed', locked_at=NULL, locked_by=NULL WHERE job_type='product_page_snapshot'
-   AND status='running' AND locked_by='render-cron' AND locked_at < now() - interval '1 hour'`.
-2. **Root-cause fix:** now partially unblocked — Render's dashboard is confirmed reachable by the founder;
-   next step is pulling the exact timestamp/content of the `Stuck reset: 10` log line to resolve D.2, not a
-   redeploy (Render is already confirmed current on `master`).
-3. **Longer-term:** unchanged — decide whether to keep both workers or consolidate; now additionally informed by
-   D.3's finding that Vercel-alone theoretical capacity already exceeds today's real combined throughput.
+1. **Surgical, immediate (still recommended, still not run):** a one-time `UPDATE background_jobs SET
+   status='failed', locked_at=NULL, locked_by=NULL WHERE job_type='product_page_snapshot' AND status='running'
+   AND locked_by='render-cron' AND locked_at < now() - interval '1 hour'` — now that D.4 confirms Render's own
+   reclaim isn't going to clear these on its own, this is the only mechanism that will actually unstick the 10
+   rows. Still not executed this round, per explicit instruction.
+2. **Code-level fix (root cause, now precisely identified):** add a result/error check to
+   `cleanupStuckJobs()`'s per-row `.update(...)` call in `esolz-app/scripts/process-asin-checker-jobs.ts` so a
+   failed reclaim write is surfaced instead of silently counted as a success — this is a real, narrow bug fix,
+   not a redeploy or config change (Render is already confirmed current on `master`). Not implemented this
+   round.
+3. **Longer-term:** unchanged — decide whether to keep both workers or consolidate; informed by D.3's finding
+   that Vercel-alone theoretical capacity already exceeds today's real combined throughput.
 
 ### Options to consider (not implemented — awaiting approval)
 
