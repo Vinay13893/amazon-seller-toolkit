@@ -538,4 +538,51 @@ Every session must begin by checking:
 
 ---
 
+## 15. Track ASIN Archive/Reinsert Fix
+
+**Status:** Code complete, tested, committed on a dedicated branch, PR open against `master`. Not merged/deployed.
+**Branch:** `fix/track-asin-restore` (separate clean worktree from `origin/master`, not the dirty
+`intern/asins-page-work` checkout).
+**PR:** #TBD — `Fix Track ASIN restore after archive` (URL filled in once opened).
+
+### Root cause
+
+`tracked_asins` has `UNIQUE (workspace_id, asin, marketplace)`. Removing an ASIN only sets `status='archived'`
+— the row persists and still occupies the unique key. `getTrackedAsins()` filters archived rows out of every
+re-check, so re-adding a previously removed ASIN hit the constraint on INSERT and returned a bare "Failed to
+track ASIN" with no indication it was previously removed.
+
+### Fix
+
+`esolz-app/src/lib/supabase/asins.ts` — new `addOrRestoreTrackedAsin(workspaceId, input, supabaseClient?)`:
+looks up the existing row by `(workspace_id, asin, marketplace)` first. Active → `already_active` (no write).
+Archived → **reactivates the same row in place** (`status='active'`, refreshed title/brand/category/image),
+preserving `id` so `asin_snapshots` history (FK'd to `tracked_asin_id`) stays linked — no duplicate row. Not
+found → inserts, `added`. Lost race on insert (`23505`) → re-resolves from current state instead of erroring or
+duplicating. ASIN format validated (`/^[A-Z0-9]{10}$/`) before any DB call. `addTrackedAsin` (the existing
+export used by `page.tsx`) is now a thin wrapper with the same signature — **no UI file was touched**.
+
+### Tests
+
+`esolz-app/scripts/test-track-asin.ts`, run via `npx tsx scripts/test-track-asin.ts` (no test framework in this
+repo; plain script per existing `scripts/*.ts` convention, no `package.json` change). All 5 required scenarios
+passed in the clean worktree: new ASIN, already-active ASIN, archived ASIN restored (same row id preserved),
+concurrent duplicate attempt (no duplicate row created), invalid ASIN (rejected before any DB call).
+`npx tsc --noEmit` and `npx eslint` on both changed files: clean, no errors.
+
+### Follow-ups (not done here — out of scope for this fix)
+
+- **UI toast wiring deferred.** `TrackAsinResult` (outcome: `already_active` / `restored` / `added` /
+  `invalid_asin` / `unavailable`, plus a seller-friendly `message`) is exported but not yet surfaced in
+  `page.tsx` toasts — that file is off-limits while `intern/asins-page-work` is uncommitted. Once that branch
+  lands, wire `addOrRestoreTrackedAsin`'s outcome/message into `handleAddAsin` and `handleTrackFromListing` for
+  precise toasts instead of the current generic success/failure messages.
+- **Unresolved: `amazon_listing_items` has the identical unique-constraint shape** —
+  `UNIQUE INDEX ... WHERE asin IS NOT NULL` on `(workspace_id, asin, marketplace_id)`
+  (`esolz-app/supabase/migrations/007_amazon_account_data_foundation.sql:93-95`) — but no archive/soft-delete
+  path was found in the code reviewed for that table, so this specific failure mode is `tracked_asins`-specific
+  today. Flagged for awareness only; not in scope for this fix and no evidence it's currently reachable.
+
+---
+
 **Last updated:** 2026-07-11

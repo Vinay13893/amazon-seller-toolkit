@@ -20,6 +20,178 @@ function currencyForMarketplace(mp: string): string {
   return 'INR'
 }
 
+// ── Track ASIN (add / restore) ─────────────────────────────────────────────
+// Amazon ASINs are exactly 10 uppercase alphanumeric characters. Kept in sync
+// with the client-side check in components/asins/AddAsinDialog.tsx — this
+// copy guards the "Track ASIN" path from a My Products row, which doesn't
+// go through that dialog and has no format validation of its own.
+export const ASIN_FORMAT_REGEX = /^[A-Z0-9]{10}$/
+
+export function isValidAsinFormat(asin: string): boolean {
+  return ASIN_FORMAT_REGEX.test(asin.trim().toUpperCase())
+}
+
+export type TrackAsinOutcome = 'already_active' | 'restored' | 'added' | 'invalid_asin' | 'unavailable'
+
+export interface TrackAsinResult {
+  outcome: TrackAsinOutcome
+  product: ProductSnapshot | null
+  message: string
+}
+
+const TRACKED_ASIN_COLUMNS = 'id, asin, marketplace, product_title, category, status, created_at'
+const UNIQUE_VIOLATION = '23505'
+
+type TrackedAsinRow = {
+  id: string
+  asin: string
+  marketplace: string
+  product_title: string | null
+  category: string | null
+  status: string
+  created_at: string
+}
+
+function mapTrackedAsinRow(row: TrackedAsinRow): ProductSnapshot {
+  return {
+    id:                 row.id,
+    asin:               row.asin,
+    label:              row.product_title || row.asin,
+    marketplace:        row.marketplace as Marketplace,
+    is_active:          row.status === 'active',
+    created_at:         row.created_at,
+    bsr_rank:           null,
+    bsr_rank_prev:      null,
+    category:           row.category ?? null,
+    sub_rank:           null,
+    sub_category:       null,
+    price:              null,
+    price_currency:     currencyForMarketplace(row.marketplace),
+    rating:             null,
+    review_count:       null,
+    buybox_winner:      null,
+    buybox_is_self:     null,
+    availability:       null,
+    availability_score: null,
+    scrape_status:      null,
+    captured_at:        null,
+  }
+}
+
+type TrackAsinSupabase = ReturnType<typeof createClient>
+
+async function findTrackedAsinRow(
+  supabase: TrackAsinSupabase,
+  workspaceId: string,
+  asin: string,
+  marketplace: string,
+): Promise<{ row: TrackedAsinRow | null; error: boolean }> {
+  const { data, error } = await supabase
+    .from('tracked_asins')
+    .select(TRACKED_ASIN_COLUMNS)
+    .eq('workspace_id', workspaceId)
+    .eq('asin', asin)
+    .eq('marketplace', marketplace)
+    .maybeSingle()
+
+  if (error) return { row: null, error: true }
+  return { row: (data as TrackedAsinRow | null) ?? null, error: false }
+}
+
+const UNAVAILABLE_RESULT: TrackAsinResult = {
+  outcome: 'unavailable',
+  product: null,
+  message: 'Could not update tracking for this ASIN right now. Please try again shortly.',
+}
+
+/**
+ * Adds a manually-tracked ASIN (Competitors tab, or "Track ASIN" from a My
+ * Products row), reactivating a previously archived (soft-deleted) row
+ * instead of attempting a duplicate insert against the
+ * (workspace_id, asin, marketplace) unique constraint. Safe under
+ * concurrent calls for the same ASIN — never creates a duplicate row.
+ *
+ * `supabaseClient` is injectable for tests; production callers omit it and
+ * get the real browser client.
+ */
+export async function addOrRestoreTrackedAsin(
+  workspaceId: string,
+  input: AddAsinInput,
+  supabaseClient?: TrackAsinSupabase,
+): Promise<TrackAsinResult> {
+  const asin = input.asin.trim().toUpperCase()
+  if (!isValidAsinFormat(asin)) {
+    return {
+      outcome: 'invalid_asin',
+      product: null,
+      message: 'Enter a valid 10-character Amazon ASIN (e.g. B0BN5NZCGH).',
+    }
+  }
+
+  const supabase = supabaseClient ?? createClient()
+
+  const existing = await findTrackedAsinRow(supabase, workspaceId, asin, input.marketplace)
+  if (existing.error) return UNAVAILABLE_RESULT
+
+  if (existing.row && existing.row.status !== 'archived') {
+    return { outcome: 'already_active', product: mapTrackedAsinRow(existing.row), message: 'This ASIN is already tracked.' }
+  }
+
+  if (existing.row && existing.row.status === 'archived') {
+    const { data: restored, error: restoreError } = await supabase
+      .from('tracked_asins')
+      .update({
+        status:        'active',
+        product_title: input.productTitle,
+        brand:         input.brand   || null,
+        category:      input.category || null,
+        image_url:     input.imageUrl || null,
+      })
+      .eq('id', existing.row.id)
+      .select(TRACKED_ASIN_COLUMNS)
+      .single()
+
+    if (restoreError || !restored) return UNAVAILABLE_RESULT
+    return {
+      outcome: 'restored',
+      product: mapTrackedAsinRow(restored as TrackedAsinRow),
+      message: 'Tracking restored for this ASIN — its previous history is preserved.',
+    }
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from('tracked_asins')
+    .insert({
+      workspace_id:  workspaceId,
+      asin,
+      marketplace:   input.marketplace,
+      product_title: input.productTitle,
+      brand:         input.brand   || null,
+      category:      input.category || null,
+      image_url:     input.imageUrl || null,
+      status:        'active',
+    })
+    .select(TRACKED_ASIN_COLUMNS)
+    .single()
+
+  if (insertError) {
+    if (insertError.code !== UNIQUE_VIOLATION) return UNAVAILABLE_RESULT
+
+    // Lost a race: another request inserted or restored this exact
+    // (workspace, asin, marketplace) row between our lookup and our insert.
+    // Resolve from current state instead of creating a duplicate.
+    const raceWinner = await findTrackedAsinRow(supabase, workspaceId, asin, input.marketplace)
+    if (raceWinner.error || !raceWinner.row) return UNAVAILABLE_RESULT
+    if (raceWinner.row.status === 'archived') {
+      return { ...UNAVAILABLE_RESULT, message: 'This ASIN changed state while adding it. Please try again.' }
+    }
+    return { outcome: 'already_active', product: mapTrackedAsinRow(raceWinner.row), message: 'This ASIN is already tracked.' }
+  }
+
+  if (!inserted) return UNAVAILABLE_RESULT
+  return { outcome: 'added', product: mapTrackedAsinRow(inserted as TrackedAsinRow), message: 'ASIN added to tracking.' }
+}
+
 function availabilityFromScore(score: number | null) {
   if (score === null) return null
   if (score >= 70) return 'in_stock' as const
@@ -216,53 +388,20 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
   })
 }
 
+/**
+ * Backward-compatible wrapper kept for existing callers (the ASIN page UI).
+ * Fixes the underlying archive/reinsert bug transparently: a previously
+ * removed ASIN is now reactivated in place rather than failing on the
+ * unique constraint. Callers that want to distinguish "already tracked" /
+ * "restored" / "newly added" / "invalid ASIN" / "temporarily unavailable"
+ * should call addOrRestoreTrackedAsin directly instead.
+ */
 export async function addTrackedAsin(
   workspaceId: string,
   input: AddAsinInput,
 ): Promise<ProductSnapshot | null> {
-  const supabase = createClient()
-  const { data, error } = await supabase
-    .from('tracked_asins')
-    .insert({
-      workspace_id:  workspaceId,
-      asin:          input.asin.toUpperCase(),
-      marketplace:   input.marketplace,
-      product_title: input.productTitle,
-      brand:         input.brand   || null,
-      category:      input.category || null,
-      image_url:     input.imageUrl || null,
-      status:        'active',
-    })
-    .select('id, asin, marketplace, product_title, category, status, created_at')
-    .single()
-
-  if (error || !data) return null
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const row = data as any
-  return {
-    id:                 row.id,
-    asin:               row.asin,
-    label:              row.product_title || row.asin,
-    marketplace:        row.marketplace as Marketplace,
-    is_active:          true,
-    created_at:         row.created_at,
-    bsr_rank:           null,
-    bsr_rank_prev:      null,
-    category:           row.category ?? null,
-    sub_rank:           null,
-    sub_category:       null,
-    price:              null,
-    price_currency:     currencyForMarketplace(row.marketplace),
-    rating:             null,
-    review_count:       null,
-    buybox_winner:      null,
-    buybox_is_self:     null,
-    availability:       null,
-    availability_score: null,
-    scrape_status:      null,
-    captured_at:        null,
-  }
+  const result = await addOrRestoreTrackedAsin(workspaceId, input)
+  return result.outcome === 'added' || result.outcome === 'restored' ? result.product : null
 }
 
 /** Increment asin_count in usage_counters for the current calendar month. */
