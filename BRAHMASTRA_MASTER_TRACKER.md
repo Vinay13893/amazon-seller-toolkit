@@ -733,6 +733,90 @@ script), so a job's retry cadence depends on which worker last touched it; (c) C
 an unpaid invoice... crons at risk until paid" note is evidently not (yet) blocking this cron — it ran
 successfully as recently as today.
 
+### D.1 Follow-up investigation (2026-07-11, later same day) — root cause classification
+
+**Inspection only. No jobs reset, no Render/Vercel config touched, no code changed.**
+
+**Render dashboard/API access: not available in this environment** (no Render CLI installed, no `RENDER_*`
+credentials present, no Render MCP tool). Everything below is evidence assembled from git history and Supabase —
+**Render's exact deployed commit SHA and deployment timestamp could not be directly confirmed** and remain
+open questions requiring dashboard access.
+
+**1. Is the "old Render orchestrator" still running? No — conclusively ruled out.** There are two
+*different* Render mechanisms in this repo and they must not be conflated:
+- `checker-worker/src/automation/productPageOrchestrator.ts` — a boot-time loop inside the separate
+  `checker-worker` **web service** that used to ping `/api/asins/jobs/enqueue` and `/process-next` every 3
+  minutes. Commit `b5e13dc` ("chore: disable checker-worker productPageOrchestrator boot loop", merged via PR
+  #12 / `e3ebbb2`) removed its `startProductPageSnapshotOrchestrator()` call from `checker-worker/src/server.ts`
+  — confirmed via direct diff read. **This is genuinely disabled.**
+- `esolz-app/scripts/process-asin-checker-jobs.ts` — a **completely separate, standalone Render Cron Job**
+  (`easyhome-asin-live-checker` per `CLAUDE.md`, schedule `0 */4 * * *`, `--limit=10 --max-runtime-ms=240000`)
+  that writes directly to Supabase via its own SP-API calls — it never touches the Vercel HTTP routes at all.
+  **PR #12 never touched this file.** It is not "the old orchestrator being reactivated" — it was simply never
+  in scope for that PR and has apparently been running independently the whole time. (`render.yaml` at the repo
+  root describes an unrelated, seemingly stale FastAPI/Celery stack under `saas-backend/` — not this Node
+  checker-worker/cron setup — so it isn't authoritative for what's actually deployed on Render either.)
+
+**2. Stuck-job evidence (all 10, re-verified, unchanged since the earlier check this session):** all
+`target_type='my_product'`, all `workspace_id=55a321c9-7729-4662-a494-9f1f1aa86846`, `locked_by='render-cron'`,
+`attempt_count=3` (equals `max_attempts=3` for every row). `created_at` ages 63–92 hours. `locked_at` (last
+claim time) ages 812–2493 **minutes** (13.5–41.5 hours) — static, unchanged from the check performed earlier
+this session, confirming no reclaim has happened in the interim despite the Render cron completing 10 other
+jobs successfully at `08:00` UTC today. `last_error_safe` is populated (`catalog_not_found` /
+`amazon_pricing_rate_limited` / `amazon_pricing_unavailable`) on every row, but this is **stale, from an
+earlier (2nd) attempt** — the claim update and the terminal update are separate writes in
+`process-asin-checker-jobs.ts`, so a row can show a leftover reason from its previous attempt while its *current*
+(3rd, final) attempt is the one that never reached its terminal update and left it stuck `running`. (No
+secrets/credentials in any of the above — job IDs and workspace ID only, no tokens.)
+
+**3. Queue-claim logic:** **Claims are atomic on both workers** — confirmed by direct code read. Vercel
+(`process-next/route.ts`) and Render (`process-asin-checker-jobs.ts:368`) both use the identical pattern:
+`UPDATE background_jobs SET status='running', locked_at=now(), locked_by=<worker>, attempt_count=attempt_count+1
+WHERE id=<job> AND status='queued'`, then check the affected-row count to detect a lost race. **A genuine
+double-claim of the same row is not possible.** There is **no heartbeat** — `locked_at` is set once at claim
+time and never renewed during processing, so a live-but-slow job is indistinguishable from an abandoned one
+except by elapsed time. The Render script **does** define a stale-lock reclaim (`cleanupStuckJobs()`,
+`STUCK_JOB_TIMEOUT_MINUTES=10`) that should reset any `running` row older than 10 minutes — for these 10 rows
+(13.5–41.5 hours stuck) that reclaim has evidently not fired across many observed successful Render invocations
+since `2026-07-09`. **Vercel and Render can and do claim from the same queue** — confirmed independently (both
+completed jobs in the same `08:00` UTC hour today) — but because claims are atomic, this causes coordination
+confusion and unlogged/hard-to-observe combined throughput, **not** duplicate processing of the same row.
+
+**4/5. Pipeline movement / logs since the earlier check this session:** unchanged — `queued=467`,
+`running=10`, `completed=13468`, `failed=71`; no new `asin_snapshots` rows since the `08:00` hour (next Vercel
+cron is `10:00` UTC, next Render cron is `12:00` UTC — neither had fired as of this check, `~09:35` UTC). Vercel
+runtime logs for the last 24h show **zero `502`/`503` responses** anywhere (the PR #15 loud-failure path has not
+been triggered since promotion) and no cron activity outside the already-documented `08:00` cycle.
+
+### Root cause classification
+
+**Primary: B — Render is (at least partially) updated, but stale `running` jobs have no working reclaim.**
+The code that should unstick them (`cleanupStuckJobs()`) exists on `origin/master` and is logically sound, but
+empirically is not clearing these 10 rows despite many opportunities to. Two explanations remain open
+(cannot be distinguished without Render dashboard access): either the currently-deployed Render script predates
+this reclaim logic being added, or the reclaim logic has a runtime bug that prevents it from completing.
+**A is ruled out** (the actual old orchestrator — `checker-worker`'s boot loop — is conclusively disabled per
+direct commit evidence). **C is also independently true and confirmed** (Vercel and Render are both actively
+draining the same queue on overlapping schedules) but is a coordination/observability problem, not the cause of
+these specific stuck rows — atomic claims prevent it from corrupting data. **D is ruled out** (92-hour-old locks
+against a 4-minute max runtime per invocation cannot be "genuinely active, just slow"). **E not needed** — B (+
+the independently-true C) fully account for the evidence.
+
+### Cheapest safe fix (proposed — not implemented)
+
+1. **Surgical, lowest-risk:** a one-time `UPDATE background_jobs SET status='failed', locked_at=NULL,
+   locked_by=NULL WHERE job_type='product_page_snapshot' AND status='running' AND locked_by='render-cron' AND
+   locked_at < now() - interval '1 hour'` — mirrors exactly what the script's own `cleanupStuckJobs()` is
+   already supposed to do for these specific rows (all have `attempt_count=max_attempts`, so this only ever
+   marks them `failed`, never re-queues them). Does not touch any legitimately in-flight job (nothing
+   legitimate stays locked past the 4-minute `--max-runtime-ms`).
+2. **Root-cause fix (needs Render dashboard access, not available this session):** confirm the actual deployed
+   commit on the `easyhome-asin-live-checker` Cron Job; if it predates the reclaim logic, redeploy/sync it to
+   latest `origin/master`.
+3. **Longer-term:** decide whether to keep both workers (with a shared heartbeat/renewal mechanism and
+   cross-worker observability) or consolidate onto one — running two independently-scheduled, uncoordinated
+   workers against the same queue is a standing source of confusion even though claims are safely atomic.
+
 ### Options to consider (not implemented — awaiting approval)
 
 1. **Increase Vercel batch size only** (5 → 15–20 per 2h run): ~180–240/day → full refresh ~2.1–2.8 days.
