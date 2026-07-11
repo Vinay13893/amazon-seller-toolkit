@@ -66,8 +66,26 @@ function makeFakeSupabase(rows: FakeRow[], opts?: { forceError?: string }) {
       }
       async function run(): Promise<{ data: FakeRow[] | null; error: FakeError }> {
         if (opts?.forceError) return { data: null, error: { message: opts.forceError } }
+        // Mirrors the real `background_jobs.run_after timestamptz NOT NULL
+        // DEFAULT now()` constraint (migration 034) — this is the exact
+        // failure observed live: "null value in column \"run_after\" ...
+        // violates not-null constraint". A literal `null` here must reject
+        // the write, same as production; `undefined` (key omitted from the
+        // patch) is fine and leaves the column untouched.
+        if ('run_after' in patch && patch.run_after === null) {
+          return { data: null, error: { message: 'null value in column "run_after" of relation "background_jobs" violates not-null constraint' } }
+        }
         const matches = rows.filter(r => filters.every(([col, val]) => (r as Record<string, unknown>)[col] === val))
-        for (const row of matches) Object.assign(row, patch)
+        // Real Supabase-js JSON.stringifies the patch before sending it over
+        // HTTP, which drops any key whose value is `undefined` — the column
+        // is left untouched server-side. Object.assign does NOT replicate
+        // this (it copies `undefined`-valued keys too), so apply only the
+        // defined keys here to match real behavior.
+        for (const row of matches) {
+          for (const [key, value] of Object.entries(patch)) {
+            if (value !== undefined) (row as Record<string, unknown>)[key] = value
+          }
+        }
         return { data: matches.map(r => ({ id: r.id } as FakeRow)), error: null }
       }
       return builder
@@ -75,6 +93,11 @@ function makeFakeSupabase(rows: FakeRow[], opts?: { forceError?: string }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any
 }
+
+// Real background_jobs rows always have a non-null run_after (NOT NULL
+// DEFAULT now()) — a "running" row's run_after is whatever it was set to
+// when the job was originally queued, well before it got stuck.
+const ORIGINAL_RUN_AFTER = '2026-07-09T14:15:06.767Z'
 
 function seedRow(overrides: Partial<FakeRow>): FakeRow {
   return {
@@ -85,7 +108,7 @@ function seedRow(overrides: Partial<FakeRow>): FakeRow {
     attempt_count: 1,
     max_attempts: 3,
     last_error_safe: null,
-    run_after: null,
+    run_after: ORIGINAL_RUN_AFTER,
     completed_at: null,
     ...overrides,
   }
@@ -99,8 +122,9 @@ function test(name: string, fn: () => Promise<void>) {
   tests.push([name, fn])
 }
 
-// 1. Successful reclaim, retries remaining -> requeued, not marked failed.
-test('reclaims a stuck job with retries remaining back to queued', async () => {
+// 1. Successful reclaim, retries remaining -> requeued, not marked failed,
+//    with a valid non-null run_after (the new retry-delay timestamp).
+test('reclaims a stuck job with retries remaining back to queued with a non-null run_after', async () => {
   const row = seedRow({ attempt_count: 1, max_attempts: 3 })
   const rows = [row]
   const supabase = makeFakeSupabase(rows)
@@ -109,6 +133,7 @@ test('reclaims a stuck job with retries remaining back to queued', async () => {
 
   assert.equal(result.ok, true)
   assert.equal(row.status, 'queued')
+  assert.notEqual(row.run_after, null, 'run_after must never be null (NOT NULL constraint)')
   assert.equal(row.run_after, RUN_AFTER)
   assert.equal(row.completed_at, null)
   assert.equal(row.locked_at, null)
@@ -116,17 +141,21 @@ test('reclaims a stuck job with retries remaining back to queued', async () => {
   assert.equal(row.last_error_safe, 'stale processing reset')
 })
 
-// 2. Successful reclaim, attempts exhausted -> marked failed, not requeued.
-test('reclaims a stuck job at max attempts to failed, not queued', async () => {
+// 2. Successful reclaim, attempts exhausted -> marked failed, not requeued,
+//    and run_after is left at its existing (non-null) value rather than
+//    being nulled out. This is the exact bug found live in production:
+//    "null value in column \"run_after\" ... violates not-null constraint".
+test('reclaims a stuck job at max attempts to failed with run_after preserved, never null', async () => {
   const row = seedRow({ attempt_count: 3, max_attempts: 3 })
   const rows = [row]
   const supabase = makeFakeSupabase(rows)
 
   const result = await reclaimStuckJob(supabase, { id: row.id, attempt_count: row.attempt_count, max_attempts: row.max_attempts, locked_at: row.locked_at! }, NOW, RUN_AFTER)
 
-  assert.equal(result.ok, true)
+  assert.equal(result.ok, true, 'must succeed — a null run_after write would be rejected by the fake NOT NULL check and fail here')
   assert.equal(row.status, 'failed')
-  assert.equal(row.run_after, null)
+  assert.notEqual(row.run_after, null, 'run_after must never be null (NOT NULL constraint)')
+  assert.equal(row.run_after, ORIGINAL_RUN_AFTER, 'run_after must be left at its existing value, not overwritten')
   assert.equal(row.completed_at, NOW)
   assert.equal(row.last_error_safe, 'stale processing reset')
 })
@@ -175,6 +204,22 @@ test('reclaiming the same job twice is idempotent (second call fails cleanly)', 
   const second = await reclaimStuckJob(supabase, jobArgs, NOW, RUN_AFTER)
   assert.equal(second.ok, false, 'must not report success twice for the same row')
   assert.equal(row.status, 'queued', 'row must not be mutated again')
+})
+
+// 6. Direct regression guard: a max-attempts reclaim must never even attempt
+//    to send a literal `run_after: null` to Supabase — verified against a
+//    fake client that rejects that exact write the way production does
+//    ("null value in column \"run_after\" ... violates not-null constraint",
+//    the exact error seen live).
+test('the failed-path update never triggers the Supabase NOT NULL rejection', async () => {
+  const row = seedRow({ attempt_count: 5, max_attempts: 5, run_after: '2026-07-08T11:11:57.503Z' })
+  const rows = [row]
+  const supabase = makeFakeSupabase(rows)
+
+  const result = await reclaimStuckJob(supabase, { id: row.id, attempt_count: row.attempt_count, max_attempts: row.max_attempts, locked_at: row.locked_at! }, NOW, RUN_AFTER)
+
+  assert.equal(result.ok, true, 'the fake NOT NULL guard would turn this into a failure if run_after were sent as null')
+  assert.equal(row.run_after, '2026-07-08T11:11:57.503Z')
 })
 
 async function main() {

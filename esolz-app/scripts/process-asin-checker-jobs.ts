@@ -161,7 +161,18 @@ export async function reclaimStuckJob(
       last_error_safe: 'stale processing reset',
       locked_at: null,
       locked_by: null,
-      run_after: canRetry ? runAfter : null,
+      // background_jobs.run_after is `timestamptz NOT NULL DEFAULT now()`
+      // (migration 034) — writing `null` here violates that constraint and
+      // the whole UPDATE is rejected (confirmed live: "null value in column
+      // \"run_after\" ... violates not-null constraint", surfaced by the
+      // verify-before-counting fix above). `undefined` is dropped by
+      // JSON.stringify before the request is sent, so Supabase leaves the
+      // column's current value untouched instead — the same pattern already
+      // used correctly for this exact failed-job case in
+      // src/app/api/asins/jobs/process-next/route.ts. A terminally failed
+      // job is never selected again by the `status='queued'` claim query,
+      // so its stale run_after value is inert once status='failed'.
+      run_after: canRetry ? runAfter : undefined,
       completed_at: canRetry ? null : now,
     })
     .eq('id', job.id)
