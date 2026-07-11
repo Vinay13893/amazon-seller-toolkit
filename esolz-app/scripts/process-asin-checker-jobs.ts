@@ -11,6 +11,7 @@
 //
 // Safety: read-only from Amazon. Does not touch Brahmastra Ads, Business Reports, payments.
 
+import { pathToFileURL } from 'node:url'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { refreshAccessToken } from '@/lib/amazon/lwa'
 import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
@@ -91,7 +92,10 @@ type WorkspaceConnection = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const admin = createAdminClient()
+// Created lazily inside main() (not at module load) so this file can be
+// imported for its exported helpers (e.g. reclaimStuckJob, for testing)
+// without requiring live Supabase credentials to be configured.
+let admin: ReturnType<typeof createAdminClient>
 
 function safeError(value: unknown): string {
   const text = value instanceof Error ? value.message : String(value)
@@ -113,39 +117,104 @@ function availabilityScore(status: BuyBoxOfferStatus | 'unavailable'): number | 
 }
 
 // ── Phase 1: Reset stuck jobs ─────────────────────────────────────────────────
+//
+// R11.3: cleanupStuckJobs() previously incremented its "reset" counter for
+// every stuck row it *attempted* to update, without checking whether that
+// update's row-count/error actually confirmed the write. Cross-referenced
+// against two live "Stuck reset: 10" log events (2026-07-11), Supabase
+// showed the same 10 truly-stuck rows untouched in both cases — the log was
+// reporting rows found, not rows fixed. This version verifies each write via
+// .select() + returned-row-count/error before counting it as reclaimed, so
+// the reported numbers are trustworthy again.
 
-async function cleanupStuckJobs(): Promise<number> {
+export interface StuckJobReclaimFailure {
+  jobId: string
+  reason: string
+}
+
+export interface StuckJobCleanupResult {
+  found: number
+  reclaimed: number
+  failed: number
+  failures: StuckJobReclaimFailure[]
+}
+
+/**
+ * Reclaims a single stuck (status='running', locked past the stale timeout)
+ * job via a guarded update: only rows still matching status='running' AND
+ * still owned by the same lock (locked_at unchanged since the row was
+ * fetched) are touched, and the returned row is checked to confirm the
+ * write actually landed. Exported standalone so it can be unit-tested
+ * without a live Supabase connection.
+ */
+export async function reclaimStuckJob(
+  client: ReturnType<typeof createAdminClient>,
+  job: { id: string; attempt_count: number; max_attempts: number; locked_at: string },
+  now: string,
+  runAfter: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const canRetry = job.attempt_count < job.max_attempts
+  const { data, error } = await client
+    .from('background_jobs')
+    .update({
+      status: canRetry ? 'queued' : 'failed',
+      last_error_safe: 'stale processing reset',
+      locked_at: null,
+      locked_by: null,
+      run_after: canRetry ? runAfter : null,
+      completed_at: canRetry ? null : now,
+    })
+    .eq('id', job.id)
+    // Guard against a race where the job was reclaimed by a normal worker
+    // (Vercel or this same script's own claim loop) between the SELECT that
+    // found it and this UPDATE — only touch it if it's still exactly the
+    // stale lock we saw.
+    .eq('status', 'running')
+    .eq('locked_at', job.locked_at)
+    .select('id')
+
+  if (error) return { ok: false, reason: safeError(error.message ?? String(error)) }
+  if (!data || data.length === 0) {
+    return { ok: false, reason: 'no row matched at update time (already reclaimed by another worker or already resolved)' }
+  }
+  return { ok: true }
+}
+
+async function cleanupStuckJobs(): Promise<StuckJobCleanupResult> {
   const cutoff = new Date(Date.now() - STUCK_JOB_TIMEOUT_MINUTES * 60 * 1000).toISOString()
   let stuckQuery = admin
     .from('background_jobs')
-    .select('id, attempt_count, max_attempts')
+    .select('id, attempt_count, max_attempts, locked_at')
     .eq('job_type', JOB_TYPE)
     .eq('status', 'running')
     .lt('locked_at', cutoff)
   if (WORKSPACE_ID) stuckQuery = stuckQuery.eq('workspace_id', WORKSPACE_ID)
   const { data: stuck } = await stuckQuery.limit(50)
 
-  if (!stuck || stuck.length === 0) return 0
+  if (!stuck || stuck.length === 0) return { found: 0, reclaimed: 0, failed: 0, failures: [] }
 
   const now = new Date().toISOString()
   const runAfter = new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString()
-  let reset = 0
+  let reclaimed = 0
+  const failures: StuckJobReclaimFailure[] = []
+
   for (const job of stuck) {
-    const canRetry = (job.attempt_count as number) < (job.max_attempts as number)
-    await admin
-      .from('background_jobs')
-      .update({
-        status: canRetry ? 'queued' : 'failed',
-        last_error_safe: 'stale processing reset',
-        locked_at: null,
-        locked_by: null,
-        run_after: canRetry ? runAfter : null,
-        completed_at: canRetry ? null : now,
-      })
-      .eq('id', job.id as string)
-    reset++
+    const result = await reclaimStuckJob(
+      admin,
+      {
+        id: job.id as string,
+        attempt_count: job.attempt_count as number,
+        max_attempts: job.max_attempts as number,
+        locked_at: job.locked_at as string,
+      },
+      now,
+      runAfter,
+    )
+    if (result.ok) reclaimed++
+    else failures.push({ jobId: job.id as string, reason: result.reason })
   }
-  return reset
+
+  return { found: stuck.length, reclaimed, failed: failures.length, failures }
 }
 
 // ── Phase 2: Enqueue new / overdue jobs ───────────────────────────────────────
@@ -305,12 +374,18 @@ async function isPricingCoolingDown(): Promise<boolean> {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  admin = createAdminClient()
   const startTime = Date.now()
   console.log(`[asin-checker] Starting — limit=${LIMIT} max-runtime=${MAX_RUNTIME_MS}ms workspaceScoped=${Boolean(WORKSPACE_ID)}`)
 
   // Phase 1
-  const stuckReset = await cleanupStuckJobs()
-  if (stuckReset > 0) console.log(`[asin-checker] Stuck reset: ${stuckReset}`)
+  const stuckCleanup = await cleanupStuckJobs()
+  if (stuckCleanup.found > 0) {
+    console.log(`[asin-checker] Stuck cleanup: found=${stuckCleanup.found} reclaimed=${stuckCleanup.reclaimed} failed=${stuckCleanup.failed}`)
+    for (const failure of stuckCleanup.failures) {
+      console.log(`[asin-checker] Stuck reclaim failed for job ${failure.jobId}: ${failure.reason}`)
+    }
+  }
 
   // Phase 2
   const { enqueued, workspaces } = await enqueueNewJobs()
@@ -326,7 +401,10 @@ async function main() {
   let pricingCooldownActive = await isPricingCoolingDown()
   if (pricingCooldownActive) {
     console.log('[asin-checker] Pricing cooldown already active — skipping processing this run')
-    console.log(JSON.stringify({ stuckReset, enqueued, workspaces, processed: 0, pricingCooldownActiveAtStart: true, elapsedMs: Date.now() - startTime }))
+    console.log(JSON.stringify({
+      stuckFound: stuckCleanup.found, stuckReclaimed: stuckCleanup.reclaimed, stuckFailed: stuckCleanup.failed,
+      enqueued, workspaces, processed: 0, pricingCooldownActiveAtStart: true, elapsedMs: Date.now() - startTime,
+    }))
     return
   }
 
@@ -539,7 +617,8 @@ async function main() {
   }
 
   const summary = {
-    stuckReset, enqueued, workspaces,
+    stuckFound: stuckCleanup.found, stuckReclaimed: stuckCleanup.reclaimed, stuckFailed: stuckCleanup.failed,
+    enqueued, workspaces,
     processed, completed, partialCatalog,
     pricingRateLimited, pricingUnavailable, catalogNotFound,
     retried, failed, skippedNoConn,
@@ -550,7 +629,12 @@ async function main() {
   console.log(JSON.stringify(summary))
 }
 
-main().catch(err => {
-  console.error('[asin-checker] Fatal:', safeError(err))
-  process.exit(1)
-})
+// Only run when executed directly (`npx tsx scripts/process-asin-checker-jobs.ts`),
+// not when imported for its exported helpers (e.g. by test-stuck-job-reclaim.ts).
+const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isMainModule) {
+  main().catch(err => {
+    console.error('[asin-checker] Fatal:', safeError(err))
+    process.exit(1)
+  })
+}
