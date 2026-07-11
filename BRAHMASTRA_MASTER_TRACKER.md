@@ -987,16 +987,54 @@ var warning, confirmed present on `master` already).
 **Not done:** no SQL run, no DB rows changed, no Render/Vercel config/cadence/batch-size changed, no migration
 (none needed — all columns already existed), not merged, not deployed.
 
-### Next verification step (after this PR is merged and deployed)
+### D.6 PR #24 merged and first post-merge verification (2026-07-11, later same day)
 
-The fix only takes effect once Render redeploys `master` with this change. After that:
-1. Watch the next few Render cron cycles' logs for `stuckFound`/`stuckReclaimed`/`stuckFailed` (replacing the
-   old `Stuck reset: N` line) and confirm `stuckReclaimed` actually matches a Supabase state change this time.
-2. Re-run the same D.4-style timestamp cross-check once on a real post-deploy cycle to confirm the fix closes
-   the gap for good.
-3. Decide on the still-deferred one-time SQL reclaim for the original 10 stuck rows (item 1 above) — either let
-   the fixed automated reclaim clear them on its own next cycle, or run the SQL manually if they're still stuck
-   after deployment.
+**PR #24 merged.** Merge commit `26c819dd3ee9ab5fe816d2efd632d4e44a260c77`, merged `2026-07-11T11:45:49Z`.
+Files changed (confirmed via `git diff --name-only` against the pre-merge tip): exactly
+`esolz-app/scripts/process-asin-checker-jobs.ts` and `esolz-app/scripts/test-stuck-job-reclaim.ts`. Vercel
+auto-built the merge commit (`dpl_Bij7FnSWHjhhoV7x3wMjAdJ8gUBq`, preview build, `target: null`) — **not
+promoted**, per instruction (this fix only affects the Render-hosted script; Vercel doesn't run it).
+
+**Render's own build/deploy state could not be directly confirmed** — no Render dashboard/API access in this
+environment, same limitation as D.1–D.4.
+
+**First post-merge Render cron cycle (12:00 UTC, ~14 minutes after the merge) — inconclusive, most likely still
+old code:**
+- All 10 originally-tracked stuck job IDs remain **completely unchanged** — identical `status='running'`,
+  identical `locked_at` timestamps, identical `last_error_safe` values, down to the same values recorded in
+  D.1–D.4.
+- A single **new**, previously-untracked row also entered `status='running'` and is now stuck too (overall
+  `running` count went 10 → 11 between checks), alongside normal queue movement elsewhere (`completed`
+  13468→13478, `failed` 71→72, `queued` 467→456) confirming the cron did fire and do real work.
+- **Most likely explanation: deploy lag, not a fix failure.** Only ~14 minutes elapsed between the GitHub merge
+  and this cron's scheduled fire — not necessarily enough time for Render to build and roll out the new
+  container before that specific invocation started. A fresh job getting stuck in exactly the old, pre-fix
+  pattern is consistent with the *old* code still being live for this one cycle, not with the new
+  verify-before-counting logic running and revealing some deeper problem.
+- **Not adjudicated with certainty** — the fastest way to resolve this is checking the Render dashboard log
+  format for the 12:00 UTC run directly: the **old** code logs a single line
+  `[asin-checker] Stuck reset: N`; the **new** (fixed) code logs
+  `[asin-checker] Stuck cleanup: found=X reclaimed=Y failed=Z` (a different shape). Whichever format appears
+  for the 12:00 run settles whether Render had already redeployed by then.
+- **No SQL reclaim run.** Per instruction: "if they do not clear, report exact reason before any manual SQL" —
+  the reason above (probable deploy lag) is reported; recommend waiting for the **next** cron cycle (16:00 UTC)
+  for an unambiguous read, by which time Render should certainly have redeployed, rather than concluding
+  anything definitive from this one early, timing-ambiguous cycle.
+
+### Next verification step
+
+1. **Fastest path:** check the Render dashboard log format for the `12:00 UTC` `easyhome-asin-live-checker` run
+   directly — `Stuck reset: N` (old code) vs `Stuck cleanup: found=... reclaimed=... failed=...` (new code)
+   immediately resolves whether the fix was live for that cycle.
+2. **Otherwise:** wait for the `16:00 UTC` cycle and re-check Supabase the same way — by then Render should
+   certainly be running the merged commit.
+3. Once a cycle is confirmed running the new code: check whether `stuckReclaimed` for the original 10 (now 11)
+   rows actually matches a real Supabase state change (row(s) moved to `queued` or `failed`, `locked_at`/
+   `locked_by` cleared). If they clear naturally, no SQL. If the new code runs and reports `stuckFailed` > 0
+   with a specific reason for these rows, that reason becomes the real remaining root cause to fix next — a
+   different, more specific problem than "unchecked write," which this PR already fixed.
+4. The still-deferred one-time SQL reclaim remains available as a fallback if automated reclaim continues not
+   to work once we're certain the new code is live.
 
 ### Options to consider (not implemented — awaiting approval)
 
