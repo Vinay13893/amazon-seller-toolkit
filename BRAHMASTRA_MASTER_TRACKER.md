@@ -765,4 +765,80 @@ diagnostic difficulty if something goes wrong.
 
 ---
 
+## 17. Standing Rule: Reuse Before Request (Report Reuse Gate)
+
+**New permanent architecture decision.** For every existing or future API report fetch, Brahmastra must use a
+centralized "reuse before request" gate. Before creating a new Amazon SP-API or Amazon Ads report, the system
+must check, in order: (1) whether trusted normalized data already covers the requested scope; (2) whether a
+matching completed report exists in our database; (3) whether a matching report is already queued or
+processing; (4) whether Amazon already has a usable completed report; (5) only then may it create a new report.
+This applies to Business Reports, Amazon Ads reports, Brand Analytics, settlement/payment reports (once
+auto-fetch is ever built), inventory/FBA reports, and any future report-fetching workflow.
+
+**Status:** Inspection and architecture complete. **No code changed, no migration created or applied, no report
+job modified.** Full spec: `REPORT_REUSE_GATE_SPEC.md` (repo root).
+
+### Audit status
+
+All current report-fetching workflows audited: Business Reports (`GET_SALES_AND_TRAFFIC_REPORT`), Amazon Ads
+(6 report types), Brand Analytics (3 report types), Inventory/FBA (`GET_LEDGER_DETAIL_VIEW_DATA`). Confirmed
+settlement/payment has no auto-fetch today (manual CSV import only — zero `createReport`-family calls anywhere
+in that code path). Replenishment inputs consume already-stored tables and don't call Amazon report endpoints
+directly, so they inherit whatever reuse behavior their upstream workflow has.
+
+### Current duplicate-request risks (highest first)
+
+1. **Brand Analytics and Inventory/FBA have zero reuse logic today.** Every request to
+   `POST /api/amazon/brand-analytics/reports/request` or the FBA `fulfillment-report` route's `action:'start'`
+   unconditionally calls `createAmazonReport` — no check against prior requests, no local-data check, no
+   concurrency lock. A double-click, a UI retry, or two admins requesting the same scope each create a separate
+   Amazon report with no warning. This is the clearest, most reachable risk found.
+2. **Ads sync and Business Report sync already have partial reuse** (6h success-skip, 30-day Amazon-retention
+   reuse for Ads, per-workspace+source concurrency lock, stale-run cleanup) via `internal_data_refresh_runs` —
+   but the concurrency lock is a SELECT-then-decide check, not atomic: the same TOCTOU race class already found
+   and fixed in `tracked_asins` this session (§15/PR #18) exists here too, just not yet triggered in production.
+3. **Three separate, structurally-incompatible registry tables exist**: `internal_data_refresh_runs` (Ads +
+   Business Reports, has reuse columns), `amazon_report_jobs` (Brand Analytics, no reuse columns),
+   `internal_fba_report_jobs` (FBA, no reuse columns) — same underlying problem solved three different ways
+   (two of them not solved at all).
+4. **No workflow anywhere checks trusted local data coverage before requesting** (`LOCAL_DATA_REUSE` doesn't
+   exist today), and **no workflow queries Amazon's own report list** (`PROVIDER_REPORT_REUSE` as an active
+   Amazon `getReports` lookup doesn't exist — the closest analog still depends on our own prior memory of a
+   report ID, not asking Amazon directly).
+
+### Existing registry available?
+
+Partially. `internal_data_refresh_runs` (migrations 046/049/050/053) is the strongest existing candidate — it
+already has `workspace_id`, `source`, `status`, `report_request_key`, `amazon_report_id`, `marketplace_id`,
+`report_type`, `report_options`. **Not sufficient as-is**: needs a `provider` column, a proper hashed
+fingerprint instead of an ad-hoc per-script string, and a DB-level atomic concurrency guarantee (a partial
+unique index) instead of today's application-level check-then-insert.
+
+### Implementation prerequisites (none started)
+
+1. Shared fingerprint-builder function (no migration, no DB change — pure refactor extracting what
+   `sync-ads-reports.ts`/`sync-business-reports.ts` already do independently).
+2. New gate module (`src/lib/reports/report-reuse-gate.ts`, illustrative name) implementing the state machine:
+   `LOCAL_DATA_REUSE → LOCAL_REPORT_REUSE → WAIT_FOR_EXISTING → PROVIDER_REPORT_REUSE → CREATE_NEW →
+   REJECT_STALE_OR_PARTIAL / FAILED`.
+3. Additive migration (proposed in the spec, **not created**): `provider` + `fingerprint_hash` columns and a
+   partial unique index `WHERE status IN ('running','queued')` on `internal_data_refresh_runs`.
+4. Adapter so Brand Analytics and FBA write into the same registry the gate reads.
+
+### Recommended implementation sequence
+
+1. Extract the shared fingerprint builder (zero risk, no migration).
+2. Build the gate module against `internal_data_refresh_runs` as-is.
+3. Migrate Ads sync + Business Report sync onto the gate first (refactor only — they already have equivalent
+   behavior; lowest risk, easiest to verify against production logs the same way PR #15/§16 was verified).
+4. Apply the proposed migration once the gate is proven.
+5. Migrate Brand Analytics + FBA onto the gate — this is where real new protection is added (today: none) and
+   is the highest-value, highest-risk step since it changes live user-facing behavior.
+6. Route settlement/payment auto-fetch through the gate from day one, if/when that work is ever approved.
+
+**Nothing in this section has been implemented.** No report workflow was modified. No migration was created or
+applied. Design only, per instructions.
+
+---
+
 **Last updated:** 2026-07-11
