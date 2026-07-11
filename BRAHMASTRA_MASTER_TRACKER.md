@@ -543,7 +543,7 @@ Every session must begin by checking:
 **Status:** Code complete, tested, committed on a dedicated branch, PR open against `master`. Not merged/deployed.
 **Branch:** `fix/track-asin-restore` (separate clean worktree from `origin/master`, not the dirty
 `intern/asins-page-work` checkout).
-**PR:** #TBD — `Fix Track ASIN restore after archive` (URL filled in once opened).
+**PR:** [#18](https://github.com/Vinay13893/amazon-seller-toolkit/pull/18) — `Fix Track ASIN restore after archive`. Open against `master`, not merged.
 
 ### Root cause
 
