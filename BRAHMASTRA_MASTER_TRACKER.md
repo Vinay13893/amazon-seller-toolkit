@@ -775,8 +775,20 @@ processing; (4) whether Amazon already has a usable completed report; (5) only t
 This applies to Business Reports, Amazon Ads reports, Brand Analytics, settlement/payment reports (once
 auto-fetch is ever built), inventory/FBA reports, and any future report-fetching workflow.
 
-**Status:** Inspection and architecture complete. **No code changed, no migration created or applied, no report
-job modified.** Full spec: `REPORT_REUSE_GATE_SPEC.md` (repo root).
+**Status:** ✅ Architecture **approved and merged to `master`**. Inspection and architecture complete.
+**Implementation not started. No migration created or applied. No report job modified.** Full spec:
+`REPORT_REUSE_GATE_SPEC.md` (repo root).
+
+**Merge record:**
+- PR [#20](https://github.com/Vinay13893/amazon-seller-toolkit/pull/20) (ASIN snapshot cron verification, §16)
+  — merged `2026-07-11T09:20:46Z`, merge commit `c27dccb72c944171fbfb3ab0bdd86d37e313a2e2`. Files changed:
+  `BRAHMASTRA_MASTER_TRACKER.md` only (docs only, content unaltered).
+- PR [#21](https://github.com/Vinay13893/amazon-seller-toolkit/pull/21) (this section + the spec) — rebased
+  cleanly onto post-#20 `master` (`git rebase --onto origin/master`) before merge; final diff verified to
+  contain exactly `REPORT_REUSE_GATE_SPEC.md` (new) and `BRAHMASTRA_MASTER_TRACKER.md` (+76/-0, §17 only) — no
+  PR #20 content reappeared as new changes. Merged `2026-07-11T09:23:00Z`, merge commit
+  `cf377201d16f23c076032bfa867f4b0cd022b9aa`.
+- Both merges were documentation-only; no Vercel build promotion was needed or performed for either.
 
 ### Audit status
 
@@ -838,6 +850,14 @@ unique index) instead of today's application-level check-then-insert.
 
 **Nothing in this section has been implemented.** No report workflow was modified. No migration was created or
 applied. Design only, per instructions.
+
+### Current next blocker (unrelated to this section)
+
+The Report Reuse Gate is a design decision, not an active blocker. The actual next-in-line blocker remains
+**§16 — ASIN snapshot cron/queue throughput verification**: the 10 rows stuck in `running` (locked by the still-
+active Render cron) are unreclaimed, the Render cron's actual deployed state hasn't been checked directly, and
+no Vercel throughput change (batch size/cadence) has been made or approved. Nothing in this session changes
+that status.
 
 ---
 
