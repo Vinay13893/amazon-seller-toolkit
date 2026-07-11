@@ -983,6 +983,71 @@ diagnostic difficulty if something goes wrong.
 3. Only then pick one of the throughput options above, smallest change first, and re-measure over multiple
    cycles before going further.
 
+### D.5 Founder-resupplied Render dashboard evidence — cross-checked against deploy state (2026-07-11, ~17:57 UTC)
+
+**Inspection only. No code changed, no Render/Vercel settings changed, no SQL run (read-only or otherwise), no
+manual SQL reclaim performed, per explicit instruction this round.**
+
+**Founder-supplied Render evidence this round (verbatim):** Render Cron Job `easyhome-asin-live-checker`
+(service ID `crn-d93v9stckfvc739b1d9g`), repo/branch `Vinay13893/amazon-seller-toolkit` / `master`, command
+`npx tsx scripts/process-asin-checker-jobs.ts --workspace-id=55a321c9-7729-4662-a494-9f1f1aa86846 --limit=10
+--max-runtime-ms=240000`, schedule every 4 hours, **latest visible build `3fa72fa`** (the PR #18 merge commit).
+Logs show: `Stuck reset: 10`; `Enqueued 0`; one run `processed 10, completed 10`; another run `processed 3,
+completed 2, partialCatalog 1, pricingRateLimited 1`; an Amazon Pricing 429 occurrence.
+
+**Cross-check against git history (read-only, `git log`/`git show`, no SQL):** `3fa72fa` merged
+**2026-07-11 08:01:13 UTC**. Every subsequent investigation and fix in this section postdates it:
+
+| Commit | What | Merged (UTC) |
+|---|---|---|
+| `3fa72fa` | PR #18 (Track ASIN restore) — what Render's dashboard still shows as latest deployed | 08:01:13 |
+| `6f65df2` | PR #23 — D.1–D.4 Render investigation (docs only) | 11:27:59 |
+| `26c819d` | PR #24 — fix `cleanupStuckJobs()` to verify writes before reporting reclaim success | 11:45:49 |
+| `fc88d01` | PR #26 — fix `reclaimStuckJob()` writing `run_after: null` (the actual root cause PR #24 exposed: a NOT NULL constraint rejected every reclaim write) | 17:15:28 |
+
+**Render's own dashboard still reports `3fa72fa` as its latest deployed build** — over 9 hours and three merged
+fixes behind current `master`. As of this evidence, **Render has not redeployed since PR #18** and is still
+running the pre-PR-#23 script.
+
+**Correcting the proposed interpretation:** the `Stuck reset: 10` / `processed 10, completed 10` log lines in
+this evidence are from that same pre-fix script — structurally identical to the evidence already recorded in
+§16 D.2, which D.4's exact-timestamp cross-check against Supabase already showed does **not** correspond to the
+10 known stuck rows actually being reclaimed. D.4 concluded the pre-fix `cleanupStuckJobs()` logs `stuckReset:
+N` based on rows *found*, not rows *successfully written* — exactly the bug PR #24 fixed, and exactly the
+failure mode PR #26 then found and fixed underneath it (the reclaim write was rejected by a NOT NULL
+constraint).
+
+**So: "B — stale reclaim missing is no longer correct; reclaim is running" is not supported by this evidence.**
+The safer reading is close to the opposite: this evidence is fully consistent with the reclaim still being
+broken on Render, because Render hasn't picked up either fix yet. Whether the fix actually works cannot be
+confirmed until (a) Render redeploys to at least `fc88d01`, and (b) a fresh, timestamped `Stuck reset` log line
+from *that* build is cross-checked against Supabase the same way D.4 did — which requires a read-only SQL
+check, not run this round per instruction.
+
+**What is confirmed / re-confirmed by this round's evidence, independent of the B question:**
+
+- **A — old orchestrator active: still false.** Unchanged; proven independently via commit diff
+  (`b5e13dc`/PR #12), not dependent on Render's current build.
+- **C — dual workers active: still true.** Render (`easyhome-asin-live-checker`, confirmed live and current per
+  this evidence, on schedule) and Vercel Cron (`0 */2 * * *`) are both still processing the same
+  `background_jobs` queue.
+- **Queue is moving.** Consistent with §16 D.1/D.3's existing throughput numbers — not re-measured this round
+  (no SQL run).
+- **Amazon Pricing throttling is real and ongoing** — another 429 in this round's evidence, consistent with the
+  4-in-48h rate already documented in D.3.
+- **Throughput/canonical-worker architecture decision remains open** — unchanged from §16's existing "Options
+  to consider," now additionally gated on confirming whether Render needs a manual redeploy trigger before any
+  of PR #24/#26's fixes take effect.
+
+**Manual SQL reclaim: still not performed, per explicit instruction this round** (was already not performed in
+D.1/D.2/D.4; remains the case).
+
+**Recommended next step (not performed — awaiting approval):** confirm whether Render auto-deploys from
+`master` on push or requires a manual "Deploy latest commit" trigger from the Render dashboard. If manual,
+that is a Render-settings-adjacent action needing explicit approval before touching it. Only after Render is
+confirmed running `fc88d01` (or later) should the next Render log evidence be treated as a real test of the
+PR #24/#26 fix.
+
 ---
 
 ## 17. Standing Rule: Reuse Before Request (Report Reuse Gate)
@@ -1081,4 +1146,4 @@ that status.
 
 ---
 
-**Last updated:** 2026-07-11
+**Last updated:** 2026-07-11 (§16 D.5 — Render evidence resupplied, cross-checked against build/deploy state)
