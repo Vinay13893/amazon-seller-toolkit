@@ -1055,16 +1055,46 @@ are separate, pre-existing latent bugs that would cause the same NOT NULL reject
 max-attempts through the normal processing path (not just the stuck-reclaim path) — out of scope for PR #26 per
 explicit "small targeted fix only" instruction. **Recommended as the next code-fix task** once #26 is reviewed.
 
-### Next verification step
+### D.8 PR #26 merged, deployed, and verified — thread closed (2026-07-11/12)
 
-1. Once PR #26 is merged and deployed, wait for the next Render cron cycle and confirm `stuckReclaimed` for the
-   original 11 stuck rows actually matches a real Supabase state change this time (rows moved to `failed`,
-   `locked_at`/`locked_by` cleared, `run_after` preserved non-null).
-2. If they clear naturally, no SQL reclaim is needed. If `stuckFailed` > 0 persists with a *different* reason,
-   that becomes the next thing to fix.
-3. Consider the three related, unfixed `run_after: null` occurrences in the main processing loop (flagged
-   above) as a follow-up task — they affect the normal (non-stuck) failure path too, not just reclaim.
-4. The one-time SQL reclaim for the original stuck rows remains available as a fallback, still not run.
+**PR #26 merged.** Merge commit `fc88d014559ec17c2dcf9199dddc1e501f64140e`, merged `2026-07-11T17:15:29Z`. Files
+changed (confirmed via `git diff --name-only` against the pre-merge tip): exactly
+`esolz-app/scripts/process-asin-checker-jobs.ts` and `esolz-app/scripts/test-stuck-job-reclaim.ts`. Vercel
+auto-built the merge commit (`dpl_3JU89QhYVwd89vBFWopvWKhzBd1u`, `READY`) — informational only, not promoted (no
+production relevance; this fix only runs on Render).
+
+**Render's build/deploy state still could not be directly confirmed** (no dashboard/API access this session) —
+verified indirectly via the next cron cycle's actual effect on Supabase instead, same approach as D.6/D.7. This
+time there was ~2h45m between merge and the next scheduled cron (`20:00 UTC`, vs. only ~14 min last time), ruling
+out the deploy-lag ambiguity from D.6.
+
+**Result: ✅ full success — all 11 stuck rows cleared naturally, no SQL needed.**
+- Cross-checked all 10 originally-tracked stuck job IDs (internal IDs only): every one now shows
+  `status='failed'`, `completed_at='2026-07-11 20:01:02.224+00'` (exactly the `20:00 UTC` cron cycle),
+  `locked_at=NULL`, `locked_by=NULL`, `last_error_safe='stale processing reset'`.
+- **`run_after` is non-null on every row and preserved at each row's original pre-stuck value** (e.g. job
+  `6282a60e…` shows `run_after='2026-07-09 14:15:06.767+00'`, matching exactly what was recorded for it in
+  D.1–D.4) — confirms the PR #26 fix (`undefined` instead of `null`) worked precisely as designed: the column
+  was left untouched rather than nulled or overwritten.
+- The previously-new 11th stuck row is also gone: aggregate `failed` count moved 72 → 83 (+11), and a direct
+  query for any `status='running'` row in the whole `product_page_snapshot` job type now returns **zero rows**.
+- Aggregate counts: `completed=13500` (+22), `failed=83` (+11), `queued=442`, `running=0`.
+
+**SQL reclaim: not needed, not run.** The automated fix cleared every stuck row on its own on the very next
+cycle.
+
+**Thread closed.** Both bugs found during this investigation (D.1–D.8) are now fixed and verified live:
+1. The silent-success logging bug (PR #24) — reclaim now reports found/reclaimed/failed accurately.
+2. The `run_after: null` NOT NULL violation (PR #26) — reclaim writes now actually persist.
+
+**Review automation is held until this thread's closure is acknowledged** — noted per instruction, not started
+this session.
+
+**Follow-up not started, still open:** the identical `run_after: null` pattern remains unfixed in **three other,
+unrelated spots** in `esolz-app/scripts/process-asin-checker-jobs.ts` (the main claim-processing loop's own
+failed-path branches, approximately lines 385/447/515 as of PR #26) — these affect the *normal* (non-stuck)
+terminal-failure path, not just reclaim, and would cause the same NOT NULL rejection for any job that
+legitimately exhausts its retries during ordinary processing. Recommended as the next code-fix task.
 
 ### Options to consider (not implemented — awaiting approval)
 
