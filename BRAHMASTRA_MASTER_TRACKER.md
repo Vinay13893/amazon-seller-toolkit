@@ -625,4 +625,144 @@ concurrent duplicate attempt (no duplicate row created), invalid ASIN (rejected 
 
 ---
 
+## 16. ASIN Snapshot Cron Verification & Throughput Measurement (post-PR #15)
+
+**Status:** Read-only production verification complete. Pipeline reaches handlers and processes correctly.
+**Decision: B — pipeline reaches handlers, but capacity is too low for a 24h freshness SLA**, plus a
+**separate, independently-confirmed issue (D-type): a second, uncoordinated worker (the Render cron) is still
+actively processing the same queue**, contrary to this tracker's prior belief that it was decommissioned. No
+code changed. No manual heavy production run triggered. No batch size/cadence change made.
+
+### 1–2. Did cron reach `/enqueue` and `/process-next`? What did each return?
+
+**Yes.** Vercel production runtime logs, `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b` (commit `1e829b6`, the PR #15 code):
+
+- `08:00:11 GET /api/cron/asins/process-product-snapshots` → `200`
+- `08:00:11 POST /api/asins/jobs/enqueue` → `200` (body not console-logged by that route; reconciled via DB below)
+- `08:00:16 POST /api/asins/jobs/process-next` → `200`, body:
+  `{"jobType":"product_page_snapshot","mode":"system","processed":5,"completed":3,"partialCatalogOnly":0,"pricingSkippedCooldown":0,"pricingRateLimited":0,"pricingUnavailable":2,"catalogNotFound":0,"retried":0,"failed":0,"skippedNoConnection":0}`
+
+This is the **only** real post-fix Vercel cron cycle observed so far (schedule `0 */2 * * *`; next due ~10:00 UTC).
+Six `401`s were also seen at `06:29` on the same deployment — these are **not** the scheduled cron (Vercel Cron
+always sends a valid `Authorization: Bearer <CRON_SECRET>`); they're unauthenticated probe requests to the same
+URL, correctly rejected. Not a pipeline problem.
+
+### 3. `background_jobs` counts by status (`job_type='product_page_snapshot'`)
+
+| status | count | split |
+|---|---|---|
+| completed | 13,468 | 12,784 my_product / 684 competitor_asin |
+| queued | 467 | 454 my_product / 13 competitor_asin |
+| running | 10 | **10 my_product, 0 competitor** — see §16.D below |
+| failed | 71 | 64 my_product / 7 competitor_asin |
+
+### 4. Oldest queued job age
+
+Created `2026-07-08 18:20:57 UTC` → **~62 hours old** as of `2026-07-11 08:19:49 UTC`. 466 of 467 queued jobs
+have `run_after <= now()` (immediately eligible) — this is a throughput backlog, not a cooldown-gating problem.
+
+### 5. Queue-count movement across recent runs
+
+Only one real post-fix Vercel cron cycle exists — too early for a multi-run Vercel-only trend. Combined with the
+independently-running Render cron (see §16.D), completed-job counts by hour (last 48h): `07-10 12:00→1`,
+`16:00→0` (2 jobs left stuck), `20:00→0` (2 jobs left stuck), `07-11 00:00→2`, `04:00→3`, `08:00→15` (13
+completed + 2 failed). Net queued count: ~470 (pre-fix baseline) → 467 now — negligible net movement so far,
+expected this early given enqueue also adds new due jobs each cycle.
+
+### 6. New `asin_snapshots` rows by hour, last 48h
+
+`07-10 12:00→1` (bsr:1, price:0), `07-11 00:00→2` (bsr:2, price:1), `04:00→3` (bsr:3, price:2), `08:00→13`
+(bsr:13, price:11). **19 total new snapshots in 48h** — reflects the multi-day near-total outage before the fix.
+
+### 7. Actual jobs processed per invocation
+
+- **Vercel system cron:** exactly 5 (matches `SYSTEM_BATCH_SIZE`), 3 fully completed + 2 failed (both catalog
+  404 and pricing 400) in the one observed run.
+- **Render cron** (separate — see §16.D): up to 10 (`--limit=10`), but inconsistent — two recent runs
+  (`07-10 16:00`, `20:00`) completed **zero** jobs and left 2 stuck each; the `08:00` run today completed all 10.
+
+### 8. Are catalog and pricing both being written?
+
+**Yes**, for the majority. Of the 13 snapshots written in the `08:00` hour: all 13 have BSR (Catalog), 11 have
+price (Pricing) — 2 are catalog-only (pricing returned "unavailable," not a hard failure).
+
+### 9. Pricing 429/cooldown frequency
+
+Low in the observed window: **0 rate-limited completions since the fix.** Last `amazon_pricing_rate_limited`
+event was `2026-07-11 04:01 UTC` (3 jobs, pre-fix/Render-attributed). The one fixed Vercel run had 2
+`amazon_pricing_unavailable` (HTTP 400, a different — non-throttling — failure class). Sample size is too small
+(1 run) to rule out future 429s at higher throughput.
+
+### 10. Effective full-catalog refresh duration
+
+Catalog size confirmed: **482 My Products + 14 tracked competitors = 496 total addressable targets** (matches
+the earlier ~470–500 estimate). Vercel-cron-only theoretical capacity: 5/2h × 12 = 60/day → **~8.3 days per full
+cycle** — unchanged from the pre-fix estimate; PR #15 restored correctness, not capacity. The Render cron could
+nominally add up to another ~60/day (10/4h × 6) when it doesn't crash, but two of its last six runs completed
+zero jobs, so this upside cannot be relied on.
+
+### 11. Is the 24-hour freshness SLA realistic?
+
+**No.** Keeping 496 targets under a 24h staleness ceiling requires ≥496/24 ≈ 20.7 jobs/hour sustained.
+Vercel-cron-only capacity is 2.5 jobs/hour — **~8x under** what's needed. Even generously crediting the Render
+cron's nominal average, combined capacity (~5 jobs/hour) is still **~4x under** the 24h SLA requirement.
+
+### D. Separate confirmed issue: an uncoordinated second worker is still active
+
+Direct evidence (not inferred): all 10 stuck `running` rows have `locked_by = 'render-cron'` — the exact
+worker-identity literal in `esolz-app/scripts/process-asin-checker-jobs.ts:368`, the Render-hosted script this
+tracker's Completed Major Work section believed was replaced by the Vercel Cron (PR #12,
+"Replace checker-worker orchestrator loop with Vercel Cron"). Reconciling job counts for the `08:00` hour: the
+logged Vercel process-next call accounts for exactly 5 of the 15 jobs that finished that hour (3 completed + 2
+failed); **the other 10 completions match the Render script's own `--limit=10` default** and its
+`0 */4 * * *`-equivalent schedule (documented in `CLAUDE.md` as `easyhome-asin-live-checker`, which coincides
+with the Vercel cron every 4 hours, including `08:00` today). `locked_at` timestamps on the 10 stuck rows align
+almost exactly with that same 4-hourly cadence going back to `2026-07-09 16:01`.
+
+The script has its own stale-lock reclaim (`cleanupStuckJobs()`, 10-minute timeout) that should have already
+reset these 10 rows to `failed` (their `attempt_count` already equals `max_attempts`, so reclaim would not
+re-queue them, just unstick them) — but they remain `running` after 12–40 hours despite clear evidence the
+script ran successfully since. Either the reclaim logic has a latent bug, or **Render's actually-deployed script
+differs from what's on `origin/master`** (Render deploys are independent of the Vercel/GitHub pipeline) — not
+confirmed here; would need direct access to the Render dashboard/logs to verify.
+
+**Practical implications:** (a) real combined throughput today was better than Vercel-alone capacity suggests,
+but unreliable and uncoordinated; (b) the two workers use different retry-delay constants
+(`PRICING_COOLDOWN_RETRY_MINUTES=240min` in the Vercel path vs. `RETRY_DELAY_MINUTES=30min` in the Render
+script), so a job's retry cadence depends on which worker last touched it; (c) CLAUDE.md's "Render account has
+an unpaid invoice... crons at risk until paid" note is evidently not (yet) blocking this cron — it ran
+successfully as recently as today.
+
+### Options to consider (not implemented — awaiting approval)
+
+1. **Increase Vercel batch size only** (5 → 15–20 per 2h run): ~180–240/day → full refresh ~2.1–2.8 days.
+   Risk: **medium** — burstier Pricing calls raise 429 risk; needs headroom check against the 120s
+   `process-next` `maxDuration`.
+2. **Increase Vercel cadence only** (every 2h → every 30–60min, batch stays 5): ~120–240/day depending on
+   interval → full refresh ~2.1–4.1 days. Risk: **low–medium** — same total daily API volume as option 1 for
+   equivalent throughput, spread more evenly (gentler on rate limits); more serverless invocations.
+3. **Prioritize My Products / hero ASINs**: reorder candidate selection to drain My Products (482/496, i.e.
+   nearly the whole catalog) first. Risk: **low** — no capacity gain by itself since My Products already
+   dominates by volume; would need a "hero ASIN" concept that doesn't exist in the schema yet to be meaningful.
+4. **Safe combination (smallest single change, tentatively recommended)**: batch 5→10 **and** cadence 2h→1h:
+   ~240/day → full refresh ~2.1 days, split across two smaller, independently-revertible levers instead of one
+   large one. Risk: **low–medium**.
+
+**Separately, and independent of any throughput decision:** the 10 stuck `render-cron`-locked rows should be
+reclaimed (one-time `UPDATE ... SET status='failed', locked_at=null, locked_by=null WHERE status='running' AND
+locked_by='render-cron' AND locked_at < now() - interval '1 hour'`), and the Render cron's actual deployed state
+should be checked directly (dashboard/logs) before tuning Vercel's batch size or cadence — running two
+uncoordinated workers against the same queue while also increasing one of them's throughput compounds the
+diagnostic difficulty if something goes wrong.
+
+### Recommended next approved task
+
+1. Investigate the Render cron directly (dashboard/deployed script version/recent run logs) and decide: keep,
+   coordinate with the Vercel cron, or finally decommission it — before any Vercel throughput change.
+2. Reclaim the 10 stuck rows (read-only-verified fix, not yet applied).
+3. Only then pick one of the throughput options above, smallest change first, and re-measure over multiple
+   cycles before going further.
+
+---
+
 **Last updated:** 2026-07-11
