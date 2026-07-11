@@ -1021,20 +1021,50 @@ old code:**
   for an unambiguous read, by which time Render should certainly have redeployed, rather than concluding
   anything definitive from this one early, timing-ambiguous cycle.
 
+### D.7 PR #24's fix confirmed live — explicit root cause found (2026-07-11, later same day)
+
+**PR #24 is live on Render.** Founder-supplied log evidence from `easyhome-asin-live-checker` around `09:31 PM
+IST` confirms the new logging format is in production:
+
+```
+Stuck reclaim failed for job ...: null value in column "run_after" of relation "background_jobs" violates not-null constraint
+{"stuckFound":11,"stuckReclaimed":0,"stuckFailed":11,"enqueued":4,"processed":2,"completed":1,"partialCatalog":1,"pricingRateLimited":1,...}
+```
+
+**This is exactly what the D.6 recommendation anticipated:** the old silent-logging bug (PR #24) is confirmed
+fixed — the reclaim mechanism now reports failures explicitly instead of claiming false success. What it
+revealed is a second, previously-invisible bug: **`background_jobs.run_after` is `timestamptz NOT NULL DEFAULT
+now()` (migration 034), but `reclaimStuckJob()`'s max-attempts branch wrote `run_after: null`, so every reclaim
+attempt for a job at max attempts was rejected outright by Postgres.** This fully explains why the original 10
+(now 11) stuck rows never cleared across every prior cycle in D.1–D.6 — not deploy lag as hypothesized, but a
+second real bug that PR #24 had to exist first in order to expose.
+
+**Fix (PR [#26](https://github.com/Vinay13893/amazon-seller-toolkit/pull/26), not merged):** the terminal-`failed`
+branch now writes `run_after: undefined` instead of `null`. Supabase-js drops `undefined`-valued keys during
+JSON serialization, so the column is left at its existing (non-null) value instead of being written at all —
+the same pattern already used correctly for this exact case in
+`esolz-app/src/app/api/asins/jobs/process-next/route.ts` (Vercel side). Retry-path (`queued`) semantics
+unchanged. 6/6 targeted tests pass (2 new, covering both paths' non-null `run_after` plus a dedicated regression
+guard simulating the exact Supabase rejection seen live); `test-track-asin.ts` 5/5 still pass; `tsc`/`eslint`
+clean.
+
+**Related, flagged, not fixed:** the identical `run_after: null` pattern also pre-exists in **three other,
+unrelated spots in this same file** — the main claim-processing loop's own failed-path branches (approximately
+the lines handling `skippedNoConnection`, pricing/catalog terminal failure, and snapshot-insert failure). These
+are separate, pre-existing latent bugs that would cause the same NOT NULL rejection for *any* job reaching
+max-attempts through the normal processing path (not just the stuck-reclaim path) — out of scope for PR #26 per
+explicit "small targeted fix only" instruction. **Recommended as the next code-fix task** once #26 is reviewed.
+
 ### Next verification step
 
-1. **Fastest path:** check the Render dashboard log format for the `12:00 UTC` `easyhome-asin-live-checker` run
-   directly — `Stuck reset: N` (old code) vs `Stuck cleanup: found=... reclaimed=... failed=...` (new code)
-   immediately resolves whether the fix was live for that cycle.
-2. **Otherwise:** wait for the `16:00 UTC` cycle and re-check Supabase the same way — by then Render should
-   certainly be running the merged commit.
-3. Once a cycle is confirmed running the new code: check whether `stuckReclaimed` for the original 10 (now 11)
-   rows actually matches a real Supabase state change (row(s) moved to `queued` or `failed`, `locked_at`/
-   `locked_by` cleared). If they clear naturally, no SQL. If the new code runs and reports `stuckFailed` > 0
-   with a specific reason for these rows, that reason becomes the real remaining root cause to fix next — a
-   different, more specific problem than "unchecked write," which this PR already fixed.
-4. The still-deferred one-time SQL reclaim remains available as a fallback if automated reclaim continues not
-   to work once we're certain the new code is live.
+1. Once PR #26 is merged and deployed, wait for the next Render cron cycle and confirm `stuckReclaimed` for the
+   original 11 stuck rows actually matches a real Supabase state change this time (rows moved to `failed`,
+   `locked_at`/`locked_by` cleared, `run_after` preserved non-null).
+2. If they clear naturally, no SQL reclaim is needed. If `stuckFailed` > 0 persists with a *different* reason,
+   that becomes the next thing to fix.
+3. Consider the three related, unfixed `run_after: null` occurrences in the main processing loop (flagged
+   above) as a follow-up task — they affect the normal (non-stuck) failure path too, not just reclaim.
+4. The one-time SQL reclaim for the original stuck rows remains available as a fallback, still not run.
 
 ### Options to consider (not implemented — awaiting approval)
 
