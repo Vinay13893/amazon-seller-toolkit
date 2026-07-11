@@ -733,6 +733,226 @@ script), so a job's retry cadence depends on which worker last touched it; (c) C
 an unpaid invoice... crons at risk until paid" note is evidently not (yet) blocking this cron — it ran
 successfully as recently as today.
 
+### D.1 Follow-up investigation (2026-07-11, later same day) — root cause classification
+
+**Inspection only. No jobs reset, no Render/Vercel config touched, no code changed.**
+
+**Render dashboard/API access: not available in this environment** (no Render CLI installed, no `RENDER_*`
+credentials present, no Render MCP tool). Everything below is evidence assembled from git history and Supabase —
+**Render's exact deployed commit SHA and deployment timestamp could not be directly confirmed** and remain
+open questions requiring dashboard access.
+
+**1. Is the "old Render orchestrator" still running? No — conclusively ruled out.** There are two
+*different* Render mechanisms in this repo and they must not be conflated:
+- `checker-worker/src/automation/productPageOrchestrator.ts` — a boot-time loop inside the separate
+  `checker-worker` **web service** that used to ping `/api/asins/jobs/enqueue` and `/process-next` every 3
+  minutes. Commit `b5e13dc` ("chore: disable checker-worker productPageOrchestrator boot loop", merged via PR
+  #12 / `e3ebbb2`) removed its `startProductPageSnapshotOrchestrator()` call from `checker-worker/src/server.ts`
+  — confirmed via direct diff read. **This is genuinely disabled.**
+- `esolz-app/scripts/process-asin-checker-jobs.ts` — a **completely separate, standalone Render Cron Job**
+  (`easyhome-asin-live-checker` per `CLAUDE.md`, schedule `0 */4 * * *`, `--limit=10 --max-runtime-ms=240000`)
+  that writes directly to Supabase via its own SP-API calls — it never touches the Vercel HTTP routes at all.
+  **PR #12 never touched this file.** It is not "the old orchestrator being reactivated" — it was simply never
+  in scope for that PR and has apparently been running independently the whole time. (`render.yaml` at the repo
+  root describes an unrelated, seemingly stale FastAPI/Celery stack under `saas-backend/` — not this Node
+  checker-worker/cron setup — so it isn't authoritative for what's actually deployed on Render either.)
+
+**2. Stuck-job evidence (all 10, re-verified, unchanged since the earlier check this session):** all
+`target_type='my_product'`, all `workspace_id=55a321c9-7729-4662-a494-9f1f1aa86846`, `locked_by='render-cron'`,
+`attempt_count=3` (equals `max_attempts=3` for every row). `created_at` ages 63–92 hours. `locked_at` (last
+claim time) ages 812–2493 **minutes** (13.5–41.5 hours) — static, unchanged from the check performed earlier
+this session, confirming no reclaim has happened in the interim despite the Render cron completing 10 other
+jobs successfully at `08:00` UTC today. `last_error_safe` is populated (`catalog_not_found` /
+`amazon_pricing_rate_limited` / `amazon_pricing_unavailable`) on every row, but this is **stale, from an
+earlier (2nd) attempt** — the claim update and the terminal update are separate writes in
+`process-asin-checker-jobs.ts`, so a row can show a leftover reason from its previous attempt while its *current*
+(3rd, final) attempt is the one that never reached its terminal update and left it stuck `running`. (No
+secrets/credentials in any of the above — job IDs and workspace ID only, no tokens.)
+
+**3. Queue-claim logic:** **Claims are atomic on both workers** — confirmed by direct code read. Vercel
+(`process-next/route.ts`) and Render (`process-asin-checker-jobs.ts:368`) both use the identical pattern:
+`UPDATE background_jobs SET status='running', locked_at=now(), locked_by=<worker>, attempt_count=attempt_count+1
+WHERE id=<job> AND status='queued'`, then check the affected-row count to detect a lost race. **A genuine
+double-claim of the same row is not possible.** There is **no heartbeat** — `locked_at` is set once at claim
+time and never renewed during processing, so a live-but-slow job is indistinguishable from an abandoned one
+except by elapsed time. The Render script **does** define a stale-lock reclaim (`cleanupStuckJobs()`,
+`STUCK_JOB_TIMEOUT_MINUTES=10`) that should reset any `running` row older than 10 minutes — for these 10 rows
+(13.5–41.5 hours stuck) that reclaim has evidently not fired across many observed successful Render invocations
+since `2026-07-09`. **Vercel and Render can and do claim from the same queue** — confirmed independently (both
+completed jobs in the same `08:00` UTC hour today) — but because claims are atomic, this causes coordination
+confusion and unlogged/hard-to-observe combined throughput, **not** duplicate processing of the same row.
+
+**4/5. Pipeline movement / logs since the earlier check this session:** unchanged — `queued=467`,
+`running=10`, `completed=13468`, `failed=71`; no new `asin_snapshots` rows since the `08:00` hour (next Vercel
+cron is `10:00` UTC, next Render cron is `12:00` UTC — neither had fired as of this check, `~09:35` UTC). Vercel
+runtime logs for the last 24h show **zero `502`/`503` responses** anywhere (the PR #15 loud-failure path has not
+been triggered since promotion) and no cron activity outside the already-documented `08:00` cycle.
+
+### Root cause classification — FINAL (resolved in D.4, after D.2's timestamp cross-check)
+
+~~**Primary: B — Render is (at least partially) updated, but stale `running` jobs have no working reclaim.**~~
+This was written without Render dashboard access. **A is ruled out** (checker-worker's `productPageOrchestrator`
+boot loop conclusively disabled, direct commit evidence, `b5e13dc`/PR #12). **C is confirmed true** (Vercel and
+Render both actively draining the same queue on overlapping schedules — real, ongoing, but not itself harmful
+since claims are atomic). **B, refined and now resolved (D.4):** Render's `cleanupStuckJobs()` reclaim
+mechanism **does run every cron cycle and correctly identifies the same 10 real stuck rows each time** — but its
+per-row `UPDATE` has no error/result check, so it logs `Stuck reset: 10` believing it succeeded while the write
+never actually persists. Confirmed by cross-referencing two independent `Stuck reset: 10` log events
+(2026-07-11, `04:01` and `08:00` UTC) against exact-timestamp Supabase queries: in both windows, the only rows
+actually touched were unrelated fresh (`attempt_count=1`) jobs completing normally — not the 10 stuck rows,
+which remain untouched through both events. **D is ruled out.** **E not needed.**
+
+### D.2 Founder-supplied Render dashboard evidence (2026-07-11, later same day) — correction and reconciliation
+
+**Inspection only. No jobs reset, no SQL run, no Render/Vercel config touched, no code changed, no cadence/batch
+size changed**, per explicit instruction this round.
+
+**New confirmed facts (founder-supplied, from Render dashboard screenshots — resolves the "cannot verify without
+dashboard access" gap in D.1):**
+- Render Cron Job: **`easyhome-asin-live-checker`**, service ID `crn-d93v9stckfvc739b1d9g`.
+- Repo/branch: `Vinay13893/amazon-seller-toolkit` / `master`. Latest visible build: **`3fa72fa`** — the PR #18
+  merge commit — confirming Render **is** tracking `master` and picked up recent commits (this postdates the
+  reclaim logic, which has been on `master` well before `3fa72fa`).
+- Command matches `CLAUDE.md` exactly: `npx tsx scripts/process-asin-checker-jobs.ts
+  --workspace-id=55a321c9-7729-4662-a494-9f1f1aa86846 --limit=10 --max-runtime-ms=240000`, schedule every 4
+  hours.
+- Render logs show real run outputs, e.g. `processed 10, completed 10` in one run and `processed 3, completed 2,
+  partialCatalog 1, pricingRateLimited 1` in another — both consistent with the script's own summary format and
+  with what was independently inferred from Supabase in D.1 (Render successfully completing batches). Logs also
+  show an explicit `Amazon Pricing 429` occurrence and a **`Stuck reset: 10`** line.
+
+**Reconciliation against Supabase (re-verified this round, read-only):** the same 10 `background_jobs` rows
+(`6282a60e…`, `9eab8a78…`, `d74c7817…`, `adff57d2…`, `00fd6134…`, `3bdc12b8…`, `277c7d02…`, `495fd4bf…`,
+`2615ca6a…`, `d0d2fc2b…` — internal IDs only) remain `status='running'` with **byte-identical `locked_at`
+timestamps** to the earlier check this session — no movement at all. A direct query for
+`last_error_safe = 'stale processing reset'` (the exact string `cleanupStuckJobs()` writes when it resets a
+row) returns **zero rows in the entire table, ever**. So: Render's logs and the founder's read of them say a
+reset of 10 happened; Supabase shows no reset of *these* 10, and no reset with that marker has ever landed.
+**This is not yet fully resolved** — two explanations are both plausible and not yet distinguished:
+(a) the `Stuck reset: 10` line reported a *different* batch of 10 stuck rows (from an earlier incident, now
+gone) and a *new* set of 10 got stuck again afterward through the same underlying crash pattern — the current
+10 would then be a fresh recurrence, not evidence the mechanism doesn't work; or (b) `cleanupStuckJobs()`'s
+per-row `.update(...)` call (`esolz-app/scripts/process-asin-checker-jobs.ts` — the update inside its reset loop
+has no error check) is silently failing while the function still increments and reports its local `reset`
+counter regardless, so it *logs* success without the write taking effect. **Not adjudicated here** — would need
+the exact timestamp of the `Stuck reset: 10` log line to cross-reference against these rows' `locked_at`/
+`updated_at`, which requires further Render log access beyond this round's screenshots.
+
+**Revised classification (superseded by D.4 below — resolved, not just "downgraded"):** see D.4.
+
+### D.4 Timestamp cross-check (2026-07-11, later same day) — discrepancy resolved
+
+**Founder supplied the exact Render log timestamps (IST) for two `Stuck reset: 10` events. Converted to UTC
+(IST = UTC+5:30) and cross-checked against Supabase, read-only, no SQL mutations, no rows changed:**
+
+| Render event (IST) | UTC | Render's own JSON summary |
+|---|---|---|
+| 1 — `09:31:13 AM` reset line, `09:31:19 AM` summary | **≈04:01:13–04:01:19** | `stuckReset:10, processed:3, completed:2, partialCatalog:1, pricingRateLimited:1, failed:0` |
+| 2 — `01:30:54 PM` reset line, `01:31:08 PM` summary | **≈08:00:54–08:01:08** | `stuckReset:10, processed:10, completed:10, failed:0` |
+
+**Supabase, `updated_at` in each exact window:**
+- Window 1 (04:00:30–04:02:00 UTC): **exactly 3 rows touched**, all `created_at=2026-07-09 20:01:05` (one
+  original batch), all `attempt_count=1` (first attempt — never previously stuck), 2 completed clean + 1
+  completed with `amazon_pricing_rate_limited` — an exact match to Render's own `processed:3/completed:2/
+  pricingRateLimited:1`.
+- Window 2 (08:00:30–08:02:00 UTC): **exactly 10 rows touched**, same `created_at=2026-07-09 20:01:05` cohort,
+  all `attempt_count=1`, all completed clean, `last_error_safe=null` — an exact match to Render's own
+  `processed:10/completed:10`. (These are the same 10 rows already reconciled against the Vercel side in D.1's
+  original `08:00` hour analysis.)
+
+**None of the known 10 stuck job IDs appear in either window** — their `updated_at`/`locked_at` remain at their
+original claim times (`2026-07-09 16:01` through `2026-07-10 20:01`), unchanged through both reset events and
+through now. **Zero rows anywhere carry `last_error_safe='stale processing reset'`, at either timestamp or
+ever.**
+
+**Answers:**
+1. **Did the same 10 stuck job IDs change at either timestamp? No.**
+2. **Were 10 different jobs reset at either timestamp? No** — the rows written in both windows were fresh,
+   `attempt_count=1` jobs undergoing ordinary claim→complete processing, not resets of anything.
+3. **Any rows marked `stale processing reset` around those times? No — none, ever, anywhere in the table.**
+4. **Did status/locked_by/locked_at/attempt_count change for the stuck rows at those times? No.**
+5. **Is `stuckReset:10` possibly logged before confirming DB persistence? Yes — this is now the best-supported
+   explanation.** `cleanupStuckJobs()`'s per-row `.update(...)` call has no error/result check
+   (`esolz-app/scripts/process-asin-checker-jobs.ts`), so its counter increments once per stuck row *found*,
+   regardless of whether that row's UPDATE actually persists. Both events report exactly **10** — matching the
+   exact, unchanging count of real stuck rows in the table at both points in time, days apart. The function is
+   correctly *finding* the same 10 stuck rows every cron cycle and *believes* it fixed them, but the write is
+   not landing.
+6. **Is Render definitely connected to the same Supabase DB as Vercel? Yes** — Render's self-reported
+   `processed`/`completed`/`pricingRateLimited` counts for both events match Supabase row-for-row, down to the
+   same `created_at` batch and sub-second completion timestamps. This could not coincidentally match a
+   different database.
+7. **Were rows reset and then immediately reclaimed again? No evidence of this** — the rows touched in both
+   windows were fresh first-attempt jobs, not previously-stuck rows cycling through reset→reclaim.
+8. **Did new jobs enter `running`/`locked_by='render-cron'` at those times? Transiently, yes** (implied by the
+   atomic claim pattern for the 3 and 10 jobs actually processed) but not persistently — all are `completed`
+   with `locked_by=NULL` now, which is expected/correct, not the stuck-job phenomenon.
+
+**Resolution:** hypothesis (b) from D.2 is now well-supported and hypothesis (a) is not — **this is not a fresh
+recurrence of a different batch; it is the same 10 rows being rediscovered and "reset" (log-wise) every cron
+cycle without the fix ever taking effect in the database**, most likely because the reclaim loop's per-row
+update has no verification step. **The discrepancy is resolved: Render's cleanup-log line is not reliable
+evidence that the DB was actually fixed.** This is a real, still-open code-level bug in
+`cleanupStuckJobs()` (not touched — no code changed this round, per instruction).
+
+### D.3 Combined throughput measurement, last ~22–48h (read-only)
+
+Real activity in the `background_jobs`/`asin_snapshots` tables only starts at `2026-07-10 12:00 UTC` — everything
+before that in the 48h window is zero, consistent with the pre-PR#15 near-outage already documented in §16.
+
+| Hour (UTC) | Completed | Failed | New `asin_snapshots` | With price | Note |
+|---|---|---|---|---|---|
+| 07-10 12:00 | 1 | 0 | 1 | 0 | |
+| 07-11 00:00 | 2 | 0 | 2 | 1 | |
+| 07-11 04:00 | 3 | 0 | 3 | 2 | |
+| 07-11 08:00 | 13 | 2 | 13 | 11 | Vercel (5) + Render (10) both fired — best hour observed |
+| 07-11 10:00 | 4 | 1 | 4 | **0** | **Vercel-only hour** (Render's schedule doesn't fire at :10) — `pricingRateLimited=1` this hour, 0/4 got a price |
+
+**Totals, last 48h:** 23 completed + 3 failed = 26 finished. Over the ~22-hour active window
+(07-10 12:00 → 07-11 10:00): **≈1.2 jobs/hour ≈ 28/day combined observed rate.**
+
+**Jobs completed per source:** not cleanly distinguishable after the fact — both workers clear `locked_by` to
+`NULL` on their terminal update, so completed rows carry no worker identity. Best-effort proxy: Render's
+schedule (`0,4,8,12,16,20` UTC) only overlaps 6 of the 24 hours/day; the other 18 (`2,6,10,14,18,22` UTC) are
+Vercel-only by construction. The one clean Vercel-only sample this window (`10:00`) produced 5 processed
+(matches `SYSTEM_BATCH_SIZE`), matching Vercel's own logged summary format from earlier in §16.
+
+**`pricingRateLimited` counts, last 48h:** 4 total (`12:00` day-1: 1, `00:00`: 1, `04:00`: 1, `10:00`: 1) —
+roughly 1 per active hour so far, spread across both Vercel-only and combined hours, confirming Amazon Pricing
+429/cooldown is an **account-wide constraint that affects both workers identically**, not a Render-specific or
+Vercel-specific problem.
+
+**Estimated full-catalog refresh duration, current combined setup:** 496 addressable targets (482 My Products +
+14 tracked competitors, per §16 original) ÷ ≈28/day observed ≈ **~18 days**. This is *worse* than the
+Vercel-alone theoretical estimate (~8.3 days at 60/day) computed earlier in §16 — the gap is Amazon Pricing 429
+throttling plus Render's own intermittent zero-completion runs (both already documented), not a new problem.
+
+**What Vercel-only settings would be needed before disabling Render:** Vercel's own theoretical solo capacity
+(60/day at batch=5, cadence=2h) **already exceeds** the current messy combined-observed rate (~28/day) — a
+finding worth sitting with before assuming Render is net-additive today. Before disabling Render:
+1. Confirm Vercel alone can sustain its 60/day theoretical rate in practice (not yet measured Vercel-only over a
+   full day — today's data has only one clean Vercel-only hour).
+2. Confirm the account-wide Pricing 429 gate behaves the same or better under Vercel-only load (no reason to
+   expect Amazon's limit changes, but not yet directly observed).
+3. Resolve the D.2 stuck-reset discrepancy first — disabling Render while its reclaim behavior is still
+   ambiguous would remove the only mechanism (however uncertain) currently touching those rows at all.
+No batch size or cadence change was made this round, per instruction.
+
+### Cheapest safe fix (proposed — still not implemented; SQL still not run, per instruction)
+
+1. **Surgical, immediate (still recommended, still not run):** a one-time `UPDATE background_jobs SET
+   status='failed', locked_at=NULL, locked_by=NULL WHERE job_type='product_page_snapshot' AND status='running'
+   AND locked_by='render-cron' AND locked_at < now() - interval '1 hour'` — now that D.4 confirms Render's own
+   reclaim isn't going to clear these on its own, this is the only mechanism that will actually unstick the 10
+   rows. Still not executed this round, per explicit instruction.
+2. **Code-level fix (root cause, now precisely identified):** add a result/error check to
+   `cleanupStuckJobs()`'s per-row `.update(...)` call in `esolz-app/scripts/process-asin-checker-jobs.ts` so a
+   failed reclaim write is surfaced instead of silently counted as a success — this is a real, narrow bug fix,
+   not a redeploy or config change (Render is already confirmed current on `master`). Not implemented this
+   round.
+3. **Longer-term:** unchanged — decide whether to keep both workers or consolidate; informed by D.3's finding
+   that Vercel-alone theoretical capacity already exceeds today's real combined throughput.
+
 ### Options to consider (not implemented — awaiting approval)
 
 1. **Increase Vercel batch size only** (5 → 15–20 per 2h run): ~180–240/day → full refresh ~2.1–2.8 days.
