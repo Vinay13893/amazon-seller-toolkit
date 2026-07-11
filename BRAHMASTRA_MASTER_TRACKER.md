@@ -57,16 +57,18 @@ GitHub currently treats `main` as the default in parts of the UI, but the active
   - Separates pipeline freshness from confirmed Buy Box coverage.
   - Prevents false “Healthy” status based on one fresh row.
 - Production commit before PR #15 promotion: `f9949bb`.
+- PR #16 live: added this tracker file to repo root (docs only, no runtime impact).
+- PR #15 promoted to production `2026-07-11T06:28:00Z`.
 
-### Merged but not yet confirmed live
+### Live, verification in progress
 
 #### PR #15 — Cron base URL loud-failure fix
 
 - **Merge commit:** `1e829b6`
-- **Deployment:** `dpl_9HvE25HKZr4fSRnZ44py6VRGxUgL`
-- **Build state:** READY
-- **Production promotion:** Pending
-- **Environment variable:** `APP_BASE_URL=https://esolz-app.vercel.app` reported as set in Vercel Production
+- **Production deployment:** `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b` (promoted from `dpl_9HvE25HKZr4fSRnZ44py6VRGxUgL`)
+- **Build state:** READY, `target: production`, aliased to `esolz-app.vercel.app` — confirmed via Vercel `get_project`.
+- **Environment variable:** `APP_BASE_URL=https://esolz-app.vercel.app` confirmed set in Vercel Production before promotion.
+- **Verification status:** Promotion confirmed live. The cron run at 06:00 UTC (before promotion finished) was still on old code. The first real post-fix run is 08:00 UTC — a one-time scheduled check (`verify-cron-fix-8am-run`) runs at 08:10 UTC to confirm it reaches `/enqueue` and `/process-next`, and to check `asin_snapshots`/`background_jobs` counts.
 
 ### What PR #15 fixes
 
@@ -85,20 +87,20 @@ PR #15:
 
 ### P0 — Promote and verify PR #15
 
-**Status:** Pending  
+**Status:** Promotion done, verification in progress  
 **Why it blocks later work:** Price, BSR, and Buy Box freshness depend on the ASIN snapshot pipeline. The current queue has been stuck because the cron's internal calls did not reach the handlers.
 
 ### Required actions
 
-1. Promote deployment `dpl_9HvE25HKZr4fSRnZ44py6VRGxUgL`.
-2. Verify production points to commit `1e829b6`.
-3. Wait for the next scheduled cron run.
-4. Confirm logs show calls to:
+1. ✅ Promote deployment `dpl_9HvE25HKZr4fSRnZ44py6VRGxUgL` — done, now live as `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b`.
+2. ✅ Verify production points to commit `1e829b6` — confirmed via Vercel `get_project`.
+3. ⏳ Wait for the next scheduled cron run (08:00 UTC, 2026-07-11) — scheduled check `verify-cron-fix-8am-run` fires at 08:10 UTC.
+4. ⏳ Confirm logs show calls to:
    - `/api/asins/jobs/enqueue`
    - `/api/asins/jobs/process-next`
-5. Confirm new `asin_snapshots` rows appear.
-6. Confirm the queued `background_jobs` count starts falling.
-7. Confirm the cron no longer returns `{ ok: true, enqueue: null, process: null }`.
+5. ⏳ Confirm new `asin_snapshots` rows appear.
+6. ⏳ Confirm the queued `background_jobs` count starts falling.
+7. ⏳ Confirm the cron no longer returns `{ ok: true, enqueue: null, process: null }`.
 
 ### Do not do yet
 
@@ -476,7 +478,8 @@ A queue that never shrinks will destroy daily usage. Persistent feedback/action 
 - Vercel Pro upgrade and deployment recovery
 - PR #13: added Buy Box/Keyword/Pincode Sync Health
 - PR #14: coverage-aware Buy Box Sync Health
-- PR #15: merged cron base URL loud-failure fix; production promotion pending
+- PR #15: cron base URL loud-failure fix — merged and promoted to production (`1e829b6`, `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b`); cron-run verification in progress
+- PR #16: added this tracker file to repo root
 - Product strategy and trust-readiness architecture completed
 
 ---
@@ -485,15 +488,13 @@ A queue that never shrinks will destroy daily usage. Persistent feedback/action 
 
 ### Next task now
 
-**Promote PR #15 deployment and verify the next cron run.**
+**Wait for the 08:00 UTC (2026-07-11) cron run and confirm it reaches `/enqueue` and `/process-next`.**
 
-Use deployment:
+PR #15 is already promoted to production:
 
-`dpl_9HvE25HKZr4fSRnZ44py6VRGxUgL`
-
-Expected production commit:
-
-`1e829b6`
+- Production deployment: `dpl_AuPQX5fNL9uuZCmCBWwW66FR2m7b`
+- Production commit: `1e829b6`
+- A one-time scheduled check (`verify-cron-fix-8am-run`) fires at 08:10 UTC to pull Vercel runtime logs and Supabase aggregate counts and report back automatically.
 
 ### After verification
 
