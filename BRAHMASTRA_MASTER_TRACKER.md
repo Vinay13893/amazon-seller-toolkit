@@ -1433,8 +1433,41 @@ Recorded here in full so it survives to whatever fresh session picks it up:
 - **Explicitly not started this session:** no branch, no migration, no production code. Planning-only, and only
   in a fresh session, per sequencing item 2 above.
 
+### §18 update (2026-07-12) — full implementation-ready spec written
+
+Founder moved review automation out of "held" and requested a full inspection + planning pass in this
+session (not a separate fresh session as originally sequenced — superseding sequencing item 2 above by
+explicit instruction). **Still inspection/planning only — no branch, migration, env var, or code
+created; no Amazon API called.**
+
+Full spec: **`REVIEW_REQUEST_AUTOMATION_SPEC.md`** (new file, repo root). Key inspection findings:
+
+- **Orders API:** not implemented anywhere in this repo. No Orders API function in
+  `src/lib/amazon/spapi-client.ts`; no live-fetched shipped-order data exists. The only `order_id`
+  data in the DB is manually-imported settlement CSV rows in `internal_payment_transactions`
+  (migration 033) — unrelated to Orders API and insufficient for solicitation eligibility.
+- **Solicitations API:** not implemented at all — zero references to `Solicitation` anywhere in `src/`.
+- **Reusable auth:** `lwa.ts` (`refreshAccessToken`), `crypto.ts` (`encryptToken`/`decryptToken`), and
+  the `amazon_connections` + `loadWorkspaceConnection()` pattern already duplicated twice
+  (`process-next/route.ts`, `process-asin-checker-jobs.ts`) — spec proposes extracting this into
+  `src/lib/amazon/connection.ts` as PR #1, so review automation isn't a third copy.
+- **SP-API scope sufficiency: unknown, cannot be determined from code.** Spec proposes a read-only
+  permission probe (mirroring the existing `probeInboundShipmentsAccess` pattern) as PR #3, to be run
+  and confirmed *before* any real catch-up/daily-job code is written — per instruction to stop and
+  report only if scope changes are needed.
+- **Migration numbering correction:** CLAUDE.md's "last used: 055" note is stale — `origin/master`
+  actually has migrations through **058** (`058_restrict_connection_token_columns.sql`) as of this
+  check. Next free number is **059**. Spec's proposed migration is numbered accordingly.
+- Data model (`review_solicitation_orders`), state machine (terminal/retryable/dry-run statuses),
+  idempotency/locking design, one-time catch-up design, daily-job design, pre-POST safety gates, env
+  var design, cron architecture/scheduling recommendation, required tests, and an 8-PR implementation
+  sequence are all fully written out in the spec — see that file for detail, not duplicated here.
+- **Nothing implemented.** No branch, migration, env var, or code exists yet. Awaiting founder review
+  of the spec and explicit go-ahead per PR in the proposed sequence.
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
-inventory and GET 500 `/` investigation recorded, both non-blocking)
+inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
+Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only)
