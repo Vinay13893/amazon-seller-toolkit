@@ -1328,6 +1328,68 @@ rows cleared naturally via the automated fix (PR #26), and a related follow-up (
 class in three more sites. The ASIN cron **throughput/canonical-worker** question (increase batch size, cadence,
 or consolidate Render+Vercel into one worker) remains genuinely open and is explicitly deferred — see §18.
 
+### §16.D.10 — PR #28 three-cycle post-deploy verification (complete, 2026-07-12)
+
+PR #28 merged to master at `dpl_5Yy9bcwTD45jw2AmEEnLiCbHcwEu` (commit `3de0ca6`). Three Vercel-cron cycles
+observed after deploy, each checked against Supabase directly (not against self-reported log text alone):
+
+| Cycle | UTC time | enqueue | process-next | JSON result | running (stuck) | run_after NULL rows | new asin_snapshots |
+|---|---|---|---|---|---|---|---|
+| 1 | 04:00 | 200 | 200 | processed>0, no NOT NULL errors | 0 | 0 | matched processed count |
+| 2 | 08:00 | 200 | 200 | processed>0, no NOT NULL errors | 0 | 0 | matched processed count |
+| 3 | 12:00:42 | 200 | 200 | `{"processed":5,"completed":1,"partialCatalogOnly":4,"pricingSkippedCooldown":3,"pricingRateLimited":1,"pricingUnavailable":0,"catalogNotFound":0,"retried":0,"failed":0,"skippedNoConnection":0}` | 0 | 0 | 5 (`asin_snapshots.checked_at >= 12:00Z` = 5, matches `processed`) |
+
+Cycle 3 detail (Supabase, queried live): `background_jobs` status counts `completed=13546, failed=83,
+queued=446`; `status='running'` count = **0**; `run_after IS NULL` count = **0** project-wide. Rows updated in
+the cycle-3 window show retries correctly preserving a non-null `run_after` across a pricing-cooldown retry
+chain (e.g. `run_after=2026-07-09 20:01:05` carried forward unchanged on `amazon_pricing_cooldown_active` /
+`amazon_pricing_rate_limited` completions) — the exact behavior PR #26/#28 fixed, now confirmed live across all
+three corrected call sites collectively (no site individually hit its rare max-attempts branch in these three
+cycles, but none regressed the common paths either).
+
+**Final status (per the taxonomy the founder specified):**
+- Unit and integration verification: **complete** (`test-stuck-job-reclaim.ts` 6/6, `test-retry-or-fail-update.ts`
+  6/6, `test-track-asin.ts` 5/5 unaffected).
+- Deployment verification: **complete** — 3 clean cron cycles recorded above, zero NOT NULL errors, zero stuck
+  rows.
+- Regression verification: **complete** — no new stuck-job or NOT NULL issue appeared in any of the 3 cycles;
+  `background_jobs` failed count did not increase abnormally; queued count moving normally (446, expected given
+  ~500 targets under pricing cooldown, consistent with prior observation).
+- Direct live execution of each rare max-attempts branch (the 3 paths PR #28 fixed): **pending natural
+  observation** — not observed directly in these 3 cycles, accepted as non-blocking per standing instruction.
+
+**Scheduler inventory (evidence for the later canonical-worker decision, §18 — not acted on):** confirmed via
+`git show origin/master:esolz-app/vercel.json` (single cron entry, `schedule: "0 */2 * * *"` →
+`/api/cron/asins/process-product-snapshots`), `git ls-tree` (no `.github/workflows` directory exists in this
+repo), and `git grep` (no other file references `/api/asins/jobs/enqueue` or `/api/asins/jobs/process-next`).
+Exactly two schedulers exist and are already fully documented: **Vercel Cron**, every 2h, hits the HTTP routes
+(confirmed firing at 02:00:42, 04:00:42, 06:00:42, 08:01:41, 12:00:42 UTC on `dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA`);
+**Render Cron** (`easyhome-asin-live-checker`), every 4h, runs `process-asin-checker-jobs.ts` directly against
+Supabase. No third/unknown scheduler exists. Both independently observed to be healthy and non-colliding
+(atomic claim guard prevents double-processing) in this verification window.
+
+**Pricing 429 observation:** `[amazon-pricing] getItemOffersForAsin error: 429` recurs across all 3 cycles
+(8 occurrences logged 2026-06-21 through 2026-07-12 in Vercel's runtime-error aggregation, route
+`/api/asins/jobs/process-next`). Each occurrence is caught and classified into `pricingRateLimited` /
+`pricingSkippedCooldown` in the JSON result and retried with the existing cooldown backoff — not raw error
+propagation. Treated as separate from the `run_after` correctness fix, per standing instruction; not itself a
+defect.
+
+**GET 500 `/` investigation (separate issue, inspection only — complete, non-blocking):** Vercel's runtime-error
+aggregation shows `Error running the exported Web Handler: Error: Your project's URL and Key are required to
+create a Supabase client!` at `routes=/middleware`, count=7, users=2, first=2026-05-30, last=2026-07-12T12:02:30Z,
+attributed to `lastDeployment=dpl_4QsnTynAkk5d4LvcRtiAW3ogTXpx`. That deployment ID resolves (via
+`get_deployment`) to a **preview** build — branch `fix/render-cron-stuck-reclaim-verify` (PR #24's preview,
+URL `esolz-jl38uwve9-vinay13893s-projects.vercel.app`), **not** the production alias (`esolz-app.vercel.app`,
+`esolz-app-vinay13893s-projects.vercel.app`, `esolz-app-git-master-vinay13893s-projects.vercel.app` — confirmed
+via `get_project`). A direct query of production-environment runtime logs for `statusCode=500` over the trailing
+24h returned **zero results**. Root cause: this specific preview deployment's environment is missing/misconfigured
+Supabase env vars (a Vercel preview-environment config gap, not an app code defect), and the first occurrence
+(2026-05-30) predates every PR in this session by weeks — it is pre-existing and unrelated to the `run_after`
+work. **Classification: non-blocking, production unaffected.** No code, config, or env change made (inspection
+only, per instruction). Flagging as a possible future cleanup item (either set preview-env Supabase vars or
+accept stale preview builds returning 500 on `/`), not an active incident.
+
 ---
 
 ## 18. Standing Decisions (2026-07-12)
@@ -1374,4 +1436,5 @@ Recorded here in full so it survives to whatever fresh session picks it up:
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
-locked review-automation spec recorded)
+locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
+inventory and GET 500 `/` investigation recorded, both non-blocking)
