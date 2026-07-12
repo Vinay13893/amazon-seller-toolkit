@@ -336,8 +336,17 @@ claim fields (`claimed_at`/`claimed_by`/`claim_expires_at`) for a future guarded
 indexes (due-work/status/sent-audit — order lookup is already covered by the unique constraint's own
 index), workspace-scoped RLS (`SELECT` only for `authenticated`, no write policy — all writes come from
 service-role automation), and a defensive check rejecting a few obviously PII-shaped keys in
-`last_eligibility_response`. No RPC, no cron, no Amazon call, no jobs. **Not applied to any database** —
-opened as PR only, awaiting founder approval to apply separately.
+`last_eligibility_response`. No RPC, no cron, no Amazon call, no jobs.
+
+**Migration applied (2026-07-12, founder-approved):** applied to production Supabase
+(`okxfwcfxxrtmijmvztdq`) via Supabase MCP `apply_migration`. Verified read-only afterward: all 22
+columns, all 8 constraints, all 5 indexes present exactly as designed; RLS enabled with exactly one
+policy (SELECT-only, workspace-scoped, no anon access, no authenticated write access); `updated_at`
+trigger confirmed live via a real UPDATE. Synthetic non-PII test row (fake order id
+`TEST-SYNTHETIC-VERIFY-0001`) inserted, duplicate-insert correctly rejected, cross-workspace RLS
+isolation confirmed via a simulated outside-authenticated-user query (0 rows visible), then deleted —
+table confirmed empty afterward. No Amazon API call made, no customer communication occurred. Full
+detail in `BRAHMASTRA_MASTER_TRACKER.md` §18.
 
 **Still not done:** no Orders-fetch job, no Solicitations POST, no cron, no env vars, no scope/credential
-changes, no live sending.
+changes, no live sending. The table exists but nothing reads or writes it yet.

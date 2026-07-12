@@ -1640,7 +1640,67 @@ and trigger — nothing else in the schema references this new table yet.
 Re-ran `npx tsc --noEmit` after both corrections — pass (unchanged from before; this is a schema-only
 file with no TS surface).
 
-**Production migration: NOT applied.** Schema only, PR opened, not merged, not applied to any database.
+**Production migration: APPLIED (2026-07-12, founder-approved).**
+
+- **Supabase project:** `okxfwcfxxrtmijmvztdq` (confirmed — same project CLAUDE.md and every prior
+  session query has used). This project is confirmed **shared** with an unrelated hobby app
+  ("Travel-tracker" — `tt_profiles`/`trips` tables visible in `list_tables`) — pre-existing, not a
+  mixup, does not affect any esolz-app table.
+- **Pre-apply checks:**
+  - Migration 059 had **not** been applied yet — `review_solicitation_orders` was absent from
+    `list_tables` before this run.
+  - SQL applied is byte-identical to `master` commit `af37c47` (`git diff` against both the merge
+    commit and the local working copy — zero diff).
+  - **Migrations 001–058: schema confirmed correct, ledger has pre-existing gaps.** Every expected
+    table exists live (spot-checked `workspaces`, `tracked_asins`, `internal_payment_transactions`,
+    and `internal_brahmastra_thresholds` from migration 054 specifically). However, Supabase's
+    `list_migrations` ledger only shows 26 tracked entries and is **missing entries for 001–033 and
+    054** even though their tables demonstrably exist — a pre-existing bookkeeping gap (those were
+    evidently applied via a path that didn't record migration history), **not** something this
+    session introduced, and not a blocker since the live schema — not the ledger — is what matters
+    for correctness. Flagging transparently per instruction rather than silently treating "confirmed."
+  - Confirmed `public.user_workspace_ids()` and `public.fn_set_updated_at()` (the two functions 059
+    depends on) both exist and match the expected definitions before applying.
+- **Applied via Supabase MCP `apply_migration`, name `059_review_solicitation_orders`** — result: success.
+
+**Post-apply read-only verification (all passed):**
+- **Table exists:** `public.review_solicitation_orders`, confirmed via `information_schema.columns`.
+- **All 22 columns present** with correct types/nullability/defaults, including every column the
+  founder listed by name (`workspace_id`, `marketplace_id`, `amazon_order_id`, `solicitation_status`,
+  `solicitation_sent`, `solicitation_sent_at`, `next_check_at`, `claimed_at`, `claimed_by`,
+  `claim_expires_at`, `last_eligibility_response`, `created_at`, `updated_at`).
+- **All 8 constraints present**, confirmed via `pg_constraint`: primary key, FK to `workspaces`, the
+  `(workspace_id, marketplace_id, amazon_order_id)` unique constraint, the 12-status CHECK, the
+  sent/status-agreement CHECK, the sent-timestamp CHECK, the `send_claimed` CHECK, `check_attempts >= 0`,
+  and the defensive PII-key CHECK — all match the migration file exactly.
+- **All 5 indexes present**, confirmed via `pg_indexes`: pkey, the unique identity index, the due-work
+  partial index (confirmed its `WHERE` clause includes all 3 required predicates —
+  `solicitation_sent = false`, `next_check_at IS NOT NULL`, and the non-terminal-status filter — exactly
+  as corrected in the founder's review pass), the status/reporting index, and the sent-audit partial
+  index.
+- **Security:** `relrowsecurity = true` (RLS enabled). Exactly **one** policy exists —
+  `review_solicitation_orders: internal select`, `FOR SELECT TO authenticated`, `USING (workspace_id IN
+  (SELECT user_workspace_ids()))`. **No policy of any kind exists for `anon`** (anonymous access is
+  denied by RLS default — no matching policy means no rows), and **no INSERT/UPDATE/DELETE policy exists
+  for `authenticated`** (write-denied by the same default).
+- **Trigger:** `trg_review_solicitation_orders_updated_at`, `BEFORE UPDATE`, calling the existing
+  `fn_set_updated_at()` — confirmed via `pg_trigger`.
+
+**Synthetic verification (service-role connection, non-PII, non-Amazon-format order id
+`TEST-SYNTHETIC-VERIFY-0001`, workspace `55a321c9-…`):**
+1. Inserted one row — succeeded.
+2. Re-inserted the identical `(workspace_id, marketplace_id, amazon_order_id)` — **correctly rejected**:
+   `23505 duplicate key value violates unique constraint "review_solicitation_orders_identity_uidx"`.
+3. Simulated an authenticated user outside any workspace (`set_config('request.jwt.claims', ...)` with a
+   random, non-existent `sub` UUID + `SET LOCAL ROLE authenticated`) and queried for the synthetic row —
+   **0 rows visible**, confirming workspace isolation is real and enforced by RLS, not just declared.
+4. Ran an `UPDATE` (touched `last_checked_at`) and confirmed `updated_at` advanced
+   (`13:45:12.343995+00` → `13:45:25.285106+00`) — trigger confirmed live, not just present.
+5. Deleted the synthetic row.
+6. Confirmed `select count(*) from review_solicitation_orders` = **0** after cleanup.
+
+**No Amazon API call was made at any point in this step. No customer communication occurred. Review
+automation remains completely disabled — no route, cron, or job reads or writes this table yet.**
 
 ---
 
@@ -1648,8 +1708,10 @@ file with no TS surface).
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
 Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
-PR #31 merged — permission probe live, scopes confirmed sufficient; PR #2 (migration 059, schema only,
-not applied) opened;
+PR #31 merged — permission probe live, scopes confirmed sufficient; PR #32 (migration 059, schema only)
+opened, review-corrected, and merged; migration 059 applied to production Supabase (okxfwcfxxrtmijmvztdq)
+and fully verified read-only (columns/constraints/indexes/RLS/trigger + synthetic insert/duplicate-reject/
+isolation/updated_at/cleanup) — table exists, is empty, and nothing reads or writes it yet;
 §18 update — Implementation PR #1 (permission probe) opened on `feat/review-automation-permission-probe`,
 4 files, no migration/POST/env/cron, tests + tsc + eslint clean; live probe run confirms scopes sufficient
 (Orders pass, Solicitations GET pass), PR #31 still open pending merge approval)
