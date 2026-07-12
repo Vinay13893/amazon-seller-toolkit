@@ -1704,6 +1704,210 @@ automation remains completely disabled — no route, cron, or job reads or write
 
 ---
 
+## 19. ASIN Page Live-Data Diagnosis (2026-07-12)
+
+**Scope: inspection only, no code/cron/Render/Vercel changes, no SQL mutations.** Triggered by a live
+screenshot showing confusing/empty values on `/dashboard/asins` (My Products tab) despite the ASIN
+cron/stuck-job fixes from §16 being verified. Builds on a prior static-code-only audit,
+`ASIN_PAGE_DATA_AUDIT.md` (found in the intern's local checkout at `amazon-seller-toolkit-clean-sync`,
+read-only per the CLAUDE.md "do not touch ASIN UI files" rule — not committed anywhere).
+
+**Audit validity check (important):** the intern's local working tree at `amazon-seller-toolkit-clean-sync`
+has uncommitted edits to these exact files, but they are **cosmetic only** — a dev-only mock-mode toggle
+(`getMockAmazonListingsResponse`, gated behind `NODE_ENV !== 'production'`) plus matching UI wiring. The
+actual price/BSR/Buy Box/availability/deal-tag computation logic is **byte-identical** to `origin/master`
+(confirmed via `git diff origin/master` — 0 diff on `catalog.ts`/`pricing.ts`, and the `listings/route.ts`
+diff is exactly the 13-line mock-mode block). The remote `intern/asins-page-work` branch has **zero commits
+ahead of master** — it's a stale pointer, never pushed with real changes. **Conclusion: what's live in
+production is what's described below**, and the prior audit's findings (which read the same, functionally-
+unchanged logic) are corroborated, not superseded.
+
+### Column-by-column
+
+**Price**
+- Current source: `asin_snapshots.price`, coalesced as `snapshots.find(s => s.price !== null)` — the most
+  recent snapshot that actually has a price, not simply the latest snapshot (`listings/route.ts:212,225`).
+- Why blank/confusing: genuinely correct behavior when blank — "—" means no Pricing call has **ever**
+  succeeded for that ASIN, not that the latest check merely failed. When a price **is** shown from an old
+  snapshot, the coalescing is working correctly (verified live — see below).
+- Missing in DB or display logic: **Missing in DB** (Pricing API rate-limited) when blank; when a stale
+  price shows, it's real historical data, correctly surfaced.
+- Seller-friendly replacement: keep the value + `last_successful_price_checked_at` sub-line (already
+  exists in the API response, `listings/route.ts:233`) more prominently in the UI — the mechanism is sound,
+  the labeling ("Pricing rate-limited") could be softer ("Price last confirmed {date}; latest check was
+  throttled by Amazon").
+- Fix priority: **Low** — this column is trustworthy as designed.
+
+**BSR**
+- Current source: `asin_snapshots.bsr`, coalesced the same way as price (`bsrSnapshot`,
+  `listings/route.ts:213,226`), from SP-API Catalog Items (`getCatalogItemForAsin`, independent of Pricing).
+- Why blank/confusing: for most sampled products, BSR is **not** blank — it refreshes successfully every
+  cycle even while Pricing is rate-limited (see live sample below), which is correct/expected since
+  Catalog and Pricing are separate SP-API calls with separate rate limits. A small subset (2 of 10 sampled)
+  have `bsr = null` on every recorded check going back at least a week — a genuine, per-ASIN Catalog lookup
+  failure, not a rate-limit artifact.
+- Missing in DB or display logic: **Missing in DB**, but only for a minority of ASINs; most have real,
+  frequently-refreshed BSR.
+- Seller-friendly replacement: "BSR unavailable from Catalog source" is accurate for the affected minority;
+  no change needed for the majority where BSR is actually populated and fresh.
+- Fix priority: **Low** for the general mechanism; **Medium** to investigate why a specific subset of ASINs
+  never gets a Catalog match (out of scope for this inspection — would need per-ASIN SP-API Catalog
+  response inspection).
+
+**Buy Box**
+- Current source: `asin_snapshots.buy_box_status` / `buy_box_owner`, coalesced via `pricingSnapshot =
+  snapshots.find(s => s.price !== null || s.buy_box_owner !== null || s.buy_box_status !== null ||
+  s.availability_score !== null)` (`listings/route.ts:214-219,227-228`).
+- Why blank/confusing: **this is a real, previously-undocumented bug.** When Pricing is rate-limited,
+  `process-next/route.ts:312` writes `buyBoxStatus = offersResult?.buy_box_status ?? 'unknown'` — a
+  **non-null placeholder string**, not `null`. Because the coalescing search looks for the most recent
+  **non-null** value, and `'unknown'` is non-null, every rate-limited check **overwrites and permanently
+  hides** any genuine prior Buy Box status (`'won'`/`'lost'`) for that ASIN — unlike Price, which correctly
+  stays `null` on a rate-limited attempt and lets the coalescing fall through to an older real value. Live
+  verification: one sampled ASIN's most recent **30 consecutive snapshots** (2026-07-05 through 2026-07-11,
+  a full week) are **all** `buy_box_status: "unknown"` with `scrape_status: partial_pricing_rate_limited` —
+  Pricing has been rate-limited on every single check for at least a week straight for this ASIN.
+- Missing in DB or display logic: **Both** — the underlying genuine value (if it ever existed) is masked in
+  the DB by the `'unknown'` placeholder, and the display logic trusts that placeholder as if it were real
+  data.
+- Seller-friendly replacement: change the write path (`process-next/route.ts:312`) to write `null` instead
+  of `'unknown'` when Pricing is skipped/rate-limited, so the same coalescing logic that already protects
+  Price protects Buy Box too. Until fixed, relabel "Buy Box seller unknown" to something that doesn't imply
+  a fresh check happened, e.g. "Buy Box not recently confirmed (Pricing throttled)".
+- Fix priority: **High** — this is a real data-hiding bug, not just a labeling problem, and the fix is small
+  and low-risk (change one fallback value from a string to `null`).
+
+**Availability**
+- Current source: `asin_snapshots.availability_score`, computed by `availabilityScoreFor(buyBoxStatus)`
+  (`process-next/route.ts:86-91`): `won`/`lost` → 100, `no_buybox` → 0, `unknown`/`partial_success` → 50,
+  else `null`. Same coalescing bug as Buy Box (same `pricingSnapshot` lookup, same non-null `'unknown'`
+  placeholder feeding into a non-null score of 50).
+- Why blank/confusing: "Availability 50%" does not mean "50% in stock" or any real stock/delivery signal —
+  it means "Buy Box status came back ambiguous or defaulted to unknown," which per the bug above happens on
+  **every** rate-limited check, not just genuinely ambiguous ones. It looks like a precise, real metric and
+  isn't one.
+- Missing in DB or display logic: **Display/semantic** — a value is present, but it doesn't mean what its
+  presentation implies. Same underlying masking issue as Buy Box.
+- Seller-friendly replacement: **remove the percentage entirely.** It has no relationship to real
+  stock/offer/pincode availability (a genuine, disconnected data source — `pincode_checks` — exists but
+  isn't joined here). Replace with a plain status word ("Buy Box: Ours / Competitor / No Buy Box / Not
+  recently checked") once the Buy Box masking bug above is fixed.
+- Fix priority: **High** for hiding the percentage (quick UI change, stops an actively misleading number);
+  **Medium** for wiring in a real availability signal later (redesign-scope, not urgent).
+
+**Deal Tag**
+- Current source: none — hardcoded literal string `"Deal checker not implemented yet"`
+  (`listings/route.ts:242`).
+- Why blank/confusing: it's not blank, it's an honest placeholder — no bug, working as labeled.
+- Missing in DB or display logic: **Feature doesn't exist.** No deal/coupon detection code path exists
+  anywhere (confirmed in a prior session: "Amazon deal/coupon badges are NOT exposed by SP-API" per
+  CLAUDE.md's known-state notes).
+- Seller-friendly replacement: hide the column/badge entirely rather than showing a "not implemented"
+  message on every single row — it adds visual noise for a feature that doesn't exist yet.
+- Fix priority: **Low** (cosmetic — hide it), but easy and worth doing alongside the Buy Box/Availability
+  fixes above since it's a one-line UI change.
+
+### Answers to the specific questions
+
+**1. Is "Cron not configured" wrong? Yes — confirmed wrong, and confirmed to be firing right now.**
+The message comes from `listings/route.ts:289-295`:
+```
+if (checkerSummary.processing > 0) return 'Processing active'
+if (checkerSummary.queueDueNow > 0) return 'Cron not configured — start processor to clear queue'
+...
+```
+This is a **snapshot-in-time heuristic**, not a real cron-health check: it fires whenever nothing is
+`status='running'` at the exact instant the page loads **and** there's any backlog due. Both Vercel Cron
+(2h) and Render Cron (4h) are confirmed configured and healthy (§16 D.10, verified across 3+ clean cycles
+this session) — but each only runs for a few seconds every 2–4 hours, so `processing=0` is true the vast
+majority of the time by design, not because no cron exists. Live-verified right now: `status='running'`
+count = **0**, `queued` = 451, all 451 with `run_after <= now()` (`queueDueNow = 451`) — this combination
+guarantees the message fires continuously given current throughput (queue backlog grows faster than the
+existing cron cadence drains it — the same known R11.2b throughput gap already tracked in §16, not a new
+issue). **The message should be removed or rewritten** to reflect actual queue depth/age rather than
+inferring cron existence from a point-in-time `processing` count.
+
+**2. Are rate-limited rows overwriting/hiding older successful values?**
+**Split answer: no for Price, yes for Buy Box and Availability.** Price correctly stays `null` on a
+rate-limited attempt, so the "most recent non-null" coalescing correctly falls back to an older real price
+— verified live (a sampled ASIN shows a real ₹209.00 price from 2026-06-23 surfacing correctly through 19
+days of subsequent rate-limited checks). Buy Box status and Availability score are **not** null on a
+rate-limited attempt — they get a placeholder (`'unknown'`, `50`) that the same coalescing logic treats as
+genuine, non-null data, so they **do** overwrite/hide any older real value. This is the single highest-value
+finding of this inspection (see "Buy Box" column above).
+
+**3. What exact backend data exists for the first 10 visible products?** (My Products tab, ordered by
+`item_name` ascending, matching the page's actual query — ASIN identifiers omitted here per the
+aggregate-only reporting convention, product names are business data not PII/secrets so kept for context):
+All 10 have `scrape_status = 'partial_pricing_rate_limited'` on their latest check. **Price:** 3 of 10 show
+a real (stale, 3–19 days old) price via correct coalescing; 7 of 10 have never had a successful price.
+**BSR:** 8 of 10 have real, frequently-refreshed BSR values (changing check-to-check, confirming Catalog is
+genuinely working); 2 of 10 have never had a successful Catalog match. **Buy Box/Availability:** all 10
+show `buy_box_status: "unknown"` / `availability_score: 50` — per finding above, this is the masking bug,
+not a genuine "no data" state for all of them. **Queue status:** 9 of 10 have a `queued` job waiting for
+its next scheduled attempt; 1 of 10 is in a permanent `failed` state (`last_error_safe: "stale processing
+reset"` — very likely a casualty of the pre-PR#24/#26 stuck-job bug from earlier §16 work, now correctly
+terminal but never automatically retried again). Workspace-wide: **76 of 482** `my_product` background job
+rows (≈16%) are in this permanent `failed` state — a residual cleanup item, not a new bug, but worth
+tracking since none of these 76 products will ever refresh again without a manual re-enqueue path.
+
+**4. What should be fixed before UI redesign?**
+1. The Buy Box/Availability masking bug (write `null` instead of `'unknown'` on rate-limited attempts) —
+   this is a **data correctness** bug, not a cosmetic one; redesigning the UI on top of masked data would
+   just make the wrong numbers look nicer.
+2. The "Cron not configured" false-alarm message — actively erodes trust in a system that's actually
+   working as designed; must not carry into a redesign unchanged.
+3. A decision on the 76 permanently-`failed` `my_product` rows (≈16% of the catalog) — whether/how to
+   re-surface them for a fresh attempt.
+4. A decision on the two-tabs-two-tables fragmentation (`amazon_listing_items` vs `tracked_asins`,
+   §9/§11 of the prior audit) — not blocking a My-Products-only redesign, but relevant if Competitors gets
+   redesigned in the same pass.
+
+**5. What can be hidden immediately because it's not implemented?**
+- The Deal Tag "not implemented yet" message — hide the column/badge rather than displaying it.
+- The Availability percentage — hide the number (not the concept) until the masking bug is fixed and/or a
+  real signal is wired in; a raw, unexplained "50%" actively misleads in the meantime.
+- Rating/review count (from the prior audit, still true — always `null`, never attempted) — already
+  rendered as "—" everywhere, no change needed, but worth confirming no surface still implies a numeric
+  rating exists.
+
+### Trustworthy vs misleading columns
+
+| Column | Trustworthy? | Why |
+|---|---|---|
+| Price | **Trustworthy** | Correct coalescing; blank = genuinely never priced, stale value = genuine history |
+| BSR | **Trustworthy** (for most ASINs) | Refreshes independently of Pricing; small minority genuinely missing |
+| Buy Box | **Misleading** | `'unknown'` placeholder masks real prior data on every rate-limited check |
+| Availability % | **Misleading** | Not a real stock signal; inherits the Buy Box masking bug; looks precise, isn't |
+| Deal Tag | **Honest placeholder** | Says exactly what it is, just shouldn't be shown on every row |
+| "Cron not configured" | **Actively wrong** | Both crons are confirmed healthy; the heuristic is broken, not the crons |
+
+### Immediate fix list (not implemented in this inspection — code change requires separate approval)
+
+1. `process-next/route.ts:312` — write `null`, not `'unknown'`, as the Buy Box status fallback when Pricing
+   is skipped/rate-limited. Small, targeted, same bug-fix pattern as the §16 `run_after` fixes.
+2. `listings/route.ts:289-295` — remove or rework the `suggestedAction` cron-health heuristic; it does not
+   measure what its message claims.
+3. UI: hide the Deal Tag badge/column and the Availability percentage number rather than displaying a
+   placeholder/misleading value on every row.
+4. Operational (not code): decide what to do with the 76 permanently-`failed` `my_product` rows.
+
+### Redesign prerequisites
+
+- Items 1–2 above should land **before** any visual redesign, since a redesign would otherwise present the
+  same masked/wrong data more confidently.
+- The two-tabs-two-tables fragmentation (My Products vs Competitors, `amazon_listing_items` vs
+  `tracked_asins`, independent `asin_snapshots` histories per §9/§11 of the prior audit) is a design
+  decision for the redesign discussion, not a pre-redesign bug fix.
+- Freshness/staleness UI is inconsistent across the three surfaces (My Products per-field status strings,
+  Competitors single relative timestamp, `[asin]` detail page's 24h badge) — worth unifying in the
+  redesign, not before it.
+
+**Nothing in this section was implemented.** No code, cron, Render, Vercel, or SQL change was made. Read-
+only inspection only, per instruction.
+
+---
+
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
@@ -1714,4 +1918,9 @@ and fully verified read-only (columns/constraints/indexes/RLS/trigger + syntheti
 isolation/updated_at/cleanup) — table exists, is empty, and nothing reads or writes it yet;
 §18 update — Implementation PR #1 (permission probe) opened on `feat/review-automation-permission-probe`,
 4 files, no migration/POST/env/cron, tests + tsc + eslint clean; live probe run confirms scopes sufficient
-(Orders pass, Solicitations GET pass), PR #31 still open pending merge approval)
+(Orders pass, Solicitations GET pass), PR #31 still open pending merge approval; **§19 new — ASIN page
+live-data diagnosis: confirmed "Cron not configured" message is wrong (both crons healthy, message is a
+broken point-in-time heuristic, live-verified firing right now), found a real Buy Box/Availability
+data-masking bug (`'unknown'` fallback defeats the coalescing logic that correctly protects Price),
+column-by-column trustworthy/misleading breakdown and an immediate fix list recorded — inspection only, no
+code changed)
