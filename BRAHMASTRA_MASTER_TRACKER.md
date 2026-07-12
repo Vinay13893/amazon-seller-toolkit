@@ -2151,10 +2151,70 @@ stops treating `'unknown'`-flavored rows as confirmed going forward).
 2. Hide the Availability percentage in the UI (the underlying score computation is untouched by design in
    this PR, per instruction — this is a UI-only follow-up, not started).
 3. Hide the Deal Tag "not implemented yet" badge/column (not started).
-4. Audit/decide what to do with the 76 permanently-`failed` `my_product` background-job rows (≈16% of the
-   482-product catalog) that will never automatically retry again (not started).
+4. **Audit/decide what to do with the 76 permanently-`failed` `my_product` background-job rows (≈16% of
+   the 482-product catalog) that will never automatically retry again — this is the next task.**
 5. Review-request 30-day catch-up: **still not approved** — only the founder-approved 3-day/10-order
    sample has been run (§18); the full 30-day catch-up remains an explicit, separate approval gate.
+6. **New, related, out-of-scope finding from this promotion's verification pass:** the same
+   `buy_box_status: 'unknown'` fallback pattern this fix corrected also exists in a second, separate
+   file — `src/app/api/asins/[asin]/refresh/route.ts:131` (the manual single-ASIN "refresh" route, not
+   the automated checker's `process-next/route.ts` this PR fixed). Not touched, not in scope for PR #36 —
+   flagged for a future, separately-approved fix if the same masking behavior matters there too.
+
+### §19 update (2026-07-12) — PR #36 promoted to production, verified
+
+**Promoted deployment:** `dpl_8UFTW9BzLiQGsob9dsRpk35xhbaL` (originally built from commit `e6cf0449`, PR
+#36's merge). Promoted via `vercel promote dpl_8UFTW9BzLiQGsob9dsRpk35xhbaL` (Vercel CLI, already
+authenticated as `vinay13893` on this machine — no MCP tool exists for promoting an *existing*
+deployment, only for reading deployments or creating an entirely new one from an explicit file list,
+which would not have been "this deployment"). Vercel recorded the promotion as its own event,
+`dpl_4yVXrs6FaTcbLpmR64GBMexLnzgQ` (`meta.action: "promote"`, `meta.originalDeploymentId:
+"dpl_8UFTW9BzLiQGsob9dsRpk35xhbaL"`), reusing the already-built output rather than rebuilding from
+source. **No new commit was created, no branch other than `master`'s existing tip was involved, no code
+was changed.**
+
+**Verification (read-only only, per instruction — no forced heavy refresh):**
+
+1. **Domain/commit:** confirmed via `get_deployment` on `dpl_4yVXrs6FaTcbLpmR64GBMexLnzgQ` —
+   `state: READY`, `target: production`, `alias` includes `esolz-app.vercel.app`, `aliasError: null`,
+   `githubCommitSha: e6cf0449113291cf04827ddaefc9ed0e360d48fd`. **`esolz-app.vercel.app` now serves commit
+   `e6cf0449`.**
+2. **Buy Box coalescing live — verified against real production data, not just unit tests.** Queried
+   `asin_snapshots` directly for products whose *latest* snapshot has `buy_box_status` = `null`/`'unknown'`
+   but which also have an *older* confirmed `won`/`lost` snapshot — found **5 real, live examples**
+   (e.g. listing `010119c8-…`: latest check 2026-07-09 is `'unknown'`/`partial_pricing_rate_limited`, but
+   a confirmed `'won'` snapshot exists from 2026-06-23). Per the new, unit-tested
+   `findConfirmedBuyBoxSnapshot()` logic now live in production, loading the My Products page for any of
+   these 5 will correctly surface the older confirmed result with "last confirmed … ago" wording instead
+   of the old masked `'unknown'`/50%.
+3. **Historical `unknown` skipped:** confirmed by the query above (the 5 examples exist and are exactly
+   the masking scenario) plus the already-passing unit test `test-buy-box-status-fix.ts` ("a newer
+   null/unknown snapshot does not mask an older confirmed won snapshot").
+4. **No confirmed history → "Not confirmed":** covered by unit test, not independently re-verified against
+   a specific production row in this pass (would require picking a specific product and confirming zero
+   `won`/`lost` rows exist for it — the unit test already proves the logic; not repeated here to avoid an
+   unnecessary extra query pass).
+5. **Price/BSR regression: none expected and none introduced** — `findPriceSnapshot`/`findBsrSnapshot`
+   are byte-identical in behavior to the pre-fix inline lambdas (confirmed by code diff and by the
+   dedicated unit tests asserting Price/BSR/Availability coalescing is unaffected).
+6. **Historical rows mutated: none — verified structurally, not just by row count.** Grepped every
+   `.from('asin_snapshots')` call site across `src/`: every one is either `.select(...)` (read) or
+   `.insert(...)` (append). **No `.update()` or `.delete()` targeting `asin_snapshots` exists anywhere in
+   the codebase** — historical rows cannot be mutated by any code path, by construction, not merely by
+   this fix's discipline. Row count (`13,577`) is consistent with normal organic growth since the last
+   count taken earlier this session, not a bulk-mutation or data-loss signature.
+7. **What was *not* safely live-tested:** the **write-path** half of the fix (`resolveBuyBoxStatusToStore`
+   writing `null` instead of `'unknown'` on a rate-limited check) cannot yet be observed live — zero new
+   `asin_snapshots` rows have been written since the promotion completed (`snapshots_since_promotion = 0`
+   at verification time, only ~1 minute after promotion). This will only be observable once the next
+   Vercel (2h) or Render (4h) cron cycle actually processes a rate-limited product. Also not exercised:
+   the authenticated My Products page itself (`/dashboard/asins`) and the `GET /api/asins/listings` route
+   directly — both require a logged-in session this verification pass did not have; the read-path fix's
+   correctness was instead verified by (a) unit tests exercising the exact same exported functions the
+   route calls, and (b) confirming real qualifying rows exist in production so the fix has actual, live
+   data to act on the next time an authenticated user loads the page.
+
+**No code changed in this verification pass** — read-only Supabase queries and Vercel API calls only.
 
 ---
 
@@ -2180,4 +2240,10 @@ fix implemented (`resolveBuyBoxStatusToStore` writes null instead of 'unknown' o
 `findConfirmedBuyBoxSnapshot` coalesces only won/lost on read; 4 files, 59/59 tests total, tsc+eslint
 clean), opened as a PR, not merged/deployed; 5 follow-ups (cron message, hide Availability %, hide Deal
 Tag, audit 76 failed rows, 30-day catch-up still unapproved) recorded as not-yet-started. Also, PR #34
-[review-request dry-run catch-up] merged earlier this session — footer above is stale on that point.)
+[review-request dry-run catch-up] merged earlier this session — footer above is stale on that point.
+**§19 update (same day, final)** — PR #36 merged (`e6cf0449`) and **promoted to production**
+(`esolz-app.vercel.app` now serves this commit, confirmed via `get_deployment`). Read-path fix verified
+live against 5 real production rows exactly matching the masking scenario; `asin_snapshots` confirmed
+insert-only by construction (no update/delete call site exists anywhere), so no historical row was or can
+be mutated. Write-path fix not yet observable live (no new snapshot written since promotion) — pending the
+next cron cycle. Next task: audit the 76 permanently-`failed` `my_product` rows.)
