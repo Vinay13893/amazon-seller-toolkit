@@ -51,11 +51,17 @@
 --
 -- PII: no buyer name, address, phone, or email column exists, matching the
 -- internal_payment_transactions convention. last_eligibility_response is
--- meant to hold only the minimal sanitized eligibility payload (e.g. the
--- list of available action names) for audit/debugging -- a defensive check
--- constraint below rejects a few obviously PII-shaped top-level keys as a
--- best-effort guard; it is not a substitute for the application only ever
--- writing sanitized data here.
+-- for audit/debugging only. The CHECK constraint below is DEFENSIVE ONLY --
+-- it rejects a handful of obviously PII-shaped top-level keys, but it is
+-- not an allowlist and cannot verify the JSON is otherwise sanitized. Future
+-- application code writing to this column MUST store only:
+--   - eligible action names (e.g. ["productReviewAndSellerFeedback"])
+--   - a sanitized status/reason string
+--   - the checked-at timestamp
+--   - non-sensitive Amazon error metadata (HTTP status, error code)
+-- and MUST NEVER store the raw Orders API or Solicitations API response
+-- body verbatim -- those responses are not guaranteed to be PII-free, and
+-- this column has no way to enforce that beyond the narrow key-name check.
 
 create table if not exists public.review_solicitation_orders (
   id uuid primary key default gen_random_uuid(),
@@ -141,11 +147,18 @@ create table if not exists public.review_solicitation_orders (
 -- Due-work selection: the daily job's "select due, non-terminal rows" query.
 -- Terminal statuses are excluded from the index entirely so it stays small
 -- and so a terminal row can never be accidentally selected for new work.
+-- solicitation_sent = false is redundant with the status filter given the
+-- sent/status agreement constraint above, but is stated explicitly so the
+-- index (and any query using it) is correct even read in isolation.
+-- next_check_at is not null excludes rows that have never been scheduled
+-- for a check yet, which "due at time X" selection has no meaning for.
 create index if not exists review_solicitation_orders_due_idx
   on public.review_solicitation_orders (workspace_id, marketplace_id, next_check_at)
-  where solicitation_status not in (
-    'sent', 'already_solicited', 'expired', 'ineligible_terminal', 'failed_terminal'
-  );
+  where solicitation_sent = false
+    and next_check_at is not null
+    and solicitation_status not in (
+      'sent', 'already_solicited', 'expired', 'ineligible_terminal', 'failed_terminal'
+    );
 
 -- Status/reporting (e.g. the dry-run volume report from spec PR #7).
 create index if not exists review_solicitation_orders_status_idx

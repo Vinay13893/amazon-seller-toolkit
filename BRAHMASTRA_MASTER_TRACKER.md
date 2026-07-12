@@ -1613,6 +1613,33 @@ repo uses) — no existing table is altered, no existing data touched. Rollback:
 public.review_solicitation_orders CASCADE` cleanly removes the table, its indexes, constraints, policy,
 and trigger — nothing else in the schema references this new table yet.
 
+**Founder final-review pass (2026-07-12) — 2 corrections applied, migration not yet applied:**
+
+1. **`updated_at`:** uses the existing, already-audited `public.fn_set_updated_at()` trigger function
+   (the same one every other table in this repo uses) — no new function, no `SECURITY DEFINER`. Confirmed.
+2. **Sent-state consistency:** confirmed the `(solicitation_status = 'sent') = solicitation_sent`
+   constraint is a true biconditional — Postgres evaluates it as boolean-equals-boolean, so all 4 required
+   directions hold: `sent=true` forces `status='sent'`, `status='sent'` forces `sent=true`, `sent=true`
+   forces `solicitation_sent_at IS NOT NULL` (separate constraint), and an unsent row cannot have
+   `status='sent'` (contrapositive of the same biconditional). Confirmed, no change needed.
+3. **Due-work index — corrected.** Originally filtered only on non-terminal status; added explicit
+   `solicitation_sent = false` (redundant given #2's constraint, but now correct even read in isolation)
+   and `next_check_at IS NOT NULL` (excludes never-scheduled rows, which "due at time X" has no meaning
+   for). Smallest possible correction — same file, not yet merged, so edited in place rather than adding
+   a second migration.
+4. **Claim fields:** confirmed `send_claimed` rows can freely set `claimed_at`/`claimed_by`/
+   `claim_expires_at`, and the one constraint referencing them (`send_claimed` requires both timestamps
+   set) does not block a future stale-claim recovery UPDATE (transitioning status away from
+   `send_claimed` is unconstrained). No RPC added. Confirmed, no change needed.
+5. **PII documentation — strengthened.** The JSONB check comment now explicitly enumerates the only 4
+   things future application code may write to `last_eligibility_response` (eligible action names,
+   sanitized status/reason, checked-at timestamp, non-sensitive Amazon error metadata) and explicitly
+   states raw Orders/Solicitations API response bodies must never be stored there. The `CHECK` constraint
+   itself is unchanged and remains explicitly documented as defensive-only, not an allowlist.
+
+Re-ran `npx tsc --noEmit` after both corrections — pass (unchanged from before; this is a schema-only
+file with no TS surface).
+
 **Production migration: NOT applied.** Schema only, PR opened, not merged, not applied to any database.
 
 ---
