@@ -367,8 +367,19 @@ detail in `BRAHMASTRA_MASTER_TRACKER.md` §18.
 - `scripts/test-review-requests.ts` — 20/20 passing (all 16 founder-requested test cases + 4 more).
 - Checks: `npx tsc --noEmit` pass, eslint pass, full regression 46/46 (5+6+6+9+20) across every test
   suite in the repo.
-- **Not run:** the live 30-day catch-up has not been executed against production Amazon — tested against
-  fakes only. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §18.
+- **Live 3-day sample run (2026-07-12, founder-approved, 2 idempotency passes, both clean):** window
+  clamped to 3 days (not 30), batch size 10, 1100ms throttle. Run 1: 419 orders upserted, 10 candidates
+  checked (all → `not_eligible_retryable`, 0 → `eligible_dry_run`, 0 errors), 0 sent, 0 duplicates, all
+  eligibility evidence conformed exactly to the 5-field sanitized allowlist. Run 2 (idempotency check):
+  422 rows (3 new orders appeared naturally), still 0 duplicates, 0 sent, and — critically — the 10
+  candidates checked in run 2 were **10 different rows** than run 1's (0 rows had `check_attempts > 1`),
+  proving the 3-day retry-scheduling policy correctly excluded already-checked rows from same-day
+  re-selection. **No bug found; no code change needed.** Full sanitized results in
+  `BRAHMASTRA_MASTER_TRACKER.md` §18. Operational note: a 3-day/~420-order window's order-fetch phase
+  alone takes ~3 minutes (sequential per-order DB round trips, by design) — flagged as evidence for
+  planning the eventual full 30-day run, not acted on here.
+- **Not yet run:** the live 30-day catch-up has not been executed against production Amazon — only the
+  3-day sample above.
 
 **Still not done:** no daily cron, no Solicitations POST anywhere in the codebase, no protected sending
-route, no live mode, no scope/credential changes, no live sending, no live catch-up run yet.
+route, no live mode, no scope/credential changes, no live sending, no live 30-day catch-up run yet.

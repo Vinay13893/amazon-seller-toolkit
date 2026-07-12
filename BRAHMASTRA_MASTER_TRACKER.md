@@ -1778,11 +1778,97 @@ warnings. Full regression: `test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts`
 `test-retry-or-fail-update.ts` 6/6, `test-review-automation-permission-probe.ts` 9/9,
 `test-review-requests.ts` 20/20 — **46/46 total, all passing.**
 
-**Explicitly not done in this PR:** the live 30-day catch-up was not run against production Amazon (code
-tested against fakes only, per instruction). No daily cron. No protected sending route. No live mode. No
-migration change. No Solicitations POST function anywhere in the codebase (re-verified by test).
+**Explicitly not done in this PR (at code-review time):** the live catch-up had not yet been run against
+production Amazon (code tested against fakes only). No daily cron. No protected sending route. No live
+mode. No migration change. No Solicitations POST function anywhere in the codebase (re-verified by test).
 
-**PR:** opened, not merged, not deployed.
+### §18 update (2026-07-12) — Live 3-day sample run (founder-approved, 2 passes, both clean)
+
+Founder approved a small live sample before merging PR #34: 3-day window (not 30), max 10 candidates,
+GET-only. Settings explicitly confirmed before running: `REVIEW_REQUESTS_ENABLED=false`,
+`REVIEW_REQUESTS_DRY_RUN=true`, `REVIEW_REQUESTS_MARKETPLACE_ID=A21TJRUUN4KGV`,
+`REVIEW_REQUESTS_CATCHUP_DAYS=3`, `REVIEW_REQUESTS_BATCH_SIZE=10`, `REVIEW_REQUESTS_RATE_LIMIT_MS=1100`.
+
+**Baseline (before run 1):** `review_solicitation_orders` was empty — 0 rows, 0 sent, no status
+breakdown.
+
+**Operational note (non-blocking, flagged for future 30-day-run planning):** run 1's shell command hit
+the tool's 2-minute output-capture timeout before the underlying script finished; the script itself kept
+running to completion in the background (unaffected, since it's a plain long-running Node process, not
+killed by the parent shell exiting) and finished cleanly — verified by watching row counts stabilize and
+by the founder confirming the reported PIDs had already exited by the time a manual `taskkill` was run.
+**No data corruption or partial-write risk resulted** — the repository's guarded-write design means an
+interrupted run simply leaves rows in their last-completed state, never a torn/partial write — but this
+surfaced a real timing fact: **a 3-day/~420-order window's order-upsert phase alone took ~2m49s–~3m05s**
+(sequential per-order Supabase round trips, by design, not a bug). A full 30-day window will contain
+substantially more orders and should be expected to take proportionally longer — run 2, captured properly
+end-to-end this time, reports `elapsedMs: 184606` (~3m05s) for the same 3-day window. This is important
+context for deciding how (and whether, in one shot) to run the eventual real 30-day catch-up — flagged as
+evidence for that future decision, not acted on here.
+
+**Run 1 results (sanitized aggregates only — no order IDs, no raw responses, matches what the script
+itself prints):**
+- Orders: window = 3 days (respected — spot-checked `purchase_date` range against the DB, oldest order
+  matched the 3-day cutoff, no order older than the window present).
+- Database after run 1: 419 rows total, 0 with `solicitation_sent = true`, 0 duplicate
+  `(workspace_id, marketplace_id, amazon_order_id)` groups.
+- Eligibility: exactly 10 candidates checked (batch size respected) — all 10 → `not_eligible_retryable`
+  (0 → `eligible_dry_run`, 0 → `failed_retryable`, 0 API errors). `last_eligibility_response` on all 10
+  contains **exactly** the 5 allowlisted keys (`actionNames`, `checkedAt`, `sanitizedReason`,
+  `amazonStatusCode`, `amazonErrorCode`) and nothing else — verified via `jsonb_object_keys` across every
+  row with a non-null value.
+- Throttle: 1100ms sleep applied before each Solicitations call as configured; the observed gap between
+  consecutive `last_checked_at` timestamps (~1.9–2.5s) is larger than 1100ms because it also includes the
+  real network/DB round-trip time for the call and the write-back, not because the throttle itself was
+  wrong — the configured delay value was confirmed correct at the code level in this session's earlier
+  unit tests (exact-value assertion).
+- Absolute safety: `postAttempted: false`, `reviewRequestsSent: 0` (script's own report), 0 rows with
+  `solicitation_sent = true` in the DB independently, no `createProductReviewAndSellerFeedbackSolicitation`
+  function exists anywhere in the codebase (unchanged from PR #31/#34's verification).
+
+**Run 2 (idempotency pass, same 3-day sample, run only after run 1 was confirmed clean) — full JSON
+report** (this run was captured as a properly tracked background task from the start, avoiding run 1's
+capture issue):
+```json
+{
+  "fetchWindowDays": 3,
+  "ordersApiPagesFetched": 6,
+  "ordersReceived": 421,
+  "ordersInserted": 3,
+  "ordersUpdated": 418,
+  "candidatesChecked": 10,
+  "eligibleDryRun": 0,
+  "notEligibleRetryable": 10,
+  "tooEarly": 0, "expired": 0, "alreadySolicited": 0, "ineligibleTerminal": 0,
+  "failedRetryable": 0, "failedTerminal": 0,
+  "skippedTerminal": 0, "skippedAlreadySent": 0,
+  "apiErrorsByCode": {},
+  "elapsedMs": 184606,
+  "estimatedApiCalls": 16,
+  "postAttempted": false,
+  "reviewRequestsSent": 0
+}
+```
+- Database after run 2: **422 rows** (419 + 3 newly-appeared orders since run 1, minutes apart — expected,
+  not a bug), 0 sent, **0 duplicate groups** (confirmed idempotent — re-upserting the same 419 orders
+  updated them in place, created no duplicates).
+- Status breakdown after run 2: `pending`=402, `not_eligible_retryable`=20 (the original 10 from run 1
+  plus 10 *different* rows from run 2) — `sum(check_attempts)` across all rows = 20, and **0 rows have
+  `check_attempts > 1`**, proving run 2 correctly selected 10 **new** due candidates rather than
+  re-checking run 1's 10 rows (which had already been scheduled a ~3-day-out `next_check_at` and were
+  correctly excluded from "due" selection on the same day). This is exactly the intended idempotent/
+  scheduling behavior, not a coincidence.
+- Terminal/sent fields: still 0 rows `sent`, still 0 rows in any terminal status — nothing in either run
+  produced a terminal outcome (consistent with the documented "GET-only cannot confidently detect
+  terminal conditions" design), so terminal-field protection was not separately exercised by *this* live
+  run (already proven at the unit-test and migration-synthetic-test level in earlier steps).
+
+**Conclusion: both passes clean, no bug found, nothing fixed.** No code change was made to PR #34 as a
+result of this live test — the implementation behaved exactly as designed on real production data.
+
+**PR:** #34 updated with this section (sanitized aggregates only — no order IDs, no raw API responses
+committed). Still open, not merged, not deployed. No cron created. No env vars changed permanently
+(only exported for the duration of each manual run). No credentials/scopes/tokens changed.
 
 ---
 
@@ -1791,7 +1877,8 @@ locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verific
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
 Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
 PR #31 merged — permission probe live, scopes confirmed sufficient; dry-run catch-up foundation
-(repository/policy/script, 46/46 tests) opened, not merged, not run live; PR #32 (migration 059, schema only)
+(repository/policy/script, 46/46 tests) opened as PR #34; live 3-day/10-order sample run twice (idempotency
+pass), both clean, sanitized results recorded, no bug found, PR #34 still open not merged; PR #32 (migration 059, schema only)
 opened, review-corrected, and merged; migration 059 applied to production Supabase (okxfwcfxxrtmijmvztdq)
 and fully verified read-only (columns/constraints/indexes/RLS/trigger + synthetic insert/duplicate-reject/
 isolation/updated_at/cleanup) — table exists, is empty, and nothing reads or writes it yet;
