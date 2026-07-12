@@ -116,6 +116,46 @@ function availabilityScore(status: BuyBoxOfferStatus | 'unavailable'): number | 
   return null
 }
 
+export interface RetryOrFailUpdate {
+  status: 'queued' | 'failed'
+  last_error_safe: string
+  run_after: string | undefined
+  locked_at: null
+  locked_by: null
+  completed_at: string | null
+}
+
+/**
+ * Builds the update payload for the three normal-processing terminal-failure
+ * branches (no active connection / catalog+pricing both failed / snapshot
+ * insert failed) in the main claim loop below. Pure and exported so each
+ * branch's behavior is unit-testable without mocking Amazon API calls or a
+ * live Supabase connection.
+ *
+ * Same bug class as reclaimStuckJob() above (R11.3/R11.4): all three call
+ * sites previously wrote `run_after: null` on the canRetry=false path,
+ * which background_jobs.run_after (`timestamptz NOT NULL DEFAULT now()`,
+ * migration 034) rejects outright. `undefined` is dropped by Supabase-js's
+ * JSON serialization, leaving the column at its existing value instead —
+ * inert once status='failed', since a failed job is never re-selected by
+ * the status='queued' claim query.
+ */
+export function buildRetryOrFailUpdate(
+  canRetry: boolean,
+  reason: string,
+  retryAfterIso: string,
+  nowIso: string,
+): RetryOrFailUpdate {
+  return {
+    status: canRetry ? 'queued' : 'failed',
+    last_error_safe: reason,
+    run_after: canRetry ? retryAfterIso : undefined,
+    locked_at: null,
+    locked_by: null,
+    completed_at: canRetry ? null : nowIso,
+  }
+}
+
 // ── Phase 1: Reset stuck jobs ─────────────────────────────────────────────────
 //
 // R11.3: cleanupStuckJobs() previously incremented its "reset" counter for
@@ -468,13 +508,12 @@ async function main() {
     if (!connection) {
       skippedNoConn++
       const canRetry = job.attempt_count + 1 < job.max_attempts
-      await admin.from('background_jobs').update({
-        status: canRetry ? 'queued' : 'failed',
-        last_error_safe: 'Amazon connection is not active for this workspace.',
-        run_after: canRetry ? new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString() : null,
-        locked_at: null, locked_by: null,
-        completed_at: canRetry ? null : new Date().toISOString(),
-      }).eq('id', job.id)
+      await admin.from('background_jobs').update(buildRetryOrFailUpdate(
+        canRetry,
+        'Amazon connection is not active for this workspace.',
+        new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString(),
+        new Date().toISOString(),
+      )).eq('id', job.id)
       if (canRetry) retried++; else failed++
       continue
     }
@@ -530,13 +569,12 @@ async function main() {
         : offersIsUnavailable ? 'amazon_pricing_unavailable'
         : (catalogError ?? offersError ?? 'Product page snapshot failed safely.')
 
-      await admin.from('background_jobs').update({
-        status: canRetry ? 'queued' : 'failed',
-        last_error_safe: reason,
-        run_after: canRetry ? new Date(Date.now() + retryDelay * 60 * 1000).toISOString() : null,
-        locked_at: null, locked_by: null,
-        completed_at: canRetry ? null : checkedAt,
-      }).eq('id', job.id)
+      await admin.from('background_jobs').update(buildRetryOrFailUpdate(
+        canRetry,
+        reason,
+        new Date(Date.now() + retryDelay * 60 * 1000).toISOString(),
+        checkedAt,
+      )).eq('id', job.id)
 
       if (offersIsRateLimited) { pricingRateLimited++; break }
       else if (offersIsUnavailable) pricingUnavailable++
@@ -598,13 +636,12 @@ async function main() {
     const { error: insertErr } = await admin.from('asin_snapshots').insert(snapshotPayload)
     if (insertErr) {
       const canRetry = job.attempt_count + 1 < job.max_attempts
-      await admin.from('background_jobs').update({
-        status: canRetry ? 'queued' : 'failed',
-        last_error_safe: 'Snapshot could not be saved.',
-        run_after: canRetry ? new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString() : null,
-        locked_at: null, locked_by: null,
-        completed_at: canRetry ? null : checkedAt,
-      }).eq('id', job.id)
+      await admin.from('background_jobs').update(buildRetryOrFailUpdate(
+        canRetry,
+        'Snapshot could not be saved.',
+        new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString(),
+        checkedAt,
+      )).eq('id', job.id)
       if (canRetry) retried++; else failed++
       continue
     }
