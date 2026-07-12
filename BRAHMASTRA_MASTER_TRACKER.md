@@ -2216,6 +2216,154 @@ was changed.**
 
 **No code changed in this verification pass** — read-only Supabase queries and Vercel API calls only.
 
+### §19 update (2026-07-12) — Failed `my_product` jobs audit + write-path live-observation (inspection only)
+
+**Read first for this pass:** `BRAHMASTRA_MASTER_TRACKER.md`, `ASIN_PAGE_DATA_AUDIT.md` (intern's local
+checkout, read-only). **No code or DB rows changed in this pass** — SQL queries were all read-only.
+
+#### 1–3. Failed `my_product` row count, breakdown, and root-cause classification
+
+**Total: 76** (reconfirmed, unchanged from the earlier count), **all in one workspace**
+(`55a321c9-…`, EasyHOME — the only workspace with `my_product` jobs). All 76 have
+`attempt_count = 3 = max_attempts` — every one is a **genuine retry exhaustion**, not a premature/incorrect
+failure.
+
+`last_error_safe` breakdown:
+
+| Reason | Count | Age range (completed_at) |
+|---|---|---|
+| `catalog_not_found` | 37 | 2026-06-23 → 2026-07-09 |
+| `amazon_pricing_unavailable` | 23 | 2026-06-23 → 2026-07-11 |
+| `stale processing reset` | 11 | **all 11 at exactly 2026-07-11 20:01:02.224** |
+| `amazon_pricing_rate_limited` | 5 | 2026-06-23 → 2026-07-06 |
+
+(No `last_error_code` column exists on `background_jobs` — that field only exists on the new,
+unrelated `review_solicitation_orders` table from §18; `last_error_safe` is the only error field this
+table has.)
+
+**Root-cause classification (evidence-based, not guessed):**
+
+- **`stale processing reset` (11) — confirmed identical count to the exact 11 stuck jobs from §16's
+  `run_after` investigation earlier this session.** All 11 share one identical `completed_at`
+  (2026-07-11 20:01:02.224) — a single batch event, consistent with these being the jobs that finally
+  transitioned from stuck-`running` to terminal-`failed` once PR #24/#26's reclaim fix started working
+  correctly and they'd already exhausted `max_attempts` by the time they were reclaimed. **Root cause:
+  already fixed** (this session, earlier). Not a live code defect.
+- **`amazon_pricing_rate_limited` (5)** — all from before 2026-07-06, i.e. predating this session's
+  cooldown-backoff refinements. Likely stale casualties of an earlier, less-refined retry policy.
+- **`catalog_not_found` (37) and `amazon_pricing_unavailable` (23) — sampled directly, not assumed.**
+  Picked the target with the most historical failed rows (9, see below) and traced its **full job
+  history**: `B0H6JJH1BH` ("Liltoes Reversible Baby PlayMat…", listing status `DISCOVERABLE`,
+  marketplace `A21TJRUUN4KGV`, a syntactically valid ASIN) was **automatically re-enqueued and re-failed
+  9 separate times over 18 days** (2026-06-23 → 2026-07-11), alternating between
+  `amazon_pricing_unavailable` and `catalog_not_found`. Sampled 8 more `catalog_not_found` ASINs
+  directly — all syntactically valid, all `DISCOVERABLE`, none deleted/archived. **Conclusion: these are
+  genuine, persistent Amazon-side data gaps (Catalog Items API has no match, or no active offers to
+  price) for specific ASINs — not malformed input, not marketplace mismatch, not an archived/deleted
+  product, not an auth/token issue, and not a code defect.** The system is already discovering this the
+  hard way, repeatedly, on its own.
+
+#### 4. Linkage check
+
+**All 76 `amazon_listing_item` rows still exist and are active** (`status = 'DISCOVERABLE'` for all 76,
+0 deleted). No orphaned targets. `tracked_asins`/workspace linkage not applicable here (`my_product`
+targets key off `amazon_listing_items` only, not `tracked_asins` — see the intern's audit §11).
+
+#### 5. Retry-safe / terminal / archive / needs-code-fix counts
+
+- **Retry-safe (transient, likely to succeed on a future attempt): 16** — the 5 `amazon_pricing_rate_limited`
+  + 11 `stale processing reset` rows. Both root causes are already resolved/superseded; nothing about the
+  ASINs themselves is problematic.
+- **Terminal (Amazon-side, low probability of ever succeeding): ~60** — the 37 `catalog_not_found` + 23
+  `amazon_pricing_unavailable`, based on the direct evidence above (one target failed the *same way* 9
+  times over 18 days with no change). Framed as "low probability," not "certainly never," since this
+  wasn't verified with a fresh live SP-API call per ASIN (out of scope for a read-only audit).
+- **Archive/ignore: 0** — no listing is deleted, archived, or orphaned; there's nothing to archive on our
+  side. All 76 are active listings simply pending Amazon's own data. 
+- **Needs-code-fix: 0** — no live code defect is responsible for any of these 4 failure reasons.
+
+#### 6. **Critical finding: no manual reset is needed at all — the system already retries these
+automatically, without any duplicate/history/max-attempts risk, because it never reuses old failed rows.**
+
+Traced the enqueue eligibility logic (`enqueue/route.ts:70-96`): its own `background_jobs` lookup query
+is filtered to `status IN (queued, running) OR (status IN (completed, failed) AND completed_at >= 24h
+ago)`. **A `failed` row older than 24h becomes invisible to the skip-logic entirely** — the target is
+treated as brand-new-eligible and gets a **fresh row** on the next enqueue pass (the old row is left
+untouched, never reused/reset). Confirmed live: **17 of the 76 target_ids already have more than one
+historical `failed` row** (one has 9, several have 4-6) — direct proof the natural cadence has already
+been re-attempting them repeatedly, all on its own. **6 of the 76 are, right now, already back in
+`queued` status** for another attempt.
+
+Answering the specific risk questions:
+- **Duplicate jobs?** Not from the natural cadence (each cycle inserts a genuinely new row for a target
+  that's had no `queued`/`running` row in >24h). Risk would only appear if someone manually flipped an
+  *old* failed row back to `queued` while a newer natural-cadence row for the same target already exists
+  (6 of the 76 are in exactly that state right now) — that would collide with the
+  `background_jobs_active_target_uidx` partial unique index (`WHERE status IN ('queued','running')`) and
+  error. **Recommendation: never manually touch these rows — the cadence already handles it correctly.**
+- **Snapshot history preserved?** Yes, unconditionally — `asin_snapshots` is insert-only by construction
+  (§19's earlier finding this session), completely independent of `background_jobs` row status.
+- **Exceed max attempts incorrectly?** Only a risk if someone reset `status` without resetting
+  `attempt_count` on an *old* row (it would immediately re-exhaust on the next claim). The natural cadence
+  avoids this entirely by inserting a fresh row with `attempt_count=0` instead.
+- **Re-trigger known poisoned inputs?** Yes, for the ~60 likely-terminal targets — but this is already
+  happening every 24h via the normal cadence regardless of any manual action, at a bounded, small rate
+  (76 rows across weeks, not a flood).
+
+#### 7. Recommended cleanup plan (proposed only, **not run**)
+
+**No SQL action is recommended for the 76 rows themselves.** They are not stuck, not orphaned, and not
+evidence of a bug — they are the visible, moment-in-time tail of a retry cadence that is already working
+correctly and self-healing (6 already re-queued; historical multi-attempt evidence for 17 targets proves
+the cycle runs on its own). Recommended order, if anything is done at all:
+
+1. **No immediate action required.** Optional: revisit in ~2 weeks to see whether the ~60 likely-terminal
+   count has grown materially or stayed flat — flat/slow growth confirms this is a small, steady-state
+   population of genuinely Amazon-unavailable ASINs, not a growing problem.
+2. **Optional product decision (not urgent):** for targets that have failed the same way ≥3 times, consider
+   either a longer backoff (to reduce wasted API/DB churn re-attempting known-persistent gaps) or a
+   distinct UI status ("Amazon data unavailable for this ASIN") instead of the generic churn indicator —
+   this is a UX/product call, not a bug fix, and was explicitly out of scope to implement here (touches
+   ASIN UI).
+3. **Optional housekeeping (low priority):** old failed rows accumulate indefinitely (no retention/pruning
+   policy exists for `background_jobs`) — a future retention policy could be considered purely for table
+   hygiene, unrelated to correctness.
+
+#### 8. Buy Box write-path live observation — two significant, unexpected findings
+
+Per instruction, observed the next normal cron cycles rather than forcing a refresh. **Two real cycles
+occurred after PR #36's production promotion** (Vercel Cron at 16:00:42 and 18:00:42 UTC, confirmed via
+`GET /api/cron/asins/process-product-snapshots` → `enqueue` → `process-next` in Vercel runtime logs) and
+both wrote new `partial_pricing_rate_limited` snapshots — **but `buy_box_status` on all of them is still
+`"unknown"`, not `null`.** The write-path fix is **not yet observably effective**, for two independent
+reasons:
+
+1. **Vercel Cron is invoking a stale, pre-fix deployment, despite the production alias being correct.**
+   Runtime logs for both the 16:00 and 18:00 cycles show `dep=dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA` — a
+   **much older deployment** (commit `3fa72fa2`, "Fix Track ASIN restore after archive," predating this
+   entire session's PR #24 onward). Directly fetching `https://esolz-app.vercel.app/` (a plain page load,
+   the one safe check the founder's instruction allowed) confirms the **public production alias itself
+   correctly serves `dpl_4yVXrs6FaTcbLpmR64GBMexLnzgQ`** (the promoted fix — `data-dpl-id` in the served
+   HTML matches exactly). So: **regular page loads and any interactively-triggered "Check Now" action get
+   the fix; Vercel's Cron Job scheduler does not**, even after two cycles. Vercel's own docs confirm
+   `vercel promote` explicitly **does not rebuild** the deployment; it appears Cron Job → deployment
+   binding is not simply "whatever the production alias currently points to" and may require a full
+   fresh production deploy (not a lightweight promote) to update, or may simply need more time to
+   propagate than two cycles (4+ hours) allowed for. **Not resolved in this pass — flagging for a
+   decision, not guessing further or taking action.**
+2. **Independently, the Render cron script was never touched by PR #36 and has the identical, still-live
+   bug.** `scripts/process-asin-checker-jobs.ts:587` has the exact same
+   `offersResult?.buy_box_status ?? 'unknown'` pattern PR #36 fixed in `process-next/route.ts` — this is
+   a **separate, independent reimplementation** of the same checker logic (see §16's dual-scheduler
+   history) that PR #36's scope never included. Render's every-4h cron will keep writing the masking
+   `'unknown'` value regardless of Vercel's binding issue above, until this file is separately fixed.
+
+**Net effect:** the read-path fix (already verified live against 5 real rows in the prior update) is
+fully effective today for any product whose masking snapshot was written *before* this fix — but new
+rate-limited snapshots written by either scheduler going forward will **still** write the masking
+`'unknown'` value until (a) Vercel's cron binding updates to the promoted deployment and (b) the Render
+script gets the same fix applied. **This needs a decision, not a further inspection-only pass.**
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
@@ -2246,4 +2394,16 @@ Tag, audit 76 failed rows, 30-day catch-up still unapproved) recorded as not-yet
 live against 5 real production rows exactly matching the masking scenario; `asin_snapshots` confirmed
 insert-only by construction (no update/delete call site exists anywhere), so no historical row was or can
 be mutated. Write-path fix not yet observable live (no new snapshot written since promotion) — pending the
-next cron cycle. Next task: audit the 76 permanently-`failed` `my_product` rows.)
+next cron cycle. Next task: audit the 76 permanently-`failed` `my_product` rows.
+**§19 update (audit complete)** — the 76 failed `my_product` rows need **no manual cleanup**: all are
+genuine retry-exhaustion (attempt_count=3=max), all listings still exist/active, the enqueue cadence
+already naturally re-attempts every one of them without any reset (17 targets already have multiple
+historical failed rows proving this, 6 are already back in `queued` right now), and a directly-traced
+9-attempt/18-day history for one target confirms `catalog_not_found`/`amazon_pricing_unavailable` (60 of
+76) are genuine, persistent Amazon-side gaps, not a code defect. **Two significant, unresolved findings
+from write-path live-observation:** (1) Vercel's Cron Job scheduler is still invoking a stale, pre-fix
+deployment (`dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA`, commit `3fa72fa2`) two cycles after promotion, even
+though the public production alias itself correctly serves the fix — needs a decision (wait longer, or a
+full fresh deploy); (2) the Render cron script (`process-asin-checker-jobs.ts:587`) has the identical,
+never-fixed bug, independent of the Vercel issue. Read-path fix remains fully effective for
+already-existing rows regardless of both issues.)
