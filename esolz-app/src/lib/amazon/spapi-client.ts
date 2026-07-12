@@ -278,3 +278,181 @@ export async function probeInboundShipmentsAccess(
     amazonErrorCode: null,
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Orders API v0 — read-only. No order-mutation calls exist in this client.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface OrderSummary {
+  amazonOrderId: string
+  orderStatus: string | null
+  purchaseDate: string | null
+  lastUpdateDate: string | null
+}
+
+export interface ListOrdersParams {
+  marketplaceId: string
+  createdAfter: string
+  maxResultsPerPage?: number
+  endpoint?: string
+}
+
+export interface ListOrdersResult {
+  ok:              boolean
+  statusCode:      number
+  orders:          OrderSummary[]
+  nextToken:       string | null
+  amazonErrorCode: string | null
+}
+
+/**
+ * Calls GET /orders/v0/orders and returns a small, defensively-parsed list
+ * of order summaries (no buyer name/address/phone/email fields are ever
+ * read or returned — Amazon's own response for this endpoint does not
+ * include them; BuyerInfo requires a separate, restricted-PII endpoint
+ * this client intentionally does not call).
+ *
+ * Never throws on a non-2xx response — returns { ok: false, ... } instead,
+ * so callers (e.g. the permission probe) can report a sanitized status
+ * rather than crash.
+ */
+export async function listOrders(
+  accessToken: string,
+  params: ListOrdersParams,
+): Promise<ListOrdersResult> {
+  const {
+    marketplaceId,
+    createdAfter,
+    maxResultsPerPage = 5,
+    endpoint = SPAPI_EU_ENDPOINT,
+  } = params
+
+  const qs = new URLSearchParams({
+    MarketplaceIds:     marketplaceId,
+    CreatedAfter:       createdAfter,
+    MaxResultsPerPage:  String(maxResultsPerPage),
+  })
+
+  const res = await fetch(`${endpoint}/orders/v0/orders?${qs}`, {
+    method:  'GET',
+    headers: {
+      'x-amz-access-token': accessToken,
+      'content-type':       'application/json',
+    },
+  })
+
+  if (!res.ok) {
+    let amazonErrorCode: string | null = null
+    try {
+      const errorBody = await res.json() as { errors?: Array<{ code?: unknown }> }
+      amazonErrorCode = safeAmazonErrorCode(errorBody.errors?.[0]?.code)
+    } catch {
+      // Intentionally ignore malformed/non-JSON bodies and never log raw content.
+    }
+    console.error('[spapi] listOrders error:', res.status)
+    return { ok: false, statusCode: res.status, orders: [], nextToken: null, amazonErrorCode }
+  }
+
+  const data = await res.json() as {
+    payload?: { Orders?: unknown[]; NextToken?: string }
+  }
+  const rawOrders = Array.isArray(data.payload?.Orders) ? data.payload!.Orders! : []
+
+  const orders: OrderSummary[] = rawOrders
+    .filter((o): o is Record<string, unknown> => Boolean(o) && typeof o === 'object')
+    .map(o => ({
+      amazonOrderId:  typeof o['AmazonOrderId'] === 'string' ? o['AmazonOrderId'] : '',
+      orderStatus:    typeof o['OrderStatus'] === 'string' ? o['OrderStatus'] : null,
+      purchaseDate:   typeof o['PurchaseDate'] === 'string' ? o['PurchaseDate'] : null,
+      lastUpdateDate: typeof o['LastUpdateDate'] === 'string' ? o['LastUpdateDate'] : null,
+    }))
+    .filter(o => o.amazonOrderId !== '')
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[spapi] listOrders success — count:', orders.length)
+  }
+
+  return {
+    ok: true,
+    statusCode: res.status,
+    orders,
+    nextToken: typeof data.payload?.NextToken === 'string' ? data.payload.NextToken : null,
+    amazonErrorCode: null,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Solicitations API v1 — GET (eligibility check) only.
+//
+// Intentionally, this file does not implement
+// createProductReviewAndSellerFeedbackSolicitation (the POST that actually
+// sends a solicitation) or any other Solicitations write call. Only the
+// read-only eligibility check exists here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SolicitationActionsResult {
+  ok:              boolean
+  statusCode:      number
+  actions:         string[]
+  amazonErrorCode: string | null
+}
+
+export interface GetSolicitationActionsParams {
+  amazonOrderId: string
+  marketplaceId: string
+  endpoint?: string
+}
+
+/**
+ * Calls GET /solicitations/v1/orders/{amazonOrderId} and returns the list
+ * of available solicitation action names (e.g. "productReviewAndSellerFeedback"
+ * when eligible). Never returns or logs the raw order id beyond what the
+ * caller already supplied, and never returns buyer PII (this endpoint's
+ * response does not include any).
+ *
+ * Never throws on a non-2xx response — returns { ok: false, ... } instead.
+ */
+export async function getSolicitationActionsForOrder(
+  accessToken: string,
+  params: GetSolicitationActionsParams,
+): Promise<SolicitationActionsResult> {
+  const { amazonOrderId, marketplaceId, endpoint = SPAPI_EU_ENDPOINT } = params
+
+  const qs = new URLSearchParams({ marketplaceIds: marketplaceId })
+  const url = `${endpoint}/solicitations/v1/orders/${encodeURIComponent(amazonOrderId)}?${qs}`
+
+  const res = await fetch(url, {
+    method:  'GET',
+    headers: {
+      'x-amz-access-token': accessToken,
+      'content-type':       'application/json',
+    },
+  })
+
+  if (!res.ok) {
+    let amazonErrorCode: string | null = null
+    try {
+      const errorBody = await res.json() as { errors?: Array<{ code?: unknown }> }
+      amazonErrorCode = safeAmazonErrorCode(errorBody.errors?.[0]?.code)
+    } catch {
+      // Intentionally ignore malformed/non-JSON bodies and never log raw content.
+    }
+    console.error('[spapi] getSolicitationActionsForOrder error:', res.status)
+    return { ok: false, statusCode: res.status, actions: [], amazonErrorCode }
+  }
+
+  const data = await res.json() as {
+    _links?: { actions?: Array<{ name?: unknown }> }
+  }
+  const actions = Array.isArray(data._links?.actions)
+    ? data._links!.actions!
+        .map(a => (a && typeof a === 'object' && typeof a.name === 'string' ? a.name : null))
+        .filter((name): name is string => name !== null)
+    : []
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[spapi] getSolicitationActionsForOrder success — actions:', actions.length)
+  }
+
+  return { ok: true, statusCode: res.status, actions, amazonErrorCode: null }
+}

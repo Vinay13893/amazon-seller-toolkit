@@ -301,3 +301,29 @@ _Read-only reconciliation found the July 7 Ads Spend gap (Seller Central ₹15,2
 - tsc/build both pass.
 
 **Tests run:** `npx tsc --noEmit` — pass. `npm run build` — pass.
+
+## Review Request Automation — Permission Probe (2026-07-12)
+
+_New workstream, EasyHOME/India only. Planning + first implementation PR only — no live Amazon call has
+been made yet, no table exists, no solicitation can be sent by any code in this repo. Full design in
+`REVIEW_REQUEST_AUTOMATION_SPEC.md`; status tracked in `BRAHMASTRA_MASTER_TRACKER.md` §18._
+
+**What exists now (PR opened, not merged):**
+- `src/lib/amazon/connection.ts` — new shared `loadWorkspaceConnection()` helper (a third copy of the
+  existing `amazon_connections` + LWA-refresh pattern; the two existing ASIN-checker copies are
+  untouched by design).
+- `src/lib/amazon/spapi-client.ts` — added read-only `listOrders()` (Orders API v0) and
+  `getSolicitationActionsForOrder()` (Solicitations API v1, GET only). **No POST/send function exists.**
+- `scripts/probe-review-automation-permissions.ts` — read-only probe: small recent Orders page →
+  Solicitations eligibility GET for one order, if any returned. Zero DB writes. Masks order ids in all
+  output. Fails closed (`scopesSufficient` only ever `'yes'` on unambiguous success).
+- `scripts/test-review-automation-permission-probe.ts` — 9/9 passing.
+
+**Live probe result (2026-07-12):** ran once against the real EasyHOME connection, GET-only. Orders API:
+pass (5 orders returned, 3-day window). Solicitations GET: pass (0 actions on the one sample order
+checked — not eligible right now, not a scope problem). **Scopes sufficient: yes.** No POST attempted,
+no DB writes, no secrets/PII in output, order id masked (`***1161`). Full sanitized result in
+`BRAHMASTRA_MASTER_TRACKER.md` §18.
+
+**Still not done:** no migration, no `review_solicitation_orders` table, no cron, no env vars, no
+scope/credential changes. PR #31 (the probe code) is open, not merged.
