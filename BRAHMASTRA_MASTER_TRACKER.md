@@ -2074,6 +2074,88 @@ tracking since none of these 76 products will ever refresh again without a manua
 **Nothing in this section was implemented.** No code, cron, Render, Vercel, or SQL change was made. Read-
 only inspection only, per instruction.
 
+### §19 update (2026-07-12) — PR #35 merged; Buy Box masking fix implemented (opened, not merged)
+
+**PR #35 (diagnosis docs): MERGED** (merge commit `3f8c599`). Confirmed documentation-only —
+`BRAHMASTRA_MASTER_TRACKER.md` was the only file in the diff, no code/runtime changes, no deployment
+required (a markdown-only merge activates nothing).
+
+**Buy Box masking fix — implemented on `fix/buy-box-status-masking`, opened as a PR, not merged, not
+deployed.** Fixes exactly the confirmed bug from the diagnosis above: `process-next/route.ts` was writing
+the literal string `'unknown'` to `asin_snapshots.buy_box_status` whenever Pricing was rate-limited or
+unavailable, which — because the read path coalesces the most recent **non-null** value per field —
+permanently masked any older confirmed `won`/`lost` result. **Note on file scope:** this PR touches
+`process-next/route.ts` and `listings/route.ts`, both named in CLAUDE.md's "do not edit ASIN UI files"
+working-tree warning (about the intern's uncommitted local checkout at a different path,
+`amazon-seller-toolkit-clean-sync`). This branch and PR are in the separate `track-asin-fix` worktree
+against `origin/master` and do not touch, stage, or overwrite the intern's local files at all — flagging
+transparently since the founder's explicit instruction for this exact fix, in this exact file, is what
+authorized proceeding despite the standing caution.
+
+**Files changed (4):**
+- `src/lib/amazon/buy-box-status.ts` (new) — `resolveBuyBoxStatusToStore()`, a small, pure, side-effect-
+  free function extracted out of the route handler specifically so it's testable without pulling in
+  `server-only` (the route handler transitively imports it via `background-worker-auth.ts` and cannot be
+  imported by a plain test script). Returns `null` when no Pricing call happened at all
+  (`offersBuyBoxStatus` is `undefined`/`null`); returns the real value unchanged for a genuine successful
+  call, including a genuinely-ambiguous `'unknown'`/`'no_buybox'`/`'partial_success'` result — the fix is
+  narrowly "no call happened" → `null`, not "any ambiguous status" → `null`.
+- `src/app/api/asins/jobs/process-next/route.ts` (write path) — split the old single `buyBoxStatus`
+  local variable into two: `buyBoxStatusForAvailability` (unchanged behavior, still defaults to `'unknown'`,
+  feeds `availabilityScoreFor()` exactly as before — **Availability is untouched, per instruction**) and
+  `buyBoxStatusToStore` (the new, correct value actually written to the `buy_box_status` column, via
+  `resolveBuyBoxStatusToStore()`).
+- `src/app/api/asins/listings/route.ts` (read path) — extracted the previously-inline snapshot-finder
+  lambdas into four named, exported, pure functions (`findPriceSnapshot`, `findBsrSnapshot`,
+  `findPricingSnapshot` — all three **unchanged behavior**, just named for testability — and the new
+  `findConfirmedBuyBoxSnapshot`, which coalesces **only** a snapshot whose `buy_box_status` is `'won'` or
+  `'lost'`, skipping `null` and every ambiguous status). `buy_box_owner`/`buy_box_status` in the API
+  response now come from `findConfirmedBuyBoxSnapshot`'s result instead of the old broad
+  `pricingSnapshot`; a new `buy_box_confirmed_at` field returns that confirmed snapshot's timestamp.
+  `buyBoxStatusLabel()` rewritten for the requested 3-state display: `"Won"` / `"Lost"` when the confirmed
+  snapshot **is** the latest check; `"Won — last confirmed {timeAgo}"` / `"Lost — last confirmed {timeAgo}"`
+  (via the existing `timeAgo()` helper from `src/lib/format.ts`) when it's older than the latest check;
+  `"Not confirmed"` when no `won`/`lost` snapshot has ever been recorded — **never** infers a loss from an
+  unconfirmed/unknown result, matching the instruction exactly. `availability_score` and
+  `availabilityStatusLabel()` still use the old, unchanged `findPricingSnapshot()` lookup — Availability
+  display is untouched, per instruction.
+- `scripts/test-buy-box-status-fix.ts` (new) — **13/13 passing**: rate-limited/unavailable write stores
+  `null` (not `'unknown'`); `won`/`lost` still store correctly; a genuine ambiguous successful result is
+  preserved as-is (not over-nulled); a newer `null`/`unknown` snapshot does not mask an older confirmed
+  `won` snapshot (direct proof of the bug fix); `no_buybox`/`partial_success` are correctly excluded from
+  "confirmed"; no confirmed history anywhere returns `null` + `"Not confirmed"` label (never `"Lost"`);
+  `"Not checked yet"` vs `"Not confirmed"` are distinct; fresh vs. stale confirmed-result label wording;
+  the returned confirmed snapshot's timestamp exactly matches the specific row selected (not just any
+  confirmed row); Price coalescing unaffected; BSR coalescing unaffected; Availability's broader lookup
+  unaffected.
+
+**Checks run:** `npx tsc --noEmit` — pass. `npx eslint` on all 4 changed/new files — pass, zero warnings.
+Full regression: `test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts` 6/6, `test-retry-or-fail-update.ts`
+6/6, `test-review-automation-permission-probe.ts` 9/9, `test-review-requests.ts` 20/20,
+`test-buy-box-status-fix.ts` 13/13 — **59/59 total, all passing.**
+
+**Explicitly not touched, per instruction:** Availability UI/percentage, Deal Tag UI, cron wording/message,
+review automation, Ads, payments, replenishment, auth/tokens/profile selection, Report Reuse Gate. No
+migration — this fix only changes what value gets written to an existing column and how existing rows are
+read; historical rows are **not** mutated (an old row that already has `buy_box_status='unknown'` from
+before this fix stays as-is; the fix only changes what future writes look like, and the read path simply
+stops treating `'unknown'`-flavored rows as confirmed going forward).
+
+**PR: opened, not merged, not deployed.**
+
+### Remaining follow-ups from the §19 diagnosis (not started)
+
+1. The "Cron not configured — start processor to clear queue" false-alarm message
+   (`listings/route.ts:289-295`) — still live, still wrong, not addressed by this PR (this PR only fixed
+   Buy Box; the cron-message heuristic is a separate, distinct fix).
+2. Hide the Availability percentage in the UI (the underlying score computation is untouched by design in
+   this PR, per instruction — this is a UI-only follow-up, not started).
+3. Hide the Deal Tag "not implemented yet" badge/column (not started).
+4. Audit/decide what to do with the 76 permanently-`failed` `my_product` background-job rows (≈16% of the
+   482-product catalog) that will never automatically retry again (not started).
+5. Review-request 30-day catch-up: **still not approved** — only the founder-approved 3-day/10-order
+   sample has been run (§18); the full 30-day catch-up remains an explicit, separate approval gate.
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
@@ -2093,4 +2175,9 @@ live-data diagnosis: confirmed "Cron not configured" message is wrong (both cron
 broken point-in-time heuristic, live-verified firing right now), found a real Buy Box/Availability
 data-masking bug (`'unknown'` fallback defeats the coalescing logic that correctly protects Price),
 column-by-column trustworthy/misleading breakdown and an immediate fix list recorded — inspection only, no
-code changed)
+code changed. **§19 update (later same day)** — PR #35 (diagnosis docs) merged, `3f8c599`; Buy Box masking
+fix implemented (`resolveBuyBoxStatusToStore` writes null instead of 'unknown' on rate-limited pricing;
+`findConfirmedBuyBoxSnapshot` coalesces only won/lost on read; 4 files, 59/59 tests total, tsc+eslint
+clean), opened as a PR, not merged/deployed; 5 follow-ups (cron message, hide Availability %, hide Deal
+Tag, audit 76 failed rows, 30-day catch-up still unapproved) recorded as not-yet-started. Also, PR #34
+[review-request dry-run catch-up] merged earlier this session — footer above is stale on that point.)

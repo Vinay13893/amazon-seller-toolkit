@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { timeAgo } from '@/lib/format'
 
 export const runtime = 'nodejs'
 
@@ -21,7 +22,7 @@ function safeSearch(value: string | null): string {
     .slice(0, 100)
 }
 
-type ListingSnapshotRow = {
+export type ListingSnapshotRow = {
   amazon_listing_item_id: string | null
   price: number | null
   bsr: number | null
@@ -66,17 +67,52 @@ function catalogStatusLabel(latest: ListingSnapshotRow | null, bsrSnapshot: List
   return 'BSR unavailable from Catalog source'
 }
 
-function buyBoxStatusLabel(latest: ListingSnapshotRow | null, pricingSnapshot: ListingSnapshotRow | null): string {
+/**
+ * Only ever called with a snapshot whose buy_box_status is 'won' or 'lost'
+ * (see confirmedBuyBoxSnapshot below) -- never an 'unknown'/'no_buybox'/
+ * 'partial_success' status, and never a rate-limited/unavailable attempt
+ * (those now write null, not a fake status string -- see
+ * BRAHMASTRA_MASTER_TRACKER.md sec19). This function never infers a loss
+ * from an unconfirmed/unknown result; absence of a confirmed snapshot always
+ * returns 'Not confirmed', never 'Lost'.
+ */
+export function findPriceSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
+  return snapshots.find(snapshot => snapshot.price !== null) ?? null
+}
+
+export function findBsrSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
+  return snapshots.find(snapshot => snapshot.bsr !== null) ?? null
+}
+
+export function findPricingSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
+  return snapshots.find(snapshot =>
+    snapshot.price !== null ||
+    snapshot.buy_box_owner !== null ||
+    snapshot.buy_box_status !== null ||
+    snapshot.availability_score !== null
+  ) ?? null
+}
+
+/**
+ * Buy Box display fix (BRAHMASTRA_MASTER_TRACKER.md sec19): coalesce ONLY a
+ * genuinely confirmed 'won'/'lost' snapshot -- ignore null (rate-limited/
+ * unavailable, now written correctly by resolveBuyBoxStatusToStore in
+ * process-next/route.ts) and ignore 'unknown'/'no_buybox'/'partial_success'
+ * too. Deliberately narrower than findPricingSnapshot above, which still
+ * feeds Price and Availability unchanged.
+ */
+export function findConfirmedBuyBoxSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
+  return snapshots.find(
+    snapshot => snapshot.buy_box_status === 'won' || snapshot.buy_box_status === 'lost'
+  ) ?? null
+}
+
+export function buyBoxStatusLabel(latest: ListingSnapshotRow | null, confirmedSnapshot: ListingSnapshotRow | null): string {
   if (!latest) return 'Not checked yet'
-  if (latest.scrape_status === 'partial_pricing_rate_limited') {
-    return pricingSnapshot ? 'Latest attempt rate-limited; showing last successful Buy Box data' : 'Buy Box pricing source rate-limited'
-  }
-  if (latest.scrape_status === 'partial_pricing_unavailable') return 'Buy Box unavailable from Pricing source'
-  if (pricingSnapshot?.buy_box_status === 'won') return 'Our offer has Buy Box'
-  if (pricingSnapshot?.buy_box_status === 'lost') return 'Another seller has Buy Box'
-  if (pricingSnapshot?.buy_box_status === 'no_buybox') return 'No Buy Box data'
-  if (pricingSnapshot?.buy_box_status) return 'Buy Box seller unknown'
-  return 'No Buy Box data from Pricing source'
+  if (!confirmedSnapshot) return 'Not confirmed'
+  const label = confirmedSnapshot.buy_box_status === 'won' ? 'Won' : 'Lost'
+  const isFresh = confirmedSnapshot.checked_at === latest.checked_at
+  return isFresh ? label : `${label} — last confirmed ${timeAgo(confirmedSnapshot.checked_at)}`
 }
 
 function availabilityStatusLabel(latest: ListingSnapshotRow | null, pricingSnapshot: ListingSnapshotRow | null): string {
@@ -209,14 +245,10 @@ export async function GET(request: NextRequest) {
       const snapshots = (snapshotsByListingId.get(listingId) ?? [])
         .sort((a, b) => new Date(b.checked_at).getTime() - new Date(a.checked_at).getTime())
       const latest = snapshots[0] ?? null
-      const priceSnapshot = snapshots.find(snapshot => snapshot.price !== null) ?? null
-      const bsrSnapshot = snapshots.find(snapshot => snapshot.bsr !== null) ?? null
-      const pricingSnapshot = snapshots.find(snapshot =>
-        snapshot.price !== null ||
-        snapshot.buy_box_owner !== null ||
-        snapshot.buy_box_status !== null ||
-        snapshot.availability_score !== null
-      ) ?? null
+      const priceSnapshot = findPriceSnapshot(snapshots)
+      const bsrSnapshot = findBsrSnapshot(snapshots)
+      const pricingSnapshot = findPricingSnapshot(snapshots)
+      const confirmedBuyBoxSnapshot = findConfirmedBuyBoxSnapshot(snapshots)
       const job = latestJobForTarget(listingJobs, listingId)
 
       if (!latest && !job) return null
@@ -224,8 +256,9 @@ export async function GET(request: NextRequest) {
       return {
         price: priceSnapshot?.price ?? null,
         bsr: bsrSnapshot?.bsr ?? null,
-        buy_box_owner: pricingSnapshot?.buy_box_owner ?? null,
-        buy_box_status: pricingSnapshot?.buy_box_status ?? null,
+        buy_box_owner: confirmedBuyBoxSnapshot?.buy_box_owner ?? null,
+        buy_box_status: confirmedBuyBoxSnapshot?.buy_box_status ?? null,
+        buy_box_confirmed_at: confirmedBuyBoxSnapshot?.checked_at ?? null,
         availability_score: pricingSnapshot?.availability_score ?? null,
         scrape_status: latest?.scrape_status ?? null,
         checked_at: latest?.checked_at ?? job?.updated_at ?? job?.completed_at ?? new Date(0).toISOString(),
@@ -237,7 +270,7 @@ export async function GET(request: NextRequest) {
         next_retry_at: nextRetryAt(job),
         price_source_status: pricingStatusLabel(latest, priceSnapshot),
         bsr_source_status: catalogStatusLabel(latest, bsrSnapshot),
-        buy_box_source_status: buyBoxStatusLabel(latest, pricingSnapshot),
+        buy_box_source_status: buyBoxStatusLabel(latest, confirmedBuyBoxSnapshot),
         availability_source_status: availabilityStatusLabel(latest, pricingSnapshot),
         deal_tag_source_status: 'Deal checker not implemented yet',
         queue_status: job?.status ?? null,

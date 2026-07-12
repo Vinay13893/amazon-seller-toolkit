@@ -4,6 +4,7 @@ import { refreshAccessToken } from '@/lib/amazon/lwa'
 import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
 import { getCatalogItemForAsin } from '@/lib/amazon/catalog'
 import { getItemOffersForAsin, type BuyBoxOfferStatus } from '@/lib/amazon/pricing'
+import { resolveBuyBoxStatusToStore } from '@/lib/amazon/buy-box-status'
 import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
 
 export const runtime = 'nodejs'
@@ -309,7 +310,12 @@ export async function POST(request: Request) {
       continue
     }
 
-    const buyBoxStatus = offersResult?.buy_box_status ?? 'unknown'
+    // Feeds availability_score only -- Availability behavior is intentionally
+    // unchanged in this fix (see BRAHMASTRA_MASTER_TRACKER.md sec19). Do not
+    // use this for buy_box_status itself; see buyBoxStatusToStore below.
+    const buyBoxStatusForAvailability = offersResult?.buy_box_status ?? 'unknown'
+    // What actually gets written to asin_snapshots.buy_box_status.
+    const buyBoxStatusToStore = resolveBuyBoxStatusToStore(offersResult?.buy_box_status)
     const scrapeStatus: 'success' | 'partial_pricing_rate_limited' | 'partial_pricing_unavailable' | 'partial_catalog_unavailable' =
       catalogResult && offersResult
         ? 'success'
@@ -355,8 +361,8 @@ export async function POST(request: Request) {
       rating: null,
       review_count: null,
       buy_box_owner: offersResult?.buy_box_owner ?? null,
-      buy_box_status: buyBoxStatus,
-      availability_score: availabilityScoreFor(buyBoxStatus),
+      buy_box_status: buyBoxStatusToStore,
+      availability_score: availabilityScoreFor(buyBoxStatusForAvailability),
       scrape_status: scrapeStatus,
       checked_at: checkedAt,
     }
