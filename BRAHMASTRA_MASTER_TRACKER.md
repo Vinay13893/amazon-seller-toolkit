@@ -1465,9 +1465,56 @@ Full spec: **`REVIEW_REQUEST_AUTOMATION_SPEC.md`** (new file, repo root). Key in
 - **Nothing implemented.** No branch, migration, env var, or code exists yet. Awaiting founder review
   of the spec and explicit go-ahead per PR in the proposed sequence.
 
+### §18 update (2026-07-12) — Implementation PR #1: permission probe (opened, not merged)
+
+Branch `feat/review-automation-permission-probe` off latest `master` (post-PR #30). Scope matches the
+spec's PR #3 (permission probe) plus the minimal slice of PR #1 (connection helper) and PR #4 (client
+functions) needed to make the probe runnable — narrowed and re-sequenced per explicit founder
+instruction for this PR specifically. **No migration, no `review_solicitation_orders` table, no cron,
+no Solicitations POST function, no env var, no scope/credential change.** ASIN checker, Ads, payments,
+replenishment, Report Reuse Gate, and ASIN UI files are untouched (confirmed via `git status`).
+
+**Files changed (4):**
+- `src/lib/amazon/connection.ts` (new) — `loadWorkspaceConnection()`, a third, canonical copy of the
+  existing (already twice-duplicated) `amazon_connections` lookup + LWA refresh logic from
+  `process-next/route.ts` / `process-asin-checker-jobs.ts`. Those two files are **not** modified —
+  refactoring them onto this helper is out of scope for this PR (would touch ASIN checker code).
+- `src/lib/amazon/spapi-client.ts` (additive only) — added `listOrders()` (Orders API v0,
+  `GET /orders/v0/orders`) and `getSolicitationActionsForOrder()` (Solicitations API v1,
+  `GET /solicitations/v1/orders/{id}`). **No POST/create/send function added** — verified by a
+  dedicated test asserting `createProductReviewAndSellerFeedbackSolicitation` is not exported and no
+  export name matches a "create...Solicitation" shape. All 3 pre-existing functions in this file are
+  unchanged.
+- `scripts/probe-review-automation-permissions.ts` (new) — read-only orchestration script, lazy admin
+  client + entrypoint guard (same import-safe pattern as `process-asin-checker-jobs.ts`). Fetches a
+  small recent Orders page (3-day window, max 5 results, India marketplace only), and — only if at
+  least one order is returned — GETs Solicitations eligibility for the first order. Performs **zero
+  database writes**. Never logs a full order id (`maskOrderId()` keeps only the last 4 characters).
+  Fails closed: `scopesSufficient` is only ever `'yes'` when both calls unambiguously succeed;
+  ambiguous/transient errors (5xx, network) report `'uncertain'`, never `'yes'`.
+- `scripts/test-review-automation-permission-probe.ts` (new) — 9/9 passing. Covers: Orders
+  success/denied, Solicitations GET success/denied, no-order-available (Solicitations correctly
+  skipped, not attempted), the POST-function-does-not-exist assertion, a sensitive-data assertion
+  (full order id never appears in the serialized report; no buyer-PII-shaped keys), `maskOrderId` edge
+  cases, and transient-error-is-uncertain-not-no.
+
+**Checks run:** `npx tsc --noEmit` — pass. `npx eslint` on all 4 changed files — pass, zero warnings.
+Regression: `test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts` 6/6, `test-retry-or-fail-update.ts`
+6/6 — all still passing, confirming no unrelated breakage.
+
+**Not run:** the probe itself has not been executed against live Amazon — that requires the founder to
+approve an actual outbound SP-API call (Orders + Solicitations GET) against the real EasyHOME
+connection. **Scope sufficiency (Orders/Solicitations API access) is therefore still unknown** — this
+PR only proves the code is ready to test it, not that it passed. Running it is the next step, on
+approval.
+
+**PR:** opened, not merged, not deployed — awaiting founder review per instruction.
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
-Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only)
+Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
+§18 update — Implementation PR #1 (permission probe) opened on `feat/review-automation-permission-probe`,
+4 files, no migration/POST/env/cron, tests + tsc + eslint clean, not yet run against live Amazon, not merged)
