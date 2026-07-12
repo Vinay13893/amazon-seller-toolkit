@@ -1702,13 +1702,96 @@ file with no TS surface).
 **No Amazon API call was made at any point in this step. No customer communication occurred. Review
 automation remains completely disabled — no route, cron, or job reads or writes this table yet.**
 
+### §18 update (2026-07-12) — Dry-run catch-up foundation built (opened, not merged, not run live)
+
+Branch `feat/review-request-dry-run-catchup` off latest `master` (post-PR #33). Builds the repository
+layer, one-time catch-up script, and dry-run reporting from `REVIEW_REQUEST_AUTOMATION_SPEC.md` §4–§7.
+**No POST/send capability, no daily cron, no protected sending route, no live mode, no migration
+change.** ASIN checker, Ads, payments, replenishment, and Report Reuse Gate untouched. The live 30-day
+catch-up was **not run** against production Amazon in this step — code only, tested against fakes.
+
+**Files changed (5):**
+- `src/lib/review-requests/policy.ts` (new) — pure, DB-free decision logic. Status model constants
+  (`TERMINAL_STATUSES`, `PROTECTED_STATUSES` = `sent`/`send_claimed`, `DUE_CANDIDATE_STATUSES`),
+  `classifyEligibilityOutcome()` (action present → `eligible_dry_run`; absent → `not_eligible_retryable`
+  — **never** `too_early`/`already_solicited`/`expired`/`ineligible_terminal` from a GET-only signal,
+  documented as a deliberate "do not invent Amazon eligibility reasons" choice), `classifySolicitationsError()`
+  (always `failed_retryable` — a failed GET call is evidence about the call, not the order),
+  `computeNextCheckAt()` (centralized retry-scheduling policy: terminal statuses and `eligible_dry_run`
+  → `null`; `failed_retryable` → +24h; `too_early`/`not_eligible_retryable` → +3 days — conservative,
+  no immediate/tight retry loop possible), `buildSanitizedEligibilityEvidence()` (strict allowlist
+  return shape: `actionNames`, `checkedAt`, `sanitizedReason`, `amazonStatusCode`, `amazonErrorCode` —
+  structurally cannot smuggle a raw payload or buyer field through, since there is no parameter for one).
+- `src/lib/review-requests/repository.ts` (new) — DB operations only, all writes guarded (matching
+  `reclaimStuckJob()`'s verify-after-write pattern from the ASIN checker):
+  - `upsertDiscoveredOrder()` — only ever writes Amazon-sourced fields (`order_status`/`purchase_date`/
+    `amazon_last_updated_at`) on an existing row; `solicitation_status`/`solicitation_sent`/
+    `solicitation_sent_at`/`next_check_at`/claim fields/`check_attempts` are never in its UPDATE
+    payload, which is what makes "never reset a terminal row" and "never overwrite sent audit fields"
+    true by construction, not by a runtime check. A genuine 23505 insert race falls back to the
+    existing row (mirrors `addOrRestoreTrackedAsin`'s established concurrent-duplicate handling).
+  - `findDueCandidates()` — `solicitation_sent=false`, non-terminal/non-in-flight status, `next_check_at
+    <= now`, deterministic ordering, respects the batch-size limit.
+  - `claimForEligibilityCheck()` / `recordEligibilityResult()` — a claim/finalize pair: claim is a
+    guarded UPDATE to `'checking'` matched on the row's expected prior status (0 rows affected = another
+    caller already claimed it); finalize is guarded to only apply if the row is still `'checking'`.
+    `recordEligibilityResult()` **throws** if asked to write `sent`/`send_claimed` — a hard guard against
+    this dry-run code ever touching either protected status, independent of caller discipline.
+- `src/lib/amazon/spapi-client.ts` (additive) — `listOrders()` gained an optional `nextToken` param for
+  pagination (per the real Orders API v0 contract: a `NextToken` call carries no other filters). No
+  other function changed.
+- `scripts/review-requests-catchup.ts` (new) — orchestration. A testable `runCatchup()` core (dependency-
+  injected: `listOrdersFn`/`getSolicitationFn`/`sleepFn`/`nowFn`) plus a thin `main()` CLI entrypoint that
+  wires real dependencies (same lazy-admin + entrypoint-guard pattern as every other script this
+  session). Hard-clamps the catch-up window to **30 days max** in code (`Math.min(..., 30)`) regardless
+  of `REVIEW_REQUESTS_CATCHUP_DAYS` misconfiguration — the "no 120-day backfill" rule cannot be
+  overridden by an env var. Paginates Orders API safely (bounded to 50 pages as a defensive ceiling).
+  Throttles Solicitations GET calls at the configured `REVIEW_REQUESTS_RATE_LIMIT_MS` (default 1100ms),
+  once per candidate checked. **Contains no Solicitations POST code path at all** — logs
+  `would-send (dry-run only, no POST)` with a masked order id when a row reaches `eligible_dry_run`,
+  never calls anything resembling a send. `REVIEW_REQUESTS_ENABLED`/`REVIEW_REQUESTS_DRY_RUN` have zero
+  effect on this script's behavior (it warns if it finds `ENABLED=true`, since that expectation would be
+  wrong for a script that structurally cannot send) — those flags only matter for a future PR that adds
+  real sending. Dry-run report (Part D shape) includes every field the founder specified: fetch window,
+  pages/orders/candidates counts, all 9 status-outcome buckets (5 of which — `tooEarly`,
+  `expired`, `alreadySolicited`, `ineligibleTerminal` — are always 0 in this PR's output, since nothing
+  in the decision logic ever produces them from GET-only evidence; documented as intentional, not a bug),
+  sanitized API-error-by-code map, elapsed time, estimated API calls, and the unconditional
+  `postAttempted: false` / `reviewRequestsSent: 0`.
+- `.env.local.example` (docs) — documents the 6 `REVIEW_REQUESTS_*` env vars with the founder-specified
+  defaults, with an explicit note that they have no effect on this particular script.
+- `scripts/test-review-requests.ts` (new) — **20/20 passing**, covering all 16 requested items plus 4
+  extra: 30-day clamp, pagination (2-page follow-through), duplicate upsert (both the simple-repeat case
+  and a true simulated 23505 insert race), terminal-status preservation on upsert, sent-row protection on
+  upsert, eligible/not-eligible classification, `eligible_dry_run` non-terminal, terminal-status-requires-
+  evidence (direct repository call proves the schema/repository *can* reach `expired` given confident
+  evidence, while the catch-up's own classifiers prove they never produce it), retry scheduling (future
+  timestamp, ≥1h out), terminal-clears-`next_check_at` (all 5 terminal statuses), batch-size enforcement,
+  rate-limit throttle (asserted call count and exact configured delay), PII-allowlist proof (adversarial
+  input, exact-keys assertion), order-id masking, POST-function-does-not-exist (re-verified, same
+  assertion style as the PR #31 probe test), protected-status write refusal, unconditional
+  `postAttempted`/`reviewRequestsSent` zero-state, and concurrent double-claim safety (exactly one of two
+  simultaneous claims succeeds; a second finalize attempt on an already-finalized row correctly fails).
+
+**Checks run:** `npx tsc --noEmit` — pass. `npx eslint` on all 5 changed/new code files — pass, zero
+warnings. Full regression: `test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts` 6/6,
+`test-retry-or-fail-update.ts` 6/6, `test-review-automation-permission-probe.ts` 9/9,
+`test-review-requests.ts` 20/20 — **46/46 total, all passing.**
+
+**Explicitly not done in this PR:** the live 30-day catch-up was not run against production Amazon (code
+tested against fakes only, per instruction). No daily cron. No protected sending route. No live mode. No
+migration change. No Solicitations POST function anywhere in the codebase (re-verified by test).
+
+**PR:** opened, not merged, not deployed.
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
 Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
-PR #31 merged — permission probe live, scopes confirmed sufficient; PR #32 (migration 059, schema only)
+PR #31 merged — permission probe live, scopes confirmed sufficient; dry-run catch-up foundation
+(repository/policy/script, 46/46 tests) opened, not merged, not run live; PR #32 (migration 059, schema only)
 opened, review-corrected, and merged; migration 059 applied to production Supabase (okxfwcfxxrtmijmvztdq)
 and fully verified read-only (columns/constraints/indexes/RLS/trigger + synthetic insert/duplicate-reject/
 isolation/updated_at/cleanup) — table exists, is empty, and nothing reads or writes it yet;

@@ -348,5 +348,27 @@ isolation confirmed via a simulated outside-authenticated-user query (0 rows vis
 table confirmed empty afterward. No Amazon API call made, no customer communication occurred. Full
 detail in `BRAHMASTRA_MASTER_TRACKER.md` §18.
 
-**Still not done:** no Orders-fetch job, no Solicitations POST, no cron, no env vars, no scope/credential
-changes, no live sending. The table exists but nothing reads or writes it yet.
+**Dry-run catch-up foundation built (2026-07-12, opened as PR, not merged, not run live):**
+- `src/lib/review-requests/policy.ts` — pure state-machine/scheduling logic (status classification,
+  `computeNextCheckAt`, sanitized-evidence builder). No DB, no Amazon client.
+- `src/lib/review-requests/repository.ts` — guarded DB operations (`upsertDiscoveredOrder`,
+  `findDueCandidates`, `claimForEligibilityCheck`/`recordEligibilityResult`), mirroring the ASIN
+  checker's verify-after-write pattern. Terminal rows and sent rows are protected by construction
+  (those columns are simply never in the upsert path's UPDATE payload); `recordEligibilityResult` throws
+  if ever asked to write `sent`/`send_claimed`.
+- `scripts/review-requests-catchup.ts` — one-time, 30-day-max (hard-clamped in code, not just by env
+  var), paginated Orders fetch → upsert → throttled (1100ms default) Solicitations GET eligibility check
+  on up to `REVIEW_REQUESTS_BATCH_SIZE` due rows → dry-run report. **No Solicitations POST code path
+  exists.** `REVIEW_REQUESTS_ENABLED`/`DRY_RUN` have no effect on this script (it structurally cannot
+  send regardless).
+- `src/lib/amazon/spapi-client.ts` — `listOrders()` gained pagination support (`nextToken` param). No
+  other function changed.
+- `.env.local.example` — documents the 6 `REVIEW_REQUESTS_*` vars.
+- `scripts/test-review-requests.ts` — 20/20 passing (all 16 founder-requested test cases + 4 more).
+- Checks: `npx tsc --noEmit` pass, eslint pass, full regression 46/46 (5+6+6+9+20) across every test
+  suite in the repo.
+- **Not run:** the live 30-day catch-up has not been executed against production Amazon — tested against
+  fakes only. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §18.
+
+**Still not done:** no daily cron, no Solicitations POST anywhere in the codebase, no protected sending
+route, no live mode, no scope/credential changes, no live sending, no live catch-up run yet.

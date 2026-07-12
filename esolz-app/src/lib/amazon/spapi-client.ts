@@ -294,6 +294,14 @@ export interface ListOrdersParams {
   marketplaceId: string
   createdAfter: string
   maxResultsPerPage?: number
+  /**
+   * Pagination token from a previous listOrders() call's nextToken. Per the
+   * Orders API v0 contract, when this is present it is the only filter sent
+   * (besides MarketplaceIds) -- createdAfter/maxResultsPerPage are ignored
+   * by Amazon on a NextToken call anyway, so this client omits them itself
+   * to keep the request shape unambiguous.
+   */
+  nextToken?: string
   endpoint?: string
 }
 
@@ -324,14 +332,17 @@ export async function listOrders(
     marketplaceId,
     createdAfter,
     maxResultsPerPage = 5,
+    nextToken,
     endpoint = SPAPI_EU_ENDPOINT,
   } = params
 
-  const qs = new URLSearchParams({
-    MarketplaceIds:     marketplaceId,
-    CreatedAfter:       createdAfter,
-    MaxResultsPerPage:  String(maxResultsPerPage),
-  })
+  const qs = nextToken
+    ? new URLSearchParams({ MarketplaceIds: marketplaceId, NextToken: nextToken })
+    : new URLSearchParams({
+        MarketplaceIds:     marketplaceId,
+        CreatedAfter:       createdAfter,
+        MaxResultsPerPage:  String(maxResultsPerPage),
+      })
 
   const res = await fetch(`${endpoint}/orders/v0/orders?${qs}`, {
     method:  'GET',
