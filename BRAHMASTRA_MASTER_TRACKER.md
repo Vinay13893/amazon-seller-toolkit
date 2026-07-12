@@ -1096,6 +1096,42 @@ failed-path branches, approximately lines 385/447/515 as of PR #26) — these af
 terminal-failure path, not just reclaim, and would cause the same NOT NULL rejection for any job that
 legitimately exhausts its retries during ordinary processing. Recommended as the next code-fix task.
 
+### D.9 Follow-up fix: the 3 remaining `run_after: null` sites (2026-07-12)
+
+**PR #25 merged** (merge commit `fd96278518a07643df367ff5b98a3f532abb10c4`, `2026-07-12T01:49:09Z`, docs only —
+closed out D.1–D.8 on `master`).
+
+**Inspected all three flagged sites plus two adjacent ones for completeness:**
+
+| Site | Branch | Status before this fix |
+|---|---|---|
+| No active Amazon connection for the workspace | `canRetry ? <30min retry> : null` | Bug (fixed) |
+| Catalog **and** Pricing both failed | `canRetry ? <variable retryDelay> : null` | Bug (fixed) |
+| `asin_snapshots` insert failed | `canRetry ? <30min retry> : null` | Bug (fixed) |
+| Missing ASIN in job payload | `run_after` omitted from update entirely | Already correct, untouched |
+| Job completed successfully | `run_after` omitted from update entirely | Already correct, untouched |
+
+**Fix (PR [#28](https://github.com/Vinay13893/amazon-seller-toolkit/pull/28), not merged):** extracted
+`buildRetryOrFailUpdate(canRetry, reason, retryAfterIso, nowIso)` — a small, pure, exported helper building the
+shared `{status, last_error_safe, run_after, locked_at, locked_by, completed_at}` payload. All three sites now
+call this helper instead of writing an inline literal; each site's own `canRetry` computation and
+reason/retry-delay logic is untouched — only the payload construction changed. `run_after: undefined` (not
+`null`) on the `canRetry=false` branch, identical pattern to the reclaim fix in PR #26. No throughput,
+scheduling, cadence, batch-size, or worker-architecture change; no auth/tokens/Ads/payments/replenishment/
+migration touched.
+
+**Tests:** new `esolz-app/scripts/test-retry-or-fail-update.ts`, 6/6 pass (2 per site: retries-remaining path has
+a valid non-null `run_after`; max-attempts path never has `run_after: null`). `test-stuck-job-reclaim.ts` 6/6 and
+`test-track-asin.ts` 5/5 still pass (no regression). `tsc --noEmit` clean. `eslint` clean on both changed files
+(one pre-existing, unrelated warning).
+
+**Not yet done:** PR #28 not merged, not deployed. Per the same post-merge verification pattern used for PR #26
+(D.8), once merged the next step is: wait for a real scheduled Render cron cycle, then confirm via Supabase that
+any job legitimately hitting these three paths at max attempts ends up `status='failed'` with a non-null
+`run_after` — these three paths are rarer in normal operation than the stuck-reclaim path was, so a specific
+live trigger may take longer to observe than one cron cycle; absence of a NOT NULL error in that window is
+itself partial evidence, not full confirmation.
+
 ### Options to consider (not implemented — awaiting approval)
 
 1. **Increase Vercel batch size only** (5 → 15–20 per 2h run): ~180–240/day → full refresh ~2.1–2.8 days.
@@ -1287,6 +1323,55 @@ active Render cron) are unreclaimed, the Render cron's actual deployed state has
 no Vercel throughput change (batch size/cadence) has been made or approved. Nothing in this session changes
 that status.
 
+**Superseded (2026-07-12):** the stuck-row reclaim blocker above is resolved — see §16.D.6–D.9. All 11 stuck
+rows cleared naturally via the automated fix (PR #26), and a related follow-up (PR #28) closes the same bug
+class in three more sites. The ASIN cron **throughput/canonical-worker** question (increase batch size, cadence,
+or consolidate Render+Vercel into one worker) remains genuinely open and is explicitly deferred — see §18.
+
 ---
 
-**Last updated:** 2026-07-11 (§16 D.5 — Render evidence resupplied, cross-checked against build/deploy state)
+## 18. Standing Decisions (2026-07-12)
+
+Founder-approved sequencing and scope decisions, recorded here so a fresh session has the full context without
+re-deriving it.
+
+### Sequencing
+
+1. **`run_after` follow-up (§16.D.9, PR #28) is the active thread.** Review automation and the Report Reuse Gate
+   both wait on this closing (merged + verified), per explicit instruction.
+2. **Review automation** moves out of "held" status once the `run_after` follow-up is merged and verified — but
+   **only inspection and implementation planning**, and **only in a separate, fresh session**. Do not create a
+   branch, migration, or production code for review automation until that happens.
+3. **ASIN cron canonical-worker/throughput redesign (Vercel batch size, cadence, or consolidating Render +
+   Vercel into a single worker) is explicitly on hold** — do not begin until reassessed with production evidence
+   gathered *after* the `run_after` follow-up lands. The options already drafted in §16 ("Options to consider")
+   remain valid candidates for that future reassessment, not yet chosen.
+4. **Report Reuse Gate implementation stays queued after review automation planning**, unless live production
+   evidence emerges that it is actively blocking a real flow (none identified as of this writing — see
+   `REPORT_REUSE_GATE_SPEC.md` and tracker §17 for the approved-but-unimplemented design).
+
+### Review automation — locked specification (do not deviate without a new founder decision)
+
+Recorded here in full so it survives to whatever fresh session picks it up:
+
+- **Scope:** Amazon India / EasyHOME only.
+- **Backfill:** one-time last-30-days Orders API catch-up only. **No 120-day backfill.**
+- **Ongoing:** daily forward processing after the one-time catch-up.
+- **API:** Amazon's official Solicitations API only — no scraping, no unofficial endpoints.
+- **Eligibility:** `GET` eligibility is the source of truth for whether a solicitation can be sent.
+- **Sending:** `POST` only when `productReviewAndSellerFeedback` is present/available in the eligibility
+  response.
+- **Idempotency:** never send more than once per `amazon_order_id` — requires a durable, unique per-order
+  tracking record (schema/migration work, not yet designed).
+- **Safety default:** dry-run by default. Live sending only when `REVIEW_REQUESTS_ENABLED=true` is explicitly
+  set.
+- **Required data model (not yet designed):** unique order tracking (one row per `amazon_order_id`, enforced at
+  the DB level) plus eligibility/error audit fields (what `GET` returned, when, why a `POST` was or wasn't sent,
+  any error).
+- **Explicitly not started this session:** no branch, no migration, no production code. Planning-only, and only
+  in a fresh session, per sequencing item 2 above.
+
+---
+
+**Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
+locked review-automation spec recorded)
