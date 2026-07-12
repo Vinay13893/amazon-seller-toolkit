@@ -1702,13 +1702,183 @@ file with no TS surface).
 **No Amazon API call was made at any point in this step. No customer communication occurred. Review
 automation remains completely disabled — no route, cron, or job reads or writes this table yet.**
 
+### §18 update (2026-07-12) — Dry-run catch-up foundation built (opened, not merged, not run live)
+
+Branch `feat/review-request-dry-run-catchup` off latest `master` (post-PR #33). Builds the repository
+layer, one-time catch-up script, and dry-run reporting from `REVIEW_REQUEST_AUTOMATION_SPEC.md` §4–§7.
+**No POST/send capability, no daily cron, no protected sending route, no live mode, no migration
+change.** ASIN checker, Ads, payments, replenishment, and Report Reuse Gate untouched. The live 30-day
+catch-up was **not run** against production Amazon in this step — code only, tested against fakes.
+
+**Files changed (5):**
+- `src/lib/review-requests/policy.ts` (new) — pure, DB-free decision logic. Status model constants
+  (`TERMINAL_STATUSES`, `PROTECTED_STATUSES` = `sent`/`send_claimed`, `DUE_CANDIDATE_STATUSES`),
+  `classifyEligibilityOutcome()` (action present → `eligible_dry_run`; absent → `not_eligible_retryable`
+  — **never** `too_early`/`already_solicited`/`expired`/`ineligible_terminal` from a GET-only signal,
+  documented as a deliberate "do not invent Amazon eligibility reasons" choice), `classifySolicitationsError()`
+  (always `failed_retryable` — a failed GET call is evidence about the call, not the order),
+  `computeNextCheckAt()` (centralized retry-scheduling policy: terminal statuses and `eligible_dry_run`
+  → `null`; `failed_retryable` → +24h; `too_early`/`not_eligible_retryable` → +3 days — conservative,
+  no immediate/tight retry loop possible), `buildSanitizedEligibilityEvidence()` (strict allowlist
+  return shape: `actionNames`, `checkedAt`, `sanitizedReason`, `amazonStatusCode`, `amazonErrorCode` —
+  structurally cannot smuggle a raw payload or buyer field through, since there is no parameter for one).
+- `src/lib/review-requests/repository.ts` (new) — DB operations only, all writes guarded (matching
+  `reclaimStuckJob()`'s verify-after-write pattern from the ASIN checker):
+  - `upsertDiscoveredOrder()` — only ever writes Amazon-sourced fields (`order_status`/`purchase_date`/
+    `amazon_last_updated_at`) on an existing row; `solicitation_status`/`solicitation_sent`/
+    `solicitation_sent_at`/`next_check_at`/claim fields/`check_attempts` are never in its UPDATE
+    payload, which is what makes "never reset a terminal row" and "never overwrite sent audit fields"
+    true by construction, not by a runtime check. A genuine 23505 insert race falls back to the
+    existing row (mirrors `addOrRestoreTrackedAsin`'s established concurrent-duplicate handling).
+  - `findDueCandidates()` — `solicitation_sent=false`, non-terminal/non-in-flight status, `next_check_at
+    <= now`, deterministic ordering, respects the batch-size limit.
+  - `claimForEligibilityCheck()` / `recordEligibilityResult()` — a claim/finalize pair: claim is a
+    guarded UPDATE to `'checking'` matched on the row's expected prior status (0 rows affected = another
+    caller already claimed it); finalize is guarded to only apply if the row is still `'checking'`.
+    `recordEligibilityResult()` **throws** if asked to write `sent`/`send_claimed` — a hard guard against
+    this dry-run code ever touching either protected status, independent of caller discipline.
+- `src/lib/amazon/spapi-client.ts` (additive) — `listOrders()` gained an optional `nextToken` param for
+  pagination (per the real Orders API v0 contract: a `NextToken` call carries no other filters). No
+  other function changed.
+- `scripts/review-requests-catchup.ts` (new) — orchestration. A testable `runCatchup()` core (dependency-
+  injected: `listOrdersFn`/`getSolicitationFn`/`sleepFn`/`nowFn`) plus a thin `main()` CLI entrypoint that
+  wires real dependencies (same lazy-admin + entrypoint-guard pattern as every other script this
+  session). Hard-clamps the catch-up window to **30 days max** in code (`Math.min(..., 30)`) regardless
+  of `REVIEW_REQUESTS_CATCHUP_DAYS` misconfiguration — the "no 120-day backfill" rule cannot be
+  overridden by an env var. Paginates Orders API safely (bounded to 50 pages as a defensive ceiling).
+  Throttles Solicitations GET calls at the configured `REVIEW_REQUESTS_RATE_LIMIT_MS` (default 1100ms),
+  once per candidate checked. **Contains no Solicitations POST code path at all** — logs
+  `would-send (dry-run only, no POST)` with a masked order id when a row reaches `eligible_dry_run`,
+  never calls anything resembling a send. `REVIEW_REQUESTS_ENABLED`/`REVIEW_REQUESTS_DRY_RUN` have zero
+  effect on this script's behavior (it warns if it finds `ENABLED=true`, since that expectation would be
+  wrong for a script that structurally cannot send) — those flags only matter for a future PR that adds
+  real sending. Dry-run report (Part D shape) includes every field the founder specified: fetch window,
+  pages/orders/candidates counts, all 9 status-outcome buckets (5 of which — `tooEarly`,
+  `expired`, `alreadySolicited`, `ineligibleTerminal` — are always 0 in this PR's output, since nothing
+  in the decision logic ever produces them from GET-only evidence; documented as intentional, not a bug),
+  sanitized API-error-by-code map, elapsed time, estimated API calls, and the unconditional
+  `postAttempted: false` / `reviewRequestsSent: 0`.
+- `.env.local.example` (docs) — documents the 6 `REVIEW_REQUESTS_*` env vars with the founder-specified
+  defaults, with an explicit note that they have no effect on this particular script.
+- `scripts/test-review-requests.ts` (new) — **20/20 passing**, covering all 16 requested items plus 4
+  extra: 30-day clamp, pagination (2-page follow-through), duplicate upsert (both the simple-repeat case
+  and a true simulated 23505 insert race), terminal-status preservation on upsert, sent-row protection on
+  upsert, eligible/not-eligible classification, `eligible_dry_run` non-terminal, terminal-status-requires-
+  evidence (direct repository call proves the schema/repository *can* reach `expired` given confident
+  evidence, while the catch-up's own classifiers prove they never produce it), retry scheduling (future
+  timestamp, ≥1h out), terminal-clears-`next_check_at` (all 5 terminal statuses), batch-size enforcement,
+  rate-limit throttle (asserted call count and exact configured delay), PII-allowlist proof (adversarial
+  input, exact-keys assertion), order-id masking, POST-function-does-not-exist (re-verified, same
+  assertion style as the PR #31 probe test), protected-status write refusal, unconditional
+  `postAttempted`/`reviewRequestsSent` zero-state, and concurrent double-claim safety (exactly one of two
+  simultaneous claims succeeds; a second finalize attempt on an already-finalized row correctly fails).
+
+**Checks run:** `npx tsc --noEmit` — pass. `npx eslint` on all 5 changed/new code files — pass, zero
+warnings. Full regression: `test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts` 6/6,
+`test-retry-or-fail-update.ts` 6/6, `test-review-automation-permission-probe.ts` 9/9,
+`test-review-requests.ts` 20/20 — **46/46 total, all passing.**
+
+**Explicitly not done in this PR (at code-review time):** the live catch-up had not yet been run against
+production Amazon (code tested against fakes only). No daily cron. No protected sending route. No live
+mode. No migration change. No Solicitations POST function anywhere in the codebase (re-verified by test).
+
+### §18 update (2026-07-12) — Live 3-day sample run (founder-approved, 2 passes, both clean)
+
+Founder approved a small live sample before merging PR #34: 3-day window (not 30), max 10 candidates,
+GET-only. Settings explicitly confirmed before running: `REVIEW_REQUESTS_ENABLED=false`,
+`REVIEW_REQUESTS_DRY_RUN=true`, `REVIEW_REQUESTS_MARKETPLACE_ID=A21TJRUUN4KGV`,
+`REVIEW_REQUESTS_CATCHUP_DAYS=3`, `REVIEW_REQUESTS_BATCH_SIZE=10`, `REVIEW_REQUESTS_RATE_LIMIT_MS=1100`.
+
+**Baseline (before run 1):** `review_solicitation_orders` was empty — 0 rows, 0 sent, no status
+breakdown.
+
+**Operational note (non-blocking, flagged for future 30-day-run planning):** run 1's shell command hit
+the tool's 2-minute output-capture timeout before the underlying script finished; the script itself kept
+running to completion in the background (unaffected, since it's a plain long-running Node process, not
+killed by the parent shell exiting) and finished cleanly — verified by watching row counts stabilize and
+by the founder confirming the reported PIDs had already exited by the time a manual `taskkill` was run.
+**No data corruption or partial-write risk resulted** — the repository's guarded-write design means an
+interrupted run simply leaves rows in their last-completed state, never a torn/partial write — but this
+surfaced a real timing fact: **a 3-day/~420-order window's order-upsert phase alone took ~2m49s–~3m05s**
+(sequential per-order Supabase round trips, by design, not a bug). A full 30-day window will contain
+substantially more orders and should be expected to take proportionally longer — run 2, captured properly
+end-to-end this time, reports `elapsedMs: 184606` (~3m05s) for the same 3-day window. This is important
+context for deciding how (and whether, in one shot) to run the eventual real 30-day catch-up — flagged as
+evidence for that future decision, not acted on here.
+
+**Run 1 results (sanitized aggregates only — no order IDs, no raw responses, matches what the script
+itself prints):**
+- Orders: window = 3 days (respected — spot-checked `purchase_date` range against the DB, oldest order
+  matched the 3-day cutoff, no order older than the window present).
+- Database after run 1: 419 rows total, 0 with `solicitation_sent = true`, 0 duplicate
+  `(workspace_id, marketplace_id, amazon_order_id)` groups.
+- Eligibility: exactly 10 candidates checked (batch size respected) — all 10 → `not_eligible_retryable`
+  (0 → `eligible_dry_run`, 0 → `failed_retryable`, 0 API errors). `last_eligibility_response` on all 10
+  contains **exactly** the 5 allowlisted keys (`actionNames`, `checkedAt`, `sanitizedReason`,
+  `amazonStatusCode`, `amazonErrorCode`) and nothing else — verified via `jsonb_object_keys` across every
+  row with a non-null value.
+- Throttle: 1100ms sleep applied before each Solicitations call as configured; the observed gap between
+  consecutive `last_checked_at` timestamps (~1.9–2.5s) is larger than 1100ms because it also includes the
+  real network/DB round-trip time for the call and the write-back, not because the throttle itself was
+  wrong — the configured delay value was confirmed correct at the code level in this session's earlier
+  unit tests (exact-value assertion).
+- Absolute safety: `postAttempted: false`, `reviewRequestsSent: 0` (script's own report), 0 rows with
+  `solicitation_sent = true` in the DB independently, no `createProductReviewAndSellerFeedbackSolicitation`
+  function exists anywhere in the codebase (unchanged from PR #31/#34's verification).
+
+**Run 2 (idempotency pass, same 3-day sample, run only after run 1 was confirmed clean) — full JSON
+report** (this run was captured as a properly tracked background task from the start, avoiding run 1's
+capture issue):
+```json
+{
+  "fetchWindowDays": 3,
+  "ordersApiPagesFetched": 6,
+  "ordersReceived": 421,
+  "ordersInserted": 3,
+  "ordersUpdated": 418,
+  "candidatesChecked": 10,
+  "eligibleDryRun": 0,
+  "notEligibleRetryable": 10,
+  "tooEarly": 0, "expired": 0, "alreadySolicited": 0, "ineligibleTerminal": 0,
+  "failedRetryable": 0, "failedTerminal": 0,
+  "skippedTerminal": 0, "skippedAlreadySent": 0,
+  "apiErrorsByCode": {},
+  "elapsedMs": 184606,
+  "estimatedApiCalls": 16,
+  "postAttempted": false,
+  "reviewRequestsSent": 0
+}
+```
+- Database after run 2: **422 rows** (419 + 3 newly-appeared orders since run 1, minutes apart — expected,
+  not a bug), 0 sent, **0 duplicate groups** (confirmed idempotent — re-upserting the same 419 orders
+  updated them in place, created no duplicates).
+- Status breakdown after run 2: `pending`=402, `not_eligible_retryable`=20 (the original 10 from run 1
+  plus 10 *different* rows from run 2) — `sum(check_attempts)` across all rows = 20, and **0 rows have
+  `check_attempts > 1`**, proving run 2 correctly selected 10 **new** due candidates rather than
+  re-checking run 1's 10 rows (which had already been scheduled a ~3-day-out `next_check_at` and were
+  correctly excluded from "due" selection on the same day). This is exactly the intended idempotent/
+  scheduling behavior, not a coincidence.
+- Terminal/sent fields: still 0 rows `sent`, still 0 rows in any terminal status — nothing in either run
+  produced a terminal outcome (consistent with the documented "GET-only cannot confidently detect
+  terminal conditions" design), so terminal-field protection was not separately exercised by *this* live
+  run (already proven at the unit-test and migration-synthetic-test level in earlier steps).
+
+**Conclusion: both passes clean, no bug found, nothing fixed.** No code change was made to PR #34 as a
+result of this live test — the implementation behaved exactly as designed on real production data.
+
+**PR:** #34 updated with this section (sanitized aggregates only — no order IDs, no raw API responses
+committed). Still open, not merged, not deployed. No cron created. No env vars changed permanently
+(only exported for the duration of each manual run). No credentials/scopes/tokens changed.
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
 Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
-PR #31 merged — permission probe live, scopes confirmed sufficient; PR #32 (migration 059, schema only)
+PR #31 merged — permission probe live, scopes confirmed sufficient; dry-run catch-up foundation
+(repository/policy/script, 46/46 tests) opened as PR #34; live 3-day/10-order sample run twice (idempotency
+pass), both clean, sanitized results recorded, no bug found, PR #34 still open not merged; PR #32 (migration 059, schema only)
 opened, review-corrected, and merged; migration 059 applied to production Supabase (okxfwcfxxrtmijmvztdq)
 and fully verified read-only (columns/constraints/indexes/RLS/trigger + synthetic insert/duplicate-reject/
 isolation/updated_at/cleanup) — table exists, is empty, and nothing reads or writes it yet;
