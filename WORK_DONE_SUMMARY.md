@@ -325,5 +325,19 @@ checked — not eligible right now, not a scope problem). **Scopes sufficient: y
 no DB writes, no secrets/PII in output, order id masked (`***1161`). Full sanitized result in
 `BRAHMASTRA_MASTER_TRACKER.md` §18.
 
-**Still not done:** no migration, no `review_solicitation_orders` table, no cron, no env vars, no
-scope/credential changes. PR #31 (the probe code) is open, not merged.
+**PR #31: merged** (2026-07-12, merge commit `952a38f`). No deployment/promotion was needed — nothing
+calls this code yet, so merging activates nothing in production. Review automation is not enabled or
+running anywhere.
+
+**Migration proposed, not applied (2026-07-12):** `esolz-app/supabase/migrations/059_review_solicitation_orders.sql`
+— the `review_solicitation_orders` table, schema only. Full state machine (12 statuses, 7 non-terminal /
+5 terminal), the `(workspace_id, marketplace_id, amazon_order_id)` uniqueness/idempotency constraint,
+claim fields (`claimed_at`/`claimed_by`/`claim_expires_at`) for a future guarded pre-POST claim, 3
+indexes (due-work/status/sent-audit — order lookup is already covered by the unique constraint's own
+index), workspace-scoped RLS (`SELECT` only for `authenticated`, no write policy — all writes come from
+service-role automation), and a defensive check rejecting a few obviously PII-shaped keys in
+`last_eligibility_response`. No RPC, no cron, no Amazon call, no jobs. **Not applied to any database** —
+opened as PR only, awaiting founder approval to apply separately.
+
+**Still not done:** no Orders-fetch job, no Solicitations POST, no cron, no env vars, no scope/credential
+changes, no live sending.

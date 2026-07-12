@@ -1537,7 +1537,83 @@ printed — no raw API response was captured or committed):
   `productReviewAndSellerFeedback` available (this run's one sample order didn't) — that's a volume
   question for the dry-run catch-up (spec PR #5), not a permission question, and is out of scope here.
 
-**PR #31: still open, not merged, not deployed** — awaiting founder go-ahead to merge.
+**PR #31: MERGED** (merge commit `952a38f`, 2026-07-12). Confirmed via `git diff --name-only` against
+the pre-merge tip: exactly the 6 expected files changed, nothing else. No deployment/promotion was
+needed or performed — no route or cron calls any of this code yet, so merging alone activates nothing
+in production. Review automation is **not enabled and not running** anywhere.
+
+### §18 update (2026-07-12) — Implementation PR #2: migration only (opened, not applied)
+
+Branch `feat/review-solicitation-orders-migration` off latest `master` (post-PR #31). **Schema only —
+no jobs, no cron, no RPC, no Amazon calls, no live sending.** ASIN checker, Ads, payments,
+replenishment, and Report Reuse Gate untouched.
+
+**File:** `esolz-app/supabase/migrations/059_review_solicitation_orders.sql` (1 file). Confirmed via
+`git ls-tree origin/master` that 058 is still the latest applied migration, so 059 is the correct next
+number (the CLAUDE.md "055" note remains stale, as already flagged in the prior §18 update).
+
+**Table:** `review_solicitation_orders` — all 19 columns from the founder's exact spec, plus 3
+justified claim/idempotency columns (`claimed_at`, `claimed_by`, `claim_expires_at`) so a future guarded
+pre-POST claim can be a single conditional UPDATE, mirroring `reclaimStuckJob()`'s pattern from the ASIN
+checker — no RPC/function created to use them yet, columns only.
+
+**Identity constraint:** `UNIQUE (workspace_id, marketplace_id, amazon_order_id)` — multi-workspace,
+multi-marketplace safe, per instruction (not a global `amazon_order_id`-only constraint). This same
+index also serves order lookups, so no separate lookup index was added (would be an exact duplicate).
+
+**Status model:** enforced by a `CHECK` constraint listing exactly the 12 statuses given (7 non-terminal:
+`pending`, `too_early`, `not_eligible_retryable`, `eligible_dry_run`, `failed_retryable`, `checking`,
+`send_claimed`; 5 terminal: `sent`, `already_solicited`, `expired`, `ineligible_terminal`,
+`failed_terminal`). `eligible_dry_run` is explicitly documented as non-terminal in the migration's
+comment block, with the constraint that any future POST still requires a fresh GET — matches the
+founder's correction from the prior turn. `ineligible_terminal` is documented as requiring Amazon to
+clearly establish permanence — a merely-absent `productReviewAndSellerFeedback` action must map to
+`not_eligible_retryable` or `too_early`, never straight to terminal.
+
+**Safety constraints added:** `solicitation_sent` and `solicitation_status='sent'` are constrained to
+always agree (`(solicitation_status = 'sent') = solicitation_sent`); `solicitation_sent_at` must be
+non-null whenever `solicitation_sent` is true; `send_claimed` status requires both `claimed_at` and
+`claim_expires_at` to be set; `check_attempts >= 0`. "Sent rows cannot be selected for new sends" is
+enforced practically by the due-work partial index excluding all terminal statuses (including `sent`)
+outright, not by a table constraint (a `CHECK` can't express "excluded from a future SELECT").
+
+**Indexes (4 requested, 3 created + 1 already covered):**
+1. Due-work: `(workspace_id, marketplace_id, next_check_at)`, partial — `WHERE solicitation_status NOT
+   IN (<5 terminal statuses>)`.
+2. Status/reporting: `(workspace_id, solicitation_status)`.
+3. Sent audit: `(workspace_id, solicitation_sent_at)`, partial — `WHERE solicitation_sent_at IS NOT
+   NULL`.
+4. Order lookup: already served by the unique constraint's own index (constraint #1 above) — a separate
+   index on the identical column set would be a redundant duplicate, so none was added.
+
+**RLS/security:** `SELECT`-only policy for `authenticated`, scoped to `workspace_id in (select
+public.user_workspace_ids())` — the corrected pattern from migration 056 (no hardcoded test-email/plan
+gate). **No `INSERT`/`UPDATE`/`DELETE` policy for `authenticated`** — intentionally more restrictive
+than `background_jobs` (which allows a member-triggered manual insert for "Check Now"): nothing in this
+workstream is user-triggered, so all writes come from server-side automation via the service-role key,
+which bypasses RLS entirely regardless. No `SECURITY DEFINER` function created. No RPC created — schema
+only, per instruction.
+
+**PII:** no buyer name/address/phone/email column exists. `last_eligibility_response jsonb` is
+documented as sanitized-only (action-name list, not raw payloads), plus a best-effort defensive `CHECK`
+constraint rejecting a handful of obviously PII-shaped top-level JSON keys (`buyerName`, `buyerEmail`,
+`buyerPhone`, `shippingAddress`, `BuyerInfo`, and PascalCase variants) as defense in depth — documented
+as non-exhaustive; the application writing only sanitized data is the real enforcement point.
+
+**Validation performed:** manual syntax review (balanced constraints/parens, valid Postgres `CHECK`/JSONB
+`?` operator usage), and line-by-line cross-reference against 4 existing applied migrations'
+create-table/RLS/trigger patterns (034 `background_jobs`, 051 `internal_payment_transaction_upload_batches`,
+054 `internal_brahmastra_thresholds`, 056's corrected RLS pattern). **No automated SQL linter or local
+Postgres instance exists in this repo** (no `supabase/config.toml`, no lint script) — this is the same
+validation depth as every other migration in this session's history. `npx tsc --noEmit` run repo-wide —
+pass (a schema-only change has no TS surface of its own; this confirms nothing else was inadvertently
+touched). Confirmed additive-only: every statement is `CREATE ... IF NOT EXISTS` or `DROP POLICY/TRIGGER
+IF EXISTS` immediately followed by re-create (the same idempotent pattern every other migration in this
+repo uses) — no existing table is altered, no existing data touched. Rollback: a single `DROP TABLE
+public.review_solicitation_orders CASCADE` cleanly removes the table, its indexes, constraints, policy,
+and trigger — nothing else in the schema references this new table yet.
+
+**Production migration: NOT applied.** Schema only, PR opened, not merged, not applied to any database.
 
 ---
 
@@ -1545,6 +1621,8 @@ printed — no raw API response was captured or committed):
 locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verification complete, scheduler
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
 Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
+PR #31 merged — permission probe live, scopes confirmed sufficient; PR #2 (migration 059, schema only,
+not applied) opened;
 §18 update — Implementation PR #1 (permission probe) opened on `feat/review-automation-permission-probe`,
 4 files, no migration/POST/env/cron, tests + tsc + eslint clean; live probe run confirms scopes sufficient
 (Orders pass, Solicitations GET pass), PR #31 still open pending merge approval)
