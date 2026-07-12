@@ -319,6 +319,11 @@ been made yet, no table exists, no solicitation can be sent by any code in this 
   output. Fails closed (`scopesSufficient` only ever `'yes'` on unambiguous success).
 - `scripts/test-review-automation-permission-probe.ts` — 9/9 passing.
 
-**Not done:** the probe has not been run against live Amazon yet, so whether the EasyHOME SP-API
-connection actually has Orders + Solicitations access is still unknown. No migration, no
-`review_solicitation_orders` table, no cron, no env vars, no scope/credential changes.
+**Live probe result (2026-07-12):** ran once against the real EasyHOME connection, GET-only. Orders API:
+pass (5 orders returned, 3-day window). Solicitations GET: pass (0 actions on the one sample order
+checked — not eligible right now, not a scope problem). **Scopes sufficient: yes.** No POST attempted,
+no DB writes, no secrets/PII in output, order id masked (`***1161`). Full sanitized result in
+`BRAHMASTRA_MASTER_TRACKER.md` §18.
+
+**Still not done:** no migration, no `review_solicitation_orders` table, no cron, no env vars, no
+scope/credential changes. PR #31 (the probe code) is open, not merged.

@@ -1502,13 +1502,42 @@ replenishment, Report Reuse Gate, and ASIN UI files are untouched (confirmed via
 Regression: `test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts` 6/6, `test-retry-or-fail-update.ts`
 6/6 — all still passing, confirming no unrelated breakage.
 
-**Not run:** the probe itself has not been executed against live Amazon — that requires the founder to
-approve an actual outbound SP-API call (Orders + Solicitations GET) against the real EasyHOME
-connection. **Scope sufficiency (Orders/Solicitations API access) is therefore still unknown** — this
-PR only proves the code is ready to test it, not that it passed. Running it is the next step, on
-approval.
+**Live probe run (2026-07-12, founder-approved) — result: scopes sufficient.**
 
-**PR:** opened, not merged, not deployed — awaiting founder review per instruction.
+Ran once against the real EasyHOME Amazon connection (workspace `55a321c9-…`), GET-only, 3-day Orders
+window, max 5 orders, at most one Solicitations eligibility check. Sanitized output (exactly what was
+printed — no raw API response was captured or committed):
+
+```json
+{
+  "ordersApiAccess": "pass",
+  "ordersReturned": 5,
+  "solicitationsGetAccess": "pass",
+  "productReviewAndSellerFeedbackObserved": false,
+  "sanitizedError": null,
+  "scopesSufficient": "yes",
+  "postAttempted": false,
+  "sampleOrderIdMasked": "***1161"
+}
+```
+
+- **Orders API: pass**, 5 orders returned (the requested max) in the 3-day window. Nothing persisted —
+  the script performs zero database writes.
+- **Solicitations GET: pass.** The one sample order checked currently has no `productReviewAndSellerFeedback`
+  action available — per the state-machine correction from the founder's last instruction, **absence of
+  the action is not a failure or a scope problem**; it just means that specific order isn't currently
+  eligible (could be too recent, or already past Amazon's window). Not evidence of a scope gap, since the
+  GET call itself succeeded cleanly.
+- **Scopes sufficient: yes** — both Orders and Solicitations GET access are confirmed working end-to-end
+  on the live EasyHOME connection.
+- **Safety confirmed live:** no POST attempted (no such function exists in the codebase), no DB writes, no
+  customer communication, no tokens/secrets in any output, order id masked to last 4 characters
+  (`***1161`) in the only place one appeared.
+- **Not yet answered by this single run:** whether *any* order in a larger window actually has
+  `productReviewAndSellerFeedback` available (this run's one sample order didn't) — that's a volume
+  question for the dry-run catch-up (spec PR #5), not a permission question, and is out of scope here.
+
+**PR #31: still open, not merged, not deployed** — awaiting founder go-ahead to merge.
 
 ---
 
@@ -1517,4 +1546,5 @@ locked review-automation spec recorded; §16 D.10 — PR #28 three-cycle verific
 inventory and GET 500 `/` investigation recorded, both non-blocking; §18 update — full implementation-ready
 Review Request Automation spec written as `REVIEW_REQUEST_AUTOMATION_SPEC.md`, inspection/planning only;
 §18 update — Implementation PR #1 (permission probe) opened on `feat/review-automation-permission-probe`,
-4 files, no migration/POST/env/cron, tests + tsc + eslint clean, not yet run against live Amazon, not merged)
+4 files, no migration/POST/env/cron, tests + tsc + eslint clean; live probe run confirms scopes sufficient
+(Orders pass, Solicitations GET pass), PR #31 still open pending merge approval)
