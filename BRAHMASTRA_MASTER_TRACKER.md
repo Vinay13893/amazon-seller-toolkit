@@ -938,20 +938,163 @@ finding worth sitting with before assuming Render is net-additive today. Before 
    ambiguous would remove the only mechanism (however uncertain) currently touching those rows at all.
 No batch size or cadence change was made this round, per instruction.
 
-### Cheapest safe fix (proposed — still not implemented; SQL still not run, per instruction)
+### Cheapest safe fix
 
-1. **Surgical, immediate (still recommended, still not run):** a one-time `UPDATE background_jobs SET
-   status='failed', locked_at=NULL, locked_by=NULL WHERE job_type='product_page_snapshot' AND status='running'
-   AND locked_by='render-cron' AND locked_at < now() - interval '1 hour'` — now that D.4 confirms Render's own
-   reclaim isn't going to clear these on its own, this is the only mechanism that will actually unstick the 10
-   rows. Still not executed this round, per explicit instruction.
-2. **Code-level fix (root cause, now precisely identified):** add a result/error check to
-   `cleanupStuckJobs()`'s per-row `.update(...)` call in `esolz-app/scripts/process-asin-checker-jobs.ts` so a
-   failed reclaim write is surfaced instead of silently counted as a success — this is a real, narrow bug fix,
-   not a redeploy or config change (Render is already confirmed current on `master`). Not implemented this
-   round.
+1. **Surgical, immediate SQL reclaim of the 10 known stuck rows: still recommended, still deferred, still not
+   run.** Code fix in D.5 below does not retroactively touch these existing 10 rows — it only makes *future*
+   reclaim attempts trustworthy. The 10 rows first identified in D.1 remain stuck as of this writing and will
+   need either this one-time SQL (still not executed, per instruction) or a subsequent successful automated
+   reclaim once PR #24 (below) is merged and deployed.
+2. **Code-level fix — ✅ implemented, PR open, not merged.** See D.5.
 3. **Longer-term:** unchanged — decide whether to keep both workers or consolidate; informed by D.3's finding
    that Vercel-alone theoretical capacity already exceeds today's real combined throughput.
+
+### D.5 Code fix for the reclaim-verification bug (2026-07-11, later same day)
+
+**Root cause (confirmed in D.4):** `cleanupStuckJobs()` in `esolz-app/scripts/process-asin-checker-jobs.ts`
+counted a stuck job as reclaimed the moment it issued the `UPDATE`, without checking the Supabase response's
+`error` or matched-row count. Both live `Stuck reset: 10` events found the same 10 real stuck rows every run and
+logged success, but the write never persisted.
+
+**Fix (PR [#24](https://github.com/Vinay13893/amazon-seller-toolkit/pull/24), not merged):**
+- Extracted `reclaimStuckJob()` as a standalone, exported function. Each reclaim now uses a **guarded update**
+  (`.eq('status','running').eq('locked_at', <snapshot taken at SELECT time>)`) plus `.select('id')`, and checks
+  the returned `error`/row-count before counting the row as reclaimed — the same verify-after-write pattern this
+  file's atomic job-claim query already used. The `locked_at` guard also closes a race window: a row reclaimed
+  by another worker between the SELECT and this UPDATE is correctly reported as "not reclaimed" instead of
+  silently overwritten.
+- `cleanupStuckJobs()` now returns `{found, reclaimed, failed, failures}` instead of a bare count.
+  `main()`'s console log and JSON summary now report `stuckFound` / `stuckReclaimed` / `stuckFailed` (plus a
+  reason per failure) instead of the single misleading `stuckReset` field — **future Render log lines will be
+  trustworthy** and the exact D.4-style discrepancy cannot recur silently.
+- **Semantics preserved exactly:** `attempt_count >= max_attempts` → `failed` (not re-queued — avoids retrying a
+  poisoned job forever); otherwise → `queued` with the existing `RETRY_DELAY_MINUTES` delay.
+  `last_error_safe='stale processing reset'` marker unchanged (kept for continuity with D.1–D.4's documented
+  evidence trail).
+- **Idempotent** — a repeat run only re-finds rows still matching `status='running'`, and the `locked_at` guard
+  prevents double-acting on a row already reclaimed by a prior/concurrent run.
+- Also made the Supabase admin client lazy (created inside `main()`, not at module load) and guarded the
+  bottom-level `main()` invocation behind an entrypoint check, so the file is importable for testing without
+  live credentials — required to add `esolz-app/scripts/test-stuck-job-reclaim.ts` (5 scenarios: retries-
+  remaining reclaim, max-attempts reclaim, Supabase error not counted as success, zero-row-match not counted as
+  success, idempotent double-reclaim — all passing). No behavior change to the real cron invocation path beyond
+  the write verification itself.
+
+**Checks:** `npx tsx scripts/test-stuck-job-reclaim.ts` — 5/5 pass. `npx tsx scripts/test-track-asin.ts` — 5/5
+still pass (no regression). `npx tsc --noEmit` — clean. `npx eslint` — no new issues (one pre-existing unused-
+var warning, confirmed present on `master` already).
+
+**Not done:** no SQL run, no DB rows changed, no Render/Vercel config/cadence/batch-size changed, no migration
+(none needed — all columns already existed), not merged, not deployed.
+
+### D.6 PR #24 merged and first post-merge verification (2026-07-11, later same day)
+
+**PR #24 merged.** Merge commit `26c819dd3ee9ab5fe816d2efd632d4e44a260c77`, merged `2026-07-11T11:45:49Z`.
+Files changed (confirmed via `git diff --name-only` against the pre-merge tip): exactly
+`esolz-app/scripts/process-asin-checker-jobs.ts` and `esolz-app/scripts/test-stuck-job-reclaim.ts`. Vercel
+auto-built the merge commit (`dpl_Bij7FnSWHjhhoV7x3wMjAdJ8gUBq`, preview build, `target: null`) — **not
+promoted**, per instruction (this fix only affects the Render-hosted script; Vercel doesn't run it).
+
+**Render's own build/deploy state could not be directly confirmed** — no Render dashboard/API access in this
+environment, same limitation as D.1–D.4.
+
+**First post-merge Render cron cycle (12:00 UTC, ~14 minutes after the merge) — inconclusive, most likely still
+old code:**
+- All 10 originally-tracked stuck job IDs remain **completely unchanged** — identical `status='running'`,
+  identical `locked_at` timestamps, identical `last_error_safe` values, down to the same values recorded in
+  D.1–D.4.
+- A single **new**, previously-untracked row also entered `status='running'` and is now stuck too (overall
+  `running` count went 10 → 11 between checks), alongside normal queue movement elsewhere (`completed`
+  13468→13478, `failed` 71→72, `queued` 467→456) confirming the cron did fire and do real work.
+- **Most likely explanation: deploy lag, not a fix failure.** Only ~14 minutes elapsed between the GitHub merge
+  and this cron's scheduled fire — not necessarily enough time for Render to build and roll out the new
+  container before that specific invocation started. A fresh job getting stuck in exactly the old, pre-fix
+  pattern is consistent with the *old* code still being live for this one cycle, not with the new
+  verify-before-counting logic running and revealing some deeper problem.
+- **Not adjudicated with certainty** — the fastest way to resolve this is checking the Render dashboard log
+  format for the 12:00 UTC run directly: the **old** code logs a single line
+  `[asin-checker] Stuck reset: N`; the **new** (fixed) code logs
+  `[asin-checker] Stuck cleanup: found=X reclaimed=Y failed=Z` (a different shape). Whichever format appears
+  for the 12:00 run settles whether Render had already redeployed by then.
+- **No SQL reclaim run.** Per instruction: "if they do not clear, report exact reason before any manual SQL" —
+  the reason above (probable deploy lag) is reported; recommend waiting for the **next** cron cycle (16:00 UTC)
+  for an unambiguous read, by which time Render should certainly have redeployed, rather than concluding
+  anything definitive from this one early, timing-ambiguous cycle.
+
+### D.7 PR #24's fix confirmed live — explicit root cause found (2026-07-11, later same day)
+
+**PR #24 is live on Render.** Founder-supplied log evidence from `easyhome-asin-live-checker` around `09:31 PM
+IST` confirms the new logging format is in production:
+
+```
+Stuck reclaim failed for job ...: null value in column "run_after" of relation "background_jobs" violates not-null constraint
+{"stuckFound":11,"stuckReclaimed":0,"stuckFailed":11,"enqueued":4,"processed":2,"completed":1,"partialCatalog":1,"pricingRateLimited":1,...}
+```
+
+**This is exactly what the D.6 recommendation anticipated:** the old silent-logging bug (PR #24) is confirmed
+fixed — the reclaim mechanism now reports failures explicitly instead of claiming false success. What it
+revealed is a second, previously-invisible bug: **`background_jobs.run_after` is `timestamptz NOT NULL DEFAULT
+now()` (migration 034), but `reclaimStuckJob()`'s max-attempts branch wrote `run_after: null`, so every reclaim
+attempt for a job at max attempts was rejected outright by Postgres.** This fully explains why the original 10
+(now 11) stuck rows never cleared across every prior cycle in D.1–D.6 — not deploy lag as hypothesized, but a
+second real bug that PR #24 had to exist first in order to expose.
+
+**Fix (PR [#26](https://github.com/Vinay13893/amazon-seller-toolkit/pull/26), not merged):** the terminal-`failed`
+branch now writes `run_after: undefined` instead of `null`. Supabase-js drops `undefined`-valued keys during
+JSON serialization, so the column is left at its existing (non-null) value instead of being written at all —
+the same pattern already used correctly for this exact case in
+`esolz-app/src/app/api/asins/jobs/process-next/route.ts` (Vercel side). Retry-path (`queued`) semantics
+unchanged. 6/6 targeted tests pass (2 new, covering both paths' non-null `run_after` plus a dedicated regression
+guard simulating the exact Supabase rejection seen live); `test-track-asin.ts` 5/5 still pass; `tsc`/`eslint`
+clean.
+
+**Related, flagged, not fixed:** the identical `run_after: null` pattern also pre-exists in **three other,
+unrelated spots in this same file** — the main claim-processing loop's own failed-path branches (approximately
+the lines handling `skippedNoConnection`, pricing/catalog terminal failure, and snapshot-insert failure). These
+are separate, pre-existing latent bugs that would cause the same NOT NULL rejection for *any* job reaching
+max-attempts through the normal processing path (not just the stuck-reclaim path) — out of scope for PR #26 per
+explicit "small targeted fix only" instruction. **Recommended as the next code-fix task** once #26 is reviewed.
+
+### D.8 PR #26 merged, deployed, and verified — thread closed (2026-07-11/12)
+
+**PR #26 merged.** Merge commit `fc88d014559ec17c2dcf9199dddc1e501f64140e`, merged `2026-07-11T17:15:29Z`. Files
+changed (confirmed via `git diff --name-only` against the pre-merge tip): exactly
+`esolz-app/scripts/process-asin-checker-jobs.ts` and `esolz-app/scripts/test-stuck-job-reclaim.ts`. Vercel
+auto-built the merge commit (`dpl_3JU89QhYVwd89vBFWopvWKhzBd1u`, `READY`) — informational only, not promoted (no
+production relevance; this fix only runs on Render).
+
+**Render's build/deploy state still could not be directly confirmed** (no dashboard/API access this session) —
+verified indirectly via the next cron cycle's actual effect on Supabase instead, same approach as D.6/D.7. This
+time there was ~2h45m between merge and the next scheduled cron (`20:00 UTC`, vs. only ~14 min last time), ruling
+out the deploy-lag ambiguity from D.6.
+
+**Result: ✅ full success — all 11 stuck rows cleared naturally, no SQL needed.**
+- Cross-checked all 10 originally-tracked stuck job IDs (internal IDs only): every one now shows
+  `status='failed'`, `completed_at='2026-07-11 20:01:02.224+00'` (exactly the `20:00 UTC` cron cycle),
+  `locked_at=NULL`, `locked_by=NULL`, `last_error_safe='stale processing reset'`.
+- **`run_after` is non-null on every row and preserved at each row's original pre-stuck value** (e.g. job
+  `6282a60e…` shows `run_after='2026-07-09 14:15:06.767+00'`, matching exactly what was recorded for it in
+  D.1–D.4) — confirms the PR #26 fix (`undefined` instead of `null`) worked precisely as designed: the column
+  was left untouched rather than nulled or overwritten.
+- The previously-new 11th stuck row is also gone: aggregate `failed` count moved 72 → 83 (+11), and a direct
+  query for any `status='running'` row in the whole `product_page_snapshot` job type now returns **zero rows**.
+- Aggregate counts: `completed=13500` (+22), `failed=83` (+11), `queued=442`, `running=0`.
+
+**SQL reclaim: not needed, not run.** The automated fix cleared every stuck row on its own on the very next
+cycle.
+
+**Thread closed.** Both bugs found during this investigation (D.1–D.8) are now fixed and verified live:
+1. The silent-success logging bug (PR #24) — reclaim now reports found/reclaimed/failed accurately.
+2. The `run_after: null` NOT NULL violation (PR #26) — reclaim writes now actually persist.
+
+**Review automation is held until this thread's closure is acknowledged** — noted per instruction, not started
+this session.
+
+**Follow-up not started, still open:** the identical `run_after: null` pattern remains unfixed in **three other,
+unrelated spots** in `esolz-app/scripts/process-asin-checker-jobs.ts` (the main claim-processing loop's own
+failed-path branches, approximately lines 385/447/515 as of PR #26) — these affect the *normal* (non-stuck)
+terminal-failure path, not just reclaim, and would cause the same NOT NULL rejection for any job that
+legitimately exhausts its retries during ordinary processing. Recommended as the next code-fix task.
 
 ### Options to consider (not implemented — awaiting approval)
 
