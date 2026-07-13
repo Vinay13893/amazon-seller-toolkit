@@ -2364,6 +2364,58 @@ rate-limited snapshots written by either scheduler going forward will **still** 
 `'unknown'` value until (a) Vercel's cron binding updates to the promoted deployment and (b) the Render
 script gets the same fix applied. **This needs a decision, not a further inspection-only pass.**
 
+### §19 update (2026-07-13) — PR #38 merged; Render masking fix implemented (opened, not merged)
+
+**PR #38 (audit docs): MERGED** (merge commit `15f1172`). Confirmed documentation-only —
+`BRAHMASTRA_MASTER_TRACKER.md` was the only file in the diff, no runtime/deployment required.
+
+**Render masking fix — implemented on `fix/render-buy-box-status-masking`, opened as a PR, not merged.**
+Fixes exactly the second half of the finding above: `scripts/process-asin-checker-jobs.ts:587` (the
+Render cron's independent reimplementation of the checker logic) had the identical
+`offersResult?.buy_box_status ?? 'unknown'` bug PR #36 already fixed on the Vercel side.
+
+**Files changed (2):**
+- `scripts/process-asin-checker-jobs.ts` — now imports and calls the same
+  `resolveBuyBoxStatusToStore()` helper from `src/lib/amazon/buy-box-status.ts` that
+  `process-next/route.ts` uses (PR #36) — **the exact same canonical helper, not a second copy of the
+  logic.** Same split as the Vercel fix: `buyBoxStatusForAvailability` (unchanged, still feeds the
+  local `availabilityScore()` exactly as before — Availability behavior untouched, per instruction) and
+  `buyBoxStatusToStore` (the corrected value actually written to `asin_snapshots.buy_box_status`). Price
+  and BSR computation (`livePrice`, `bsrValue`, and everything around them) is byte-for-byte unchanged —
+  confirmed by a dedicated regression test, not just by not touching those lines.
+- `scripts/test-render-buy-box-status-fix.ts` (new) — **8/8 passing**: Render rate-limited path resolves
+  to `null`; confirmed `won`/`lost` still resolve correctly; a genuine ambiguous successful result is
+  preserved as-is; **both files' source text is directly checked** to confirm each imports
+  `resolveBuyBoxStatusToStore` from the shared lib and calls it (not a reimplementation), that neither
+  file still writes the old buggy `buyBoxStatus` variable directly into `buy_box_status`, that both
+  preserve the unchanged `buyBoxStatusForAvailability` split, and that neither file's Price/BSR
+  expressions changed; plus an exhaustive equivalence check across every possible `BuyBoxOfferStatus`
+  value.
+
+**Checks run:** `npx tsc --noEmit` — pass. `npx eslint` on both changed files — 0 new warnings (1
+pre-existing, unrelated `no-unused-vars` warning on `COOLDOWN_ACTIVE_REASON`, confirmed present before
+this change too via `git stash`). Full regression: all 6 prior test suites (`test-track-asin.ts` 5/5,
+`test-stuck-job-reclaim.ts` 6/6, `test-retry-or-fail-update.ts` 6/6,
+`test-review-automation-permission-probe.ts` 9/9, `test-review-requests.ts` 20/20,
+`test-buy-box-status-fix.ts` 13/13) plus the new suite — **67/67 total, all passing.**
+
+**Explicitly not touched, per instruction:** queue semantics, cadence, batch size, retries, Render
+settings, UI, review automation, Ads, payments, replenishment, auth/tokens, migrations, Report Reuse
+Gate.
+
+**Vercel fresh-deploy requirement — still open, not resolved by this PR.** The Render fix above closes
+one of the two gaps from the prior update; the Vercel Cron-binding issue (still invoking
+`dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA`, the stale pre-fix deployment, despite the production alias correctly
+serving the promoted fix) is **unrelated to this PR and remains unresolved** — it needs either more
+propagation time or an explicit full fresh production deploy (not a lightweight `vercel promote`), and
+that decision has not been made yet.
+
+**76 failed `my_product` rows: no action recommended (reconfirmed).** Per the completed audit above, all
+76 are either already self-healing via the normal 24h enqueue cadence or genuine Amazon-side persistent
+data gaps — no SQL, no reset, no code fix needed for these rows themselves.
+
+**PR: opened, not merged, not deployed.**
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
@@ -2406,4 +2458,9 @@ deployment (`dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA`, commit `3fa72fa2`) two cycles af
 though the public production alias itself correctly serves the fix — needs a decision (wait longer, or a
 full fresh deploy); (2) the Render cron script (`process-asin-checker-jobs.ts:587`) has the identical,
 never-fixed bug, independent of the Vercel issue. Read-path fix remains fully effective for
-already-existing rows regardless of both issues.)
+already-existing rows regardless of both issues.
+**§19 update (2026-07-13)** — PR #38 merged (`15f1172`, docs-only). Render masking fix implemented
+(reuses the exact same `resolveBuyBoxStatusToStore()` helper as the Vercel fix — not a second copy — 2
+files, 8/8 new tests, 67/67 total, tsc+eslint clean), opened as a PR, not merged. Vercel cron-binding
+issue remains separately unresolved (not addressed by this PR). 76 failed-row audit conclusion
+reconfirmed: no action needed.)

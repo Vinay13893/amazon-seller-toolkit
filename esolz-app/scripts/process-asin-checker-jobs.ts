@@ -17,6 +17,7 @@ import { refreshAccessToken } from '@/lib/amazon/lwa'
 import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
 import { getCatalogItemForAsin } from '@/lib/amazon/catalog'
 import { getItemOffersForAsin, type BuyBoxOfferStatus } from '@/lib/amazon/pricing'
+import { resolveBuyBoxStatusToStore } from '@/lib/amazon/buy-box-status'
 
 // ── Constants (mirrored from process-next/route.ts) ──────────────────────────
 
@@ -584,7 +585,14 @@ async function main() {
       continue
     }
 
-    const buyBoxStatus = offersResult?.buy_box_status ?? 'unknown'
+    // Feeds availability_score only -- Availability behavior is intentionally
+    // unchanged in this fix (see BRAHMASTRA_MASTER_TRACKER.md sec19). Do not
+    // use this for buy_box_status itself; see buyBoxStatusToStore below.
+    const buyBoxStatusForAvailability = offersResult?.buy_box_status ?? 'unknown'
+    // What actually gets written to asin_snapshots.buy_box_status. Reuses the
+    // same canonical helper process-next/route.ts uses (PR #36) so both
+    // workers resolve this identically -- see src/lib/amazon/buy-box-status.ts.
+    const buyBoxStatusToStore = resolveBuyBoxStatusToStore(offersResult?.buy_box_status)
     const scrapeStatus =
       catalogResult && offersResult ? 'success'
       : catalogResult && offersIsRateLimited ? 'partial_pricing_rate_limited'
@@ -627,8 +635,8 @@ async function main() {
       rating: null,
       review_count: null,
       buy_box_owner: offersResult?.buy_box_owner ?? null,
-      buy_box_status: buyBoxStatus,
-      availability_score: availabilityScore(buyBoxStatus),
+      buy_box_status: buyBoxStatusToStore,
+      availability_score: availabilityScore(buyBoxStatusForAvailability),
       scrape_status: scrapeStatus,
       checked_at: checkedAt,
     }
