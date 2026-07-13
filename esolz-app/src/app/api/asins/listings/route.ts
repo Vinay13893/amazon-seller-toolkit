@@ -7,7 +7,10 @@ export const runtime = 'nodejs'
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
 const JOB_TYPE = 'product_page_snapshot'
-const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+const PRICING_COOLDOWN_RETRY_MINUTES = 4 * 60
+const REPEATED_PRICING_COOLDOWN_RETRY_MINUTES = 24 * 60
+const REPEATED_COOLDOWN_LOOKBACK_HOURS = 24
+const REPEATED_COOLDOWN_THRESHOLD = 3
 
 const RATE_LIMIT_REASONS = new Set([
   'amazon_pricing_rate_limited',
@@ -129,11 +132,25 @@ function latestJobForTarget(jobs: CheckerJobRow[], targetId: string): CheckerJob
   return rows.sort((a, b) => new Date(b.updated_at ?? b.completed_at ?? 0).getTime() - new Date(a.updated_at ?? a.completed_at ?? 0).getTime())[0] ?? null
 }
 
-function nextRetryAt(job: CheckerJobRow | null): string | null {
+function isRepeatedCooldown(rows: CheckerJobRow[]): boolean {
+  const lookbackCutoff = Date.now() - REPEATED_COOLDOWN_LOOKBACK_HOURS * 60 * 60 * 1000
+  const recent = rows
+    .filter(row => row.completed_at && new Date(row.completed_at).getTime() >= lookbackCutoff)
+    .sort((a, b) => new Date(b.completed_at ?? 0).getTime() - new Date(a.completed_at ?? 0).getTime())
+    .slice(0, REPEATED_COOLDOWN_THRESHOLD)
+
+  return recent.length >= REPEATED_COOLDOWN_THRESHOLD &&
+    recent.every(row => RATE_LIMIT_REASONS.has(String(row.last_error_safe ?? '')))
+}
+
+function nextRetryAt(job: CheckerJobRow | null, relatedJobs: CheckerJobRow[] = []): string | null {
   if (!job) return null
   if ((job.status === 'queued' || job.status === 'running') && job.run_after) return job.run_after
   if (job.completed_at && RATE_LIMIT_REASONS.has(job.last_error_safe ?? '')) {
-    const retryAt = addMinutes(job.completed_at, PRICING_RATE_LIMITED_RETRY_MINUTES)
+    const retryAt = addMinutes(
+      job.completed_at,
+      isRepeatedCooldown(relatedJobs) ? REPEATED_PRICING_COOLDOWN_RETRY_MINUTES : PRICING_COOLDOWN_RETRY_MINUTES,
+    )
     // Only return future retry times — past dates mean the job is already overdue for re-enqueue
     if (retryAt > new Date().toISOString()) return retryAt
   }
@@ -267,7 +284,7 @@ export async function GET(request: NextRequest) {
         last_successful_bsr_checked_at: bsrSnapshot?.checked_at ?? null,
         last_successful_pricing_checked_at: pricingSnapshot?.checked_at ?? null,
         latest_failure_reason: job?.last_error_safe ?? null,
-        next_retry_at: nextRetryAt(job),
+        next_retry_at: nextRetryAt(job, listingJobs.filter(listingJob => listingJob.target_id === listingId)),
         price_source_status: pricingStatusLabel(latest, priceSnapshot),
         bsr_source_status: catalogStatusLabel(latest, bsrSnapshot),
         buy_box_source_status: buyBoxStatusLabel(latest, confirmedBuyBoxSnapshot),
