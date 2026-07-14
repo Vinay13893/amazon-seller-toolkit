@@ -8,6 +8,12 @@ const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
 const JOB_TYPE = 'product_page_snapshot'
 const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
+// Two independent schedulers process this queue: Vercel Cron (every 2h) and
+// Render Cron (every 4h) -- see BRAHMASTRA_MASTER_TRACKER.md sec16/sec19.
+// A generous multiple of the slower cadence, so a normal gap between ticks
+// (or a deep backlog that simply hasn't reached a given job yet) never
+// triggers a false "stalled" reading.
+const STALLED_QUEUE_HOURS = 6
 
 const RATE_LIMIT_REASONS = new Set([
   'amazon_pricing_rate_limited',
@@ -105,6 +111,46 @@ export function findConfirmedBuyBoxSnapshot(snapshots: ListingSnapshotRow[]): Li
   return snapshots.find(
     snapshot => snapshot.buy_box_status === 'won' || snapshot.buy_box_status === 'lost'
   ) ?? null
+}
+
+export interface CheckerSummaryForAction {
+  processing: number
+  queueDueNow: number
+  queueWaiting: number
+  queued: number
+  succeeded: number
+  rateLimited: number
+  lastAttemptedAt: string | null
+}
+
+/**
+ * Replaces the old "Cron not configured" heuristic (BRAHMASTRA_MASTER_TRACKER.md
+ * sec19), which inferred "no cron exists" from processing=0 at the exact
+ * instant this API request ran -- true almost continuously by design, since
+ * both schedulers only run for a few seconds every 2-4h. This version asks
+ * a question the data can actually answer: has ANY worker touched ANY job
+ * recently? lastAttemptedAt already reflects the most recent updated_at/
+ * completed_at across every job in the workspace, so staleness here means
+ * neither scheduler has run in a long time -- not "the queue has a backlog"
+ * (which is normal and expected) and not "nothing is running this instant"
+ * (also normal, most of the time).
+ */
+export function resolveSuggestedAction(summary: CheckerSummaryForAction, nowIso: string): string | null {
+  if (summary.processing > 0) return 'Processing active'
+
+  if (summary.queueDueNow > 0) {
+    const hoursSinceLastAttempt = summary.lastAttemptedAt
+      ? (new Date(nowIso).getTime() - new Date(summary.lastAttemptedAt).getTime()) / (60 * 60 * 1000)
+      : null
+    if (hoursSinceLastAttempt === null || hoursSinceLastAttempt > STALLED_QUEUE_HOURS) {
+      return `No checks have run in over ${STALLED_QUEUE_HOURS}h — automation may be stalled`
+    }
+    return 'Checks queued — next automatic run within a few hours'
+  }
+
+  if (summary.rateLimited > 0 && summary.queueWaiting > 0) return 'Pricing API cooldown active'
+  if (summary.queued === 0 && summary.succeeded > 0) return 'Queue healthy'
+  return null
 }
 
 export function buyBoxStatusLabel(latest: ListingSnapshotRow | null, confirmedSnapshot: ListingSnapshotRow | null): string {
@@ -319,13 +365,7 @@ export async function GET(request: NextRequest) {
     nextRetryAt: null as string | null,
   })
 
-  const suggestedAction = (() => {
-    if (checkerSummary.processing > 0) return 'Processing active'
-    if (checkerSummary.queueDueNow > 0) return 'Cron not configured — start processor to clear queue'
-    if (checkerSummary.rateLimited > 0 && checkerSummary.queueWaiting > 0) return 'Pricing API cooldown active'
-    if (checkerSummary.queued === 0 && checkerSummary.succeeded > 0) return 'Queue healthy'
-    return null
-  })()
+  const suggestedAction = resolveSuggestedAction(checkerSummary, checkerNow)
 
   const { data: latestJob } = await supabase
     .from('amazon_sync_jobs')
