@@ -2416,6 +2416,52 @@ data gaps — no SQL, no reset, no code fix needed for these rows themselves.
 
 **PR: opened, not merged, not deployed.**
 
+### §19 update (2026-07-14) — "Cron not configured" false-alarm fixed (opened, not merged)
+
+**Fixes remaining follow-up #1** from the diagnosis above. Founder picked this as the next priority from
+the published status board (see below).
+
+**Root cause recap:** `suggestedAction` (`listings/route.ts:322-328`, old code) inferred "no cron exists"
+from `processing === 0` at the exact instant the page's API request ran — true almost continuously by
+design, since both schedulers (Vercel 2h, Render 4h) only run for a few seconds every cycle. It fired
+whenever there was any backlog at all, which is the normal, expected state given current throughput.
+
+**Fix — branch `fix/cron-status-message`, opened as a PR, not merged.** Replaced the point-in-time
+heuristic with a question the data can actually answer: *has any worker touched any job recently?*
+`lastAttemptedAt` (already computed — the max `updated_at`/`completed_at` across every job in the
+workspace) is compared against a new `STALLED_QUEUE_HOURS = 6` constant — a generous multiple of the
+slower (4h) Render cadence, chosen so a normal gap between ticks, or a deep backlog that simply hasn't
+reached a given job yet, never trips a false positive. Extracted as a new pure, exported function,
+`resolveSuggestedAction()`, matching this file's established testability pattern (`findConfirmedBuyBoxSnapshot`,
+`buyBoxStatusLabel`, etc.).
+
+**New messages (never "Cron not configured" again):**
+- Healthy backlog, recent activity → `"Checks queued — next automatic run within a few hours"`
+- Genuinely stale (no activity in >6h, including the case where nothing has ever been recorded at all)
+  → `"No checks have run in over 6h — automation may be stalled"` — the one case where a real warning is
+  now justified.
+- `processing`, pricing-cooldown, and queue-healthy branches: **unchanged behavior**, only the previously-broken
+  branch was touched.
+
+**Files changed (2):** `src/app/api/asins/listings/route.ts` (the fix), `scripts/test-cron-status-message-fix.ts`
+(new, **10/10 passing** — proves the exact real-world false-alarm scenario no longer fires (500 due-now
+jobs + recent activity → healthy, not stalled), the boundary just under 6h stays healthy, just over 6h
+correctly flags, a null `lastAttemptedAt` (never-run) case is correctly flagged rather than silently
+ignored, `processing` still takes priority over everything, and the untouched branches (pricing cooldown,
+queue healthy, no signal) are unchanged).
+
+**Checks run:** `npx tsc --noEmit` — pass. `npx eslint` on both files — pass, zero warnings. Full
+regression: all 7 prior suites (`test-track-asin.ts` 5/5, `test-stuck-job-reclaim.ts` 6/6,
+`test-retry-or-fail-update.ts` 6/6, `test-review-automation-permission-probe.ts` 9/9,
+`test-review-requests.ts` 20/20, `test-buy-box-status-fix.ts` 13/13, `test-render-buy-box-status-fix.ts`
+8/8) plus the new suite — **77/77 total, all passing.**
+
+**Explicitly not touched:** Availability %/Deal Tag UI (follow-ups #2/#3, untouched), cadence/batch
+size/retries, review automation, Ads, payments, replenishment, auth/tokens, migrations, Report Reuse
+Gate.
+
+**PR: opened, not merged, not deployed.**
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
@@ -2463,4 +2509,9 @@ already-existing rows regardless of both issues.
 (reuses the exact same `resolveBuyBoxStatusToStore()` helper as the Vercel fix — not a second copy — 2
 files, 8/8 new tests, 67/67 total, tsc+eslint clean), opened as a PR, not merged. Vercel cron-binding
 issue remains separately unresolved (not addressed by this PR). 76 failed-row audit conclusion
-reconfirmed: no action needed.)
+reconfirmed: no action needed.
+**§19 update (2026-07-14)** — "Cron not configured" false-alarm fixed: replaced the point-in-time
+`processing=0` heuristic with a `lastAttemptedAt` staleness check (6h threshold, generous over both
+known cron cadences) via a new pure `resolveSuggestedAction()` function. 2 files, 10/10 new tests, 77/77
+total, tsc+eslint clean. Opened as a PR, not merged. Availability %/Deal Tag UI, cadence/batch/retries,
+and every other risky area untouched.)
