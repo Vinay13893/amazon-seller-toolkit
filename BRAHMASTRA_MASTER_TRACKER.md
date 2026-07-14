@@ -2416,6 +2416,59 @@ data gaps — no SQL, no reset, no code fix needed for these rows themselves.
 
 **PR: opened, not merged, not deployed.**
 
+### §19 update (2026-07-13) — PR #39 merged, deployed, Vercel cron-binding issue resolved and confirmed
+
+**PR #39: MERGED** (merge commit `815cd6d`) — the Render Buy Box masking fix. Latest `master` commit
+confirmed: `815cd6d`.
+
+**Fresh Vercel production deploy triggered and verified.** `vercel promote` (used for PR #36) does not
+rebuild, and the prior update found Vercel's Cron Job scheduler was still invoking a stale, pre-fix
+deployment two cycles after that promote. Per instruction, triggered a genuine full production build this
+time: `vercel deploy --prod` from the exact `815cd6d` commit.
+
+**Mistake made and corrected during this step:** the first attempt ran from the wrong working directory
+(`esolz-app/`, which doubled the project's configured root path) and, on retry from the repo root without
+an explicit project link, Vercel auto-created and deployed to a **brand-new, incorrect project**
+(`amazon-seller-toolkit-track-asin-fix`, misdetected as Flask) — **this never touched the real `esolz-app`
+project or its production alias at all**, but it did leave an unwanted extra project/deployment in the
+Vercel team account. Stopped immediately, removed the local (repo-only) `.vercel` linkage files, and asked
+the founder how to handle it — **founder is deleting the erroneous project themselves.** Corrected the
+approach by writing an explicit `.vercel/project.json` pointing at the real project ID
+(`prj_B0AQXItWZSuQ2rcqYUYsABOBOEkl`) before retrying, which deployed correctly.
+
+**Verification (read-only observation of the next natural cron cycles — no forced/manual trigger):**
+
+1. **Fresh deployment confirmed:** `dpl_Eh8WTqut7a954johwW1BYgK5eoy2` — `state: READY`, `target:
+   production`, `alias` includes `esolz-app.vercel.app`, `aliasError: null`,
+   `gitCommitSha: 815cd6defa30e141bc8d97d0f83c268a6c4652fb` (exact match). A genuine full `next build` ran
+   (confirmed via build log output — dependency install, TypeScript compile, static page generation — not
+   a reused/promoted artifact).
+2. **Vercel Cron-binding issue: confirmed resolved.** The next natural Vercel Cron cycle (04:01:11–04:01:16
+   UTC, `GET /api/cron/asins/process-product-snapshots` → `enqueue` → `process-next`) now shows
+   `dep=dpl_Eh8WTqut7a954johwW1BYgK5eoy2` in Vercel runtime logs — the **new** deployment, not the stale
+   `dpl_8mGnvVE7au9mLYkwTdzaKn8nLPpA` from the prior update. A real fresh production deploy fixed the
+   binding; a lightweight promote had not.
+3. **Write-path fix confirmed live for Vercel.** Queried `asin_snapshots` for rows written after 04:00 UTC:
+   **6 of 7 new rows** have `scrape_status: 'partial_pricing_rate_limited'` with `buy_box_status: null`
+   (not `'unknown'`) and `availability_score: 50` (unchanged, as designed). The 7th row is a genuine
+   successful Pricing call correctly preserving its real result (`buy_box_status: 'no_buybox'`,
+   `scrape_status: 'success'`) — proving the fix does not over-null genuine data, exactly as intended.
+4. **Render's cycle: fired, and its write-path fix is very likely also confirmed — with an honest caveat
+   on attribution.** `background_jobs` shows **7 jobs completed** in this window, but Vercel's own
+   `process-next` log explicitly reports `"processed": 5`. The 2 extra completions were not made by the
+   Vercel route call captured in the logs — strong circumstantial evidence Render's cron (scheduled every
+   4h at the top of the hour, i.e. also ~04:00 UTC) fired independently and processed 2 jobs of its own,
+   consistent with the known dual-scheduler architecture (§16). **No `asin_snapshots` column identifies
+   which scheduler wrote a given row, and no direct Render API/dashboard access exists in this
+   environment** — so per-row attribution to Render specifically could not be made with certainty. What
+   *can* be said with confidence: all 6 `partial_pricing_rate_limited` rows in this batch — regardless of
+   which scheduler wrote which — show `buy_box_status: null`, none show `'unknown'`. This is strong,
+   though not 100%-certain-by-row, evidence that Render's fix (PR #39) is also live and working.
+
+**Net result: both halves of the write-path fix (Vercel binding + Render script) are now confirmed
+resolved**, with the Render half resting on strong circumstantial evidence rather than direct,
+row-level API confirmation (the honest limit of what's observable in this environment).
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
@@ -2463,4 +2516,15 @@ already-existing rows regardless of both issues.
 (reuses the exact same `resolveBuyBoxStatusToStore()` helper as the Vercel fix — not a second copy — 2
 files, 8/8 new tests, 67/67 total, tsc+eslint clean), opened as a PR, not merged. Vercel cron-binding
 issue remains separately unresolved (not addressed by this PR). 76 failed-row audit conclusion
-reconfirmed: no action needed.)
+reconfirmed: no action needed.
+**§19 update (2026-07-13, final)** — PR #39 merged (`815cd6d`). Fresh `vercel deploy --prod` triggered
+(`dpl_Eh8WTqut7a954johwW1BYgK5eoy2`, real full build, commit-exact match, aliased to
+`esolz-app.vercel.app`) after a corrected mistake (an initial wrong-directory attempt auto-created an
+unrelated stray Vercel project, never touched real production, founder deleting it separately). Vercel
+Cron-binding issue **confirmed resolved**: the next natural cycle's logs show the new deployment ID.
+Write-path fix **confirmed live for Vercel** (6/7 new snapshots show `buy_box_status: null`, the 7th
+correctly preserves a genuine real result). Render **very likely also confirmed live** (7 jobs completed
+vs Vercel's own log showing only 5 processed — strong evidence of independent Render activity — all
+`partial_pricing_rate_limited` rows in the batch show `null`), though row-level attribution to Render
+specifically isn't possible without direct Render API access, honestly noted as a limit rather than
+overclaimed.)
