@@ -393,12 +393,17 @@ export async function listOrders(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Solicitations API v1 — GET (eligibility check) only.
+// Solicitations API v1 — GET (eligibility check) and the single official
+// POST (send). No custom buyer messages exist anywhere in this client --
+// createProductReviewAndSellerFeedbackSolicitation takes no message body,
+// matching Amazon's own contract for this action (Amazon generates the
+// review-request content; sellers cannot customize it).
 //
-// Intentionally, this file does not implement
-// createProductReviewAndSellerFeedbackSolicitation (the POST that actually
-// sends a solicitation) or any other Solicitations write call. Only the
-// read-only eligibility check exists here.
+// Callers MUST treat a fresh GET (getSolicitationActionsForOrder) as the
+// only source of truth for eligibility immediately before calling the POST
+// below -- see src/lib/review-requests/daily-run.ts. This client itself
+// applies no additional gating; the two REVIEW_REQUESTS_ENABLED /
+// REVIEW_REQUESTS_DRY_RUN safety checks live at the call site.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface SolicitationActionsResult {
@@ -466,4 +471,64 @@ export async function getSolicitationActionsForOrder(
   }
 
   return { ok: true, statusCode: res.status, actions, amazonErrorCode: null }
+}
+
+export interface CreateSolicitationResult {
+  ok:              boolean
+  statusCode:      number
+  amazonErrorCode: string | null
+}
+
+export interface CreateSolicitationParams {
+  amazonOrderId: string
+  marketplaceId: string
+  endpoint?: string
+}
+
+/**
+ * Calls POST /solicitations/v1/orders/{amazonOrderId}/solicitations/productReviewAndSellerFeedback
+ * -- the single official Amazon Solicitations action that requests a
+ * product review and seller feedback. Amazon generates the request content;
+ * this call takes no message body and this client provides no way to send
+ * a custom buyer message.
+ *
+ * Callers MUST have called getSolicitationActionsForOrder immediately
+ * before this and confirmed "productReviewAndSellerFeedback" is present --
+ * this function does not re-verify eligibility itself.
+ *
+ * Never throws on a non-2xx response — returns { ok: false, ... } instead,
+ * matching every other write-adjacent call in this client.
+ */
+export async function createProductReviewAndSellerFeedbackSolicitation(
+  accessToken: string,
+  params: CreateSolicitationParams,
+): Promise<CreateSolicitationResult> {
+  const { amazonOrderId, marketplaceId, endpoint = SPAPI_EU_ENDPOINT } = params
+
+  const qs = new URLSearchParams({ marketplaceIds: marketplaceId })
+  const url = `${endpoint}/solicitations/v1/orders/${encodeURIComponent(amazonOrderId)}/solicitations/productReviewAndSellerFeedback?${qs}`
+
+  const res = await fetch(url, {
+    method:  'POST',
+    headers: {
+      'x-amz-access-token': accessToken,
+      'content-type':       'application/json',
+    },
+  })
+
+  if (!res.ok) {
+    let amazonErrorCode: string | null = null
+    try {
+      const errorBody = await res.json() as { errors?: Array<{ code?: unknown }> }
+      amazonErrorCode = safeAmazonErrorCode(errorBody.errors?.[0]?.code)
+    } catch {
+      // Intentionally ignore malformed/non-JSON bodies and never log raw content.
+    }
+    console.error('[spapi] createProductReviewAndSellerFeedbackSolicitation error:', res.status)
+    return { ok: false, statusCode: res.status, amazonErrorCode }
+  }
+
+  console.log('[spapi] createProductReviewAndSellerFeedbackSolicitation success — order review request sent')
+
+  return { ok: true, statusCode: res.status, amazonErrorCode: null }
 }

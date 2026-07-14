@@ -11,6 +11,7 @@
  *   npx tsx scripts/test-review-automation-permission-probe.ts
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   maskOrderId,
   classifyOrdersAccess,
@@ -136,19 +137,24 @@ test('Orders access succeeds but returns zero orders: Solicitations is skipped, 
   assert.equal(report.sampleOrderIdMasked, null)
 })
 
-// 6. Confirm the POST function is never called / does not exist in this PR
-test('createProductReviewAndSellerFeedbackSolicitation does not exist in the SP-API client', () => {
+// 6. Confirm the permission probe itself never references the POST/send function
+//
+// createProductReviewAndSellerFeedbackSolicitation was added later (for the
+// separate daily-forward workflow, src/lib/review-requests/daily-run.ts --
+// see scripts/test-review-requests-daily.ts for its dedicated safety-gating
+// tests), so it now legitimately exists on the SP-API client. What this
+// read-only permission probe must still guarantee is that IT never imports,
+// calls, or references it.
+test('probe-review-automation-permissions.ts never references the Solicitations POST/send function', () => {
   const clientAsRecord = spapiClient as unknown as Record<string, unknown>
+  assert.equal(typeof clientAsRecord['createProductReviewAndSellerFeedbackSolicitation'], 'function')
+
+  const probeSource = readFileSync(new URL('./probe-review-automation-permissions.ts', import.meta.url), 'utf8')
   assert.equal(
-    typeof clientAsRecord['createProductReviewAndSellerFeedbackSolicitation'],
-    'undefined',
-    'this PR must not introduce any Solicitations POST/send capability',
+    probeSource.includes('createProductReviewAndSellerFeedbackSolicitation'),
+    false,
+    'the permission probe must never reference the send function',
   )
-  // Defensive: also confirm no other export name contains "create" + "Solicitation" (case-insensitive)
-  const suspiciousExports = Object.keys(clientAsRecord).filter(
-    k => /create/i.test(k) && /solicit/i.test(k),
-  )
-  assert.deepEqual(suspiciousExports, [], `unexpected solicitation-send-shaped export(s): ${suspiciousExports.join(', ')}`)
 })
 
 // 7. Sensitive data not included in output

@@ -241,3 +241,116 @@ export async function recordEligibilityResult(
   if (error) return false
   return (data?.length ?? 0) > 0
 }
+
+// ── Part B: guarded send-claim / finalize (daily forward live-send path) ────
+//
+// claimForSendAttempt() -> recordSendResult() is the second claim/finalize
+// pair the migration 059 comment block anticipated ("a future guarded
+// pre-POST claim ... WHERE solicitation_sent = false AND solicitation_status
+// IN ('eligible_dry_run', ...)"). Same guarded-UPDATE-with-row-count-check
+// discipline as Part A.3 above: claimForSendAttempt() is the only way a row
+// can reach 'send_claimed', and it atomically re-verifies solicitation_sent
+// = false at the moment of claiming -- immediately before any POST is
+// attempted -- so two workers racing on the same row can never both claim
+// it. recordSendResult() is the only way a row can leave 'send_claimed'.
+
+// How long a send-claim holds a row before it is considered stale. No
+// reclaim job reads this yet in this PR (the claim/finalize pair below
+// always completes synchronously within a single request), but it is
+// required at write time by the migration's own
+// review_solicitation_orders_send_claimed_chk constraint (claim_expires_at
+// must be non-null whenever solicitation_status = 'send_claimed').
+const SEND_CLAIM_TTL_MINUTES = 10
+
+export interface ClaimForSendResult {
+  claimed: boolean
+}
+
+/**
+ * Guarded claim: transitions a row from `fromStatus` (expected to be
+ * 'eligible_dry_run' -- a fresh GET just confirmed the eligible action is
+ * present) to 'send_claimed', recording claimed_at/claimed_by/
+ * claim_expires_at. Matches on solicitation_sent = false so a row that
+ * (impossibly, but defensively) already has solicitation_sent = true can
+ * never be reclaimed. Returns claimed=false if another caller already moved
+ * the row away from `fromStatus` -- the caller must not POST in that case.
+ */
+export async function claimForSendAttempt(
+  admin: AdminClient,
+  id: string,
+  fromStatus: SolicitationStatus,
+  claimedBy: string,
+  nowIso: string = new Date().toISOString(),
+  claimTtlMinutes: number = SEND_CLAIM_TTL_MINUTES,
+): Promise<ClaimForSendResult> {
+  const claimExpiresAt = new Date(new Date(nowIso).getTime() + claimTtlMinutes * 60 * 1000).toISOString()
+
+  const { data, error } = await admin
+    .from(TABLE)
+    .update({
+      solicitation_status: 'send_claimed',
+      claimed_at: nowIso,
+      claimed_by: claimedBy,
+      claim_expires_at: claimExpiresAt,
+    })
+    .eq('id', id)
+    .eq('solicitation_status', fromStatus)
+    .eq('solicitation_sent', false)
+    .select('id')
+
+  if (error || !data || data.length === 0) return { claimed: false }
+  return { claimed: true }
+}
+
+export type SendOutcomeStatus = 'sent' | 'failed_retryable' | 'failed_terminal' | 'already_solicited'
+
+export interface RecordSendResultInput {
+  toStatus: SendOutcomeStatus
+  evidence: SanitizedEligibilityEvidence | null
+  errorCode?: string | null
+  errorMessage?: string | null
+  nowIso?: string
+}
+
+/**
+ * Finalizes a claimed send attempt. Guarded to only apply if the row is
+ * still 'send_claimed' -- only the caller that successfully claimed it can
+ * finalize it, and finalizing twice (e.g. a duplicate/retried call) is a
+ * safe no-op on the second call (0 rows affected, returns false).
+ *
+ * toStatus='sent' sets solicitation_sent=true and solicitation_sent_at=now
+ * -- the only place in this codebase that ever does either, matching the
+ * migration's sent/status/sent_at CHECK constraints exactly. Every other
+ * outcome leaves solicitation_sent=false and clears the claim fields so the
+ * row is never left permanently stuck in a claimed-looking state.
+ */
+export async function recordSendResult(
+  admin: AdminClient,
+  id: string,
+  input: RecordSendResultInput,
+): Promise<boolean> {
+  const nowIso = input.nowIso ?? new Date().toISOString()
+  const isSent = input.toStatus === 'sent'
+  const nextCheckAt = computeNextCheckAt(input.toStatus, nowIso)
+
+  const { data, error } = await admin
+    .from(TABLE)
+    .update({
+      solicitation_status: input.toStatus,
+      solicitation_sent: isSent,
+      solicitation_sent_at: isSent ? nowIso : null,
+      next_check_at: nextCheckAt,
+      last_eligibility_response: input.evidence,
+      last_error_code: input.errorCode ?? null,
+      last_error_message: input.errorMessage ?? null,
+      claimed_at: null,
+      claimed_by: null,
+      claim_expires_at: null,
+    })
+    .eq('id', id)
+    .eq('solicitation_status', 'send_claimed')
+    .select('id')
+
+  if (error) return false
+  return (data?.length ?? 0) > 0
+}

@@ -26,9 +26,11 @@ export const TERMINAL_STATUSES: readonly SolicitationStatus[] = [
   'sent', 'already_solicited', 'expired', 'ineligible_terminal', 'failed_terminal',
 ]
 
-// Statuses this dry-run PR must never write. 'sent' and 'send_claimed' are
-// reserved for a future PR that actually implements sending; a dry-run
-// catch-up has no business ever setting either one.
+// Statuses recordEligibilityResult() must never write. 'sent' and
+// 'send_claimed' are reserved for the dedicated claimForSendAttempt() /
+// recordSendResult() functions in repository.ts (the guarded send-claim
+// flow) -- the eligibility-check finalize path has no business ever
+// setting either one directly.
 export const PROTECTED_STATUSES: readonly SolicitationStatus[] = ['sent', 'send_claimed']
 
 // Statuses a row may be in while eligible to be selected as a "due
@@ -74,6 +76,26 @@ export function classifyEligibilityOutcome(actionsPresent: boolean): 'eligible_d
 export function classifySolicitationsError(statusCode: number, amazonErrorCode: string | null): 'failed_retryable' {
   void statusCode // reserved for future refinement -- see doc comment above
   void amazonErrorCode
+  return 'failed_retryable'
+}
+
+/**
+ * Maps a failed Solicitations POST (send) call to a status. Same "do not
+ * invent an Amazon reason" discipline as classifySolicitationsError above:
+ * this never guesses 'already_solicited' from an error code, because a
+ * generic 4xx/5xx body gives no confident way to distinguish "already sent"
+ * from any other rejection.
+ *
+ * The one distinction this function does make is bounding retries: a 429
+ * or 5xx is transient (network/throttling), so failed_retryable is correct
+ * and the next daily run will re-verify eligibility via a fresh GET before
+ * trying again. A non-429 4xx (400/403/404/etc) means the identical request
+ * will keep failing identically -- retrying it forever would just be silent
+ * churn -- so it is classified failed_terminal instead.
+ */
+export function classifySendOutcome(statusCode: number, amazonErrorCode: string | null): 'failed_retryable' | 'failed_terminal' {
+  void amazonErrorCode
+  if (statusCode >= 400 && statusCode < 500 && statusCode !== 429) return 'failed_terminal'
   return 'failed_retryable'
 }
 

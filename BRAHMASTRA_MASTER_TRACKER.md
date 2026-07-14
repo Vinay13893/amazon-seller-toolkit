@@ -1870,6 +1870,96 @@ result of this live test — the implementation behaved exactly as designed on r
 committed). Still open, not merged, not deployed. No cron created. No env vars changed permanently
 (only exported for the duration of each manual run). No credentials/scopes/tokens changed.
 
+### §18 update (2026-07-14) — Daily forward workflow built (opened as PR, not merged, not run live)
+
+**Product decision recorded:** the 3-day dry-run sample above remains sufficient for now — the 30-day
+catch-up stays deferred, not run. Priority shifted to **daily forward automation**: EasyHOME receives
+~100–150 orders/day and new eligible orders must not be missed while the 30-day backfill question stays
+open. Built from latest `origin/master` (`eb3beaa`, PR #41's merge) on a new isolated branch
+`feat/review-requests-daily-forward`. Live sending stays disabled by default in every environment.
+
+**New/changed files:**
+- `src/lib/amazon/spapi-client.ts` — added `createProductReviewAndSellerFeedbackSolicitation()`: the
+  first POST/send function in this codebase (`POST /solicitations/v1/orders/{id}/solicitations/
+  productReviewAndSellerFeedback`, no body — Amazon owns the message content). `{ok, statusCode,
+  amazonErrorCode}` return shape, never throws, matches every other client call.
+- `src/lib/review-requests/policy.ts` — added `classifySendOutcome(statusCode, amazonErrorCode)`: 429/5xx
+  → `failed_retryable` (transient; re-verified via a fresh GET before any retry), non-429 4xx →
+  `failed_terminal` (bounds retries on a request that will keep failing identically). Never infers
+  `already_solicited` from an error code — same conservative discipline as the existing GET classifier.
+- `src/lib/review-requests/repository.ts` — added the second guarded claim/finalize pair the migration
+  059 comment block explicitly anticipated: `claimForSendAttempt(admin, id, fromStatus='eligible_dry_run',
+  claimedBy, ...)` (guarded UPDATE, re-verifies `solicitation_sent=false` atomically at claim time —
+  immediately before any POST is attempted) and `recordSendResult()` (guarded `send_claimed` → final
+  status; the only function in the codebase that ever sets `solicitation_sent=true`/
+  `solicitation_sent_at`). Both follow the exact verify-after-write / row-count-check pattern as the
+  existing `claimForEligibilityCheck`/`recordEligibilityResult`.
+- `src/lib/review-requests/daily-run.ts` (NEW) — `runDailyForward()`, the testable orchestration core.
+  **Phase 1:** rolling-overlap order fetch (`REVIEW_REQUESTS_OVERLAP_DAYS`, default 3 days) +
+  `upsertDiscoveredOrder` (idempotent — a failed/delayed run can never create a gap or a duplicate row).
+  **Phase 2:** per due candidate, a *fresh* Solicitations GET (never a cached/reused signal, per the
+  original spec's design) → eligible action present → records `eligible_dry_run` unconditionally, then
+  — **only when both `REVIEW_REQUESTS_ENABLED=true` and `REVIEW_REQUESTS_DRY_RUN=false`** — attempts
+  `claimForSendAttempt` → `createProductReviewAndSellerFeedbackSolicitation` POST →
+  `recordSendResult`. One candidate throwing is caught, counted, and never aborts the rest of the batch.
+  Report is sanitized aggregate counts only (fetch window, orders fetched/inserted/updated/duplicates
+  prevented, candidates checked, eligible_dry_run/not_eligible_retryable/sent/failed counts, Amazon
+  errors by safe code, duration, live-send-active flag) — no order ids, no PII, ever.
+- `src/lib/review-requests/cron-auth.ts` (NEW) — pure `isValidCronBearer()` bearer-token check, no
+  `server-only` import, extracted specifically so cron authentication is directly unit-testable (mirrors
+  the existing `buy-box-status.ts` pure-extraction pattern).
+- `src/app/api/review-requests/jobs/run/route.ts` (NEW) — protected `POST` worker route. Auth via the
+  existing `resolveJobsAuth()` (background-worker secret header for cron/system calls, or an
+  authenticated workspace session) — identical convention to `/api/asins/jobs/process-next`. Reads
+  `REVIEW_REQUESTS_ENABLED`/`REVIEW_REQUESTS_DRY_RUN` at the call site; committed defaults
+  (`false`/`true`) keep it dry-run-only everywhere until both are explicitly changed.
+- `src/app/api/cron/review-requests/daily-run/route.ts` (NEW) — Vercel Cron `GET` entry point, mirrors
+  `/api/cron/asins/process-product-snapshots/route.ts` byte-for-byte in structure: `CRON_SECRET` bearer
+  check, then a single internal call to the protected worker route above using the background-worker
+  secret header, with the same redirect-detection / content-type / JSON-body verification that fixed the
+  2026-07-09 Vercel-SSO silent-no-op incident on the ASIN cron (see §16) — never trusts a redirected or
+  non-JSON response as success.
+- `vercel.json` — added **one new** cron entry: `{"path": "/api/cron/review-requests/daily-run",
+  "schedule": "0 3 * * *"}` (once daily). The existing ASIN-checker cron entry and its 2-hour cadence are
+  completely untouched.
+- `.env.local.example` — added `REVIEW_REQUESTS_OVERLAP_DAYS=3`. All 6 pre-existing `REVIEW_REQUESTS_*`
+  vars unchanged; `REVIEW_REQUESTS_ENABLED=false` / `REVIEW_REQUESTS_DRY_RUN=true` remain the committed
+  defaults.
+- `scripts/review-requests-daily.ts` (NEW) — CLI convenience wrapper around the same `runDailyForward()`
+  core (manual/local runs only, not the production entry point). **Not executed against production in
+  this task.**
+- `scripts/test-review-requests-daily.ts` (NEW) — 13/13 passing: all 12 founder-requested cases (rolling
+  3-day overlap is idempotent; dry-run never POSTs; live POST requires both
+  `REVIEW_REQUESTS_ENABLED`/`REVIEW_REQUESTS_DRY_RUN` gates — all 4 combinations tested; an eligible GET
+  action allows a POST; a missing action never POSTs, live-send active or not; an already-sent row is
+  never re-selected/re-POSTed; two concurrent workers racing `claimForSendAttempt`/`recordSendResult`
+  cannot both send; every terminal status is excluded from `findDueCandidates`; one candidate throwing
+  never aborts the batch; the rate limiter is applied once per candidate checked; cron bearer-auth is
+  enforced; a 150-order/day estimate stays inside the 280s route budget) plus a `classifySendOutcome`
+  unit test.
+- Two pre-existing tests updated for accuracy (their premise — "the send function does not exist in this
+  codebase" — was correct scoped to those specific PRs, but is now stale for the codebase as a whole):
+  `scripts/test-review-requests.ts` and `scripts/test-review-automation-permission-probe.ts` now assert
+  the function exists on the SP-API client but is never referenced by that script specifically
+  (`review-requests-catchup.ts` / `probe-review-automation-permissions.ts`, confirmed via a source-text
+  scan, not just an export check).
+
+**Checks:** `npx tsc --noEmit` clean. `npx eslint` clean on every changed/new file. `npm run build` clean
+— both new routes (`/api/review-requests/jobs/run`, `/api/cron/review-requests/daily-run`) appear
+correctly in the production route tree. Full regression **90/90** across every test suite in the repo
+(13+10+8+6+9+13+20+6+5).
+
+**Not done / explicitly deferred, per the task's own scope:** the 30-day catch-up was not run. Live
+sending was not enabled anywhere — `REVIEW_REQUESTS_ENABLED`/`REVIEW_REQUESTS_DRY_RUN` remain at their
+safe committed defaults in every environment; no review request was sent during this work. No live
+supervised dry run of the new daily workflow was executed against production this round (recommended
+next step, pending approval, before relying on the cron in production). No SP-API scope was found
+missing — the existing Orders/Solicitations GET connection already proven live in the earlier §18 3-day
+sample covers everything this workflow needs; the Solicitations POST itself has not yet been exercised
+live (by design — that requires the founder to explicitly enable live mode first). No credentials/scopes
+changed. Ads, payments, replenishment, the ASIN checker, ASIN UI, the Render ASIN cron, and the Report
+Reuse Gate are all untouched — no file under any of those areas appears in this change.
+
 ---
 
 ## 19. ASIN Page Live-Data Diagnosis (2026-07-12)
