@@ -2515,6 +2515,65 @@ Gate.
 
 **PR: opened, not merged, not deployed.**
 
+### §19 update (2026-07-14) — PR #40 + PR #41 merged, promoted to production, verified live
+
+**PR #40 merged** (`81003f0`, `docs/vercel-fresh-deploy-verification` → master). Documentation-only —
+no runtime/code changes, no deployment required by the merge itself (already covered by the fresh
+`vercel deploy --prod` recorded under PR #39/§19 above).
+
+**PR #41 merged** (`eb3beaa`, `fix/cron-status-message` → master) — the "Cron not configured" false-alarm
+fix from the update directly above this one. Merge required resolving a real conflict in this tracker
+file against PR #40's edits (both appended a similarly-dated §19 section and touched the same footer
+region); resolved by reconstructing both sections in correct chronological order, re-verified with a
+grep for zero remaining conflict markers, and the full 77/77 regression suite re-run against the
+resolved merge before pushing.
+
+**Production deployment:** a genuine fresh `vercel deploy --prod` was triggered from master at `eb3beaa`
+— **`dpl_2nWR51iH6tjtLoNTMS92r1RxdXW9`**, confirmed `target=production`, aliased to
+`esolz-app.vercel.app`, `aliasError=null`. (Deliberately a full rebuild, not a lightweight `vercel
+promote` — see §19's PR #39 entry above for why promote alone previously left the Cron Job scheduler
+bound to a stale deployment for two cycles.)
+
+**Live production verification (no manual trigger — natural cron cycle only, per founder instruction):**
+- Vercel runtime logs, `environment=production`, window 07:55–08:12 UTC: the full
+  `GET /api/cron/asins/process-product-snapshots` (08:00:58, 200) → `POST /api/asins/jobs/enqueue`
+  (08:00:59, 200) → `POST /api/asins/jobs/process-next` (08:01:04, 200) sequence ran, all three requests
+  tagged `dep=dpl_2nWR51iH6tjtLoNTMS92r1RxdXW9 branch=master` — confirms the new deployment is the one
+  actually serving the Vercel Cron trigger, not a stale one. `process-next`'s log line is tagged
+  `error`-level only because it contains the routine classified 429/404 sub-errors it always logs
+  (`{"processed":5,"completed":1,"partialCatalogOnly":3,"pricingRateLimited":1,"catalogNotFound":1,
+  "failed":0}`) — the route itself returned HTTP 200, this is normal/expected noise, not a failure.
+- Supabase `background_jobs` (workspace `55a321c9-…`, `job_type='product_page_snapshot'`) queried
+  immediately after: `queued`=445 (444 due now, 1 waiting), `running`=0, `completed`=13233, `failed`=76
+  (the already-audited, no-action-needed rows — see the audit entry above), `rate_limited`(due-queued)=0.
+  Most recent `updated_at`/`completed_at` across all jobs = **2026-07-14 08:01:17 UTC** — i.e.
+  `lastAttemptedAt` as `resolveSuggestedAction()` would compute it right now is only minutes old.
+- **Reasoned outcome (not a live authenticated-route call):** given `processing=0`, `rate_limited=0`
+  (pricing-cooldown branch doesn't apply), `queueDueNow=444` (queue-healthy branch doesn't apply), and
+  `lastAttemptedAt` ≈ minutes old (well under the 6h `STALLED_QUEUE_HOURS` threshold),
+  `resolveSuggestedAction()` would return **`"Checks queued — next automatic run within a few hours"`**
+  — confirmed NOT the old "Cron not configured" message, and NOT the stalled-warning branch either.
+  This is exactly the healthy-backlog-with-recent-activity case the fix was built for.
+- **6h-silence (stalled) branch:** not observed live in this verification, by design — the founder
+  explicitly instructed not to manually stop/silence a worker just to manufacture that condition. That
+  branch remains verified at the code/test level only (`test-cron-status-message-fix.ts`, 10/10,
+  including the exact >6h-boundary and null-`lastAttemptedAt` cases) rather than live-observed. Both
+  real cron schedulers (Vercel 2h, Render 4h) are healthy, so a genuine 6h silence is not expected to
+  occur under normal operation — if it ever does, the next natural cron cycle will surface it correctly
+  without any further action needed.
+
+**Not touched by this update:** Availability %/Deal Tag UI, Daily Action Engine, Report Reuse Gate,
+30-day review-request catch-up, cadence/batch/retry settings, Ads/payments/replenishment/auth/tokens,
+migrations.
+
+**Remaining open items (recorded exactly as the founder listed them):**
+1. 30-day review-request catch-up — still deferred, not run (daily-forward automation prioritized
+   instead this session; see §18 update 2026-07-14 above).
+2. Hide Availability % (ASIN page UI placeholder) — not started.
+3. Hide Deal Tag (ASIN page UI placeholder) — not started.
+4. Daily Action Engine (cards) — not started.
+5. Report Reuse Gate — not started.
+
 ---
 
 **Last updated:** 2026-07-12 (§16 D.9 — run_after follow-up fix opened as PR #28; §18 — standing decisions and
