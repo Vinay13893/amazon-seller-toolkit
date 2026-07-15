@@ -12,6 +12,7 @@
  *   npx tsx scripts/test-review-requests.ts
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   TERMINAL_STATUSES,
   isTerminalStatus,
@@ -440,12 +441,23 @@ test('maskOrderId never exposes a full order id', () => {
   assert.equal(maskOrderId(''), '')
 })
 
-// ── 15. No POST/send function exists or is called ────────────────────────────
-test('createProductReviewAndSellerFeedbackSolicitation does not exist in the SP-API client', () => {
+// ── 15. This catch-up script's own send path is still nonexistent ───────────
+// createProductReviewAndSellerFeedbackSolicitation was added to the SP-API
+// client for the daily-forward workflow (src/lib/review-requests/daily-run.ts,
+// see scripts/test-review-requests-daily.ts for its dedicated safety-gating
+// tests) -- it now legitimately exists. What this catch-up script must still
+// guarantee is that IT never imports or calls it: runCatchup() has no send
+// code path, structurally, regardless of env vars.
+test('createProductReviewAndSellerFeedbackSolicitation exists on the SP-API client but review-requests-catchup.ts never references it', () => {
   const clientAsRecord = spapiClient as unknown as Record<string, unknown>
-  assert.equal(typeof clientAsRecord['createProductReviewAndSellerFeedbackSolicitation'], 'undefined')
-  const suspicious = Object.keys(clientAsRecord).filter(k => /create/i.test(k) && /solicit/i.test(k))
-  assert.deepEqual(suspicious, [])
+  assert.equal(typeof clientAsRecord['createProductReviewAndSellerFeedbackSolicitation'], 'function')
+
+  const catchupSource = readFileSync(new URL('./review-requests-catchup.ts', import.meta.url), 'utf8')
+  assert.equal(
+    catchupSource.includes('createProductReviewAndSellerFeedbackSolicitation'),
+    false,
+    'review-requests-catchup.ts must never reference the send function',
+  )
 })
 
 test('recordEligibilityResult refuses to write a protected status (sent/send_claimed)', async () => {

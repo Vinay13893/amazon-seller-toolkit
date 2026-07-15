@@ -7,8 +7,11 @@
 //   2. Solicitations eligibility API (GET /solicitations/v1/orders/{id})
 //
 // Safety, by construction:
-//   - Contains NO Solicitations POST code path. createProductReviewAndSellerFeedbackSolicitation
-//     does not exist anywhere in this codebase as of this script.
+//   - Contains NO Solicitations POST code path. This script never imports or
+//     references the SP-API client's send function (added later, for the
+//     separate daily-forward workflow) -- see
+//     scripts/test-review-automation-permission-probe.ts for the test
+//     enforcing that.
 //   - Never persists any order or eligibility data — this script performs
 //     zero writes to any table.
 //   - Never prints buyer name/address/phone/email or a raw, unmasked order id.

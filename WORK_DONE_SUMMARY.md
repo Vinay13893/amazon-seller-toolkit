@@ -381,5 +381,71 @@ detail in `BRAHMASTRA_MASTER_TRACKER.md` §18.
 - **Not yet run:** the live 30-day catch-up has not been executed against production Amazon — only the
   3-day sample above.
 
-**Still not done:** no daily cron, no Solicitations POST anywhere in the codebase, no protected sending
-route, no live mode, no scope/credential changes, no live sending, no live 30-day catch-up run yet.
+**Still not done (as of 2026-07-12):** no daily cron, no Solicitations POST anywhere in the codebase, no
+protected sending route, no live mode, no scope/credential changes, no live sending, no live 30-day
+catch-up run yet.
+
+## Review Request Automation — Daily Forward Workflow (2026-07-14)
+
+_Product decision this round: the 3-day dry-run sample above is sufficient — the 30-day catch-up remains
+deferred, not run. Priority shifted to daily forward automation (EasyHOME ≈100–150 orders/day; must not
+miss new eligible orders). Built on a new branch off latest master, PR opened, not merged, not deployed,
+not run live. Live sending remains disabled by default._
+
+**What's new:**
+- `src/lib/amazon/spapi-client.ts` — added `createProductReviewAndSellerFeedbackSolicitation()`, the
+  **first-ever POST/send function** in this codebase (POST
+  `/solicitations/v1/orders/{id}/solicitations/productReviewAndSellerFeedback`, no body — Amazon
+  generates the request content, no custom buyer message is possible). Returns `{ok, statusCode,
+  amazonErrorCode}`, never throws on non-2xx, same shape as every other client call here.
+- `src/lib/review-requests/policy.ts` — added `classifySendOutcome()`: 429/5xx → `failed_retryable`
+  (transient, safe to retry with a fresh GET first), non-429 4xx → `failed_terminal` (bounds retries on
+  a request that will keep failing identically). Never guesses `already_solicited` from an error code —
+  same "do not invent an Amazon reason" discipline as the existing GET-side classifier.
+- `src/lib/review-requests/repository.ts` — added the second guarded claim/finalize pair the migration
+  059 schema comment anticipated: `claimForSendAttempt()` (guarded `eligible_dry_run` → `send_claimed`,
+  re-verifies `solicitation_sent=false` atomically immediately before any POST) and
+  `recordSendResult()` (guarded `send_claimed` → `sent`/`failed_retryable`/`failed_terminal`/
+  `already_solicited`, only place in the codebase that ever sets `solicitation_sent=true`).
+- `src/lib/review-requests/daily-run.ts` (NEW) — testable orchestration core, `runDailyForward()`:
+  Phase 1 fetches orders with a rolling 3-day overlap window (`REVIEW_REQUESTS_OVERLAP_DAYS`, default 3)
+  and idempotently upserts them (a failed/delayed run never creates a gap or a duplicate). Phase 2
+  re-runs the Solicitations GET eligibility check per due candidate (never cached/reused across runs) —
+  eligible → records `eligible_dry_run`, then, **only if both `REVIEW_REQUESTS_ENABLED=true` AND
+  `REVIEW_REQUESTS_DRY_RUN=false`**, attempts the guarded claim → POST → finalize send path. One
+  candidate's unexpected error is caught and counted, never aborts the batch. Report is sanitized
+  aggregate counts only (no order ids, no PII).
+- `src/lib/review-requests/cron-auth.ts` (NEW) — pure `isValidCronBearer()` helper (no `server-only`
+  import), extracted for direct unit-testability, same pattern as `buy-box-status.ts`.
+- `src/app/api/review-requests/jobs/run/route.ts` (NEW) — protected `POST` worker route, auth via the
+  existing `resolveJobsAuth()` (background-worker secret header or workspace session — same pattern as
+  `/api/asins/jobs/process-next`). Reads the two safety env vars at the call site; committed defaults
+  keep it dry-run-only.
+- `src/app/api/cron/review-requests/daily-run/route.ts` (NEW) — Vercel Cron `GET` entry point, mirrors
+  `process-product-snapshots/route.ts` exactly: `CRON_SECRET` bearer check, then an internal call to the
+  protected worker route with redirect/content-type/JSON-body verification (same protection against the
+  Vercel SSO silent-no-op failure mode documented on that route).
+- `vercel.json` — added one new cron entry (`0 3 * * *`, daily). Existing ASIN-checker cron entry/cadence
+  untouched.
+- `.env.local.example` — added `REVIEW_REQUESTS_OVERLAP_DAYS=3`. Existing 6 vars unchanged; committed
+  defaults remain `REVIEW_REQUESTS_ENABLED=false` / `REVIEW_REQUESTS_DRY_RUN=true`.
+- `scripts/review-requests-daily.ts` (NEW) — CLI wrapper around the same `runDailyForward()` core, for
+  manual/local runs. **Not executed against production in this task** — pending founder approval for a
+  supervised dry run before the cron is relied on.
+- `scripts/test-review-requests-daily.ts` (NEW) — 13/13 passing, covering all 12 founder-requested test
+  cases (rolling-overlap idempotency, dry-run never POSTs, live POST requires both env gates, eligible
+  GET allows POST, missing action never POSTs, already-sent row never POSTed again, concurrent workers
+  cannot send twice, terminal statuses skipped, one failed order doesn't abort the batch, rate limiter
+  applied, cron auth enforced, 100–150/day fits the runtime budget) plus 1 extra (`classifySendOutcome`).
+- Two pre-existing tests updated (their premise — "the send function does not exist anywhere" — was
+  correct for those PRs specifically but is now stale for the codebase as a whole): both now assert the
+  function exists on the client but is never referenced by that specific script
+  (`review-requests-catchup.ts` / `probe-review-automation-permissions.ts`).
+- Checks: `npx tsc --noEmit` clean, eslint clean on all changed files, `npm run build` clean (both new
+  routes appear in the route tree), full regression **90/90** across every test suite in the repo.
+
+**Not done / explicitly deferred:** 30-day catch-up still not run. Live sending not enabled anywhere —
+`REVIEW_REQUESTS_ENABLED`/`DRY_RUN` remain at their safe committed defaults on every environment. No live
+supervised dry run of the new daily workflow executed yet (recommended as the next approval-gated step
+before relying on the cron). No credentials/scopes changed. Ads/payments/replenishment/ASIN
+checker/ASIN UI/Render ASIN cron/Report Reuse Gate all untouched.

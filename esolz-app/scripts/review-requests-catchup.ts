@@ -7,9 +7,11 @@
 // records the result. DRY-RUN ONLY -- see the safety notes below.
 //
 // Safety, by construction, not by config flag:
-//   - This script contains NO Solicitations POST/send code path.
-//     createProductReviewAndSellerFeedbackSolicitation does not exist
-//     anywhere in this codebase.
+//   - This script contains NO Solicitations POST/send code path. The SP-API
+//     client's send function (added for the separate daily-forward
+//     workflow, src/lib/review-requests/daily-run.ts) is never imported or
+//     referenced anywhere in this file -- see
+//     scripts/test-review-requests.ts for the test enforcing that.
 //   - REVIEW_REQUESTS_ENABLED and REVIEW_REQUESTS_DRY_RUN have ZERO effect
 //     on whether this script can send anything -- it structurally cannot,
 //     regardless of their value. They exist only for a future PR that adds

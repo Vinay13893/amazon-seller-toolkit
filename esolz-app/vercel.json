@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/asins/process-product-snapshots",
       "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/review-requests/daily-run",
+      "schedule": "0 3 * * *"
     }
   ]
 }
