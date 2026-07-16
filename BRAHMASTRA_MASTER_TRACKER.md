@@ -1960,6 +1960,43 @@ live (by design — that requires the founder to explicitly enable live mode fir
 changed. Ads, payments, replenishment, the ASIN checker, ASIN UI, the Render ASIN cron, and the Report
 Reuse Gate are all untouched — no file under any of those areas appears in this change.
 
+### §18 update (2026-07-16) — PR #42 reviewed + merged; production promotion blocked
+
+**Review (independent, not trust-the-PR-description):** re-ran everything myself in a worktree checkout
+of the PR branch. Full regression **90/90** passing, `tsc --noEmit` clean, `eslint` clean, `npm run
+build` clean with both new routes present in the route tree. Diff-stat confirmed scope: only
+`review-requests/*`, `spapi-client.ts`, the 2 new routes, `vercel.json`, `.env.local.example`, and the 2
+tracker docs — no Ads/payments/replenishment/ASIN checker/ASIN UI/Render ASIN cron/Report Reuse Gate
+file appears. **Merged to `master` as `69afbbc`** (standard merge commit).
+
+**Production promotion: blocked, not completed, founder decision = stop for now.**
+`list_deployments` (Vercel MCP, which worked normally throughout) confirms production (`target:
+"production"`) is still serving `eb3beaa` — one commit behind, from PR #41. A `READY` build for
+`69afbbc` already exists (`dpl_13wA24MP76CUdxwEj85C5AMKjx8A`, auto-built off the `master` push) but its
+`target` is `null` — never promoted/aliased to the public production alias. Because of this, the new
+routes do not exist on production yet, so **Steps 2–4 of the deploy-and-verify task (env-safety check,
+route checks, one supervised dry-run invocation) could not be attempted.**
+
+Root cause of the block: no promote/alias tool exists in the available Vercel MCP toolset (only
+list/read tools plus `deploy_to_vercel`, which builds an entirely new deployment from an uploaded file
+tree rather than promoting an existing one); `get_project`/`get_deployment`/`web_fetch_vercel_url` all
+failed consistently with `"MCP tool call requires approval"` (4 attempts, while `list_teams`/
+`list_projects`/`list_deployments` worked fine every time); no `vercel` CLI or token exists in this
+sandbox. A from-scratch `deploy_to_vercel` upload was deliberately not attempted as a workaround — with
+`get_project` blocked, the project's real build/env settings could not be read first, so reconstructing
+them by guesswork for a production deploy was judged too risky to do unilaterally. Asked the founder;
+**decision: stop here for now**, do not attempt the risky from-scratch path.
+
+**Nothing risky occurred:** no env var was changed anywhere (`REVIEW_REQUESTS_ENABLED`/`DRY_RUN`
+untouched, still `false`/`true`), no Amazon API call was made, no review request was sent, no DB row was
+written, no migration ran. The only production-adjacent actions this round were read-only Vercel list
+calls plus the one GitHub merge (code only).
+
+**Next step (needs the founder):** promote `dpl_13wA24MP76CUdxwEj85C5AMKjx8A` to production (`vercel
+promote dpl_13wA24MP76CUdxwEj85C5AMKjx8A` from an authenticated machine, or the dashboard's "Promote to
+Production" action). Once production is confirmed on `69afbbc` or newer, Steps 2–4 can proceed exactly
+as scoped — still dry-run only, still no live sending.
+
 ---
 
 ## 19. ASIN Page Live-Data Diagnosis (2026-07-12)
