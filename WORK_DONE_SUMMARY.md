@@ -449,3 +449,53 @@ not run live. Live sending remains disabled by default._
 supervised dry run of the new daily workflow executed yet (recommended as the next approval-gated step
 before relying on the cron). No credentials/scopes changed. Ads/payments/replenishment/ASIN
 checker/ASIN UI/Render ASIN cron/Report Reuse Gate all untouched.
+
+## Review Request Automation — PR #42 Code Review + Merge, Production Deploy Blocked (2026-07-16)
+
+**PR #42 reviewed fresh and merged.** Independently re-ran everything rather than trusting the PR
+description: full regression **90/90** passing, `npx tsc --noEmit` clean, `eslint` clean, `npm run build`
+clean with both new routes (`/api/review-requests/jobs/run`, `/api/cron/review-requests/daily-run`) in
+the production route tree. Confirmed via diff stat that no Ads/payments/replenishment/ASIN
+checker/ASIN UI/Render ASIN cron/Report Reuse Gate files are touched. Merged to `master` as `69afbbc`
+(merge commit, `merge` method, matching this repo's existing convention).
+
+**Production deploy: blocked, not completed.** Verified via `list_deployments` (Vercel MCP) that:
+- Production (`target: "production"`) is still serving `eb3beaa` — the commit from PR #41, one merge
+  before PR #42. It has **not** picked up PR #42.
+- A deployment for `69afbbc` already exists and is `READY` (`dpl_13wA24MP76CUdxwEj85C5AMKjx8A`, built
+  automatically off the `master` push) but its `target` is `null` — Vercel built it but never promoted/
+  aliased it to production. This is the same "build succeeds, promotion is a separate manual step" gap
+  documented in earlier sessions (see the PR #36 promotion note above).
+
+**Why it wasn't completed this session:** no tool available to me can perform that promotion step.
+- The Vercel MCP server exposes no promote/alias tool — only list/read tools and `deploy_to_vercel`
+  (builds an entirely new deployment from an uploaded file tree; it does not promote an existing build).
+- `get_project`, `get_deployment`, and `web_fetch_vercel_url` all failed consistently (4 attempts across
+  the session) with `"MCP tool call requires approval"` — `list_teams`/`list_projects`/`list_deployments`
+  worked normally throughout, so this was not a broad outage, just those specific calls.
+- No `vercel` CLI is installed in this sandbox and no `VERCEL_TOKEN`/credentials exist locally to install
+  and drive one directly (checked `env`, global npm packages, and common credential/config paths — none
+  found).
+- Deliberately did not attempt a from-scratch `deploy_to_vercel` upload as a workaround: with
+  `get_project` blocked, the current build command/env-var scoping/output settings for this production
+  project could not be read first, so guessing at them for a real production deployment was judged too
+  risky to do unilaterally. Asked the founder how to proceed; **decision: stop here for now** rather than
+  attempt the risky from-scratch path.
+
+**As a direct result, Steps 2–4 of the deploy-and-verify task could not run:** env-safety verification,
+route-existence checks, and the supervised production dry-run invocation all require the new code to
+actually be serving on production first (the new routes do not exist on the currently-live `eb3beaa`
+build). None of these were attempted against the stale production build.
+
+**Confirmed unaffected by this session:** no environment variables were changed (production or
+otherwise); `REVIEW_REQUESTS_ENABLED`/`REVIEW_REQUESTS_DRY_RUN` were never touched; no Amazon API call
+was made; no review request was sent; no database row was written; no migration ran; no live/production
+system was mutated in any way — this session's only production-adjacent actions were read-only
+(`list_teams`, `list_projects`, `list_deployments`) plus the one GitHub merge of PR #42 (code only,
+`REVIEW_REQUESTS_ENABLED=false`/`DRY_RUN=true` unchanged in that merge).
+
+**Next step (needs the founder):** promote `dpl_13wA24MP76CUdxwEj85C5AMKjx8A` to production — either
+`vercel promote dpl_13wA24MP76CUdxwEj85C5AMKjx8A` from a machine with the Vercel CLI authenticated, or
+the "Promote to Production" action on that deployment in the Vercel dashboard. Once production is
+confirmed serving `69afbbc` (or newer), Steps 2–4 (env-safety check, route checks, one supervised
+dry-run invocation) can proceed exactly as originally scoped — still dry-run only, still no live sending.
