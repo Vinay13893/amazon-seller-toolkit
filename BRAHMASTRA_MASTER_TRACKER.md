@@ -2271,6 +2271,79 @@ used anywhere in this session.
 **Next step (needs the founder):** review the amended PR #45; once merged, still needs the same manual
 production deploy + promotion step as before.
 
+### §18 update (2026-07-17, final) — PR #45 merged, deployed fresh, first natural process-eligibility cycle: GREEN
+
+**PR #45 approved and merged** to `master` as merge commit `43c457e50b727f5f2e5147f94289d788e119778a`
+(head commit `1b4b617`, confirmed matching before merge). Both PR commits confirmed present on
+`origin/master`. Full regression re-verified on the merged state: **104/104 tests passing**, `tsc`/`eslint`
+(scoped to the PR's changed files)/`npm run build` all clean.
+
+**Fresh production deployment** (`vercel deploy --prod`, not a promote — required since `vercel.json`'s
+cron configuration changed) run from the **repo root** of a linked worktree
+(`C:\Vinay\amazon-seller-toolkit-review-worker-fix`), not from inside `esolz-app/` — this repo's own
+history (§19, PR #39) documents that deploying from inside `esolz-app/` causes a "doubled root path" build
+failure, since the Vercel project's Root Directory setting already points at `esolz-app`. Deployment
+`dpl_3mfEXaja9iyqCACKjTJv5JDujXZf` confirmed via Vercel MCP `get_deployment`: commit
+`43c457e...` exact match, `target: "production"`, aliased to `esolz-app.vercel.app`.
+
+**Post-deploy verification, all clean:**
+- New routes live and protected: `GET`/`POST` on all 4 new routes return 401 unauthenticated (not 404).
+- Old combined routes confirmed **404** (gone): `/api/cron/review-requests/daily-run`,
+  `/api/review-requests/jobs/run`.
+- Cron schedules confirmed exactly as designed: `daily-ingest` `0 3 * * *`, `process-eligibility`
+  `0 */4 * * *`.
+- `vercel env ls production`: **no** `REVIEW_REQUESTS_*` var is set — every code default applies (enabled
+  false, dry-run true, eligibility batch 120, eligibility runtime budget 220000ms, stale-claim TTL 15min,
+  ingest concurrency 8, ingest runtime budget 220000ms). `CRON_SECRET`/`BACKGROUND_WORKER_SECRET`/
+  `APP_BASE_URL` all present.
+
+**First natural `process-eligibility` cycle since deploy — due 2026-07-17T08:00Z, observed at 08:08Z.
+Classification: GREEN.** No manual invocation was made — this is the Vercel Cron firing on its own
+schedule. Evidence:
+- Vercel runtime logs: `GET /api/cron/review-requests/process-eligibility` → **200**;
+  `POST /api/review-requests/jobs/process-eligibility` → **200** (not 502/504 — the exact failure mode this
+  whole split was built to eliminate did not recur). `get_runtime_errors` for both routes: **zero** errors
+  in the prior 24h.
+- The route's own structured log line: `staleClaimsReclaimed:1, candidatesSelected:120,
+  candidatesCompleted:100, selectedCandidatesRemaining:20, dueBacklogRemaining:766,
+  stoppedDueToRuntimeBudget:true, eligibleDryRun:19, notEligibleRetryable:81, sent:0, failedRetryable:0,
+  failedTerminal:0, amazonErrorsByCode:{}, durationMs:220352, liveSendActive:false`.
+- **The previously-stuck row was recovered.** Baseline (captured pre-cycle): 885 total rows, 1 row stuck in
+  `checking` since `2026-07-17T03:05:47Z`. Post-cycle: `checking_rows = 0` — matches the log's
+  `staleClaimsReclaimed:1` exactly. The stale-claim reclaim mechanism (§18, 2026-07-17 amendment) worked in
+  production on its very first real invocation, recovering a row that had been permanently unreachable for
+  ~5 hours under the old combined-worker code.
+- **Graceful runtime-budget stop confirmed working as designed, not as a failure.** `durationMs:220352`
+  (~220.4s) is just over the 220,000ms internal budget and comfortably under Vercel's 280s platform
+  ceiling — the function stopped itself cleanly (`stoppedDueToRuntimeBudget:true`) and returned an honest
+  HTTP 200 partial-run report instead of ever depending on (or hitting) a platform kill.
+- **Read-only DB verification, all pass:**
+  - Duplicates: `select ... group by workspace_id, marketplace_id, amazon_order_id having count(*) > 1` →
+    **0 rows**.
+  - Sent/POST: `solicitation_sent = true` count unchanged at **0** — confirms 0 POST attempts succeeded
+    (structurally impossible anyway per the confirmed env state).
+  - PII allowlist: on the 100 rows touched this cycle (`last_checked_at > 07:55Z`), `last_eligibility_response`
+    contains **exactly** the 5 approved keys (`actionNames`, `checkedAt`, `sanitizedReason`,
+    `amazonStatusCode`, `amazonErrorCode`), each appearing **exactly 100 times** — a clean, independent
+    cross-check against the log's `candidatesCompleted:100`.
+  - Backlog trend: `pending` **845 → 746** in this single ~220s run (no new ingestion ran today after
+    deploy, so this is a pure decline, not diluted by new arrivals) — direct evidence the backlog is
+    genuinely shrinking, not just being reported as shrinking.
+
+**Per the approved GREEN protocol: documented, docs-only PR opened, live sending NOT enabled, not waiting
+for another cycle.** This closes the review-automation reliability workstream for now — the system is
+verified working end-to-end in production: ingestion, bounded eligibility processing, graceful runtime
+stop, stale-claim self-healing, and the dry-run safety gate all confirmed live and correct.
+
+**Confirmed still true:** `REVIEW_REQUESTS_ENABLED=false`/`REVIEW_REQUESTS_DRY_RUN=true` (absent, safe
+defaults); 0 review requests sent; 30-day catch-up still not run; no production environment value changed
+outside of the deploy itself; no manual DB row alteration at any point; Ads/payments/replenishment/ASIN
+checker/UI/Report Reuse Gate/Amazon auth/tokens untouched; the dirty `intern/asins-page-work` checkout
+untouched.
+
+**Next step:** none required — reliability workstream closed. Live sending remains a separate, future,
+explicitly-approval-gated decision, not implied or scheduled by this closure.
+
 ---
 
 ## 19. ASIN Page Live-Data Diagnosis (2026-07-12)
