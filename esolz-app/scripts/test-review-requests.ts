@@ -443,11 +443,12 @@ test('maskOrderId never exposes a full order id', () => {
 
 // ── 15. This catch-up script's own send path is still nonexistent ───────────
 // createProductReviewAndSellerFeedbackSolicitation was added to the SP-API
-// client for the daily-forward workflow (src/lib/review-requests/daily-run.ts,
-// see scripts/test-review-requests-daily.ts for its dedicated safety-gating
-// tests) -- it now legitimately exists. What this catch-up script must still
-// guarantee is that IT never imports or calls it: runCatchup() has no send
-// code path, structurally, regardless of env vars.
+// client for the separate eligibility-processor workflow
+// (src/lib/review-requests/eligibility-processor.ts, see
+// scripts/test-review-requests-eligibility-processor.ts for its dedicated
+// safety-gating tests) -- it now legitimately exists. What this catch-up
+// script must still guarantee is that IT never imports or calls it:
+// runCatchup() has no send code path, structurally, regardless of env vars.
 test('createProductReviewAndSellerFeedbackSolicitation exists on the SP-API client but review-requests-catchup.ts never references it', () => {
   const clientAsRecord = spapiClient as unknown as Record<string, unknown>
   assert.equal(typeof clientAsRecord['createProductReviewAndSellerFeedbackSolicitation'], 'function')

@@ -8,9 +8,9 @@
 //
 // Safety, by construction, not by config flag:
 //   - This script contains NO Solicitations POST/send code path. The SP-API
-//     client's send function (added for the separate daily-forward
-//     workflow, src/lib/review-requests/daily-run.ts) is never imported or
-//     referenced anywhere in this file -- see
+//     client's send function (added for the separate eligibility-processor
+//     workflow, src/lib/review-requests/eligibility-processor.ts) is never
+//     imported or referenced anywhere in this file -- see
 //     scripts/test-review-requests.ts for the test enforcing that.
 //   - REVIEW_REQUESTS_ENABLED and REVIEW_REQUESTS_DRY_RUN have ZERO effect
 //     on whether this script can send anything -- it structurally cannot,

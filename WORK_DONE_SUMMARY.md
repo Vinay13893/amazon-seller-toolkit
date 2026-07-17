@@ -557,3 +557,134 @@ no route invoked manually, no live sending enabled, no 30-day catch-up run, no d
 written/updated/deleted, the dirty `intern/asins-page-work` checkout untouched.
 
 **Tests run:** none (read-only verification task, no code changed).
+
+## Review Request Automation — Worker Split: Ingestion + Bounded Eligibility Processor (2026-07-17)
+
+_PR #44 (natural-cron-run findings above) merged to `master` as `abb3ab4`. Founder-approved architecture
+direction: leave the stuck `checking` row untouched (recover it through code, not manual SQL), fix the
+timeout and stale-claim behavior before the next natural cycle, defer Pincode Checker. Built from latest
+`origin/master` on a new isolated worktree (`C:\Vinay\amazon-seller-toolkit-review-worker-fix`, branch
+`fix/review-request-worker-timeout`) — the dirty `intern/asins-page-work` checkout and the
+`review-verification` worktree were never touched. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §18._
+
+**Timeout root cause, confirmed by direct calculation, not guesswork:** the old combined worker's default
+`REVIEW_REQUESTS_BATCH_SIZE=300` at `REVIEW_REQUESTS_RATE_LIMIT_MS=1100` is `300 × 1100ms = 330s` of
+mandatory sequential throttling alone — already past Vercel's 280s function ceiling before any GET call or
+DB write happens. This was structurally guaranteed to time out near the old default batch size, not a
+one-off backlog fluke.
+
+**New architecture — two independently-scheduled, independently-bounded phases**, replacing the former
+combined `daily-run.ts` (deleted, along with its 2 routes, its CLI script, and its dedicated test file —
+no cron references the old combined workflow anymore):
+
+1. **`src/lib/review-requests/order-ingestion.ts` (`runOrderIngestion`)** — the former Phase 1, unchanged
+   logic: rolling 3-day Orders API fetch, idempotent upsert. Structurally cannot claim, check eligibility,
+   or send (its deps type has no Solicitations GET/POST parameter). Cron unchanged:
+   `GET /api/cron/review-requests/daily-ingest`, `0 3 * * *`.
+2. **`src/lib/review-requests/eligibility-processor.ts` (`runEligibilityProcessing`)** — the former Phase 2
+   (fresh GET as sole eligibility source of truth, 1100ms rate limiter, guarded claim/finalize, identical
+   live-send gating), plus two new mechanisms:
+   - **Runtime budget** (`REVIEW_REQUESTS_RUNTIME_BUDGET_MS`, default 220,000ms) — checked before claiming
+     each new candidate, never mid-candidate. On expiry: stop claiming, finish finalizing the currently
+     claimed candidate, return HTTP 200 with `{candidatesSelected, candidatesCompleted, remaining,
+     stoppedDueToRuntimeBudget, durationMs}`. Never depends on Vercel force-killing the function.
+   - **Stale `checking` reclaim** (`repository.ts#reclaimStaleCheckingClaims`, new) — runs first every
+     invocation. Guarded UPDATE matching only `solicitation_status='checking' AND updated_at <
+     staleBeforeIso` (default TTL 15 min), returns matched rows to `pending` with `next_check_at` reset to
+     now. Uses the **existing** `updated_at` column (reliably bumped by the DB's own
+     `trg_review_solicitation_orders_updated_at` trigger on the claim UPDATE) — **no migration added**, the
+     existing schema already supports this. Never overlaps `send_claimed` (separate status/claim pair), so
+     reclaim cannot interfere with an in-flight send or cause a duplicate.
+   Batch size default lowered `300 → 120` (same `REVIEW_REQUESTS_BATCH_SIZE` var, repurposed to the
+   processor only — ingestion has no batch concept). Cron: `GET /api/cron/review-requests/process-eligibility`,
+   `0 */4 * * *` (new, every 4 hours).
+3. **`src/lib/review-requests/cron-relay.ts` (new)** — the CRON_SECRET-check-then-relay logic, previously
+   duplicated inline in the one combined cron route, extracted once and shared by both new cron routes.
+
+**The stuck `checking` row was not touched manually** — it will be recovered by
+`reclaimStaleCheckingClaims()` automatically the first time `process-eligibility` runs after this deploys
+(its `updated_at` is already hours stale by then).
+
+**Capacity, proved by calculation and asserted in a test** (batch-size × rate-limit arithmetic, not a live
+run): 120 × 1100ms ≈ 132s mandatory throttling, comfortably inside the 220s budget (≈88s headroom for
+GET/DB overhead) and the 280s Vercel ceiling. 6 runs/day × 120 = **720 candidates/day capacity** vs. an
+expected 100-150 new orders/day — enough for the ~845-row `pending` backlog to decline instead of grow.
+
+**Safety unchanged, re-verified:** `.env.local.example` committed defaults remain
+`REVIEW_REQUESTS_ENABLED=false` / `REVIEW_REQUESTS_DRY_RUN=true` (only the batch-size default and 2 new
+budget/TTL vars were added). Same `liveSendEnabled && !dryRun` gate, now guarding
+`runEligibilityProcessing()`. No live sending enabled, no 30-day catch-up run, no production environment
+value changed, no manual production invocation, no historical row mutated, no order ID/buyer info printed,
+no secret printed, `git add .` not used anywhere.
+
+**Files changed:** 4 new lib files (`order-ingestion.ts`, `eligibility-processor.ts`, `cron-relay.ts`, plus
+`policy.ts`/`repository.ts` additions), 4 new route files (2 cron + 2 worker), 3 deleted (old combined lib
++ 2 old routes), 2 new CLI scripts (`review-requests-ingest.ts`, `review-requests-process-eligibility.ts`,
+replacing the deleted `review-requests-daily.ts`), 2 new test files (`test-review-requests-ingestion.ts`,
+`test-review-requests-eligibility-processor.ts`, replacing the deleted `test-review-requests-daily.ts`),
+`vercel.json` (2 crons replacing 1), `.env.local.example` (new vars + corrected default), plus stale
+comment-only path references fixed in `spapi-client.ts`, `review-requests-catchup.ts`,
+`test-review-requests.ts`, `test-review-automation-permission-probe.ts`.
+
+**Tests: 95/95 passing** across all 10 suites (8 pre-existing unchanged + 2 new, covering all 13 required
+cases: ingestion/processing separation, batch cap, runtime-budget graceful stop, accurate partial-run
+counts, stale-claim reclaim, fresh-claim non-reclaim, reclaim-cannot-duplicate-send, dry-run never POSTs,
+terminal/already-sent excluded, one-failure-doesn't-abort-batch, cron auth enforced, every-4-hours
+capacity, full pre-existing coverage ported and still passing). `npx tsc --noEmit` clean, `eslint` clean on
+every changed/new file, `npm run build` clean — new route tree confirmed present
+(`daily-ingest`/`process-eligibility` cron + worker routes), old combined routes confirmed absent.
+
+**Opened as a PR from `fix/review-request-worker-timeout`, not merged, not deployed.**
+
+**Not done / explicitly deferred:** no production deploy or promotion (needs the same manual step every
+prior PR here has needed); no live sending; no 30-day catch-up; Pincode Checker work not resumed (per
+instruction); the stuck row remains stuck until this deploys and its first `process-eligibility` cycle
+runs.
+
+## Review Request Automation — PR #45 Amended: 3 Reliability/Reporting Gaps Closed (2026-07-17, later still)
+
+_Founder review of PR #45 approved the split architecture in principle but flagged 3 gaps before merge.
+All fixed on the same branch (`fix/review-request-worker-timeout`) -- no second branch/PR. PR #45 still not
+merged, not deployed. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §18._
+
+**Gap 1 fixed — ingestion was still sequential and close to the platform limit.** The natural run's 483
+sequential order upserts consumed most of the 280s before the kill (eligibility throttling alone only
+accounted for ~22s). `runOrderIngestion()` now processes upserts in bounded chunks of
+`REVIEW_REQUESTS_INGEST_CONCURRENCY` (default 8, never an unbounded `Promise.all`) via a new
+`processInBoundedChunks()` helper. `upsertDiscoveredOrder()` itself, idempotency, and the rolling 3-day
+overlap are all unchanged. One failed upsert is caught and counted in a new `ordersFailed` field (never
+aborts the run, never logs an order id). A new internal runtime guard
+(`REVIEW_REQUESTS_INGEST_RUNTIME_BUDGET_MS`, default 220,000ms) stops gracefully instead of depending on a
+platform kill, reporting `paginationComplete`, `pagesCompleted`, `ordersCompleted`, and (on a partial stop)
+a `partialIngestionNote` explaining the recurring-under-service risk since pagination has no persisted
+cursor. Deliberately did not add a persisted cursor -- concurrency should make the runtime guard rarely
+trip; per instruction, honest partial reporting beats an unsafe partial-ingestion design. Proven with a new
+test that runs 483 synthetic orders through the real chunking logic and confirms both full completion and
+that observed concurrent DB calls never exceed 8.
+
+**Gap 2 fixed — `candidatesCompleted` incremented too early.** It previously counted right after a
+successful Amazon GET, before the DB finalize write was confirmed applied -- so a GET-succeeded-but-DB-
+write-failed row was miscounted as done. Redefined: completed now requires the finalize write
+(`recordEligibilityResult`/`recordSendResult`) to return `true`. Every call site checks this before
+incrementing. New test: GET succeeds, DB finalize is forced to fail, confirms `candidatesCompleted` stays 0,
+the row stays in `checking`, and `reclaimStaleCheckingClaims()` still recovers it. The same fix applied to
+the `sent` counter for consistency (live-send-path-only, unreachable under committed defaults, but carried
+the identical bug).
+
+**Gap 3 fixed — `remaining` was ambiguous.** Renamed to `selectedCandidatesRemaining` (this batch only).
+Added an optional `dueBacklogRemaining` field -- a new, genuinely cheap index-only `COUNT`
+(`repository.ts#countDueCandidates()`, same filter shape/index as `findDueCandidates()`) called once per
+run, giving an honest read on whether the backlog is actually declining, which the batch-scoped field alone
+can't answer.
+
+**Tests: 104/104 passing** (8 pre-existing unchanged + 2 grown in place: ingestion 3→10 tests, eligibility
+processor 15→17 tests). `npx tsc --noEmit` clean, `eslint` clean on every changed file, `npm run build`
+clean.
+
+**Unchanged by this amendment:** live sending still disabled by committed default, no production env value
+changed, no manual production invocation, stuck row still not touched manually, no 30-day catch-up, Pincode
+Checker not resumed, all protected areas (Ads/payments/replenishment/ASIN checker/ASIN UI/Report Reuse
+Gate/Amazon auth/tokens, the dirty checkout, the review-verification worktree) untouched, `git add .` not
+used.
+
+**PR #45 description updated. Still not merged, not deployed.**

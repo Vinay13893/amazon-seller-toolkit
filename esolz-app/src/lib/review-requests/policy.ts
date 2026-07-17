@@ -174,3 +174,17 @@ export function buildSanitizedEligibilityEvidence(input: {
     amazonErrorCode: input.amazonErrorCode ?? null,
   }
 }
+
+// ── Shared reporting helpers (pure) ──────────────────────────────────────────
+// Used by both order-ingestion.ts and eligibility-processor.ts so the two
+// split phases record errors and mask order ids identically.
+
+export function recordApiError(bucket: Record<string, number>, statusCode: number, amazonErrorCode: string | null): void {
+  const key = amazonErrorCode ?? `HTTP_${statusCode}`
+  bucket[key] = (bucket[key] ?? 0) + 1
+}
+
+export function maskOrderId(orderId: string): string {
+  if (!orderId) return ''
+  return `***${orderId.slice(-4)}`
+}

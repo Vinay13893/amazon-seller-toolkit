@@ -6,8 +6,12 @@
       "schedule": "0 */2 * * *"
     },
     {
-      "path": "/api/cron/review-requests/daily-run",
+      "path": "/api/cron/review-requests/daily-ingest",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/review-requests/process-eligibility",
+      "schedule": "0 */4 * * *"
     }
   ]
 }

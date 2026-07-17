@@ -354,3 +354,90 @@ export async function recordSendResult(
   if (error) return false
   return (data?.length ?? 0) > 0
 }
+
+// ── Part D: stale `checking` claim reclaim ───────────────────────────────────
+//
+// claimForEligibilityCheck() has no TTL/expiry field on the schema (unlike
+// the send-claim's claim_expires_at) -- if the process that claimed a row
+// is killed before recordEligibilityResult() finalizes it (e.g. a
+// serverless runtime-budget stop or platform timeout), the row is stuck in
+// 'checking' forever: findDueCandidates() deliberately excludes 'checking'
+// by design (see policy.ts's DUE_CANDIDATE_STATUSES comment), so no future
+// run will ever select it again without this reclaim.
+//
+// reclaimStaleCheckingClaims() is intended to run at the start of every
+// eligibility processor invocation, before selecting new candidates. It
+// uses the existing `updated_at` column -- reliably bumped by the DB's own
+// trg_review_solicitation_orders_updated_at trigger on the exact UPDATE
+// claimForEligibilityCheck() performs -- so no migration/new column is
+// needed. Reclaimed rows go back to 'pending' (a valid, always-safe
+// DUE_CANDIDATE_STATUS) with next_check_at reset to now, exactly like a
+// freshly-discovered row.
+//
+// Guarded to only match solicitation_status='checking' AND
+// updated_at < staleBeforeIso: a row with a fresh/active claim is never
+// touched (updated_at recent), and a row already finalized by the worker
+// that claimed it no longer matches 'checking'. This scope never overlaps
+// with 'send_claimed' (a separate status/claim pair guarded by
+// claimForSendAttempt/recordSendResult), so reclaim can never interfere
+// with an in-flight send claim or cause a duplicate send.
+
+export interface ReclaimStaleCheckingParams {
+  workspaceId: string
+  marketplaceId: string
+  staleBeforeIso: string
+  nowIso?: string
+}
+
+export async function reclaimStaleCheckingClaims(
+  admin: AdminClient,
+  params: ReclaimStaleCheckingParams,
+): Promise<number> {
+  const nowIso = params.nowIso ?? new Date().toISOString()
+  const { data, error } = await admin
+    .from(TABLE)
+    .update({
+      solicitation_status: 'pending',
+      next_check_at: nowIso,
+    })
+    .eq('workspace_id', params.workspaceId)
+    .eq('marketplace_id', params.marketplaceId)
+    .eq('solicitation_status', 'checking')
+    .lt('updated_at', params.staleBeforeIso)
+    .select('id')
+
+  if (error) throw new Error(`reclaimStaleCheckingClaims failed: ${error.message}`)
+  return data?.length ?? 0
+}
+
+// ── Optional: cheap read-only due-backlog count ──────────────────────────────
+//
+// Same filter shape as findDueCandidates(), backed by the same partial
+// index (review_solicitation_orders_due_idx) -- an index-only COUNT, not a
+// full table scan, so it is cheap enough to call every eligibility-processor
+// run purely for reporting ("how much backlog is left after this batch").
+// Never used to select or claim rows itself.
+
+export interface CountDueCandidatesParams {
+  workspaceId: string
+  marketplaceId: string
+  nowIso?: string
+}
+
+export async function countDueCandidates(
+  admin: AdminClient,
+  params: CountDueCandidatesParams,
+): Promise<number> {
+  const nowIso = params.nowIso ?? new Date().toISOString()
+  const { count, error } = await admin
+    .from(TABLE)
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', params.workspaceId)
+    .eq('marketplace_id', params.marketplaceId)
+    .eq('solicitation_sent', false)
+    .in('solicitation_status', DUE_CANDIDATE_STATUSES as string[])
+    .lte('next_check_at', nowIso)
+
+  if (error) throw new Error(`countDueCandidates failed: ${error.message}`)
+  return count ?? 0
+}
