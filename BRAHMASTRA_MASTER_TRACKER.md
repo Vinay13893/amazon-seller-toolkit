@@ -2980,3 +2980,66 @@ overclaimed.
 known cron cadences) via a new pure `resolveSuggestedAction()` function. 2 files, 10/10 new tests, 77/77
 total, tsc+eslint clean. Opened as a PR, not merged. Availability %/Deal Tag UI, cadence/batch/retries,
 and every other risky area untouched.)
+
+---
+
+## 20. Pincode Checker Product Audit (2026-07-17)
+
+**Status: audit only, no implementation yet, needs founder approval before any fix.**
+
+**Scope:** Static, read-only code audit of the Pincode Checker feature (all pincode-related pages, API
+routes, checker-worker code, and DB tables), done in a dedicated worktree
+(`C:\Vinay\amazon-seller-toolkit-pincode-cleanup`, branch `audit/pincode-checker-product-cleanup`, base
+commit `43c457e`) kept deliberately separate from the review-automation reliability work (§18) — no
+`review-requests` file was read or touched. Full report: `PINCODE_CHECKER_PRODUCT_AUDIT.md` at repo root.
+No app code, migrations, or config changed. Every finding below was spot-checked directly against the
+source before being trusted (three of the highest-stakes claims re-verified line-by-line in this session:
+the dead-page redirect, the FBA/FBM hardcode, and the availability truthy-check bug — all confirmed
+accurate).
+
+### Headline finding
+
+**Two separate, non-communicating pincode-checking systems are live at once.** The nav-linked bulk
+"Pincode Checker" (`/dashboard/pincode-checker`) writes to `pincode_availability_results`, correctly
+models 4 states (`available`/`unavailable`/`blocked`/`unknown`), and is the only system a seller can
+intentionally navigate to — but its results feed **nothing else**: not alerts, not reports, not Sync
+Health, not the dashboard KPIs. Every one of those instead reads `pincode_checks`, a table populated only
+by a *third*, undocumented surface: a single-pincode widget embedded in the ASIN detail page (a second,
+more built-out per-ASIN dashboard at `/dashboard/pincode` also targets `pincode_checks` but is dead —
+its `layout.tsx` unconditionally redirects away before ever rendering). A seller running bulk checks gets
+zero downstream credit for that work anywhere else in the product.
+
+### P0 — actively misleading, blocks trusting this feature (2)
+
+1. **Availability null-masking bug on the ASIN-detail widget + dashboard Recent Activity** — same bug
+   class as the Buy Box status-masking bug already fixed in `b0a1c5b`/`c9ce4b3`. `pincode_checks.available`
+   is correctly stored as a nullable boolean (`null` = failed/uncertain check, preserved by the write path's
+   own comment: `// Preserve null from worker so uncertain checks are stored as failed/unknown, not
+   unavailable`), but both render sites (`asins/[asin]/page.tsx:1145-1147,1192-1200` and
+   `dashboard/page.tsx:372,374`) use a plain JS truthy check, so a worker outage/timeout/captcha block
+   renders identically to a confirmed "not deliverable here" — exactly the failure mode the Buy Box fix was
+   written to eliminate. The bulk Pincode Checker does not have this bug.
+2. **Hardcoded `amazon_fulfilled: false` for worker-routed single checks**
+   (`api/asins/[asin]/pincode/route.ts:158`) — every FBA product checked through this path is mislabeled
+   FBM. A positive wrong-value claim, not just an unclear one.
+
+### P1 — should fix soon (5): 
+decide the fate of the dead `/dashboard/pincode` page and its parallel `pincode_checks` data model (or
+consolidate all consumers onto one table); wire up or remove the decorative `pincode_checks_used` usage
+counter and unenforced `pincode_check_limit` quota; re-enable or explicitly retire pincode alerts
+(`PINCODE_ALERTS_PAUSED = true`, logic underneath is correct and already switched off); address the 80s
+worker-trigger timeout vs. up-to-200×55s worst-case bulk-job duration mismatch (no retry/resume path for a
+stuck job); de-duplicate `cleanDeliveryMessage()` (copy-pasted identically in 3 files).
+
+### P2 — polish (4): 
+surface `seller_name` in the bulk checker's on-screen table (already captured, only missing from CSV-only
+export); make the bulk checker's Buy Box/Price columns status-aware for blocked/unknown rows; quarantine
+or delete the unused `MOCK_PINCODE_RESULTS` fake dataset sitting in the same file as still-used utilities;
+add a staleness indicator to the bulk checker (has none today, unlike the ASIN-detail widget and Sync
+Health); add responsive column hiding to the bulk checker's results table.
+
+**Totals: 2 P0, 5 P1, 4 P2.** Full evidence, file/line citations, and CONFIRMED/INFERRED/UNKNOWN tags for
+every claim in `PINCODE_CHECKER_PRODUCT_AUDIT.md`.
+
+**Next step (needs the founder):** review the audit and the docs-only PR; decide which P0/P1/P2 items to
+approve for implementation. No fix has been made or proposed as code in this round — audit only.
