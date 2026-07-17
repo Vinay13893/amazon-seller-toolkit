@@ -1,11 +1,12 @@
-// scripts/review-requests-daily.ts
+// scripts/review-requests-process-eligibility.ts
 //
-// CLI wrapper for the daily-forward Review Request Automation workflow
-// (src/lib/review-requests/daily-run.ts). Convenience for a manual/local
-// run with the exact same core logic the protected route and cron use --
-// this script is NOT itself the production entry point (that is
-// src/app/api/cron/review-requests/daily-run, wired via vercel.json). See
-// BRAHMASTRA_MASTER_TRACKER.md sec18 for the full design.
+// CLI wrapper for the bounded eligibility-processing phase of the Review
+// Request Automation workflow
+// (src/lib/review-requests/eligibility-processor.ts). Convenience for a
+// manual/local run with the exact same core logic the protected route and
+// cron use -- this script is NOT itself the production entry point (that is
+// src/app/api/cron/review-requests/process-eligibility, wired via
+// vercel.json). See BRAHMASTRA_MASTER_TRACKER.md sec18 for the full design.
 //
 // Safety: identical env-gating to the route -- live sending only happens
 // when REVIEW_REQUESTS_ENABLED=true AND REVIEW_REQUESTS_DRY_RUN=false are
@@ -13,21 +14,24 @@
 // dry-run-only.
 //
 // Run:
-//   npx tsx scripts/review-requests-daily.ts [--workspace-id=<uuid>]
+//   npx tsx scripts/review-requests-process-eligibility.ts [--workspace-id=<uuid>]
 
 import { pathToFileURL } from 'node:url'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { loadWorkspaceConnection } from '@/lib/amazon/connection'
 import {
-  listOrders,
   getSolicitationActionsForOrder,
   createProductReviewAndSellerFeedbackSolicitation,
 } from '@/lib/amazon/spapi-client'
-import { runDailyForward, DEFAULT_ROLLING_OVERLAP_DAYS } from '@/lib/review-requests/daily-run'
+import {
+  runEligibilityProcessing,
+  DEFAULT_ELIGIBILITY_BATCH_SIZE,
+  DEFAULT_RUNTIME_BUDGET_MS,
+  DEFAULT_STALE_CLAIM_TTL_MINUTES,
+} from '@/lib/review-requests/eligibility-processor'
 
 const EASYHOME_WORKSPACE_ID = '55a321c9-7729-4662-a494-9f1f1aa86846'
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
-const DEFAULT_BATCH_SIZE = 300
 const DEFAULT_RATE_LIMIT_MS = 1100
 
 const args = process.argv.slice(2)
@@ -53,33 +57,33 @@ async function main() {
   const admin = createAdminClient()
   const workspaceId = getStrArg('workspace-id') ?? EASYHOME_WORKSPACE_ID
   const marketplaceId = process.env.REVIEW_REQUESTS_MARKETPLACE_ID || DEFAULT_MARKETPLACE_ID
-  const overlapDays = parseIntEnv('REVIEW_REQUESTS_OVERLAP_DAYS', DEFAULT_ROLLING_OVERLAP_DAYS)
-  const batchSize = parseIntEnv('REVIEW_REQUESTS_BATCH_SIZE', DEFAULT_BATCH_SIZE)
+  const batchSize = parseIntEnv('REVIEW_REQUESTS_BATCH_SIZE', DEFAULT_ELIGIBILITY_BATCH_SIZE)
   const rateLimitMs = parseIntEnv('REVIEW_REQUESTS_RATE_LIMIT_MS', DEFAULT_RATE_LIMIT_MS)
+  const runtimeBudgetMs = parseIntEnv('REVIEW_REQUESTS_RUNTIME_BUDGET_MS', DEFAULT_RUNTIME_BUDGET_MS)
+  const staleClaimTtlMinutes = parseIntEnv('REVIEW_REQUESTS_STALE_CLAIM_TTL_MINUTES', DEFAULT_STALE_CLAIM_TTL_MINUTES)
   const liveSendEnabled = process.env.REVIEW_REQUESTS_ENABLED === 'true'
   const dryRun = process.env.REVIEW_REQUESTS_DRY_RUN !== 'false'
 
   if (liveSendEnabled && !dryRun) {
     console.warn(
-      '[review-requests-daily] LIVE SEND IS ACTIVE (REVIEW_REQUESTS_ENABLED=true and ' +
+      '[review-requests-process-eligibility] LIVE SEND IS ACTIVE (REVIEW_REQUESTS_ENABLED=true and ' +
       'REVIEW_REQUESTS_DRY_RUN=false) -- this run WILL POST real review requests to eligible orders.',
     )
   } else {
-    console.log('[review-requests-daily] Dry-run mode -- no review requests will be sent.')
+    console.log('[review-requests-process-eligibility] Dry-run mode -- no review requests will be sent.')
   }
 
-  console.log('[review-requests-daily] Starting daily-forward run — workspace:', workspaceId)
+  console.log('[review-requests-process-eligibility] Starting eligibility-processing run — workspace:', workspaceId)
 
   const connection = await loadWorkspaceConnection(admin, workspaceId)
   if (!connection) {
-    console.log('[review-requests-daily] No active Amazon connection for this workspace — stopping.')
+    console.log('[review-requests-process-eligibility] No active Amazon connection for this workspace — stopping.')
     process.exit(1)
   }
 
-  const report = await runDailyForward(
+  const report = await runEligibilityProcessing(
     {
       admin,
-      listOrdersFn: listOrders,
       getSolicitationFn: getSolicitationActionsForOrder,
       createSolicitationFn: createProductReviewAndSellerFeedbackSolicitation,
       sleepFn: sleep,
@@ -89,12 +93,13 @@ async function main() {
       workspaceId,
       marketplaceId: connection.marketplaceId ?? marketplaceId,
       accessToken: connection.accessToken,
-      overlapDays,
       batchSize,
       rateLimitMs,
+      runtimeBudgetMs,
+      staleClaimTtlMinutes,
       liveSendEnabled,
       dryRun,
-      workerId: 'cli-review-requests-daily',
+      workerId: 'cli-review-requests-process-eligibility',
     },
   )
 
@@ -104,7 +109,7 @@ async function main() {
 const isMainModule = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMainModule) {
   main().catch(err => {
-    console.error('[review-requests-daily] Fatal error:', err instanceof Error ? err.message : err)
+    console.error('[review-requests-process-eligibility] Fatal error:', err instanceof Error ? err.message : err)
     process.exit(1)
   })
 }

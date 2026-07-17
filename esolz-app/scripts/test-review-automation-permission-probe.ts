@@ -140,11 +140,12 @@ test('Orders access succeeds but returns zero orders: Solicitations is skipped, 
 // 6. Confirm the permission probe itself never references the POST/send function
 //
 // createProductReviewAndSellerFeedbackSolicitation was added later (for the
-// separate daily-forward workflow, src/lib/review-requests/daily-run.ts --
-// see scripts/test-review-requests-daily.ts for its dedicated safety-gating
-// tests), so it now legitimately exists on the SP-API client. What this
-// read-only permission probe must still guarantee is that IT never imports,
-// calls, or references it.
+// separate eligibility-processor workflow,
+// src/lib/review-requests/eligibility-processor.ts -- see
+// scripts/test-review-requests-eligibility-processor.ts for its dedicated
+// safety-gating tests), so it now legitimately exists on the SP-API client.
+// What this read-only permission probe must still guarantee is that IT
+// never imports, calls, or references it.
 test('probe-review-automation-permissions.ts never references the Solicitations POST/send function', () => {
   const clientAsRecord = spapiClient as unknown as Record<string, unknown>
   assert.equal(typeof clientAsRecord['createProductReviewAndSellerFeedbackSolicitation'], 'function')

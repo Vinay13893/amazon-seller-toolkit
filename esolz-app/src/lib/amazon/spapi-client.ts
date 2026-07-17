@@ -401,7 +401,7 @@ export async function listOrders(
 //
 // Callers MUST treat a fresh GET (getSolicitationActionsForOrder) as the
 // only source of truth for eligibility immediately before calling the POST
-// below -- see src/lib/review-requests/daily-run.ts. This client itself
+// below -- see src/lib/review-requests/eligibility-processor.ts. This client itself
 // applies no additional gating; the two REVIEW_REQUESTS_ENABLED /
 // REVIEW_REQUESTS_DRY_RUN safety checks live at the call site.
 // ─────────────────────────────────────────────────────────────────────────────

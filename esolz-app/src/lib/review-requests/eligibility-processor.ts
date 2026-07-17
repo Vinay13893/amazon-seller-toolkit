@@ -1,102 +1,101 @@
 /**
- * src/lib/review-requests/daily-run.ts
+ * src/lib/review-requests/eligibility-processor.ts
  *
- * Daily forward workflow for the Amazon India EasyHOME Review Request
- * Automation (see REVIEW_REQUEST_AUTOMATION_SPEC.md and
- * BRAHMASTRA_MASTER_TRACKER.md sec18). Builds on the PR #34 dry-run
- * catch-up foundation (scripts/review-requests-catchup.ts):
+ * Bounded eligibility-check-and-optionally-send phase for the Amazon India
+ * EasyHOME Review Request Automation (see REVIEW_REQUEST_AUTOMATION_SPEC.md
+ * and BRAHMASTRA_MASTER_TRACKER.md sec18). Split out of the former combined
+ * daily-run.ts after the 2026-07-17 production timeout finding: the
+ * combined workflow's Phase 2 (a 300-candidate, 1100ms-rate-limited
+ * sequential loop) could not complete inside Vercel's 280s serverless
+ * ceiling on a backlogged run, and left one candidate permanently stuck in
+ * 'checking' with no reclaim path.
  *
- *   Phase 1: fetch Amazon India shipped orders using a rolling overlap
- *   window (default 3 days) so a failed/delayed run never has a gap --
- *   upsertDiscoveredOrder() is idempotent by (workspace_id, marketplace_id,
- *   amazon_order_id), so re-fetching the same order on every run for 3 days
- *   never creates a duplicate row and never resets an order's solicitation
- *   progress.
+ * This phase, in order:
+ *   0. Reclaims any stale 'checking' claim (see
+ *      repository.ts#reclaimStaleCheckingClaims) before selecting new
+ *      work, so a prior run's runtime-budget stop can never orphan a row.
+ *   1. Selects up to `batchSize` due candidates (recommended default 120 --
+ *      see the capacity note in scripts/test-review-requests-eligibility-processor.ts).
+ *   2. Re-runs the Solicitations GET eligibility check per candidate
+ *      (source of truth, never cached/reused across runs), then either
+ *      records eligible_dry_run and stops, or -- only when BOTH
+ *      REVIEW_REQUESTS_ENABLED=true AND REVIEW_REQUESTS_DRY_RUN=false --
+ *      attempts the guarded claimForSendAttempt() -> POST ->
+ *      recordSendResult() send path. Identical safety gating to the former
+ *      daily-run.ts Phase 2 -- this file only changes *how much* work one
+ *      invocation attempts and *how* it stops, never *whether* it can send.
+ *   3. Stops claiming new candidates once the internal runtime budget
+ *      (default 220s, comfortably under Vercel's 280s hard ceiling) is
+ *      exhausted, finishes finalizing whichever candidate is already
+ *      claimed, and returns an accurate partial-run summary instead of
+ *      ever depending on the platform to force-kill the function.
  *
- *   Phase 2: for each due candidate, re-run the Solicitations GET eligibility
- *   check (source of truth, never cached/reused across runs), then either:
- *     - record eligible_dry_run and stop (default/dry-run behavior, identical
- *       to the PR #34 catch-up script), or
- *     - when BOTH REVIEW_REQUESTS_ENABLED=true AND REVIEW_REQUESTS_DRY_RUN=
- *       false (params.liveSendEnabled && !params.dryRun -- computed by the
- *       caller, see src/app/api/review-requests/jobs/run/route.ts), attempt
- *       the guarded claimForSendAttempt() -> POST -> recordSendResult() send
- *       path.
- *
- * One candidate's unexpected error never aborts the batch -- each iteration
- * is wrapped in try/catch and counted, not thrown.
- *
- * Never persists a raw Orders/Solicitations API payload, never logs a full
- * unmasked order id, and the returned report contains only sanitized
- * aggregate counts (no order ids, no buyer PII).
+ * One candidate's unexpected error never aborts the batch -- each
+ * iteration is wrapped in try/catch and counted, not thrown. Never persists
+ * a raw Orders/Solicitations API payload, never logs a full unmasked order
+ * id, and the returned report contains only sanitized aggregate counts (no
+ * order ids, no buyer PII).
  */
 import type { createAdminClient } from '@/lib/supabase/admin'
 import {
-  listOrders,
   getSolicitationActionsForOrder,
   createProductReviewAndSellerFeedbackSolicitation,
-  type ListOrdersResult,
   type SolicitationActionsResult,
   type CreateSolicitationResult,
 } from '@/lib/amazon/spapi-client'
 import {
-  upsertDiscoveredOrder,
   findDueCandidates,
   claimForEligibilityCheck,
   recordEligibilityResult,
   claimForSendAttempt,
   recordSendResult,
+  reclaimStaleCheckingClaims,
 } from './repository'
 import {
   classifyEligibilityOutcome,
   classifySolicitationsError,
   classifySendOutcome,
   buildSanitizedEligibilityEvidence,
+  recordApiError,
+  maskOrderId,
 } from './policy'
 
 type AdminClient = ReturnType<typeof createAdminClient>
 
 const PRODUCT_REVIEW_ACTION_NAME = 'productReviewAndSellerFeedback'
-export const DEFAULT_ROLLING_OVERLAP_DAYS = 3
-const ORDERS_PAGE_SIZE = 100
-// Safety cap on pagination, same rationale as review-requests-catchup.ts:
-// defensive ceiling, not an expected limit at ~100-150 orders/day.
-const MAX_ORDERS_PAGES = 50
+export const DEFAULT_ELIGIBILITY_BATCH_SIZE = 120
+export const DEFAULT_RUNTIME_BUDGET_MS = 220_000
+export const DEFAULT_STALE_CLAIM_TTL_MINUTES = 15
 
-export interface DailyRunDeps {
+export interface EligibilityProcessorDeps {
   admin: AdminClient
-  listOrdersFn: typeof listOrders
   getSolicitationFn: typeof getSolicitationActionsForOrder
   createSolicitationFn: typeof createProductReviewAndSellerFeedbackSolicitation
   sleepFn: (ms: number) => Promise<void>
   nowFn: () => Date
 }
 
-export interface DailyRunParams {
+export interface EligibilityProcessorParams {
   workspaceId: string
   marketplaceId: string
   accessToken: string
-  overlapDays: number
   batchSize: number
   rateLimitMs: number
+  runtimeBudgetMs: number
+  staleClaimTtlMinutes: number
   /** REVIEW_REQUESTS_ENABLED === 'true' */
   liveSendEnabled: boolean
   /** REVIEW_REQUESTS_DRY_RUN !== 'false' (defaults true -- dry-run) */
   dryRun: boolean
   workerId: string
-  maxPages?: number
 }
 
-export interface DailyRunReport {
-  fetchWindowDays: number
-  fetchWindowStart: string
-  fetchWindowEnd: string
-  ordersApiPagesFetched: number
-  ordersFetched: number
-  ordersInserted: number
-  ordersUpdated: number
-  duplicatesPrevented: number
-  candidatesChecked: number
+export interface EligibilityProcessorReport {
+  staleClaimsReclaimed: number
+  candidatesSelected: number
+  candidatesCompleted: number
+  remaining: number
+  stoppedDueToRuntimeBudget: boolean
   eligibleDryRun: number
   notEligibleRetryable: number
   sent: number
@@ -107,67 +106,24 @@ export interface DailyRunReport {
   liveSendActive: boolean
 }
 
-function recordApiError(bucket: Record<string, number>, statusCode: number, amazonErrorCode: string | null) {
-  const key = amazonErrorCode ?? `HTTP_${statusCode}`
-  bucket[key] = (bucket[key] ?? 0) + 1
-}
-
-function maskOrderId(orderId: string): string {
-  if (!orderId) return ''
-  return `***${orderId.slice(-4)}`
-}
-
-export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams): Promise<DailyRunReport> {
-  const { admin, listOrdersFn, getSolicitationFn, createSolicitationFn, sleepFn, nowFn } = deps
+export async function runEligibilityProcessing(
+  deps: EligibilityProcessorDeps,
+  params: EligibilityProcessorParams,
+): Promise<EligibilityProcessorReport> {
+  const { admin, getSolicitationFn, createSolicitationFn, sleepFn, nowFn } = deps
   const startedAt = nowFn().getTime()
   const liveSendActive = params.liveSendEnabled && !params.dryRun
+  const budgetDeadline = startedAt + Math.max(params.runtimeBudgetMs, 0)
 
-  const overlapDays = Math.max(params.overlapDays, 1)
-  const windowEnd = new Date(startedAt)
-  const windowStart = new Date(startedAt - overlapDays * 24 * 60 * 60 * 1000)
-  const createdAfter = windowStart.toISOString()
+  // Step 0: reclaim stale 'checking' claims before selecting new work.
+  const staleBeforeIso = new Date(startedAt - Math.max(params.staleClaimTtlMinutes, 1) * 60 * 1000).toISOString()
+  const staleClaimsReclaimed = await reclaimStaleCheckingClaims(admin, {
+    workspaceId: params.workspaceId,
+    marketplaceId: params.marketplaceId,
+    staleBeforeIso,
+    nowIso: nowFn().toISOString(),
+  })
 
-  const amazonErrorsByCode: Record<string, number> = {}
-
-  // Phase 1: rolling-overlap order fetch + idempotent upsert.
-  let nextToken: string | undefined
-  let pagesFetched = 0
-  let ordersFetched = 0
-  let ordersInserted = 0
-  let ordersUpdated = 0
-
-  do {
-    const page: ListOrdersResult = await listOrdersFn(params.accessToken, {
-      marketplaceId: params.marketplaceId,
-      createdAfter,
-      maxResultsPerPage: ORDERS_PAGE_SIZE,
-      nextToken,
-    })
-    pagesFetched += 1
-
-    if (!page.ok) {
-      recordApiError(amazonErrorsByCode, page.statusCode, page.amazonErrorCode)
-      break
-    }
-
-    ordersFetched += page.orders.length
-    for (const order of page.orders) {
-      const result = await upsertDiscoveredOrder(admin, {
-        workspaceId: params.workspaceId,
-        marketplaceId: params.marketplaceId,
-        amazonOrderId: order.amazonOrderId,
-        orderStatus: order.orderStatus,
-        purchaseDate: order.purchaseDate,
-        amazonLastUpdatedAt: order.lastUpdateDate,
-      }, nowFn().toISOString())
-      if (result.inserted) ordersInserted += 1
-      else ordersUpdated += 1
-    }
-
-    nextToken = page.nextToken ?? undefined
-  } while (nextToken && pagesFetched < (params.maxPages ?? MAX_ORDERS_PAGES))
-
-  // Phase 2: eligibility-check-and-optionally-send due candidates.
   const candidates = await findDueCandidates(admin, {
     workspaceId: params.workspaceId,
     marketplaceId: params.marketplaceId,
@@ -175,14 +131,27 @@ export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams
     nowIso: nowFn().toISOString(),
   })
 
-  let candidatesChecked = 0
+  const amazonErrorsByCode: Record<string, number> = {}
+  let candidatesCompleted = 0
   let eligibleDryRun = 0
   let notEligibleRetryable = 0
   let sent = 0
   let failedRetryable = 0
   let failedTerminal = 0
+  let stoppedDueToRuntimeBudget = false
 
   for (const candidate of candidates) {
+    // Check the runtime budget BEFORE claiming a new candidate -- never
+    // mid-candidate. Once a candidate is claimed below, its own
+    // claim -> GET -> finalize cycle always runs to completion as a unit,
+    // so a claimed row is never left in a half-finished state by this
+    // budget check (only by an actual process kill, which the stale-claim
+    // reclaim above exists to recover from on the next run).
+    if (nowFn().getTime() >= budgetDeadline) {
+      stoppedDueToRuntimeBudget = true
+      break
+    }
+
     // One failed order must not abort the batch.
     try {
       const claim = await claimForEligibilityCheck(admin, candidate.id, candidate.solicitation_status)
@@ -193,7 +162,7 @@ export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams
         amazonOrderId: candidate.amazon_order_id,
         marketplaceId: params.marketplaceId,
       })
-      candidatesChecked += 1
+      candidatesCompleted += 1
       const nowIso = nowFn().toISOString()
       const newCheckAttempts = (claim.previousCheckAttempts ?? 0) + 1
 
@@ -233,8 +202,8 @@ export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams
       }
 
       // Eligible action present. Record eligible_dry_run first regardless of
-      // mode -- this is the historical GET-evidence record and matches PR
-      // #34's dry-run behavior exactly when live-send is not active.
+      // mode -- historical GET-evidence record, matches the former
+      // daily-run.ts behavior exactly when live-send is not active.
       await recordEligibilityResult(admin, candidate.id, {
         toStatus: 'eligible_dry_run',
         checkAttempts: newCheckAttempts,
@@ -248,8 +217,7 @@ export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams
       }
 
       // Live-send path -- only reachable when REVIEW_REQUESTS_ENABLED=true
-      // AND REVIEW_REQUESTS_DRY_RUN=false (params.liveSendEnabled/dryRun,
-      // computed by the caller from env vars; committed defaults keep this
+      // AND REVIEW_REQUESTS_DRY_RUN=false (committed defaults keep this
       // branch unreachable). claimForSendAttempt() re-verifies
       // solicitation_sent=false atomically, immediately before the POST.
       const sendClaim = await claimForSendAttempt(admin, candidate.id, 'eligible_dry_run', params.workerId, nowIso)
@@ -273,7 +241,7 @@ export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams
           nowIso: sentAtIso,
         })
         sent += 1
-        console.log(`[review-requests-daily] sent (live POST): order=${maskOrderId(candidate.amazon_order_id)}`)
+        console.log(`[review-requests-eligibility] sent (live POST): order=${maskOrderId(candidate.amazon_order_id)}`)
       } else {
         recordApiError(amazonErrorsByCode, sendResult.statusCode, sendResult.amazonErrorCode)
         const toStatus = classifySendOutcome(sendResult.statusCode, sendResult.amazonErrorCode)
@@ -301,15 +269,11 @@ export async function runDailyForward(deps: DailyRunDeps, params: DailyRunParams
   }
 
   return {
-    fetchWindowDays: overlapDays,
-    fetchWindowStart: windowStart.toISOString(),
-    fetchWindowEnd: windowEnd.toISOString(),
-    ordersApiPagesFetched: pagesFetched,
-    ordersFetched,
-    ordersInserted,
-    ordersUpdated,
-    duplicatesPrevented: ordersUpdated,
-    candidatesChecked,
+    staleClaimsReclaimed,
+    candidatesSelected: candidates.length,
+    candidatesCompleted,
+    remaining: Math.max(candidates.length - candidatesCompleted, 0),
+    stoppedDueToRuntimeBudget,
     eligibleDryRun,
     notEligibleRetryable,
     sent,
