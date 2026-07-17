@@ -33,10 +33,14 @@ type FakeError = { code: string; message: string } | null
 
 let idCounter = 1
 
-function makeFakeAdmin(rows: Row[], getNow: () => Date) {
+function makeFakeAdmin(rows: Row[], getNow: () => Date, opts?: { forceFinalizeFailureForOrderId?: string }) {
+  // Fails only the FIRST non-'checking' UPDATE for the designated order --
+  // simulates one finalize write failing, without also breaking a later,
+  // legitimate reclaim UPDATE (which also targets a non-'checking' status).
+  const alreadyForcedFailureFor = new Set<string>()
   function from(table: string) {
     void table
-    let mode: 'select' | 'insert' | 'update' = 'select'
+    let mode: 'select' | 'insert' | 'update' | 'count' = 'select'
     let payload: Row | null = null
     const filters: Array<{ op: 'eq' | 'in' | 'lte' | 'lt'; col: string; val: unknown }> = []
     const orderBy: Array<{ col: string; ascending: boolean }> = []
@@ -77,6 +81,19 @@ function makeFakeAdmin(rows: Row[], getNow: () => Date) {
 
     function runUpdate(): { data: Row[]; error: FakeError } {
       const matched = applyFilters(rows)
+      // Simulate a finalize write (a non-'checking' status transition)
+      // failing for a designated test row -- the claim UPDATE (which sets
+      // status TO 'checking') must still succeed normally, only the
+      // subsequent finalize is forced to fail.
+      if (
+        opts?.forceFinalizeFailureForOrderId &&
+        payload!.solicitation_status !== 'checking' &&
+        !alreadyForcedFailureFor.has(opts.forceFinalizeFailureForOrderId) &&
+        matched.some(r => r.amazon_order_id === opts.forceFinalizeFailureForOrderId)
+      ) {
+        alreadyForcedFailureFor.add(opts.forceFinalizeFailureForOrderId)
+        return { data: [], error: { code: 'SIMULATED_DB_ERROR', message: 'forced finalize failure for test' } }
+      }
       for (const r of matched) {
         for (const [k, v] of Object.entries(payload!)) {
           if (v !== undefined) r[k] = v
@@ -91,9 +108,13 @@ function makeFakeAdmin(rows: Row[], getNow: () => Date) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const builder: any = {
-      select(cols: string) {
+      select(cols: string, options?: { count?: string; head?: boolean }) {
         void cols
-        if (mode !== 'insert' && mode !== 'update') mode = 'select'
+        if (options?.count === 'exact' && options?.head) {
+          mode = 'count'
+        } else if (mode !== 'insert' && mode !== 'update') {
+          mode = 'select'
+        }
         return builder
       },
       insert(p: Row) {
@@ -135,8 +156,9 @@ function makeFakeAdmin(rows: Row[], getNow: () => Date) {
         return { data: null, error: { code: 'UNSUPPORTED', message: 'single unsupported mode' } }
       },
       then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
-        let result: { data: unknown; error: unknown }
+        let result: { data: unknown; error: unknown; count?: number }
         if (mode === 'update') result = runUpdate()
+        else if (mode === 'count') result = { data: null, count: applyFilters(rows).length, error: null }
         else if (mode === 'select') result = { data: runSelect(), error: null }
         else result = { data: null, error: null }
         return Promise.resolve(result).then(resolve, reject)
@@ -238,7 +260,7 @@ test('the runtime budget stops claiming new candidates before it is exhausted an
 })
 
 // ── 3. Partial completion reports accurate counts ─────────────────────────────
-test('a partial run (stopped by the runtime budget) returns accurate selected/completed/remaining counts', async () => {
+test('a partial run (stopped by the runtime budget) returns accurate selected/completed/selectedCandidatesRemaining counts', async () => {
   const clock = makeClock(Date.parse('2026-07-18T03:00:00Z'))
   const rows: Row[] = Array.from({ length: 3 }, (_, i) =>
     seedRow(clock.now, { workspace_id: WS, marketplace_id: MP, amazon_order_id: `ORDER-PARTIAL-${i}` }),
@@ -258,7 +280,37 @@ test('a partial run (stopped by the runtime budget) returns accurate selected/co
   })
   assert.equal(report.candidatesSelected, 3)
   assert.equal(report.candidatesCompleted, 1)
-  assert.equal(report.remaining, 2, 'remaining must equal selected minus completed')
+  assert.equal(report.selectedCandidatesRemaining, 2, 'selectedCandidatesRemaining must equal selected minus completed (this batch only)')
+})
+
+// ── 3b. selectedCandidatesRemaining is unambiguous -- not the total DB backlog ─
+test('selectedCandidatesRemaining reflects only this batch, while dueBacklogRemaining reflects the full due-candidate count', async () => {
+  const clock = makeClock(Date.parse('2026-07-18T03:00:00Z'))
+  // 5 due rows total, but batchSize caps selection at 2.
+  const rows: Row[] = Array.from({ length: 5 }, (_, i) =>
+    seedRow(clock.now, { workspace_id: WS, marketplace_id: MP, amazon_order_id: `ORDER-BACKLOG-${i}` }),
+  )
+  const admin = makeFakeAdmin(rows, clock.now)
+  const deps = {
+    admin,
+    getSolicitationFn: async (): Promise<SolicitationActionsResult> => okSolicitation([]),
+    createSolicitationFn: async (): Promise<CreateSolicitationResult> => okCreate(),
+    sleepFn: async () => {}, nowFn: clock.now,
+  }
+  const report = await runEligibilityProcessing(deps, {
+    workspaceId: WS, marketplaceId: MP, accessToken: 'tok',
+    batchSize: 2, rateLimitMs: 1, runtimeBudgetMs: DEFAULT_RUNTIME_BUDGET_MS, staleClaimTtlMinutes: 15,
+    liveSendEnabled: false, dryRun: true, workerId: 'test-worker',
+  })
+  assert.equal(report.candidatesSelected, 2)
+  assert.equal(report.candidatesCompleted, 2)
+  assert.equal(report.selectedCandidatesRemaining, 0, 'this batch fully completed')
+  // 3 of the 5 were never selected in this batch -- they are checked
+  // (not_eligible_retryable, retry-scheduled 3 days out) or still pending;
+  // dueBacklogRemaining must reflect whatever is genuinely still due right
+  // now, independent of selectedCandidatesRemaining.
+  assert.equal(typeof report.dueBacklogRemaining, 'number')
+  assert.notEqual(report.dueBacklogRemaining, report.selectedCandidatesRemaining, 'the two fields must not be conflated')
 })
 
 // ── 4. Stale checking row is reclaimed ────────────────────────────────────────
@@ -327,6 +379,40 @@ test('reclaim only ever matches solicitation_status=checking -- a send_claimed r
   assert.equal(finalized, true)
   assert.equal(rows[0].solicitation_status, 'sent')
   assert.equal(rows[0].solicitation_sent, true, 'exactly one send must be recorded -- no duplicate claim was possible')
+})
+
+// ── 6b. candidatesCompleted only increments after DB finalization succeeds ───
+test('a successful Amazon GET followed by a failed DB finalize write does NOT increment candidatesCompleted, and the row remains recoverable via stale-claim reclaim', async () => {
+  const clock = makeClock(Date.parse('2026-07-18T03:00:00Z'))
+  const FAILING_ORDER = 'ORDER-FINALIZE-FAILS'
+  const rows: Row[] = [seedRow(clock.now, { workspace_id: WS, marketplace_id: MP, amazon_order_id: FAILING_ORDER })]
+  const admin = makeFakeAdmin(rows, clock.now, { forceFinalizeFailureForOrderId: FAILING_ORDER })
+  const deps = {
+    admin,
+    getSolicitationFn: async (): Promise<SolicitationActionsResult> => okSolicitation([]), // GET succeeds
+    createSolicitationFn: async (): Promise<CreateSolicitationResult> => okCreate(),
+    sleepFn: async () => {}, nowFn: clock.now,
+  }
+
+  const report = await runEligibilityProcessing(deps, {
+    workspaceId: WS, marketplaceId: MP, accessToken: 'tok',
+    batchSize: 10, rateLimitMs: 1, runtimeBudgetMs: DEFAULT_RUNTIME_BUDGET_MS, staleClaimTtlMinutes: 15,
+    liveSendEnabled: false, dryRun: true, workerId: 'test-worker',
+  })
+
+  assert.equal(report.candidatesCompleted, 0, 'the GET succeeded but the DB finalize write failed -- must not count as completed')
+  assert.equal(report.notEligibleRetryable, 1, 'the outcome classification itself is still counted -- only completion is gated on finalize success')
+  assert.equal(rows[0].solicitation_status, 'checking', 'the row must remain in checking, not silently marked done')
+
+  // Prove recoverability: advance the clock past the stale-claim TTL and
+  // confirm reclaim picks it up, exactly like a process-kill orphan would be.
+  clock.advanceMs(16 * 60 * 1000)
+  const staleBeforeIso = new Date(clock.now().getTime() - 15 * 60 * 1000).toISOString()
+  const reclaimed = await reclaimStaleCheckingClaims(admin, {
+    workspaceId: WS, marketplaceId: MP, staleBeforeIso, nowIso: clock.now().toISOString(),
+  })
+  assert.equal(reclaimed, 1)
+  assert.equal(rows[0].solicitation_status, 'pending', 'reclaim must recover the row left stuck by the failed finalize')
 })
 
 // ── 7. Dry-run never POSTs ────────────────────────────────────────────────────

@@ -50,6 +50,7 @@ import {
   claimForSendAttempt,
   recordSendResult,
   reclaimStaleCheckingClaims,
+  countDueCandidates,
 } from './repository'
 import {
   classifyEligibilityOutcome,
@@ -93,8 +94,24 @@ export interface EligibilityProcessorParams {
 export interface EligibilityProcessorReport {
   staleClaimsReclaimed: number
   candidatesSelected: number
+  /**
+   * A candidate counts as completed only once its claim has been resolved
+   * out of 'checking' AND the final DB write (recordEligibilityResult or
+   * recordSendResult) has been confirmed applied. A successful Amazon GET
+   * followed by a failed/unconfirmed DB write does NOT count -- that row is
+   * left in 'checking' and is recovered later by reclaimStaleCheckingClaims,
+   * not silently mis-reported as done here.
+   */
   candidatesCompleted: number
-  remaining: number
+  /**
+   * How many of THIS batch's selected candidates were not completed --
+   * i.e. candidatesSelected - candidatesCompleted. This is NOT the total
+   * database backlog; see dueBacklogRemaining for that (a separate,
+   * optional, cheap read-only count).
+   */
+  selectedCandidatesRemaining: number
+  /** Cheap index-backed COUNT of the full due-candidate backlog after this run, across all batches -- not just this one. */
+  dueBacklogRemaining: number
   stoppedDueToRuntimeBudget: boolean
   eligibleDryRun: number
   notEligibleRetryable: number
@@ -162,14 +179,19 @@ export async function runEligibilityProcessing(
         amazonOrderId: candidate.amazon_order_id,
         marketplaceId: params.marketplaceId,
       })
-      candidatesCompleted += 1
+      // NOTE: candidatesCompleted is intentionally NOT incremented here.
+      // A successful Amazon GET is not "completion" -- completion requires
+      // the DB finalize write below to actually apply (recordEligibilityResult
+      // / recordSendResult returning true). If that write fails or throws,
+      // the row stays in 'checking' and is picked up later by
+      // reclaimStaleCheckingClaims -- it must not be counted as done here.
       const nowIso = nowFn().toISOString()
       const newCheckAttempts = (claim.previousCheckAttempts ?? 0) + 1
 
       if (!solResult.ok) {
         recordApiError(amazonErrorsByCode, solResult.statusCode, solResult.amazonErrorCode)
         const toStatus = classifySolicitationsError(solResult.statusCode, solResult.amazonErrorCode)
-        await recordEligibilityResult(admin, candidate.id, {
+        const finalized = await recordEligibilityResult(admin, candidate.id, {
           toStatus,
           checkAttempts: newCheckAttempts,
           evidence: buildSanitizedEligibilityEvidence({
@@ -183,6 +205,7 @@ export async function runEligibilityProcessing(
           errorMessage: `HTTP ${solResult.statusCode}`,
           nowIso,
         })
+        if (finalized) candidatesCompleted += 1
         failedRetryable += 1
         continue
       }
@@ -191,12 +214,13 @@ export async function runEligibilityProcessing(
 
       if (!actionsPresent) {
         const toStatus = classifyEligibilityOutcome(false)
-        await recordEligibilityResult(admin, candidate.id, {
+        const finalized = await recordEligibilityResult(admin, candidate.id, {
           toStatus,
           checkAttempts: newCheckAttempts,
           evidence: buildSanitizedEligibilityEvidence({ actionNames: solResult.actions, checkedAt: nowIso }),
           nowIso,
         })
+        if (finalized) candidatesCompleted += 1
         notEligibleRetryable += 1
         continue
       }
@@ -204,7 +228,7 @@ export async function runEligibilityProcessing(
       // Eligible action present. Record eligible_dry_run first regardless of
       // mode -- historical GET-evidence record, matches the former
       // daily-run.ts behavior exactly when live-send is not active.
-      await recordEligibilityResult(admin, candidate.id, {
+      const eligibleFinalized = await recordEligibilityResult(admin, candidate.id, {
         toStatus: 'eligible_dry_run',
         checkAttempts: newCheckAttempts,
         evidence: buildSanitizedEligibilityEvidence({ actionNames: solResult.actions, checkedAt: nowIso }),
@@ -212,6 +236,7 @@ export async function runEligibilityProcessing(
       })
 
       if (!liveSendActive) {
+        if (eligibleFinalized) candidatesCompleted += 1
         eligibleDryRun += 1
         continue
       }
@@ -223,7 +248,9 @@ export async function runEligibilityProcessing(
       const sendClaim = await claimForSendAttempt(admin, candidate.id, 'eligible_dry_run', params.workerId, nowIso)
       if (!sendClaim.claimed) {
         // Another worker claimed it between finalize and here -- safe skip.
-        // The eligible_dry_run record written above still stands.
+        // The eligible_dry_run record written above still stands, and it
+        // was already confirmed finalized above.
+        if (eligibleFinalized) candidatesCompleted += 1
         eligibleDryRun += 1
         continue
       }
@@ -235,17 +262,25 @@ export async function runEligibilityProcessing(
       const sentAtIso = nowFn().toISOString()
 
       if (sendResult.ok) {
-        await recordSendResult(admin, candidate.id, {
+        const sentFinalized = await recordSendResult(admin, candidate.id, {
           toStatus: 'sent',
           evidence: buildSanitizedEligibilityEvidence({ actionNames: solResult.actions, checkedAt: sentAtIso }),
           nowIso: sentAtIso,
         })
-        sent += 1
-        console.log(`[review-requests-eligibility] sent (live POST): order=${maskOrderId(candidate.amazon_order_id)}`)
+        if (sentFinalized) {
+          sent += 1
+          candidatesCompleted += 1
+          console.log(`[review-requests-eligibility] sent (live POST): order=${maskOrderId(candidate.amazon_order_id)}`)
+        }
+        // If sentFinalized is false, the POST already succeeded on Amazon's
+        // side but our own finalize write did not apply (row left in
+        // send_claimed, extremely unlikely given claimForSendAttempt() just
+        // succeeded uncontested) -- not counted as sent or completed here;
+        // out of scope for this fix to add a send_claimed reclaim path.
       } else {
         recordApiError(amazonErrorsByCode, sendResult.statusCode, sendResult.amazonErrorCode)
         const toStatus = classifySendOutcome(sendResult.statusCode, sendResult.amazonErrorCode)
-        await recordSendResult(admin, candidate.id, {
+        const finalized = await recordSendResult(admin, candidate.id, {
           toStatus,
           evidence: buildSanitizedEligibilityEvidence({
             actionNames: solResult.actions,
@@ -258,6 +293,7 @@ export async function runEligibilityProcessing(
           errorMessage: `HTTP ${sendResult.statusCode}`,
           nowIso: sentAtIso,
         })
+        if (finalized) candidatesCompleted += 1
         if (toStatus === 'failed_terminal') failedTerminal += 1
         else failedRetryable += 1
       }
@@ -268,11 +304,18 @@ export async function runEligibilityProcessing(
     }
   }
 
+  const dueBacklogRemaining = await countDueCandidates(admin, {
+    workspaceId: params.workspaceId,
+    marketplaceId: params.marketplaceId,
+    nowIso: nowFn().toISOString(),
+  })
+
   return {
     staleClaimsReclaimed,
     candidatesSelected: candidates.length,
     candidatesCompleted,
-    remaining: Math.max(candidates.length - candidatesCompleted, 0),
+    selectedCandidatesRemaining: Math.max(candidates.length - candidatesCompleted, 0),
+    dueBacklogRemaining,
     stoppedDueToRuntimeBudget,
     eligibleDryRun,
     notEligibleRetryable,

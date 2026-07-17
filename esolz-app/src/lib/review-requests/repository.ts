@@ -409,3 +409,35 @@ export async function reclaimStaleCheckingClaims(
   if (error) throw new Error(`reclaimStaleCheckingClaims failed: ${error.message}`)
   return data?.length ?? 0
 }
+
+// ── Optional: cheap read-only due-backlog count ──────────────────────────────
+//
+// Same filter shape as findDueCandidates(), backed by the same partial
+// index (review_solicitation_orders_due_idx) -- an index-only COUNT, not a
+// full table scan, so it is cheap enough to call every eligibility-processor
+// run purely for reporting ("how much backlog is left after this batch").
+// Never used to select or claim rows itself.
+
+export interface CountDueCandidatesParams {
+  workspaceId: string
+  marketplaceId: string
+  nowIso?: string
+}
+
+export async function countDueCandidates(
+  admin: AdminClient,
+  params: CountDueCandidatesParams,
+): Promise<number> {
+  const nowIso = params.nowIso ?? new Date().toISOString()
+  const { count, error } = await admin
+    .from(TABLE)
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', params.workspaceId)
+    .eq('marketplace_id', params.marketplaceId)
+    .eq('solicitation_sent', false)
+    .in('solicitation_status', DUE_CANDIDATE_STATUSES as string[])
+    .lte('next_check_at', nowIso)
+
+  if (error) throw new Error(`countDueCandidates failed: ${error.message}`)
+  return count ?? 0
+}

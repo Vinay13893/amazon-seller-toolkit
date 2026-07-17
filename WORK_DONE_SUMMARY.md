@@ -640,3 +640,51 @@ every changed/new file, `npm run build` clean — new route tree confirmed prese
 prior PR here has needed); no live sending; no 30-day catch-up; Pincode Checker work not resumed (per
 instruction); the stuck row remains stuck until this deploys and its first `process-eligibility` cycle
 runs.
+
+## Review Request Automation — PR #45 Amended: 3 Reliability/Reporting Gaps Closed (2026-07-17, later still)
+
+_Founder review of PR #45 approved the split architecture in principle but flagged 3 gaps before merge.
+All fixed on the same branch (`fix/review-request-worker-timeout`) -- no second branch/PR. PR #45 still not
+merged, not deployed. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §18._
+
+**Gap 1 fixed — ingestion was still sequential and close to the platform limit.** The natural run's 483
+sequential order upserts consumed most of the 280s before the kill (eligibility throttling alone only
+accounted for ~22s). `runOrderIngestion()` now processes upserts in bounded chunks of
+`REVIEW_REQUESTS_INGEST_CONCURRENCY` (default 8, never an unbounded `Promise.all`) via a new
+`processInBoundedChunks()` helper. `upsertDiscoveredOrder()` itself, idempotency, and the rolling 3-day
+overlap are all unchanged. One failed upsert is caught and counted in a new `ordersFailed` field (never
+aborts the run, never logs an order id). A new internal runtime guard
+(`REVIEW_REQUESTS_INGEST_RUNTIME_BUDGET_MS`, default 220,000ms) stops gracefully instead of depending on a
+platform kill, reporting `paginationComplete`, `pagesCompleted`, `ordersCompleted`, and (on a partial stop)
+a `partialIngestionNote` explaining the recurring-under-service risk since pagination has no persisted
+cursor. Deliberately did not add a persisted cursor -- concurrency should make the runtime guard rarely
+trip; per instruction, honest partial reporting beats an unsafe partial-ingestion design. Proven with a new
+test that runs 483 synthetic orders through the real chunking logic and confirms both full completion and
+that observed concurrent DB calls never exceed 8.
+
+**Gap 2 fixed — `candidatesCompleted` incremented too early.** It previously counted right after a
+successful Amazon GET, before the DB finalize write was confirmed applied -- so a GET-succeeded-but-DB-
+write-failed row was miscounted as done. Redefined: completed now requires the finalize write
+(`recordEligibilityResult`/`recordSendResult`) to return `true`. Every call site checks this before
+incrementing. New test: GET succeeds, DB finalize is forced to fail, confirms `candidatesCompleted` stays 0,
+the row stays in `checking`, and `reclaimStaleCheckingClaims()` still recovers it. The same fix applied to
+the `sent` counter for consistency (live-send-path-only, unreachable under committed defaults, but carried
+the identical bug).
+
+**Gap 3 fixed — `remaining` was ambiguous.** Renamed to `selectedCandidatesRemaining` (this batch only).
+Added an optional `dueBacklogRemaining` field -- a new, genuinely cheap index-only `COUNT`
+(`repository.ts#countDueCandidates()`, same filter shape/index as `findDueCandidates()`) called once per
+run, giving an honest read on whether the backlog is actually declining, which the batch-scoped field alone
+can't answer.
+
+**Tests: 104/104 passing** (8 pre-existing unchanged + 2 grown in place: ingestion 3→10 tests, eligibility
+processor 15→17 tests). `npx tsc --noEmit` clean, `eslint` clean on every changed file, `npm run build`
+clean.
+
+**Unchanged by this amendment:** live sending still disabled by committed default, no production env value
+changed, no manual production invocation, stuck row still not touched manually, no 30-day catch-up, Pincode
+Checker not resumed, all protected areas (Ads/payments/replenishment/ASIN checker/ASIN UI/Report Reuse
+Gate/Amazon auth/tokens, the dirty checkout, the review-verification worktree) untouched, `git add .` not
+used.
+
+**PR #45 description updated. Still not merged, not deployed.**

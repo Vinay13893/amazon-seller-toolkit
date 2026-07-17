@@ -18,7 +18,12 @@ import { pathToFileURL } from 'node:url'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { loadWorkspaceConnection } from '@/lib/amazon/connection'
 import { listOrders } from '@/lib/amazon/spapi-client'
-import { runOrderIngestion, DEFAULT_ROLLING_OVERLAP_DAYS } from '@/lib/review-requests/order-ingestion'
+import {
+  runOrderIngestion,
+  DEFAULT_ROLLING_OVERLAP_DAYS,
+  DEFAULT_INGEST_CONCURRENCY,
+  DEFAULT_INGESTION_RUNTIME_BUDGET_MS,
+} from '@/lib/review-requests/order-ingestion'
 
 const EASYHOME_WORKSPACE_ID = '55a321c9-7729-4662-a494-9f1f1aa86846'
 const DEFAULT_MARKETPLACE_ID = 'A21TJRUUN4KGV'
@@ -43,6 +48,8 @@ async function main() {
   const workspaceId = getStrArg('workspace-id') ?? EASYHOME_WORKSPACE_ID
   const marketplaceId = process.env.REVIEW_REQUESTS_MARKETPLACE_ID || DEFAULT_MARKETPLACE_ID
   const overlapDays = parseIntEnv('REVIEW_REQUESTS_OVERLAP_DAYS', DEFAULT_ROLLING_OVERLAP_DAYS)
+  const concurrency = parseIntEnv('REVIEW_REQUESTS_INGEST_CONCURRENCY', DEFAULT_INGEST_CONCURRENCY)
+  const runtimeBudgetMs = parseIntEnv('REVIEW_REQUESTS_INGEST_RUNTIME_BUDGET_MS', DEFAULT_INGESTION_RUNTIME_BUDGET_MS)
 
   console.log('[review-requests-ingest] Starting order-ingestion run — workspace:', workspaceId)
 
@@ -59,6 +66,8 @@ async function main() {
       marketplaceId: connection.marketplaceId ?? marketplaceId,
       accessToken: connection.accessToken,
       overlapDays,
+      concurrency,
+      runtimeBudgetMs,
     },
   )
 

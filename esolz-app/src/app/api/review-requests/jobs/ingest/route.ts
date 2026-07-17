@@ -3,7 +3,12 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
 import { loadWorkspaceConnection } from '@/lib/amazon/connection'
 import { listOrders } from '@/lib/amazon/spapi-client'
-import { runOrderIngestion, DEFAULT_ROLLING_OVERLAP_DAYS } from '@/lib/review-requests/order-ingestion'
+import {
+  runOrderIngestion,
+  DEFAULT_ROLLING_OVERLAP_DAYS,
+  DEFAULT_INGEST_CONCURRENCY,
+  DEFAULT_INGESTION_RUNTIME_BUDGET_MS,
+} from '@/lib/review-requests/order-ingestion'
 
 export const runtime = 'nodejs'
 export const maxDuration = 280
@@ -42,6 +47,8 @@ export async function POST(request: Request) {
   const workspaceId = auth.mode === 'session' ? auth.workspaceId : EASYHOME_WORKSPACE_ID
   const marketplaceId = process.env.REVIEW_REQUESTS_MARKETPLACE_ID || DEFAULT_MARKETPLACE_ID
   const overlapDays = parseIntEnv('REVIEW_REQUESTS_OVERLAP_DAYS', DEFAULT_ROLLING_OVERLAP_DAYS)
+  const concurrency = parseIntEnv('REVIEW_REQUESTS_INGEST_CONCURRENCY', DEFAULT_INGEST_CONCURRENCY)
+  const runtimeBudgetMs = parseIntEnv('REVIEW_REQUESTS_INGEST_RUNTIME_BUDGET_MS', DEFAULT_INGESTION_RUNTIME_BUDGET_MS)
 
   const connection = await loadWorkspaceConnection(admin, workspaceId)
   if (!connection) {
@@ -56,6 +63,8 @@ export async function POST(request: Request) {
       marketplaceId: connection.marketplaceId ?? marketplaceId,
       accessToken: connection.accessToken,
       overlapDays,
+      concurrency,
+      runtimeBudgetMs,
     },
   )
 

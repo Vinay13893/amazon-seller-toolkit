@@ -5,24 +5,52 @@
  * No test framework is installed in this repo, so this follows the existing
  * scripts/*.ts convention: a plain script run via `npx tsx`, using Node's
  * built-in assert module, with its own self-contained fake admin harness
- * (matching scripts/test-review-requests.ts / the former
- * scripts/test-review-requests-daily.ts). Exits non-zero on any failure.
+ * (matching scripts/test-review-requests.ts / the eligibility-processor
+ * test file). Exits non-zero on any failure.
  *
  * Run:
  *   npx tsx scripts/test-review-requests-ingestion.ts
  */
 import assert from 'node:assert/strict'
-import { runOrderIngestion, DEFAULT_ROLLING_OVERLAP_DAYS } from '../src/lib/review-requests/order-ingestion'
-import type { ListOrdersResult } from '../src/lib/amazon/spapi-client'
+import {
+  runOrderIngestion,
+  DEFAULT_ROLLING_OVERLAP_DAYS,
+  DEFAULT_INGEST_CONCURRENCY,
+  DEFAULT_INGESTION_RUNTIME_BUDGET_MS,
+} from '../src/lib/review-requests/order-ingestion'
+import type { ListOrdersResult, OrderSummary } from '../src/lib/amazon/spapi-client'
 
-// ── Fake in-memory review_solicitation_orders table ──────────────────────────
+// ── Fake in-memory review_solicitation_orders table, with optional
+// concurrency tracking and a configurable per-call delay so tests can
+// exercise bounded-concurrency behavior (matches the DB round-trip shape a
+// real Supabase call has: one select, then one insert or update). ──────────
 
 type Row = Record<string, unknown>
 type FakeError = { code: string; message: string } | null
 
 let idCounter = 1
 
-function makeFakeAdmin(rows: Row[]) {
+interface ConcurrencyStats {
+  active: number
+  maxActive: number
+}
+
+function makeFakeAdmin(
+  rows: Row[],
+  opts?: { delayMs?: number; stats?: ConcurrencyStats; failForOrderId?: string },
+) {
+  const delayMs = opts?.delayMs ?? 0
+  const stats = opts?.stats
+
+  async function trackedDelay() {
+    if (stats) {
+      stats.active += 1
+      stats.maxActive = Math.max(stats.maxActive, stats.active)
+    }
+    if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs))
+    if (stats) stats.active -= 1
+  }
+
   function from(table: string) {
     void table
     let mode: 'select' | 'insert' | 'update' = 'select'
@@ -34,6 +62,9 @@ function makeFakeAdmin(rows: Row[]) {
     }
 
     function runInsert(): { data: Row | null; error: FakeError } {
+      if (opts?.failForOrderId && payload!.amazon_order_id === opts.failForOrderId) {
+        return { data: null, error: { code: 'SIMULATED_DB_ERROR', message: 'forced failure for test' } }
+      }
       const conflict = rows.find(
         r =>
           r.workspace_id === payload!.workspace_id &&
@@ -80,6 +111,7 @@ function makeFakeAdmin(rows: Row[]) {
         return builder
       },
       async maybeSingle() {
+        await trackedDelay()
         if (mode === 'select') {
           const result = applyFilters(rows)
           return { data: result[0] ?? null, error: null }
@@ -87,6 +119,7 @@ function makeFakeAdmin(rows: Row[]) {
         return { data: null, error: { code: 'UNSUPPORTED', message: 'maybeSingle in non-select mode' } }
       },
       async single() {
+        await trackedDelay()
         if (mode === 'insert') return runInsert()
         if (mode === 'select') {
           const result = applyFilters(rows)
@@ -116,6 +149,27 @@ function okOrdersPage(orders: ListOrdersResult['orders'] = [], nextToken: string
   return { ok: true, statusCode: 200, orders, nextToken, amazonErrorCode: null }
 }
 
+function baseParams(overrides: Partial<Parameters<typeof runOrderIngestion>[1]> = {}) {
+  return {
+    workspaceId: WS,
+    marketplaceId: MP,
+    accessToken: 'tok',
+    overlapDays: DEFAULT_ROLLING_OVERLAP_DAYS,
+    concurrency: DEFAULT_INGEST_CONCURRENCY,
+    runtimeBudgetMs: DEFAULT_INGESTION_RUNTIME_BUDGET_MS,
+    ...overrides,
+  }
+}
+
+function makeOrder(i: number): OrderSummary {
+  return { amazonOrderId: `ORDER-${i}`, orderStatus: 'Shipped', purchaseDate: null, lastUpdateDate: null }
+}
+
+function makeClock(startMs: number) {
+  let current = startMs
+  return { now: () => new Date(current), advanceMs: (ms: number) => { current += ms } }
+}
+
 const tests: Array<[string, () => Promise<void> | void]> = []
 function test(name: string, fn: () => Promise<void> | void) {
   tests.push([name, fn])
@@ -125,10 +179,10 @@ function test(name: string, fn: () => Promise<void> | void) {
 test('rolling 3-day fetch overlap is idempotent -- re-running with the same window never duplicates order rows', async () => {
   const rows: Row[] = []
   const admin = makeFakeAdmin(rows)
-  const order = { amazonOrderId: 'ORDER-OVERLAP-1', orderStatus: 'Shipped', purchaseDate: null, lastUpdateDate: null }
+  const order = makeOrder(1)
   const listOrdersFn = async (): Promise<ListOrdersResult> => okOrdersPage([order])
   const deps = { admin, listOrdersFn, nowFn: () => new Date() }
-  const params = { workspaceId: WS, marketplaceId: MP, accessToken: 'tok', overlapDays: DEFAULT_ROLLING_OVERLAP_DAYS }
+  const params = baseParams()
 
   const first = await runOrderIngestion(deps, params)
   const second = await runOrderIngestion(deps, params)
@@ -137,26 +191,17 @@ test('rolling 3-day fetch overlap is idempotent -- re-running with the same wind
   assert.equal(second.ordersInserted, 0, 'second run must not re-insert the same order')
   assert.equal(second.ordersUpdated, 1)
   assert.equal(second.duplicatesPrevented, 1)
-  assert.equal(rows.filter(r => r.amazon_order_id === 'ORDER-OVERLAP-1').length, 1, 'exactly one row must exist for the order')
+  assert.equal(rows.filter(r => r.amazon_order_id === order.amazonOrderId).length, 1, 'exactly one row must exist for the order')
 })
 
 // ── 2. Ingestion never touches eligibility/send state ────────────────────────
 test('order ingestion is structurally separate from eligibility processing -- it has no eligibility-check or send dependency at all', async () => {
   const rows: Row[] = []
   const admin = makeFakeAdmin(rows)
-  const order = { amazonOrderId: 'ORDER-NEW-1', orderStatus: 'Shipped', purchaseDate: null, lastUpdateDate: null }
+  const order = makeOrder(1)
   const listOrdersFn = async (): Promise<ListOrdersResult> => okOrdersPage([order])
-  const report = await runOrderIngestion(
-    { admin, listOrdersFn, nowFn: () => new Date() },
-    { workspaceId: WS, marketplaceId: MP, accessToken: 'tok', overlapDays: 3 },
-  )
+  const report = await runOrderIngestion({ admin, listOrdersFn, nowFn: () => new Date() }, baseParams())
 
-  // runOrderIngestion's deps type has no getSolicitationFn/createSolicitationFn
-  // parameter at all (see OrderIngestionDeps) -- this is a structural
-  // (type-level) guarantee, not just a runtime one. At runtime: the new row
-  // must land as 'pending' (the insert default), never any eligibility-check
-  // or send-related status, since this phase never calls
-  // claimForEligibilityCheck/recordEligibilityResult/claimForSendAttempt.
   assert.equal(report.ordersInserted, 1)
   assert.equal(rows[0].solicitation_status, 'pending')
   assert.equal(rows[0].solicitation_sent, false)
@@ -170,17 +215,170 @@ test('ingestion pages until nextToken is exhausted or the API returns a failure,
   let calls = 0
   const listOrdersFn = async (): Promise<ListOrdersResult> => {
     calls += 1
-    if (calls === 1) return okOrdersPage([{ amazonOrderId: 'ORDER-PAGE-1', orderStatus: 'Shipped', purchaseDate: null, lastUpdateDate: null }], 'next-token-2')
+    if (calls === 1) return okOrdersPage([makeOrder(1)], 'next-token-2')
     return { ok: false, statusCode: 429, orders: [], nextToken: null, amazonErrorCode: 'QuotaExceeded' }
   }
-  const report = await runOrderIngestion(
-    { admin, listOrdersFn, nowFn: () => new Date() },
-    { workspaceId: WS, marketplaceId: MP, accessToken: 'tok', overlapDays: 3 },
-  )
+  const report = await runOrderIngestion({ admin, listOrdersFn, nowFn: () => new Date() }, baseParams())
 
   assert.equal(calls, 2, 'must fetch the second page then stop after the failure')
   assert.equal(report.ordersInserted, 1)
   assert.equal(report.amazonErrorsByCode['QuotaExceeded'], 1)
+  assert.equal(report.paginationComplete, false, 'an Amazon-side failure is not a natural pagination end')
+})
+
+// ── 4. 483 synthetic orders are all processed using bounded concurrency ──────
+test('483 synthetic orders across multiple pages are all processed, using bounded concurrency', async () => {
+  const stats: ConcurrencyStats = { active: 0, maxActive: 0 }
+  const rows: Row[] = []
+  const admin = makeFakeAdmin(rows, { delayMs: 2, stats })
+
+  const TOTAL = 483
+  const PAGE_SIZE = 100
+  const allOrders = Array.from({ length: TOTAL }, (_, i) => makeOrder(i))
+  let cursor = 0
+  const listOrdersFn = async (): Promise<ListOrdersResult> => {
+    const page = allOrders.slice(cursor, cursor + PAGE_SIZE)
+    cursor += PAGE_SIZE
+    const nextToken = cursor < allOrders.length ? `token-${cursor}` : null
+    return okOrdersPage(page, nextToken)
+  }
+
+  const report = await runOrderIngestion(
+    { admin, listOrdersFn, nowFn: () => new Date() },
+    baseParams({ concurrency: 8 }),
+  )
+
+  assert.equal(report.ordersFetched, TOTAL)
+  assert.equal(report.ordersCompleted, TOTAL, 'every fetched order must be attempted to a resolved outcome')
+  assert.equal(report.ordersInserted, TOTAL)
+  assert.equal(report.ordersFailed, 0)
+  assert.equal(report.paginationComplete, true)
+  assert.equal(report.stoppedDueToRuntimeBudget, false)
+  assert.equal(rows.length, TOTAL, 'no duplicate/missing rows')
+})
+
+// ── 5. Maximum simultaneous upserts never exceeds configured concurrency ─────
+test('maximum simultaneous DB calls never exceeds the configured concurrency', async () => {
+  const stats: ConcurrencyStats = { active: 0, maxActive: 0 }
+  const rows: Row[] = []
+  const admin = makeFakeAdmin(rows, { delayMs: 5, stats })
+  const orders = Array.from({ length: 40 }, (_, i) => makeOrder(i))
+  const listOrdersFn = async (): Promise<ListOrdersResult> => okOrdersPage(orders)
+
+  await runOrderIngestion(
+    { admin, listOrdersFn, nowFn: () => new Date() },
+    baseParams({ concurrency: 8 }),
+  )
+
+  assert.ok(stats.maxActive <= 8, `observed max concurrent DB calls (${stats.maxActive}) must never exceed the configured concurrency (8)`)
+  assert.ok(stats.maxActive > 1, 'sanity check: this test must actually observe overlapping calls, not accidental full serialization')
+})
+
+// ── 6. Inserted/updated/failed totals reconcile with fetched orders ──────────
+test('ordersInserted + ordersUpdated + ordersFailed always equals ordersCompleted, and reconciles with ordersFetched when pagination completes', async () => {
+  const rows: Row[] = [
+    { id: 'existing-1', workspace_id: WS, marketplace_id: MP, amazon_order_id: 'ORDER-EXISTING', solicitation_sent: false, check_attempts: 0 },
+  ]
+  const admin = makeFakeAdmin(rows)
+  const orders = [{ amazonOrderId: 'ORDER-EXISTING', orderStatus: 'Shipped', purchaseDate: null, lastUpdateDate: null }, makeOrder(1), makeOrder(2)]
+  const listOrdersFn = async (): Promise<ListOrdersResult> => okOrdersPage(orders)
+
+  const report = await runOrderIngestion({ admin, listOrdersFn, nowFn: () => new Date() }, baseParams())
+
+  assert.equal(report.ordersInserted + report.ordersUpdated + report.ordersFailed, report.ordersCompleted)
+  assert.equal(report.ordersCompleted, report.ordersFetched, 'pagination completed naturally, so everything fetched must have been completed')
+  assert.equal(report.ordersUpdated, 1, 'the pre-existing order must be counted as updated, not inserted')
+  assert.equal(report.ordersInserted, 2)
+})
+
+// ── 7. Duplicate/idempotency behavior is unchanged ────────────────────────────
+test('re-fetching the same order across a page boundary within one run never creates a duplicate row', async () => {
+  const rows: Row[] = []
+  const admin = makeFakeAdmin(rows)
+  let calls = 0
+  const listOrdersFn = async (): Promise<ListOrdersResult> => {
+    calls += 1
+    // The same order id appears on two consecutive "pages" (a realistic
+    // overlap scenario at a page boundary) -- must still resolve to one row.
+    if (calls === 1) return okOrdersPage([makeOrder(1)], 'tok-2')
+    return okOrdersPage([makeOrder(1)], null)
+  }
+  const report = await runOrderIngestion({ admin, listOrdersFn, nowFn: () => new Date() }, baseParams())
+
+  assert.equal(rows.length, 1)
+  assert.equal(report.ordersInserted, 1)
+  assert.equal(report.ordersUpdated, 1, 'the second sighting in the same run must be an update, not a second insert')
+})
+
+// ── 8. Ingestion does not silently drop a failed order ────────────────────────
+test('a failed upsert is counted in ordersFailed, never silently dropped, and does not abort the rest of the batch', async () => {
+  const rows: Row[] = []
+  const admin = makeFakeAdmin(rows, { failForOrderId: 'ORDER-WILL-FAIL' })
+  const orders = [
+    { amazonOrderId: 'ORDER-WILL-FAIL', orderStatus: 'Shipped', purchaseDate: null, lastUpdateDate: null },
+    makeOrder(1),
+    makeOrder(2),
+  ]
+  const listOrdersFn = async (): Promise<ListOrdersResult> => okOrdersPage(orders)
+
+  const report = await runOrderIngestion({ admin, listOrdersFn, nowFn: () => new Date() }, baseParams())
+
+  assert.equal(report.ordersFetched, 3)
+  assert.equal(report.ordersFailed, 1)
+  assert.equal(report.ordersInserted, 2, 'the other two orders must still succeed')
+  assert.equal(report.ordersCompleted, 3, 'a failed order is still "completed" -- attempted to a resolved outcome')
+  assert.equal(rows.length, 2, 'the failed order must never appear as a row')
+})
+
+// ── 9. Runtime guard returns an honest partial report ─────────────────────────
+test('the runtime guard stops ingestion before it is exhausted and returns an honest partial report', async () => {
+  const clock = makeClock(Date.parse('2026-07-18T03:00:00Z'))
+  const rows: Row[] = []
+  const admin = makeFakeAdmin(rows)
+  const PAGE_SIZE_LOCAL = 5
+  let cursor = 0
+  const totalOrders = 15
+  const allOrders = Array.from({ length: totalOrders }, (_, i) => makeOrder(i))
+  const listOrdersFn = async (): Promise<ListOrdersResult> => {
+    clock.advanceMs(60) // simulate page-fetch latency
+    const page = allOrders.slice(cursor, cursor + PAGE_SIZE_LOCAL)
+    cursor += PAGE_SIZE_LOCAL
+    const nextToken = cursor < allOrders.length ? `token-${cursor}` : null
+    return okOrdersPage(page, nextToken)
+  }
+
+  const report = await runOrderIngestion(
+    { admin, listOrdersFn, nowFn: clock.now },
+    baseParams({ runtimeBudgetMs: 100 }), // trips after ~1-2 page fetches at 60ms each
+  )
+
+  assert.equal(report.stoppedDueToRuntimeBudget, true)
+  assert.equal(report.paginationComplete, false, 'must never claim the full window was ingested')
+  assert.ok(report.ordersCompleted < totalOrders, 'a partial run must not claim to have completed everything')
+  assert.ok(report.partialIngestionNote && report.partialIngestionNote.length > 0, 'must explain the partial-run risk')
+})
+
+// ── 10. Pagination completion is reported accurately ──────────────────────────
+test('pagesCompleted and paginationComplete accurately reflect a fully-processed window', async () => {
+  const rows: Row[] = []
+  const admin = makeFakeAdmin(rows)
+  const PAGE_SIZE_LOCAL = 5
+  let cursor = 0
+  const totalOrders = 12 // 3 pages of 5, 5, 2
+  const allOrders = Array.from({ length: totalOrders }, (_, i) => makeOrder(i))
+  const listOrdersFn = async (): Promise<ListOrdersResult> => {
+    const page = allOrders.slice(cursor, cursor + PAGE_SIZE_LOCAL)
+    cursor += PAGE_SIZE_LOCAL
+    const nextToken = cursor < allOrders.length ? `token-${cursor}` : null
+    return okOrdersPage(page, nextToken)
+  }
+
+  const report = await runOrderIngestion({ admin, listOrdersFn, nowFn: () => new Date() }, baseParams())
+
+  assert.equal(report.ordersApiPagesFetched, 3)
+  assert.equal(report.pagesCompleted, 3)
+  assert.equal(report.paginationComplete, true)
+  assert.equal(report.partialIngestionNote, null, 'no partial-run note when pagination genuinely completed')
 })
 
 async function main() {
