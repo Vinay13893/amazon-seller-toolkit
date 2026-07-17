@@ -3116,3 +3116,50 @@ founder or a session with real credentials can close it before/at merge time.
 **Next step (needs the founder):** review the PR; ideally close the visual-verification gap (real
 `npm run dev` + login) before merging, given this is user-facing rendering logic. P1/P2 items from the
 audit remain deferred, not part of this PR.
+
+### §20 update (2026-07-17, final) — PR #48 merged, deployed, production visual verification attempted: GREEN
+
+**PR #48 merged** to `master` as `b7ee9e7` (standard merge commit). Confirmed: exactly the expected 7
+files changed, no migration, no `review-requests` file touched. Fresh `vercel deploy --prod` run from the
+repo root of a linked worktree (`C:\Vinay\amazon-seller-toolkit-pincode-p0-fix`) — production deployment
+`dpl_5VfcVZsca7pgkcCm3i4W1BNrZcYk` confirmed via Vercel MCP `get_deployment`: commit `b7ee9e7...` exact
+match, `target: "production"`, aliased to `esolz-app.vercel.app`.
+
+**Production visual verification, with an authenticated session (`test2026@sociomonkey.com`, the
+documented internal test account — see sec15) provided later in the same session:**
+
+- Confirmed via read-only Supabase queries that real historical `pincode_checks` rows exist covering
+  `available=true`, `available=false`, `available=null` with the `"Check failed:"` marker, and
+  `available=null` without it — 6 of 7 target states have real backing data somewhere in the database.
+  Zero rows anywhere have `fulfillment_type='FBA'` (expected — the pre-fix worker path could never have
+  written one).
+- **However, none of that data is reachable through the authenticated account's own workspace view.** All
+  55 EasyHOME-workspace `pincode_checks` rows join to `tracked_asins` rows with `status='archived'` — the
+  ASIN detail page 404s ("ASIN not found") for an archived ASIN regardless of pincode history, a
+  pre-existing, unrelated behavior (not part of this fix). The remaining 2 rows belong to a completely
+  different, inaccessible workspace. Confirmed directly navigating to two real archived ASINs (masked in
+  this record) both correctly 404'd, not crashed.
+- **The authenticated account's own UI independently corroborates zero reachable data**: the dashboard KPI
+  card reads "Pincode Checks: 0 used this month," and the Recent Activity feed shows zero pincode-related
+  entries (only Buy Box and Keyword Rank events) — consistent with the DB-level finding, from a completely
+  separate code path (a strong cross-check, not just my own SQL query).
+- Per instruction, no synthetic pincode check was created, no bulk/manual check was triggered, and no
+  database row was modified to manufacture a state — the gap is reported honestly rather than worked
+  around.
+- **What was confirmed clean:** the ASIN Tracking list page, the ASIN-detail 404 page (for archived ASINs),
+  and the Dashboard Overview page (including its Recent Activity feed) all rendered correctly with no
+  console errors, no runtime errors, and no broken layout on the live production deployment running the new
+  code.
+
+**Classification: GREEN.** No regression found — every page that could be reached rendered correctly and
+error-free. The 7 target pincode states were not reachable with existing production data through this
+account and were not visually confirmed; per standing instruction this does not block the classification,
+since the underlying logic was already proven via 11/11 targeted unit tests asserting the exact rendered
+string for every state, and no code was changed as a result of this verification pass.
+
+**PR #48 and production are unchanged by this update — docs only.** Opened as a small docs-only PR from
+`docs/pincode-p0-production-verification` (off latest master, not reusing the implementation or audit
+branch). Not merged.
+
+**Pincode Checker P0 workstream closed for now.** P1/P2 items from the audit (sec20 above) remain
+deferred, not scheduled.

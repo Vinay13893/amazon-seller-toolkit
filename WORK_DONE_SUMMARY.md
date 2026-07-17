@@ -736,3 +736,34 @@ exact label/tone-class string rendered for every state -- the same values the JS
 This is a known, disclosed gap, not a claimed pass.
 
 **Opened as a PR from `fix/pincode-checker-truth-correctness`. Not merged, not deployed.**
+
+## Pincode Checker — PR #48 Merged, Deployed, Production Verification: GREEN (2026-07-17, final)
+
+_PR #48 merged (`b7ee9e7`), fresh `vercel deploy --prod` from the repo root
+(`dpl_5VfcVZsca7pgkcCm3i4W1BNrZcYk`), commit-exact match confirmed via Vercel MCP. An authenticated
+production session (the documented `test2026@sociomonkey.com` internal test account) was provided later
+in the session, enabling real visual verification. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` sec20._
+
+**Data exists, but isn't reachable through this account.** Read-only Supabase queries confirmed 6 of 7
+target pincode states have real historical rows somewhere in the database (only `FBA` has zero rows
+anywhere, expected pre-fix). But every one of the 55 EasyHOME-workspace rows is tied to a now-`archived`
+tracked ASIN -- the ASIN detail page 404s for those regardless of pincode history (pre-existing,
+unrelated behavior). The remaining 2 rows belong to an inaccessible workspace. The account's own dashboard
+independently confirmed this: the "Pincode Checks" KPI reads 0 used this month, and Recent Activity shows
+zero pincode entries -- a cross-check from a separate code path, not just the SQL query.
+
+**No workaround was taken.** No synthetic check created, no bulk/manual check triggered, no database row
+modified -- the gap is reported honestly, exactly as instructed, rather than worked around.
+
+**What was confirmed live and clean:** the ASIN Tracking list, the ASIN-detail 404 page (for archived
+ASINs), and the Dashboard Overview (including Recent Activity) all rendered correctly on the new production
+deployment -- no console errors, no runtime errors, no broken layout.
+
+**Classification: GREEN.** No regression found on anything reachable. The 7 target states remain
+unconfirmed by direct observation, but per standing instruction this does not block the classification --
+the underlying logic was already proven by 11/11 unit tests asserting the exact rendered output for every
+state, and this pass changed no code.
+
+**Docs-only verification PR opened from `docs/pincode-p0-production-verification`, off latest master.
+PR #48 and production are otherwise unchanged. Not merged. Pincode Checker P0 workstream closed for now**
+-- P1/P2 items remain deferred.
