@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { getWorkspaceId, getAsinLimit, getCurrentEntitlement, getTrackedAsins } from '@/lib/supabase/asins'
 import { normalizeEmbed } from '@/lib/supabase/normalize'
+import { getPincodeAvailabilityDisplay } from '@/lib/pincode-status'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { InsightFeed } from '@/components/dashboard/InsightFeed'
 import { Button } from '@/components/ui/button'
@@ -329,7 +330,7 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
       .limit(5),
     supabase
       .from('pincode_checks')
-      .select('tracked_asin_id, pincode, available, checked_at')
+      .select('tracked_asin_id, pincode, available, delivery_promise, checked_at')
       .in('tracked_asin_id', asinIds)
       .order('checked_at', { ascending: false })
       .limit(5),
@@ -365,14 +366,21 @@ async function loadDashboardStats(workspaceId: string): Promise<DashboardStats> 
       timestamp: e.checked_at as string,
       severity: (e.buy_box_status === 'won' ? 'success' : 'info') as Insight['severity'],
     })),
-    ...(pinEvts.data ?? []).map((e, i) => ({
-      id: `pin-${i}`,
-      type: 'scrape_complete' as const,
-      title: 'Pincode Checked',
-      description: `${e.pincode as string}: ${e.available ? 'Available ✓' : 'Not available'} — ${labelMap[e.tracked_asin_id] ?? ''}`,
-      timestamp: e.checked_at as string,
-      severity: (e.available ? 'success' : 'warning') as Insight['severity'],
-    })),
+    ...(pinEvts.data ?? []).map((e, i) => {
+      const avail = getPincodeAvailabilityDisplay(e.available, e.delivery_promise)
+      const severity: Insight['severity'] =
+        avail.state === 'available' ? 'success' :
+        avail.state === 'unavailable' ? 'warning' :
+        'info' // failed/not_confirmed is a checker signal issue, not a confirmed negative result
+      return {
+        id: `pin-${i}`,
+        type: 'scrape_complete' as const,
+        title: 'Pincode Checked',
+        description: `${e.pincode as string}: ${avail.label} — ${labelMap[e.tracked_asin_id] ?? ''}`,
+        timestamp: e.checked_at as string,
+        severity,
+      }
+    }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ...(kwRankEvts.data ?? []).map((e: any, i: number) => {
       const kw = normalizeEmbed<{ keyword: string }>(e.tracked_keywords)
