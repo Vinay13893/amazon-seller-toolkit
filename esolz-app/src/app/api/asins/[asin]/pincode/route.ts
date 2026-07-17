@@ -155,7 +155,10 @@ export async function POST(
         delivery_type:   workerRes.delivery_promise ?? null,
         delivery_text:   workerRes.delivery_promise ?? null,
         merchant_text:   workerRes.seller ?? null,
-        amazon_fulfilled: false,
+        // PincodeResponse (checker-worker-client.ts) has no fulfillment signal
+        // at all -- there is nothing here to confirm FBA or FBM, so this must
+        // be null, never a guessed false. Do not default this to false.
+        amazon_fulfilled: null as boolean | null,
         checked_at:      new Date().toISOString(),
         pincode:         normalizedPincode,
       }
@@ -230,8 +233,15 @@ export async function POST(
     }
   }
 
-  // Map fulfillment type
-  const fulfillmentType = result.amazon_fulfilled ? 'FBA' : 'FBM'
+  // Map fulfillment type -- never guess. Only a confirmed true/false signal
+  // (from the dev-only local checker path today; the worker path has none)
+  // maps to FBA/FBM. Anything else (including null/undefined) means
+  // fulfillment could not be established and must be stored as null, not
+  // defaulted to FBM.
+  const fulfillmentType: 'FBA' | 'FBM' | null =
+    result.amazon_fulfilled === true ? 'FBA' :
+    result.amazon_fulfilled === false ? 'FBM' :
+    null
 
   const insertPayload = {
     workspace_id:     workspaceId,

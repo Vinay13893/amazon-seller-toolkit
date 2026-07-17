@@ -688,3 +688,51 @@ Gate/Amazon auth/tokens, the dirty checkout, the review-verification worktree) u
 used.
 
 **PR #45 description updated. Still not merged, not deployed.**
+
+## Pincode Checker — 2 P0 Correctness Bugs Fixed (2026-07-17)
+
+_PR #46 (product audit) merged (`1a4188e`). Approved scope: fix only the 2 confirmed P0 bugs; P1/P2
+explicitly deferred. New worktree `C:\Vinay\amazon-seller-toolkit-pincode-p0-fix`, branch
+`fix/pincode-checker-truth-correctness`, fresh off latest master -- the audit branch was not reused. Full
+detail in `BRAHMASTRA_MASTER_TRACKER.md` §20._
+
+**P0-1 fixed:** availability null-masking bug. New shared pure helper `src/lib/pincode-status.ts` --
+`classifyPincodeAvailability()` returns 4 states (`available`/`unavailable`/`failed`/`not_confirmed`),
+never collapsing a failed/uncertain check into a confirmed-unavailable result. `failed` vs `not_confirmed`
+is distinguished using the existing `"Check failed:"` marker text the write path already produces on a
+thrown exception -- the only structured signal the schema supports without a migration. Applied to all 3
+render sites: the ASIN-detail widget's Latest Check summary and Recent Checks history table (new neutral
+`HelpCircle` icon for uncertain states instead of forcing green-check-or-red-X), and the dashboard Recent
+Activity feed (whose `pincode_checks` query was extended to also select `delivery_promise`, previously
+omitted, so the same 4-state classifier works there with full fidelity).
+
+**P0-2 fixed:** FBA/FBM hardcode. `api/asins/[asin]/pincode/route.ts`'s worker-routed branch now writes
+`amazon_fulfilled: null` instead of a hardcoded `false` -- confirmed via the `PincodeResponse` type that
+the worker path has no fulfillment signal at all, so `null` is the only honest value. Downstream mapping
+changed from a truthy check to an explicit three-way `=== true ? 'FBA' : === false ? 'FBM' : null`. The
+dev-only local Python path (which does return a real signal) was left untouched -- the bug was specific to
+the worker path. `null` now renders as "Not confirmed" via a new `getFulfillmentDisplay()` helper.
+
+**No migration** -- both `pincode_checks.available` and `.fulfillment_type` were already nullable with no
+CHECK constraint (confirmed via migration 001 + a repo-wide grep finding no later migration touches
+either column); `null` was always valid, just never correctly rendered.
+
+**Not touched, per instruction:** `pincode_availability_results` (bulk checker table); the dead
+`/dashboard/pincode` legacy page; `PINCODE_ALERTS_PAUSED` (still disabled); billing/quota code;
+queue/worker runtime, cadence, or Amazon auth/tokens; any `review-requests` file (diff scope confirmed:
+exactly 5 files, all pincode-specific). Buy Box "Detected" wording left unchanged as instructed.
+
+**Tests: 115/115 passing** (10 pre-existing unchanged + 1 new suite, `test-pincode-status.ts`, 11/11,
+covering every required case plus source-level regression guards confirming the old buggy patterns are
+gone from both renderers and the route). `npx tsc --noEmit` clean, `eslint` clean on every new/changed
+file (pre-existing lint issues in the two large touched files fall outside this diff's line ranges,
+confirmed via `git diff` hunk comparison -- not introduced here). `npm run build` clean.
+
+**Visual verification: not performed, reported honestly rather than faked.** This worktree has no
+Supabase credentials (`.env.local`) configured, and none were pulled from production for this purpose. A
+real authenticated `npm run dev` session with seeded `pincode_checks` rows covering all 6 states was not
+achievable here. Verification instead relies on a clean type-check/build plus unit tests asserting the
+exact label/tone-class string rendered for every state -- the same values the JSX now renders directly.
+This is a known, disclosed gap, not a claimed pass.
+
+**Opened as a PR from `fix/pincode-checker-truth-correctness`. Not merged, not deployed.**

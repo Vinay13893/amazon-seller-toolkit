@@ -3043,3 +3043,76 @@ every claim in `PINCODE_CHECKER_PRODUCT_AUDIT.md`.
 
 **Next step (needs the founder):** review the audit and the docs-only PR; decide which P0/P1/P2 items to
 approve for implementation. No fix has been made or proposed as code in this round — audit only.
+
+### §20 update (2026-07-17, later) — PR #46 merged; both P0 bugs fixed, opened as a PR
+
+**PR #46 (the audit above) merged** to `master` as `1a4188e` (standard merge commit). Approved next step:
+implement only the 2 confirmed P0 correctness bugs; P1/P2 remain explicitly deferred.
+
+**New clean worktree:** `C:\Vinay\amazon-seller-toolkit-pincode-p0-fix`, branch
+`fix/pincode-checker-truth-correctness`, created fresh from latest `origin/master` (`1a4188e`) — the audit
+branch was not reused, the dirty `intern/asins-page-work` checkout was not touched.
+
+**P0-1 fixed — availability null-masking.** New shared, pure helper `src/lib/pincode-status.ts`:
+`classifyPincodeAvailability(available, deliveryPromise)` returns one of 4 states —
+`available` / `unavailable` / `failed` / `not_confirmed` — never collapsing `null` into `unavailable`.
+`failed` vs `not_confirmed` is distinguished by the existing `"Check failed:"` marker text
+`insertFailedCheck()` already writes on a thrown-exception failure (the only structured-enough signal the
+current schema offers without a migration — both a hard failure and an uncertain-but-not-thrown worker
+response store `available: null`). `getPincodeAvailabilityDisplay()` wraps this with the seller-facing
+label/tone (`Available`/`Unavailable`/`Check failed`/`Not confirmed`). Applied to all 3 render sites the
+audit identified:
+- ASIN-detail widget's Latest Check summary (`asins/[asin]/page.tsx`)
+- ASIN-detail widget's Recent Checks history table (same file) — the check/X icon column now shows a
+  neutral `HelpCircle` icon for `failed`/`not_confirmed` instead of forcing green-check-or-red-X
+- Dashboard Recent Activity (`dashboard/page.tsx`) — its `pincode_checks` query was extended to also select
+  `delivery_promise` (previously omitted), so the same 4-state classifier can be used there with full
+  fidelity, not a degraded 3-state version
+
+**P0-2 fixed — FBA/FBM hardcode.** `api/asins/[asin]/pincode/route.ts`: the worker-routed branch now writes
+`amazon_fulfilled: null` instead of a hardcoded `false` — confirmed via `PincodeResponse`
+(`checker-worker-client.ts`) that the worker path has **no fulfillment signal at all**, so `null` is the
+only honest value, not a guess. The downstream `fulfillmentType` derivation changed from a truthy check to
+an explicit three-way `=== true ? 'FBA' : === false ? 'FBM' : null`. The dev-only local Python path
+(`checkPincode()`/`amazon-pincode-adapter.ts`) genuinely does return a real `amazon_fulfilled: boolean`
+signal and was left untouched — the bug was specific to the worker path. New
+`getFulfillmentDisplay()` helper renders `fulfillment_type = null` as `"Not confirmed"` instead of the
+previous `'—'` (which was ambiguous — could have meant "confirmed FBM" to a careless reader) or a bare
+falsy-guessed `'FBM'`.
+
+**No migration.** `pincode_checks.fulfillment_type` (TEXT) and `.available` (BOOLEAN) are both already
+nullable with no CHECK constraint restricting values (confirmed via `supabase/migrations/001_initial_schema.sql`
+and a repo-wide grep finding no later migration touches either column) — `null` was always a valid value
+for both, just never correctly rendered as "not confirmed" until now.
+
+**Explicitly not touched, per instruction:** `pincode_availability_results` (the bulk checker's table);
+the dead `/dashboard/pincode` legacy page (not revived); `PINCODE_ALERTS_PAUSED` (still `true`, alerts not
+re-enabled); billing/quota code; queue/worker runtime infrastructure, cadence, or Amazon auth/tokens; any
+`review-requests` file (confirmed via diff scope — exactly 5 files changed, all pincode-specific).
+Buy Box "Detected" wording left unchanged, as instructed (not a direct correctness regression on its own).
+
+**Tests: 115/115 passing** across all 11 suites (10 pre-existing unchanged + 1 new,
+`test-pincode-status.ts`, 11/11, covering all 13 required cases: confirmed available/unavailable, unknown
+vs failed distinction, missing availability never renders unavailable, confirmed FBA/FBM, missing
+fulfillment never renders FBM, a source-level regression guard confirming the route no longer contains the
+old hardcoded-false pattern, a source-level guard confirming both renderers import the shared helper and
+no longer contain the old raw-truthy-check patterns, and totality checks). `npx tsc --noEmit` clean,
+`eslint` clean on every new/changed file (pre-existing lint issues found elsewhere in the two large touched
+files are outside this diff's hunks, confirmed via `git diff` line-range comparison — not introduced by
+this change). `npm run build` clean.
+
+**Visual verification: not performed, honestly reported rather than fabricated.** This worktree has no
+`.env.local` / Supabase credentials configured, and none were pulled from production for this purpose
+(consistent with this project's standing discipline against unnecessary secret handling) — a real
+`npm run dev` session with authenticated, seeded `pincode_checks` rows covering all 6 states was not
+achievable in this environment. Verification instead relies on: a clean type-check and build (no
+render-breaking errors), and unit tests that assert the exact label/tone-class string produced for every
+input state — the same values the JSX now renders directly, with the specific old buggy patterns confirmed
+absent via source-level regression-guard tests. Live browser visual verification remains a gap; the
+founder or a session with real credentials can close it before/at merge time.
+
+**Opened as a PR from `fix/pincode-checker-truth-correctness`, not merged, not deployed.**
+
+**Next step (needs the founder):** review the PR; ideally close the visual-verification gap (real
+`npm run dev` + login) before merging, given this is user-facing rendering logic. P1/P2 items from the
+audit remain deferred, not part of this PR.

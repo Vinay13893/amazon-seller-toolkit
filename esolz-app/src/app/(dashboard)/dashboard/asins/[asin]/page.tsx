@@ -44,6 +44,7 @@ interface AsinAlert {
 }
 import { formatPrice, timeAgo } from '@/lib/format'
 import { sanitizeCheckerError } from '@/lib/checker-errors'
+import { getPincodeAvailabilityDisplay, getFulfillmentDisplay } from '@/lib/pincode-status'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { getWorkspaceId, getAsinDetail, type AsinDetailRow } from '@/lib/supabase/asins'
@@ -71,6 +72,7 @@ import {
   Info,
   Check,
   X,
+  HelpCircle,
   Users,
   Loader2,
   RefreshCw,
@@ -744,6 +746,13 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
 
   const availLabel = availLabelFrom(product.availability_score)
 
+  const latestPincodeAvailability = latestCheck
+    ? getPincodeAvailabilityDisplay(latestCheck.available, latestCheck.delivery_promise)
+    : null
+  const latestPincodeFulfillment = latestCheck
+    ? getFulfillmentDisplay(latestCheck.fulfillment_type)
+    : null
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-6">
@@ -1142,8 +1151,8 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Availability</p>
-                <p className={cn('text-sm font-medium', latestCheck.available ? 'text-green-400' : 'text-red-400')}>
-                  {latestCheck.available ? '✓ Available' : '✗ Not Available'}
+                <p className={cn('text-sm font-medium', latestPincodeAvailability!.toneClass)}>
+                  {latestPincodeAvailability!.label}
                 </p>
               </div>
               <div className="col-span-2 sm:col-span-1">
@@ -1157,7 +1166,7 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Fulfillment</p>
-                <p className="text-sm font-medium text-foreground">{latestCheck.fulfillment_type || '—'}</p>
+                <p className="text-sm font-medium text-foreground">{latestPincodeFulfillment!.label}</p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Seller</p>
@@ -1185,17 +1194,24 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
                   </tr>
                 </thead>
                 <tbody>
-                  {pincodeHistory.map((check, i) => (
+                  {pincodeHistory.map((check, i) => {
+                    const availDisplay = getPincodeAvailabilityDisplay(check.available, check.delivery_promise)
+                    const fulfillDisplay = getFulfillmentDisplay(check.fulfillment_type)
+                    return (
                     <tr key={check.id || i} className="border-b border-border/50 last:border-0">
                       <td className="py-3 font-mono text-xs text-foreground">{check.pincode}</td>
                       <td className="py-3 text-center">
-                        {check.available ? (
+                        {availDisplay.state === 'available' ? (
                           <span className="inline-flex items-center gap-1 text-xs text-green-400 font-medium">
                             <Check className="size-3" />
                           </span>
-                        ) : (
+                        ) : availDisplay.state === 'unavailable' ? (
                           <span className="inline-flex items-center gap-1 text-xs text-red-400 font-medium">
                             <X className="size-3" />
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground font-medium" title={availDisplay.label}>
+                            <HelpCircle className="size-3" />
                           </span>
                         )}
                       </td>
@@ -1208,13 +1224,14 @@ export default function AsinDetailPage({ params }: { params: Promise<{ asin: str
                         }
                       </td>
                       <td className="py-3 text-center text-xs text-muted-foreground hidden md:table-cell">
-                        {check.fulfillment_type || '—'}
+                        {fulfillDisplay.label}
                       </td>
                       <td className="py-3 text-right text-xs text-muted-foreground">
                         {timeAgo(check.checked_at)}
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
