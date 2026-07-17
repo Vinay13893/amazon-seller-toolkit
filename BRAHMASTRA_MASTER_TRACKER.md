@@ -1997,6 +1997,106 @@ promote dpl_13wA24MP76CUdxwEj85C5AMKjx8A` from an authenticated machine, or the 
 Production" action). Once production is confirmed on `69afbbc` or newer, Steps 2–4 can proceed exactly
 as scoped — still dry-run only, still no live sending.
 
+### §18 update (2026-07-17) — Production verified live on `8ef0ecd`; first natural cron run observed, timed out mid-batch, one stuck row found
+
+**Production promotion confirmed done (by the founder, outside this session).** `get_project`/
+`get_deployment` (Vercel MCP) confirm `esolz-app.vercel.app` now serves `dpl_4u3RJr6YvrCW1V3iQjo8VTGyrRpM`,
+commit `8ef0ecd80673357f8a38238d6f4857f9c6ed70ce` (`target: "production"`, `readyState: READY`). PR #43
+(`8ef0ecd`, one commit past the `69afbbc` merge) is also live.
+
+**Steps 2–4 (env-safety, route protection, code-level send-gate verification) completed from a new clean
+worktree** (`C:\Vinay\amazon-seller-toolkit-review-verification`, branch `verify/review-automation-local`,
+tracking `origin/master`; the dirty `intern/asins-page-work` checkout was never touched). Findings:
+- Code-verified: live POST requires both `REVIEW_REQUESTS_ENABLED=true` and `REVIEW_REQUESTS_DRY_RUN=false`
+  (`daily-run.ts`'s `liveSendActive` gate); unset/false defaults cannot send; the send function
+  (`createProductReviewAndSellerFeedbackSolicitation`) is unreachable unless both gates pass; every
+  eligibility decision comes from a fresh GET, never cached; a missing `productReviewAndSellerFeedback`
+  action or a terminal/already-sent row cannot reach the send path; `claimForSendAttempt` is a guarded
+  atomic claim.
+- `vercel env ls production` (names only, no values pulled): **none of the 6 `REVIEW_REQUESTS_*` vars are
+  set in production** — every one runs on its safe committed default. `CRON_SECRET`,
+  `BACKGROUND_WORKER_SECRET`, `APP_BASE_URL` all confirmed present.
+- Route protection confirmed live: unauthenticated `GET /api/cron/review-requests/daily-run` → 401,
+  unauthenticated `POST /api/review-requests/jobs/run` → 401, `GET` on that same route → 405.
+
+**Manual supervised invocation attempted, then deliberately abandoned in favor of the natural cron.**
+Pulling `CRON_SECRET` to fire one invocation manually was blocked by the local Claude Code auto-mode
+permission classifier (flagged as secret-inspection) partway through diagnosing an extraction bug — no
+secret value was ever printed or persisted, and the temp env file was deleted both times it was pulled.
+Rather than change any permission rule (explicitly forbidden), the founder chose to wait for Vercel's own
+`0 3 * * *` cron to fire naturally and verify that instead.
+
+**A one-time scheduled check was created to verify the natural run automatically; it failed to run at
+all** — the scheduled session (`review-requests-natural-cron-verify`) started at 2026-07-17T05:14:14Z (over
+2h after its target time, consistent with "app was closed, ran on next launch") but crashed immediately
+with `API Error: Unable to connect to API (ENOTFOUND)` before making a single tool call. Not a permission
+block — a network/API connectivity failure. Verification was then performed directly in this session
+instead, using the same read-only method (Vercel runtime logs + read-only Supabase queries), per fallback
+instruction.
+
+**The natural cron DID fire, on schedule, on the correct (`8ef0ecd`) production deployment — but did not
+complete.** Vercel runtime logs show, at `2026-07-17T03:01:06Z` on `dpl_4u3RJr6YvrCW1V3iQjo8VTGyrRpM`:
+`POST /api/review-requests/jobs/run` → **504**, `Vercel Runtime Timeout Error: Task timed out after 280
+seconds`; `GET /api/cron/review-requests/daily-run` → **502**, body
+`{"ok":false,"reason":"This operation was aborted"}` (the cron route's own internal-call abort, exactly the
+behavior documented in that route's code comment for this failure mode). **Discrepancy honestly noted, not
+resolved:** Supabase evidence (below) shows real write activity continuing through `03:05:46–03:05:47Z`,
+about 4.5 minutes after the logged timeout timestamp — most likely Vercel's error-aggregation timestamp
+lagging the true kill moment, but not confirmed with certainty; the DB timestamps are treated as
+authoritative since they are first-party and directly queried.
+
+**Read-only Supabase diff against the pre-run baseline** (`review_solicitation_orders`, workspace
+`55a321c9-…`, marketplace `A21TJRUUN4KGV`; baseline: 422 rows, 0 sent, 402 `pending`, 20
+`not_eligible_retryable`, last activity `2026-07-12 14:44:38Z`, from the earlier manual 3-day sample —
+this was genuinely the first natural run of this code in production):
+- **463 new orders discovered and inserted** (Phase 1, rolling 3-day window fetch), **20 existing orders
+  re-touched** (metadata refresh only, no solicitation fields changed — matches `upsertDiscoveredOrder`'s
+  guarantee).
+- **21 candidates claimed for an eligibility check; 20 completed** (`18 → not_eligible_retryable`, `2 →
+  eligible_dry_run` — 2 genuinely eligible orders, correctly recorded dry-run-only, never sent). **1 row is
+  now stuck in `checking`** — claimed but never finalized before the function was killed. This is a real,
+  new finding: `claimForEligibilityCheck` has no `claim_expires_at`/TTL or reclaim job (unlike the later
+  send-claim, which does), so this row is permanently excluded from `findDueCandidates()` (which excludes
+  `checking` by design) until someone manually resets it or a reclaim mechanism is added. **Not fixed here**
+  — would be a DB write, out of scope for a read-only verification task.
+- **0 duplicate `(workspace_id, marketplace_id, amazon_order_id)` groups** (also structurally guaranteed by
+  the unique constraint, empirically confirmed).
+- **0 rows with `solicitation_sent = true`** (unchanged from baseline) — **0 POST attempts, 0 review
+  requests sent**, matching the code+env analysis above.
+- **0 Amazon error codes** among the 20 finalized checks (`last_error_code` null on all 20) — all 20 were
+  clean, successful Solicitations GET calls.
+- **PII allowlist check: PASS.** `last_eligibility_response` on all 20 touched rows contains exactly the 5
+  approved keys (`actionNames`, `checkedAt`, `sanitizedReason`, `amazonStatusCode`, `amazonErrorCode`) —
+  keys only inspected, no row content printed anywhere in this verification.
+- Re-confirmed post-run: `REVIEW_REQUESTS_*` vars still absent from production — live sending remained
+  structurally impossible throughout.
+
+**Root cause of the timeout (assessment, not yet fixed):** this was a cold-start backlog spike, not a
+steady-state failure — the entire pre-existing 402-row `pending` pool plus 463 newly-discovered orders all
+became due simultaneously because no natural run had ever executed this code before. Combined with the
+default `REVIEW_REQUESTS_BATCH_SIZE=300`, the sequential per-order Phase 1 upsert (previously measured at
+~3 minutes for a 3-day/~420-order window), and the 1100ms-rate-limited sequential Phase 2 GET loop, the
+full workflow cannot complete inside Vercel's 280s serverless ceiling on a backlogged first run.
+
+**Two real findings need a founder decision before this cron can be relied on unattended:**
+1. The 1 stuck `checking` row needs either a one-off manual fix or, better, a code-level stale-claim
+   reclaim (mirroring `claimForSendAttempt`'s `claim_expires_at` pattern, or the ASIN checker's
+   `reclaimStuckJob()`/`cleanupStuckJobs()`). Neither was attempted here (would require a DB write or a code
+   change, both out of scope for this read-only task).
+2. The backlog has not been cleared — **845 rows remain `pending`** after this run. The same timeout risk
+   is likely to recur on the next natural cycle (`2026-07-18T03:00Z`) unless batch size, phasing
+   (splitting order-fetch from eligibility-check into separate invocations), or the timeout budget is
+   revisited. Not changed here — needs explicit approval, same as every other change to this workstream.
+
+**Confirmed NOT done this session:** no `CRON_SECRET`/`BACKGROUND_WORKER_SECRET` value inspected, printed,
+or logged; no Bash/Claude Code permission rule changed; no environment variable changed; no route invoked
+manually; no live sending enabled; no 30-day catch-up run; no database row written, updated, or deleted;
+the dirty `intern/asins-page-work` checkout was never touched.
+
+**Next step (needs the founder):** decide how to handle the stuck `checking` row and the timeout/backlog
+risk before the next natural cycle. This update (tracker + `WORK_DONE_SUMMARY.md`) is being opened as a
+docs-only PR from the clean worktree, not merged without approval.
+
 ---
 
 ## 19. ASIN Page Live-Data Diagnosis (2026-07-12)

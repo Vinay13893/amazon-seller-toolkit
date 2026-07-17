@@ -499,3 +499,61 @@ system was mutated in any way — this session's only production-adjacent action
 the "Promote to Production" action on that deployment in the Vercel dashboard. Once production is
 confirmed serving `69afbbc` (or newer), Steps 2–4 (env-safety check, route checks, one supervised
 dry-run invocation) can proceed exactly as originally scoped — still dry-run only, still no live sending.
+
+## Review Request Automation — Production Verified Live, First Natural Cron Run Observed (2026-07-17)
+
+_Production promotion to `8ef0ecd` confirmed done (by the founder, outside this session). Steps 2–4
+(env-safety, route protection, code-level send-gate re-verification) completed clean from a new worktree
+(`C:\Vinay\amazon-seller-toolkit-review-verification`, branch `verify/review-automation-local`). A
+supervised manual invocation was attempted but abandoned after the local permission classifier blocked a
+`CRON_SECRET`-extraction debugging step (no secret ever printed/persisted) — the founder chose to wait for
+the natural `0 3 * * *` Vercel cron instead of granting a broader permission. Full detail in
+`BRAHMASTRA_MASTER_TRACKER.md` §18._
+
+**Code + env safety re-confirmed (read-only, no values pulled):** all 8 send-gate safety claims verified
+directly against `daily-run.ts`/`policy.ts`/`repository.ts`. `vercel env ls production` (names only) shows
+**none of the 6 `REVIEW_REQUESTS_*` vars are set in production** — every one runs on its safe default
+(enabled=false, dry-run=true). `CRON_SECRET`/`BACKGROUND_WORKER_SECRET`/`APP_BASE_URL` all present. Route
+protection confirmed: unauthenticated cron `GET` → 401, unauthenticated worker `POST` → 401, `GET` on the
+worker route → 405.
+
+**A one-time scheduled check to auto-verify the natural cron run failed to execute** — it started 2h+ late
+(app was closed at the target time) and crashed immediately with a network error (`ENOTFOUND`) before
+making any tool call. Verification was performed manually instead, same read-only method.
+
+**The natural cron fired on schedule on production (`dpl_4u3RJr6YvrCW1V3iQjo8VTGyrRpM`, `8ef0ecd`) but hit
+Vercel's 280s hard function timeout before completing:** `POST /api/review-requests/jobs/run` → 504
+(`Task timed out after 280 seconds`), `GET /api/cron/review-requests/daily-run` → 502
+(`"reason":"This operation was aborted"`), both logged at `2026-07-17T03:01:06Z`. Supabase evidence shows
+real write activity continuing to `03:05:47Z` — a ~4.5 min discrepancy versus the logged timeout timestamp,
+noted honestly rather than explained away (most likely log-aggregation lag, not confirmed).
+
+**Read-only DB diff against the pre-run baseline** (422 rows / 0 sent / 402 pending / 20
+not_eligible_retryable / last activity 2026-07-12):
+- Orders fetched/inserted: **463 new**. Orders updated (metadata refresh only): **20**.
+- Candidates claimed: **21**. Completed: **20** (18 `not_eligible_retryable`, 2 `eligible_dry_run` — 2
+  genuinely eligible orders, correctly dry-run-only, never sent). **1 row stuck in `checking`** — claimed
+  but never finalized before the kill. New finding: `claimForEligibilityCheck` has no TTL/reclaim
+  mechanism (unlike the send-claim's `claim_expires_at`), so this row is now excluded from all future
+  due-candidate selection until manually fixed or a reclaim job is added. Not fixed here (would require a
+  DB write, out of scope for read-only verification).
+- Duplicates: **0**. Sent: **0**. POST attempts: **0**. Amazon errors: **0** (all 20 finalized checks were
+  clean successful GETs). PII allowlist check on all 20 touched rows: **PASS** (exactly the 5 approved
+  keys, no PII-shaped keys, no row content printed).
+
+**Root cause (assessment):** a cold-start backlog spike — this was genuinely the first natural run, so the
+full pre-existing 402-row pending pool plus 463 newly-discovered orders all became due at once. Combined
+with `REVIEW_REQUESTS_BATCH_SIZE=300` default, sequential per-order Phase 1 upserts, and the
+1100ms-rate-limited sequential Phase 2 GET loop, the workflow structurally cannot finish inside Vercel's
+280s ceiling on a backlogged first run.
+
+**Two findings need a founder decision before relying on this cron unattended:** (1) the 1 stuck
+`checking` row — needs a manual fix or a code-level reclaim mechanism; (2) 845 rows remain `pending` —
+the same timeout is likely to recur on the next natural cycle (`2026-07-18T03:00Z`) unless batch
+size/phasing/timeout handling changes. Neither addressed in this session.
+
+**Confirmed NOT done:** no secret value inspected/printed, no permission rule changed, no env var changed,
+no route invoked manually, no live sending enabled, no 30-day catch-up run, no database row
+written/updated/deleted, the dirty `intern/asins-page-work` checkout untouched.
+
+**Tests run:** none (read-only verification task, no code changed).
