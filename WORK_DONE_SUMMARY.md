@@ -767,3 +767,31 @@ state, and this pass changed no code.
 **Docs-only verification PR opened from `docs/pincode-p0-production-verification`, off latest master.
 PR #48 and production are otherwise unchanged. Not merged. Pincode Checker P0 workstream closed for now**
 -- P1/P2 items remain deferred.
+
+## Keywords Tab — 1 P0 Correctness Bug Fixed (2026-07-17)
+
+_PR #50 (product audit) merged (`609311a`). Approved scope: fix only the one confirmed P0; P1/P2 explicitly
+deferred. New worktree `C:\Vinay\amazon-seller-toolkit-keywords-p0-fix`, branch
+`fix/keywords-checker-unavailable-truth`, fresh off latest master -- the audit branch was not reused. Full
+detail in `BRAHMASTRA_MASTER_TRACKER.md` §21._
+
+**P0 fixed:** the ASIN-detail page's `KeywordsTable` "Found" column could render a failed/unattempted rank
+check (`scrape_status = 'checker_unavailable'`) as "Not found" -- a factual claim the system never actually
+confirmed. New pure helper `src/lib/keyword-found-status.ts` (`classifyKeywordFound()`) introduces 4
+seller-facing states -- **Found**, **Not found**, **Check unavailable**, **Not confirmed** -- mirroring the
+state meaning the main Keywords tab's `FoundStatusBadge` already used correctly (left untouched, it had no
+bug). "Not confirmed" intentionally reuses the exact term established by the Pincode P0 fix, for
+cross-feature consistency.
+
+**Scope discipline:** the adjacent Status column (already correct) untouched; the main Keywords tab
+untouched; no rank-checker, worker, Ads sync, Pincode, or review-requests file touched (test-verified); no
+migration -- the underlying columns were already the correct shape.
+
+**Tests: 126/126 passing** (11 pre-existing unchanged + 1 new suite, `test-keyword-found-status.ts`,
+11/11 -- covering every required state, a totality check, null-never-rendered-as-zero regression guards on
+both the ASIN-detail widget and the main tab, organic/sponsored-never-combined confirmation, and a scope
+guard confirming no Ads/Pincode/review-requests/rank-checker file was touched). `npx tsc --noEmit` clean,
+`eslint` clean on every new/changed file (pre-existing issues elsewhere in the touched file confirmed via
+`git diff` hunk comparison to be outside this diff). `npm run build` clean.
+
+**Opened as a PR from `fix/keywords-checker-unavailable-truth`. Not merged, not deployed.**

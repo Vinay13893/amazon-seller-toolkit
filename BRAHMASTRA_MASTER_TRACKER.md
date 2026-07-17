@@ -3236,3 +3236,46 @@ P1/P2 findings (sec20).
 **Next step (needs the founder):** review the audit and the docs-only PR; decide whether to approve the
 single P0 fix (same small, low-risk shape as the Pincode P0 fixes) and which P1/P2 items, if any, to
 schedule separately. No fix has been made or proposed as code in this round — audit only.
+
+### §21 update (2026-07-17, later) — PR #50 merged; the one confirmed P0 fixed, opened as a PR
+
+**PR #50 (the audit above) merged** to `master` as `609311a` (standard merge commit). Approved scope:
+implement only the one confirmed P0; nothing else from the audit.
+
+**New clean worktree:** `C:\Vinay\amazon-seller-toolkit-keywords-p0-fix`, branch
+`fix/keywords-checker-unavailable-truth`, created fresh from latest `origin/master` (`609311a`) — the
+audit branch was not reused.
+
+**P0 fixed.** New pure, independently-testable helper `src/lib/keyword-found-status.ts`:
+`classifyKeywordFound({scrape_status, found})` returns one of 4 seller-facing states —
+`found` / `not_found` / `check_unavailable` / `not_confirmed` — mirroring the *state meaning* the main
+Keywords tab's `FoundStatusBadge` already used correctly (that component was left untouched — it had no
+bug). Applied to the single confirmed defect site: `asins/[asin]/page.tsx`'s `KeywordsTable` "Found"
+column (previously fell through to `kw.found ? Found : Not found` whenever `scrape_status` was
+`checker_unavailable`, rendering a check the system never completed as the factual claim "Not found").
+Seller-facing labels: **Found**, **Not found**, **Check unavailable**, **Not confirmed** — the last two
+intentionally reuse "Not confirmed" terminology already established by the Pincode P0 fix (sec20), for
+cross-feature consistency.
+
+**Scope discipline confirmed:** the adjacent "Status" column on the same row (which already correctly
+showed "Checker not connected" for `checker_unavailable`/`failed`) was left untouched — fixing it wasn't
+broken. The main Keywords tab (`keywords/page.tsx`) was not modified at all. No rank-checker, worker,
+Ads sync, Pincode, or review-requests file was touched (test-verified, see below). No migration —
+`keyword_rank_snapshots.scrape_status`/`.found` were already the correct nullable/boolean shape.
+
+**Tests: 126/126 passing** across all 12 suites (11 pre-existing unchanged + 1 new,
+`test-keyword-found-status.ts`, 11/11, covering: confirmed found/not-found, `checker_unavailable` and
+`failed` both correctly render "Check unavailable" and never the false-negative "Not found", never-checked
+renders "Not confirmed", totality over every status×found combination, a source-level regression guard
+confirming rank is never rendered via a `|| 0` truthy-coercion pattern on either the ASIN-detail widget or
+the main tab, confirmation organic/sponsored rank are never combined on the main tab, confirmation the
+ASIN-detail widget has no sponsored-rank field to combine in the first place, and a scope guard confirming
+no Ads/Pincode/review-requests/rank-checker file was touched). `npx tsc --noEmit` clean, `eslint` clean on
+every new/changed file (pre-existing issues elsewhere in the large touched file confirmed via `git diff`
+hunk comparison to be outside this diff, not introduced). `npm run build` clean.
+
+**Opened as a PR from `fix/keywords-checker-unavailable-truth`, not merged, not deployed.**
+
+**Next step (needs the founder):** review the PR; once merged, a production deploy + verification would
+follow the same pattern as the Pincode P0 work (fresh `vercel deploy --prod` from the repo root, then a
+production visual/data check), pending approval at each step. P1/P2 items from the audit remain deferred.

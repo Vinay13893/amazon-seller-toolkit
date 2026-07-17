@@ -45,6 +45,7 @@ interface AsinAlert {
 import { formatPrice, timeAgo } from '@/lib/format'
 import { sanitizeCheckerError } from '@/lib/checker-errors'
 import { getPincodeAvailabilityDisplay, getFulfillmentDisplay } from '@/lib/pincode-status'
+import { classifyKeywordFound, KEYWORD_FOUND_LABEL, KEYWORD_FOUND_TONE } from '@/lib/keyword-found-status'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { getWorkspaceId, getAsinDetail, type AsinDetailRow } from '@/lib/supabase/asins'
@@ -218,7 +219,9 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
           </tr>
         </thead>
         <tbody>
-          {keywords.map((kw, i) => (
+          {keywords.map((kw, i) => {
+            const foundState = classifyKeywordFound(kw)
+            return (
             <tr key={i} className="border-b border-border/50 last:border-0">
               <td className="py-3 text-foreground font-medium">
                 <div>{kw.keyword}</div>
@@ -243,15 +246,9 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
                 {kw.movement !== null ? `${kw.movement > 0 ? '+' : ''}${kw.movement}` : '—'}
               </td>
               <td className="py-3 text-center">
-                {kw.scrape_status === 'never_checked' ? (
-                  <span className="text-xs text-muted-foreground">Never checked</span>
-                ) : kw.scrape_status === 'failed' ? (
-                  <span className="text-xs text-red-400">Failed</span>
-                ) : kw.found ? (
-                  <span className="text-xs text-green-400">Found</span>
-                ) : (
-                  <span className="text-xs text-yellow-400">Not found</span>
-                )}
+                <span className={cn('text-xs', KEYWORD_FOUND_TONE[foundState])}>
+                  {KEYWORD_FOUND_LABEL[foundState]}
+                </span>
               </td>
               <td className="py-3 text-right text-muted-foreground text-xs hidden md:table-cell">
                 {kw.search_volume ? kw.search_volume.toLocaleString('en-IN') : '—'}
@@ -276,7 +273,8 @@ function KeywordsTable({ keywords }: { keywords: KeywordRank[] }) {
                 )}
               </td>
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>
