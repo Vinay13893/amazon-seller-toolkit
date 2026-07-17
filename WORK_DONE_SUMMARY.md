@@ -688,3 +688,44 @@ Gate/Amazon auth/tokens, the dirty checkout, the review-verification worktree) u
 used.
 
 **PR #45 description updated. Still not merged, not deployed.**
+
+## Review Request Automation — PR #45 Merged, Deployed, First Natural Cycle: GREEN (2026-07-17, final)
+
+_PR #45 approved and merged (`43c457e`). Fresh `vercel deploy --prod` run from the repo root (not
+`esolz-app/` — see the repo-root-vs-subdirectory lesson from PR #39). First natural `process-eligibility`
+cron cycle since deploy classified **GREEN**. Per the approved protocol: documented and closed, no live
+sending, no further waiting for another cycle. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §18._
+
+**Deploy verified:** commit-exact match via Vercel MCP, all 4 new routes live and protected (401, not
+404), old combined routes confirmed 404, cron schedules exactly as designed (`0 3 * * *` /
+`0 */4 * * *`), production env confirmed safe (no `REVIEW_REQUESTS_*` var set anywhere, every code default
+applies).
+
+**First natural cycle (due 08:00Z, observed 08:08Z) — GREEN:**
+- `GET`/`POST` both returned 200 (not 502/504 — the exact failure this split was built to fix did not
+  recur). Zero runtime errors in the prior 24h for either route.
+- Route report: `staleClaimsReclaimed:1, candidatesSelected:120, candidatesCompleted:100,
+  selectedCandidatesRemaining:20, dueBacklogRemaining:766, stoppedDueToRuntimeBudget:true,
+  eligibleDryRun:19, notEligibleRetryable:81, sent:0, failedRetryable:0, failedTerminal:0,
+  amazonErrorsByCode:{}, durationMs:220352, liveSendActive:false`.
+- **The previously-stuck `checking` row was recovered** — DB `checking_rows` went 1→0, matching
+  `staleClaimsReclaimed:1` exactly. First real-world proof the reclaim mechanism works.
+- **Graceful stop confirmed working as designed**: `durationMs:220352` (~220.4s) just over the internal
+  220s budget, comfortably under Vercel's 280s ceiling — self-stopped cleanly, no platform kill.
+- Read-only DB checks all pass: 0 duplicate groups; `solicitation_sent=true` count unchanged at 0; the 100
+  rows touched this cycle carry exactly the 5 allowlisted `last_eligibility_response` keys, each appearing
+  exactly 100 times (cross-checks the log's `candidatesCompleted:100` independently); `pending` count
+  845→746 in one run — a genuine backlog decline, not diluted by same-day new ingestion (none ran today
+  after deploy).
+
+**This closes the review-automation reliability workstream for now.** Ingestion, bounded eligibility
+processing, the graceful runtime-budget stop, stale-claim self-healing, and the dry-run safety gate are all
+confirmed working end-to-end in production. Live sending was NOT enabled and remains a separate, future,
+explicitly-approval-gated decision — closing this workstream does not imply or schedule that.
+
+**Confirmed unaffected:** 0 review requests sent ever; 30-day catch-up still not run; no manual DB
+alteration at any point; Ads/payments/replenishment/ASIN checker/UI/Report Reuse Gate/Amazon auth/tokens
+untouched; dirty `intern/asins-page-work` checkout untouched.
+
+**Tests run:** none this round (verification-only; full 104/104 regression was re-run and confirmed clean
+before the merge in the previous round).
