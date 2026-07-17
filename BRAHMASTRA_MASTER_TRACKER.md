@@ -3163,3 +3163,76 @@ branch). Not merged.
 
 **Pincode Checker P0 workstream closed for now.** P1/P2 items from the audit (sec20 above) remain
 deferred, not scheduled.
+
+---
+
+## 21. Keywords Tab Product Audit (2026-07-17)
+
+**Status: audit only, no implementation yet, needs founder approval before any fix.** Drafted by a
+background research agent, then **independently re-verified in the main session against source before
+being trusted or committed** — 8+ of the highest-stakes claims (the P0 and its full causal chain, the
+organic/sponsored separation, the decorative category dropdown, Ads-search-term isolation, the
+never-shown-as-zero rank pattern, `mock-keywords.ts`'s dead-code status, the real `category` TEXT columns,
+and the absence of any category-taxonomy table) were each re-read directly against source/migrations and
+confirmed accurate. **Zero corrections were needed to the agent's draft.** New worktree
+`C:\Vinay\amazon-seller-toolkit-keywords-audit`, branch `audit/keywords-tab-product-cleanup`, off latest
+master. `review-requests` and `pincode` code untouched, per instructions. Full detail in
+`KEYWORDS_TAB_PRODUCT_AUDIT.md` (665+ lines, sections A-G, every claim tagged CONFIRMED/INFERRED/UNKNOWN).
+
+**Scope:** Full audit of the Keywords tab (`/dashboard/keywords`), its 2 rank-check API routes and 2
+track/research API routes, the ASIN-detail page's Keyword Rank Snapshot widget, the checker-worker
+keyword-rank checker, keyword-related Sync Health and alerts, and the boundary with Brand Analytics Search
+Terms / Amazon Ads search-term data.
+
+**Headline finding:** architecturally sounder than the Pincode audit — the three keyword-tracking surfaces
+share the same two tables (`tracked_keywords`, `keyword_rank_snapshots`) consistently, not fragmented data
+models. Organic and sponsored rank are cleanly separated everywhere (migration 022), no missing-rank-
+shown-as-0 bug exists anywhere checked, no fabricated volume/CPC/difficulty is ever presented as fact, and
+Amazon Ads search-term data never leaks into this page (confirmed siloed in both directions by direct
+grep). The Keyword Research section's Category dropdown is fully decorative (sent to the API, never read
+server-side) and populated with generic demo categories (grocery/health/kitchen/sports) unrelated to
+EasyHOME's actual catalog.
+
+**The one confirmed P0:** the ASIN-detail page's `KeywordsTable` "Found" column
+(`asins/[asin]/page.tsx:245-254`) checks for `never_checked` and `failed` scrape statuses but omits
+`checker_unavailable`, so a failed/unattempted rank check falls through to `kw.found ? Found : Not found`
+and renders the factual claim **"Not found"** — even though the write path
+(`asins/[asin]/keywords/refresh/route.ts`'s `insertFailedSnapshot`) always sets `found: false` on a
+checker-unavailable snapshot, guaranteeing this false render. The adjacent Status column on the same row
+(`:259-264`) correctly checks `checker_unavailable` and shows "Checker not connected" — the correct
+information exists on the row, just not in the column a seller would most naturally read first. Same bug
+class already found and fixed for Pincode/Buy Box, here narrower and partially self-mitigated by the
+neighboring column.
+
+**Counts: P0: 1. P1: 10. P2: 4. Deferred (new paid API/data source required): 3.**
+
+**Category experience vs. the founder's stated direction (view all Amazon categories, multi-select, group
+keywords category-wise, bulk-select, then filter product-wise):** no Amazon category taxonomy source
+exists anywhere in this codebase today (confirmed: no browse-node/category-tree table in any migration).
+"All Amazon categories" would require PA-API BrowseNodes or a paid third-party taxonomy feed — both
+excluded by this tracker's standing "no new paid API for MVP" rule (sec1). A narrower, honest V1 is
+buildable today with real data: group the seller's own tracked products by their existing
+`tracked_asins.category`/`competitor_asins.category` TEXT field, explicitly labeled "Your product
+categories," never "Amazon categories."
+
+**Recommended Keywords V1 (5 conceptually separate areas, per the founder's own instruction not to merge
+sources/meanings into one table):** Keyword Discovery (autocomplete only, honestly labeled, category
+filter removed or rewired to real tracked-category data); My Tracked Keywords (existing core, keep, but
+close the orphan-keyword dead end and stop blending "Average Organic Rank" across dissimilar keywords);
+Organic Rank (existing trend chart/history, add a third "Checker unavailable" label to the Check History
+table); Advertising Search Terms (do not merge into this page — add a clearly-labeled cross-link to the
+existing, separate Brand Analytics Search Terms page instead); Category Opportunities (V1 scoped to "your
+product categories" only, using real data, with true Amazon-wide category browsing explicitly deferred).
+
+**Recommended first implementation scope (smallest safe, not implemented):** fix only the one P0 — add the
+missing `scrape_status === 'checker_unavailable'` branch to `asins/[asin]/page.tsx`'s `KeywordsTable`
+"Found" column, mirroring the exact pattern the main Keywords tab's `FoundStatusBadge` already uses
+correctly. Single file, single render branch, precedented elsewhere in this same codebase. Every P1/P2
+item (dead-code removal, the decorative dropdown, the orphan-keyword workflow decision, the Advertising
+Search Terms cross-link, etc.) is a separate, independently-approvable decision and should not be bundled
+with the P0 fix — matching exactly how the Pincode P0 fix was scoped and shipped separately from its
+P1/P2 findings (sec20).
+
+**Next step (needs the founder):** review the audit and the docs-only PR; decide whether to approve the
+single P0 fix (same small, low-risk shape as the Pincode P0 fixes) and which P1/P2 items, if any, to
+schedule separately. No fix has been made or proposed as code in this round — audit only.
