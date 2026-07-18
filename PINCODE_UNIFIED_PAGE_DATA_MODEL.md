@@ -163,7 +163,14 @@ CREATE TABLE public.pincode_monitored_products (
   image_url_snapshot     text,
   brand_snapshot         text,
 
-  status                text        NOT NULL DEFAULT 'active',  -- 'active' | 'paused' | 'archived' | 'removed'
+  -- Correction 13 (2026-07-18, round 4): the PARENT lifecycle has exactly
+  -- three states -- 'active' | 'archived' | 'removed'. There is no
+  -- parent-level 'paused'. "Paused"/"Failed"/"Partially active" are
+  -- DERIVED UI states computed from the child pincode_tracking_targets'
+  -- own statuses (which DO have 'paused' -- that enum is unchanged, §3) --
+  -- see the dedicated discussion after this table for the full reasoning
+  -- and the tracker-derivation formula.
+  status                text        NOT NULL DEFAULT 'active',  -- 'active' | 'archived' | 'removed'
 
   -- Correction 6 (2026-07-18, round 3): soft user-removal, distinct from
   -- source-driven archival (below) -- see the dedicated discussion after
@@ -183,7 +190,7 @@ CREATE TABLE public.pincode_monitored_products (
   CONSTRAINT pincode_monitored_products_source_chk
     CHECK (product_source IN ('owned', 'other')),
   CONSTRAINT pincode_monitored_products_status_chk
-    CHECK (status IN ('active', 'paused', 'archived', 'removed')),
+    CHECK (status IN ('active', 'archived', 'removed')),
   CONSTRAINT pincode_monitored_products_asin_format_chk
     CHECK (asin ~ '^[A-Z0-9]{10}$'),
   -- Correction 6: removed_at/removal_reason are set together with status
@@ -230,6 +237,43 @@ CREATE TRIGGER trg_pincode_monitored_products_updated_at
   BEFORE UPDATE ON public.pincode_monitored_products
   FOR EACH ROW EXECUTE FUNCTION public.fn_set_updated_at();
 ```
+
+**Correction 13 (2026-07-18, round 4) — the parent's `status` is a lifecycle field, not a display field; do
+not overload it with "paused."** Round 3's enum (`active`/`paused`/`archived`/`removed`) let a parent's own
+`status` mean two different things depending on context: sometimes "the product's relationship to its
+source" (owned/archived/removed) and sometimes "did the seller pause this product's checks." That ambiguity
+is exactly what caused round 3's own archival-cascade bug (§5) — code that reasoned about "the parent's
+status" had to guess which meaning applied. **Locked: the parent lifecycle contains exactly three states —
+`active`, `archived`, `removed`.** There is no parent-level `paused`.
+
+- **Product-level "Paused," "Failed," and "Partially active" are *derived* UI states**, computed by reading
+  the child `pincode_tracking_targets` rows under an `active`-lifecycle parent (target `status` keeps its own
+  unchanged four-value enum — `active`/`paused`/`failed`/`checking`, §3):
+  - **Paused** (product-level): parent is `active`, and every non-`checking` child target is `paused`.
+  - **Failed** (product-level): parent is `active`, and every "should be running" child target (i.e. every
+    target that isn't itself individually `paused`) is `failed`.
+  - **Partially active** (product-level, a new, honestly-named state — not a synonym for "Active"): parent is
+    `active`, and its child targets are a genuine mix of `active`/`paused`/`failed` — some checks are running,
+    some aren't, and collapsing that into a single "Active" or "Paused" label would misrepresent the actual
+    state to the seller.
+  - **Active** (product-level, unchanged meaning): parent is `active`, and at least one child target is
+    `active` or `checking`, with no `paused`/`failed` targets present (a clean, fully-running product).
+- **"Product-level Pause" is a UI convenience, not a new parent state** — clicking Pause on a product row
+  bulk-pauses its child targets via `set_pincode_tracking_state` (§3a), exactly as if the seller had
+  multi-selected every pincode row individually. The parent's own `status` never changes to reflect this —
+  it stays `'active'` the entire time, because from the *lifecycle* perspective (does this product still have
+  a valid source / has the seller removed it) nothing has changed, only its checks have.
+- **Claim filtering is unaffected by this correction** — `claim_due_pincode_targets` (`IMPLEMENTATION_PLAN.md`
+  §2.8) already filters on `p.status = 'active'` at the parent level and `t.status = 'active'` at the target
+  level independently; removing `'paused'` from the parent enum doesn't change that predicate's meaning, it
+  just removes a value that predicate never needed to check for in the first place (a target-level pause was
+  always sufficient to make a target unclaimable, with or without a parent-level pause concept).
+- **Manual Check Now's status-test matrix is corrected accordingly** (`IMPLEMENTATION_PLAN.md` §2.10) — it
+  already tested parent `status IN ('archived', 'removed')` as the rejection condition, which remains correct
+  and requires no further change; it never had a parent-`'paused'` branch to remove.
+
+`pincode_monitored_products_status_chk` above enforces this directly — a write attempting `status = 'paused'`
+on this table is rejected at the database layer, not just discouraged by convention.
 
 **Correction 6 (2026-07-18, round 3) — `archived` and `removed` are deliberately two different states, not
 one.** The UI's "Remove Tracking" action needs a truthful soft-removal state, and the schema had none — only
@@ -335,7 +379,12 @@ SELECT pg_advisory_xact_lock(hashtextextended(p_workspace_id::text || ':' || p_m
 
 **`enroll_pincode_monitored_products(p_workspace_id uuid, p_marketplace_id text, p_products jsonb, p_quota_limit integer)`**
 — the single atomic bulk-enrollment RPC, `SECURITY DEFINER`, `search_path` pinned, `service_role`-only
-`EXECUTE`:
+`EXECUTE`.
+
+**Round 4 rewrite — follows the one global lock order (`IMPLEMENTATION_PLAN.md` §2.0), re-validates
+workspace/marketplace on every locked row (Correction 3), reactivates a re-added removed product's existing
+targets atomically instead of requiring a second Resume call (Correction 10), and validates its own
+parameters before doing anything else (Correction 14):**
 
 - `p_products` is a JSONB array, one element per product:
   `{ "product_source": "owned"|"other", "amazon_listing_item_id": uuid|null, "tracked_asin_id": uuid|null,
@@ -344,37 +393,85 @@ SELECT pg_advisory_xact_lock(hashtextextended(p_workspace_id::text || ':' || p_m
   before calling this RPC (§6's approved lookup path, `enroll_pincode_monitored_products` itself does not
   call SP-API).
 - **Transaction body:**
-  1. `SELECT pg_advisory_xact_lock(...)` using the deterministic key above — held for the remainder of this
-     transaction, released automatically on commit/rollback.
-  2. For every element of `p_products`: if `product_source = 'owned'`, `SELECT id, marketplace_id FROM
-     amazon_listing_items WHERE id = :amazon_listing_item_id AND workspace_id = :workspace_id FOR SHARE` —
-     if not found, or its `marketplace_id` doesn't match `p_marketplace_id` (the marketplace-consistency
-     check flagged below §2), **reject the entire request**, do not write anything for any product in the
-     batch. This is the same "verified against an actual `amazon_listing_items` row" requirement as round 1,
-     now applied per-element inside a bulk validate-everything-first pass rather than per-transaction.
-  3. For every `(product, pincode)` pair in the batch: `SELECT id, status FROM pincode_monitored_products p
-     JOIN pincode_tracking_targets t ON t.monitored_product_id = p.id WHERE p.workspace_id = :workspace_id
-     AND p.asin = :asin AND t.pincode = :pincode` — determine which pairs are **genuinely new** (no existing
-     target) versus already-active (no-op, not counted against quota) versus existing-but-paused/failed
-     (a resume, not a fresh enrollment — routed to §3a instead, this RPC does not silently resume).
-  4. Count only the genuinely-new pairs → `v_requested_additional`.
-  5. `SELECT count(*) FROM pincode_tracking_targets t JOIN pincode_monitored_products p ON p.id =
+  0. **Correction 14 — parameter validation, before any lock or query:** `p_products` array length must be
+     ≤ a bounded maximum (e.g. 200 products per call — bulk, not unbounded); each element's `pincodes` array
+     must also be bounded (e.g. ≤ 100); `p_quota_limit` must be a positive integer (reject `NULL`, `0`,
+     negative — an environment-variable typo must never silently become "unlimited"); every `pincode` string
+     must match the pincode format, every `asin` the ASIN format (defense-in-depth alongside the target/
+     product table's own CHECK constraints, §1/§2/§3); **duplicate `(asin, pincode)` pairs within the same
+     request are normalized (de-duplicated) before quota calculation** — a caller submitting the same pincode
+     twice for the same product must not be double-counted against quota.
+  1. **Lock order step 1:** `SELECT pg_advisory_xact_lock(...)` using the deterministic key above — held for
+     the remainder of this transaction, released automatically on commit/rollback.
+  2. **Lock order step 2 — lock parent rows first, ordered by `id`:** for every element of `p_products`,
+     resolve or create the parent `pincode_monitored_products` row and lock it: `SELECT * FROM
+     pincode_monitored_products WHERE workspace_id = :workspace_id AND marketplace_id = :marketplace_id AND
+     asin = :asin FOR UPDATE` (existing row) — **all such locks acquired in a single query ordered by `id`**
+     (`... ORDER BY id FOR UPDATE`) to respect the global lock order and avoid a self-deadlock within this
+     same call when the batch touches multiple products. For a product with no existing row, no lock is
+     needed yet (it will be created in step 6).
+  3. **Correction 3 — re-validate, don't just trust the caller's parameters:** for every locked existing
+     parent row, confirm `parent.workspace_id = p_workspace_id AND parent.marketplace_id = p_marketplace_id`
+     — this is already guaranteed by the `WHERE` clause in step 2 (the lookup itself is scoped), stated here
+     explicitly because it is the same discipline every other RPC in this document must follow, not a gap
+     specific to this one.
+  4. If `product_source = 'owned'`: `SELECT id, marketplace_id FROM amazon_listing_items WHERE id =
+     :amazon_listing_item_id AND workspace_id = :workspace_id FOR SHARE` — if not found, or its
+     `marketplace_id` doesn't match `p_marketplace_id` (the marketplace-consistency check, §2), **reject the
+     entire request**, do not write anything for any product in the batch.
+  5. **Lock order step 3 — lock target rows second, ordered by `id`:** for every `(product, pincode)` pair in
+     the batch, `SELECT t.* FROM pincode_tracking_targets t JOIN pincode_monitored_products p ON p.id =
+     t.monitored_product_id WHERE p.workspace_id = :workspace_id AND p.asin = :asin AND t.pincode = :pincode
+     ORDER BY t.id FOR UPDATE` — classify each pair:
+     - **No existing target** → genuinely new, will be `INSERT`ed as `active`.
+     - **Existing target, `status = 'active'` or `'checking'`** → no-op, does not count as additional quota
+       (it's already counted in the current total).
+     - **Existing target, `status IN ('paused', 'failed')`, and the parent was `'removed'` before this call**
+       → **Correction 10: a re-add reactivation**, not a separate Resume call. This request already implies
+       "bring this product back," so its previously-paused/failed targets for the pincodes selected in this
+       same request are reactivated (`status = 'active'`, and for a `'failed'` target,
+       `consecutive_failures = 0`) **inside this same transaction**, counted as additional quota below,
+       exactly like a genuinely-new target.
+     - **Existing target, `status IN ('paused', 'failed')`, parent was already `'active'`** → **not**
+       reactivated by this RPC (a seller re-enrolling into an already-active product's existing paused
+       pincode is a deliberate Resume action, routed to `set_pincode_tracking_state`, §3a — this RPC does not
+       silently resume targets under an already-active parent, only under the specific re-add-a-removed-
+       product case above, where reactivation is the whole point of the request).
+     - Any pincode from `p_products` **not** present among the batch's existing targets, for a product that
+       already has *other* historical targets not selected in this request, is left untouched — "unselected
+       historical targets remain paused" (Correction 10's explicit requirement).
+  6. Count genuinely-new targets **plus** re-add reactivations from step 5 → `v_requested_additional`.
+  7. `SELECT count(*) FROM pincode_tracking_targets t JOIN pincode_monitored_products p ON p.id =
      t.monitored_product_id WHERE p.workspace_id = :workspace_id AND p.marketplace_id = :marketplace_id AND
-     t.status IN ('active', 'checking')` → `v_current_active` (see §2b for why `'archived'`/`'removed'` are
-     not, and never were, valid values of `t.status` — this counts the **target** table only, whose status
-     enum is `active`/`paused`/`failed`/`checking`; a target's *product* being archived/removed is a
-     separate, parent-level fact, not part of this count's own WHERE clause).
-  6. If `v_current_active + v_requested_additional > p_quota_limit`, **raise/return** the locked quota error
-     (§2b) — no `INSERT`/`UPDATE` for *any* product or pincode in the batch, even the ones that individually
-     would have fit. Never create a subset unless the caller submits a new, smaller request.
-  7. Otherwise, perform the **complete** write in the same transaction: for each product, `INSERT ... ON
+     t.status IN ('active', 'checking')` → `v_current_active` (§2b — this counts the **target** table only,
+     whose status enum is `active`/`paused`/`failed`/`checking`; a target's *product* lifecycle state is a
+     separate, parent-level fact per Correction 13, not part of this count's own `WHERE` clause).
+  8. If `v_current_active + v_requested_additional > p_quota_limit`, **raise/return** the locked quota error
+     (§2b) — no `INSERT`/`UPDATE` for *any* product, pincode, or reactivation in the batch, even the ones
+     that individually would have fit. Never create a subset unless the caller submits a new, smaller
+     request.
+  9. Otherwise, perform the **complete** write in the same transaction: for each product, `INSERT ... ON
      CONFLICT (workspace_id, marketplace_id, asin) DO UPDATE` (unchanged Other→Owned promotion logic from
-     round 1/2, and the round-3 removed-product-restore logic, §2 above) against
-     `pincode_monitored_products`; for each genuinely-new `(product, pincode)` pair, `INSERT` into
-     `pincode_tracking_targets` (`status = 'active'`, `next_check_at = now()`).
-  8. Commit. The advisory lock releases automatically.
-- **Marketplace consistency** (round 1's flagged-but-deferred item) is now enforced directly in step 2 above,
-  inside the same atomic pass — no longer a separate, easy-to-forget check.
+     round 1/2) against `pincode_monitored_products` — **when the conflicting existing row is `status =
+     'removed'`, the `DO UPDATE` also clears `removed_at`/`removal_reason` and sets `status = 'active'`
+     (Correction 10 — the parent restore happens atomically here, in the same statement, not a separate
+     call)**; for each genuinely-new `(product, pincode)` pair, `INSERT` into `pincode_tracking_targets`
+     (`status = 'active'`, `next_check_at = now()`); for each re-add reactivation identified in step 5,
+     `UPDATE` that exact locked target row (`status = 'active'`, `next_check_at = now()`, and
+     `consecutive_failures = 0` if it was `'failed'`) — **no second Resume request is required after a
+     re-add**, satisfying Correction 10's explicit requirement.
+  10. Commit. The advisory lock releases automatically. **Lock order step 4** (result insertion/finalization)
+      does not apply to this RPC — enrollment never writes to `pincode_availability_results`.
+- **Marketplace consistency** (round 1's flagged-but-deferred item) is enforced directly in step 4 above,
+  inside the same atomic pass.
+- **Archived products are explicitly out of scope for this "re-add" reactivation path** — Correction 10 also
+  requires "equivalent behavior when an archived product becomes valid and is explicitly re-enrolled from a
+  confirmed owned catalog listing": the same `ON CONFLICT ... DO UPDATE` branch applies when the conflicting
+  existing row is `status = 'archived'` (not just `'removed'`) **and** the enrollment attempt is `'owned'`
+  with a freshly-verified listing (step 4 above) — the parent is restored to `'active'` and its
+  paused/failed targets for the selected pincodes are reactivated by the same step-5/9 logic, since from the
+  seller's perspective "the listing came back and I'm re-enrolling it" is the same shape of event as "I
+  un-removed a product I'd removed myself."
 
 **Every quota-increasing path uses this same lock discipline** — not just fresh enrollment:
 
@@ -382,17 +479,22 @@ SELECT pg_advisory_xact_lock(hashtextextended(p_workspace_id::text || ':' || p_m
 |---|---|---|
 | New enrollment (bulk or single) | `enroll_pincode_monitored_products` | Advisory lock (above) |
 | Adding pincodes to an already-enrolled product | `enroll_pincode_monitored_products` (same RPC — a pincode-add is structurally identical to enrolling a product with 1 element, `p_products` already includes the product's existing `amazon_listing_item_id`/`tracked_asin_id` so no re-verification is skipped) | Advisory lock (above) |
-| Resuming paused targets | `set_pincode_tracking_state` (§3a) | Same advisory lock, same key derivation |
-| Reactivating failed targets | `set_pincode_tracking_state` (§3a) | Same advisory lock, same key derivation |
+| Resuming a paused/failed target under an already-`active` parent | `set_pincode_tracking_state` (§3a) | Same advisory lock, same key derivation |
+| Re-adding a `removed`/`archived` parent, reactivating its selected existing targets | `enroll_pincode_monitored_products` (Correction 10 — atomic in the same call, not a separate Resume) | Same advisory lock, same key derivation |
 | Bulk enrollment | `enroll_pincode_monitored_products` | Advisory lock (above), one lock acquisition for the whole batch, not per-product |
 
 Integration tests (required, `IMPLEMENTATION_PLAN.md` §5) must cover: enrolling an owned product with a
 valid listing succeeds; enrolling an owned product with a fabricated/foreign-workspace listing ID is
 rejected; enrolling the same ASIN as owned after it was already "other" performs the promotion in place and
-does not duplicate history; **a 5-product×6-pincode bulk request where only some pairs fit under quota is
+does not duplicate history; a 5-product×6-pincode bulk request where only some pairs fit under quota is
 rejected in full, not partially applied; two concurrent enrollment requests that would jointly exceed quota
 serialize correctly and exactly one succeeds (or both succeed if there was room for both, but never both
-succeeding when only one should have).**
+succeeding when only one should have); **duplicate `(asin, pincode)` pairs within one request are
+normalized and not double-counted against quota (Correction 14); a bulk request exceeding the bounded array
+length is rejected outright (Correction 14); re-adding a previously-removed product with 3 of its 5
+historical pincodes selected reactivates exactly those 3 targets and restores the parent to `active` in one
+call, with no second Resume request needed, and the projected quota calculation correctly includes the
+reactivated targets, not just the genuinely-new ones (Correction 10).**
 
 ---
 
@@ -556,6 +658,15 @@ CREATE TABLE public.pincode_tracking_targets (
     UNIQUE (monitored_product_id, pincode),
   CONSTRAINT pincode_tracking_targets_workspace_id_uidx
     UNIQUE (workspace_id, id),  -- FK target for pincode_availability_results (§4)
+  -- Correction 12 (2026-07-18, round 4): composite identity proving a
+  -- target's (workspace_id, id) pair, together with the product it
+  -- belongs to, is internally consistent. This is the FK target
+  -- pincode_availability_results uses (§4) to prove a result's
+  -- tracking_target_id and monitored_product_id actually agree with each
+  -- other, not just that each independently belongs to the right
+  -- workspace.
+  CONSTRAINT pincode_tracking_targets_identity_uidx
+    UNIQUE (workspace_id, id, monitored_product_id),
   CONSTRAINT pincode_tracking_targets_status_chk
     CHECK (status IN ('active', 'paused', 'failed', 'checking')),
   CONSTRAINT pincode_tracking_targets_pincode_format_chk
@@ -641,44 +752,131 @@ this closes that gap.** Fifth RPC (bringing the P0-A total to 5, `IMPLEMENTATION
 `'resume'`; bulk (`p_target_ids`, an array, not a single ID) so a multi-target pause/resume from the tracker
 table's bulk actions is also one atomic operation, never partially applied.
 
+**Round 4 rewrite — follows the one global lock order (`IMPLEMENTATION_PLAN.md` §2.0), re-validates
+workspace/marketplace on every locked row (Correction 3), and validates its own parameters up front
+(Correction 14):**
+
+0. **Correction 14 — parameter validation, before any lock or query:** `p_target_ids` must be non-empty and
+   bounded (e.g. ≤ 500 targets per call); `p_action` must be exactly `'pause'` or `'resume'` — any other
+   string is rejected outright, not silently ignored; `p_quota_limit` must be a positive integer (only
+   relevant for `'resume'`, but validated regardless of action to keep the check unconditional and simple);
+   duplicate IDs within `p_target_ids` are normalized (de-duplicated) before any counting.
+
 **Resume (`p_action = 'resume'`):**
-1. Acquire the same deterministic advisory lock as §2a/§2b (`(workspace_id, marketplace_id)`).
-2. Lock every target row named in `p_target_ids` (`FOR UPDATE`) plus its parent `pincode_monitored_products`
-   row (`FOR UPDATE` too — needed for step 3).
-3. For each target: if the parent product's `status` is `archived` or `removed`, **reject the entire
-   operation** — "archived/removed product cannot resume" (a resume attempt against a product whose source
-   is gone or that the seller explicitly removed makes no sense; the seller must re-add, not resume, per §2's
-   removed-restore path).
-4. Calculate the projected active-target count (current `active`/`checking` count, §2b, plus every target in
+1. **Lock order step 1:** acquire the same deterministic advisory lock as §2a/§2b/§2c
+   (`(workspace_id, marketplace_id)`).
+2. **Lock order step 2 — lock parent rows first:** `SELECT DISTINCT p.* FROM pincode_monitored_products p
+   JOIN pincode_tracking_targets t ON t.monitored_product_id = p.id WHERE t.id = ANY(p_target_ids) ORDER BY
+   p.id FOR UPDATE`.
+3. **Correction 3 — re-validate every locked parent belongs to the caller's stated scope:** for each locked
+   parent, confirm `p.workspace_id = p_workspace_id AND p.marketplace_id = p_marketplace_id`; if any parent
+   fails this check, **reject the entire operation** — a caller cannot resume targets belonging to a
+   different workspace/marketplace than it claims to be operating in, even if `p_target_ids` happened to
+   include such a row (defense-in-depth beyond the composite FK, since the FK proves referential integrity
+   at write time, not that *this specific call's* claimed scope matches at read time).
+4. If any locked parent's `status` is `archived` or `removed`, **reject the entire operation** —
+   "archived/removed product cannot resume" (a resume attempt against a product whose source is gone or that
+   the seller explicitly removed makes no sense; the seller must re-add, not resume, per §2a's re-add-restore
+   path). Per Correction 13, a parent is never `'paused'`, so there is no such branch to consider here.
+5. **Lock order step 3 — lock target rows second:** `SELECT * FROM pincode_tracking_targets WHERE id =
+   ANY(p_target_ids) ORDER BY id FOR UPDATE` — re-validate `t.workspace_id = p_workspace_id AND
+   t.monitored_product_id = <the corresponding locked parent's id>` for each (same defense-in-depth as step
+   3, now at the target level).
+6. Calculate the projected active-target count (current `active`/`checking` count, §2b, plus every target in
    this batch that is currently `paused` or `failed` and about to become `active`).
-5. If the projection exceeds `p_quota_limit`, **reject the entire operation** with the locked `409
+7. If the projection exceeds `p_quota_limit`, **reject the entire operation** with the locked `409
    pincode_tracking_quota_exceeded` shape (§2b) — never partially resume a bulk request.
-6. Otherwise, for each target: if it was `failed`, reset `consecutive_failures = 0` (an explicit resume is
+8. Otherwise, for each target: if it was `failed`, reset `consecutive_failures = 0` (an explicit resume is
    the seller's signal that they want a clean retry, not a continuation of the failure count); set `status =
    'active'`, `next_check_at = now()` (immediately due, same "resuming re-schedules" behavior as a fresh
    enrollment).
-7. Commit.
+9. Commit.
 
 **Pause (`p_action = 'pause'`):**
-1. Acquire the same advisory lock (pausing doesn't strictly need it for correctness — pausing only *frees*
-   quota, it can't oversubscribe — but using the same lock uniformly avoids a second, divergent locking
-   discipline to reason about).
-2. Lock every target row named in `p_target_ids`.
-3. For each target, branch on its **current** `status`:
+1. **Lock order step 1:** acquire the same advisory lock (pausing doesn't strictly need it for correctness —
+   pausing only *frees* quota, it can't oversubscribe — but using the same lock uniformly avoids a second,
+   divergent locking discipline to reason about, and keeps this RPC's lock acquisition order identical to
+   every other one regardless of action).
+2. **Lock order step 2 — lock parent rows first**, same shape as Resume step 2, re-validated per Correction 3
+   the same way.
+3. **Lock order step 3 — lock target rows second**, same shape as Resume step 5, re-validated the same way.
+4. For each target, branch on its **current** `status`:
    - **`active` or a queued manual request** (i.e. not yet `checking`): set `status = 'paused'`, clear
      `manual_requested_at`/`manual_requested_by`/`manual_request_token`, clear `next_check_at`.
    - **`checking`**: **reject that target** with `409 { errorCode: 'check_in_progress' }` in P0 — do not
      invalidate an in-flight claim out from under the worker currently holding it (the same in-flight-safety
-     principle as §5's archival cascade, Correction 5). The seller can pause again once the check finalizes.
-     If the bulk request mixes pausable and in-progress targets, P0 rejects the **whole** batch with the
+     principle as §5's archival cascade). The seller can pause again once the check finalizes. If the bulk
+     request mixes pausable and in-progress targets, P0 rejects the **whole** batch with the
      `check_in_progress` error naming which target(s) are in flight, rather than silently pausing a subset —
      consistent with this RPC's all-or-nothing discipline elsewhere; the UI can prompt the seller to retry
      without the in-flight target(s).
    - **`paused`/`failed`**: no-op (already not running), does not error.
-4. Commit.
+5. Commit.
 
 Both actions share the "the caller always gets an explicit, complete success or an explicit, complete
-rejection — never a silent partial result" discipline as `enroll_pincode_monitored_products` (§2a).
+rejection — never a silent partial result" discipline as `enroll_pincode_monitored_products` (§2a). Neither
+action writes to `pincode_availability_results`, so lock-order step 4 (result insertion/finalization) does
+not apply to this RPC.
+
+---
+
+## 3b. Remove Tracking — the sixth trusted RPC (Correction 8, round 4)
+
+**`set_pincode_tracking_state` (§3a) only operates on individual targets — it cannot truthfully implement
+product-level "Remove Tracking," which is a *parent* lifecycle transition (`status → 'removed'`, §2), not a
+target-level pause.** Using target-level pause alone to fake removal would leave the parent's `status`
+untouched (still `'active'` per Correction 13's derived-state model) with no `removed_at`/`removal_reason`
+recorded anywhere — indistinguishable from a seller who just paused every pincode individually. A dedicated
+sixth RPC closes this gap:
+
+**`remove_pincode_monitored_products(p_workspace_id uuid, p_marketplace_id text, p_monitored_product_ids uuid[], p_removal_reason text)`**
+— `SECURITY DEFINER`, `search_path` pinned, `service_role`-only `EXECUTE`. Bulk (`p_monitored_product_ids`,
+an array) so a multi-select Remove Tracking action is also one atomic operation.
+
+1. **Correction 14 — parameter validation:** `p_monitored_product_ids` non-empty and bounded (e.g. ≤ 200);
+   `p_removal_reason` must be one of a narrow, application-defined allowed-value set (e.g.
+   `'user_requested'` — never an arbitrary free-text string written unchecked into the database); duplicate
+   IDs normalized before processing.
+2. **Lock order step 1:** acquire the deterministic advisory lock (§2a) — removal frees quota (same
+   reasoning as Pause, §3a, for using the lock uniformly even though removal alone can't oversubscribe).
+3. **Lock order step 2 — lock parent rows first:** `SELECT * FROM pincode_monitored_products WHERE id =
+   ANY(p_monitored_product_ids) ORDER BY id FOR UPDATE`. **Correction 3:** re-validate every locked parent's
+   `workspace_id = p_workspace_id AND marketplace_id = p_marketplace_id`; reject the entire operation on any
+   mismatch.
+4. If any locked parent is already `status = 'removed'`, treat that specific product as a no-op (idempotent
+   — removing an already-removed product is not an error) rather than failing the whole batch; if any locked
+   parent is `status = 'archived'`, it may still be removed (a seller can explicitly remove a product whose
+   source already disappeared — the two states are not mutually exclusive as a matter of *sequence*, only
+   `removed_at`/`removal_reason` win once set, per Correction 9 below).
+5. **Lock order step 3 — lock target rows second:** `SELECT * FROM pincode_tracking_targets WHERE
+   monitored_product_id = ANY(p_monitored_product_ids) ORDER BY id FOR UPDATE`.
+6. **Preferred P0 in-flight behavior (chosen over rejecting the whole batch on any `checking` child target):**
+   unlike Pause (§3a), Remove Tracking does **not** reject the operation when a child target is `checking` —
+   removal is a stronger, more final action than pause, and making a seller wait for every in-flight check
+   across a potentially large product before they can remove it would be poor UX for a "get this off my
+   tracker" action. Instead:
+   - **`checking` targets are left `checking`** — not touched by this step at all. The parent is still moved
+     to `'removed'` in the same transaction (step 7). `finalize_pincode_check`
+     (`IMPLEMENTATION_PLAN.md` §2.7) already re-reads the parent's locked status at finalize time and, seeing
+     `'removed'`, records the current valid result but finalizes that target to `paused` with `next_check_at
+     = NULL` instead of rescheduling — the exact same mechanism Correction 5 already built for archival,
+     reused here without modification.
+   - **Non-`checking` children** (`active`, `paused`, `failed`) pause immediately: `status = 'paused'`,
+     `next_check_at = NULL`, and any pending `manual_requested_at`/`manual_requested_by`/`manual_request_token`
+     cleared.
+7. Update each parent: `status = 'removed'`, `removed_at = now()`, `removal_reason = p_removal_reason`.
+8. Commit. No row is hard-deleted at any point — `pincode_monitored_products`, every child
+   `pincode_tracking_targets` row, and all `pincode_availability_results` history remain fully intact and
+   joined exactly as before.
+
+This is **one atomic product-level mutation**, not independent route-level updates to the parent and each
+child separately — a crash or error partway through rolls back the whole batch, never leaving some products
+removed and others not from a single bulk Remove Tracking click.
+
+Required tests (`IMPLEMENTATION_PLAN.md` §5): removing a product with an in-flight `checking` target leaves
+that target `checking` and the parent `removed` in the same transaction; a subsequent finalize on that target
+records the result and pauses it, never rescheduling; removing an already-removed product is a no-op, not an
+error; removing an already-archived product succeeds and sets `removed_at`/`removal_reason`.
 
 ---
 
@@ -719,20 +917,55 @@ ALTER TABLE public.pincode_availability_results
   ADD COLUMN check_attempt_id     uuid,
   ADD COLUMN check_status         text;  -- 'success' | 'failed' | 'blocked' -- see §4a
 
--- Workspace-scoped composite FKs (Correction 2, same discipline as §2/§3).
--- Both confirmed safe on this project's PostgreSQL 17.6 -- see the
--- amendment note at the top of this document.
+-- Correction 11 (2026-07-18, round 4): RESTRICT/NO ACTION, not SET NULL.
+-- Round 3 used ON DELETE SET NULL here, matching the pattern used
+-- elsewhere in this doc for the amazon_listing_items/tracked_asins FKs on
+-- pincode_monitored_products (§2) -- but those two situations are NOT
+-- analogous. amazon_listing_items/tracked_asins are EXTERNAL source
+-- tables this feature doesn't own, hard-deleted by other subsystems
+-- outside this feature's control, so SET NULL is the correct reaction
+-- there. pincode_monitored_products/pincode_tracking_targets, by
+-- contrast, are THIS feature's own tables, and Correction 6/8 (§2, §3b)
+-- established that normal operation NEVER hard-deletes them -- removal is
+-- always the soft 'removed' state, never a DELETE statement. A hard
+-- DELETE against either of these two tables is therefore not a normal
+-- event this schema should silently absorb by nulling history references
+-- -- it should be flatly rejected, so that if it ever happens (an
+-- operational mistake, a manual psql session, a future bug), the
+-- rejection is loud and the history/FK relationship is never silently
+-- severed. Workspace-level cascade (ON DELETE CASCADE from workspaces,
+-- unchanged, §2/§3) is unaffected -- deleting an entire workspace still
+-- cascades through normally, since that's a real, intentional,
+-- whole-tenant deletion, not a per-row one this feature would ever
+-- trigger on its own.
 ALTER TABLE public.pincode_availability_results
   ADD CONSTRAINT pincode_availability_results_monitored_product_fk
   FOREIGN KEY (workspace_id, monitored_product_id)
   REFERENCES public.pincode_monitored_products (workspace_id, id)
-  ON DELETE SET NULL (monitored_product_id);
+  ON DELETE RESTRICT;
 
+-- Correction 12 (2026-07-18, round 4): composite FK against the target's
+-- OWN composite identity (DATA_MODEL.md §3's
+-- pincode_tracking_targets_identity_uidx), not just (workspace_id, id).
+-- A separate same-workspace-only FK on tracking_target_id (as round 3
+-- had) still permits a malformed row where monitored_product_id points to
+-- product A while tracking_target_id points to a real target belonging to
+-- product B -- both individually valid, same-workspace FKs, but mutually
+-- inconsistent with each other. This composite FK proves the referenced
+-- target's OWN monitored_product_id column equals this row's
+-- monitored_product_id -- the two ID columns can no longer disagree.
 ALTER TABLE public.pincode_availability_results
   ADD CONSTRAINT pincode_availability_results_tracking_target_fk
-  FOREIGN KEY (workspace_id, tracking_target_id)
-  REFERENCES public.pincode_tracking_targets (workspace_id, id)
-  ON DELETE SET NULL (tracking_target_id);
+  FOREIGN KEY (workspace_id, tracking_target_id, monitored_product_id)
+  REFERENCES public.pincode_tracking_targets (workspace_id, id, monitored_product_id)
+  ON DELETE RESTRICT;
+
+-- Both the direct monitored_product_id FK above and this composite one are
+-- kept, not redundant: the direct FK is the database's only guarantee that
+-- monitored_product_id itself is valid when tracking_target_id is NULL
+-- (legacy rows, where the composite FK's multi-column NULL-skip means it
+-- never fires); the composite FK is what proves the two ID columns AGREE
+-- with each other on new rows. Each closes a gap the other doesn't cover.
 
 -- Correction 2: claim_token uniqueness -- the finalize RPC's idempotency
 -- key. Partial (non-null only) because legacy/bulk-checker rows never set
@@ -785,20 +1018,46 @@ ALTER TABLE public.pincode_availability_results
 -- exist. This is finalize_pincode_check's own write-integrity boundary
 -- (IMPLEMENTATION_PLAN.md §2.7 Correction 11) enforced a second time at
 -- the database layer, in case any other future write path is ever added.
+--
+-- Correction 1 (2026-07-18, round 4): rewritten for NULL-safety. Postgres
+-- CHECK constraints use three-valued logic -- a CHECK PASSES when its
+-- expression evaluates to TRUE **or NULL**, only a FALSE result rejects
+-- the row. `x NOT IN (...)` and `x IN (...)` both evaluate to NULL when x
+-- IS NULL, not FALSE -- so the round-3 version of this constraint would
+-- have silently ACCEPTED a row with check_status = NULL, or
+-- availability_status = NULL on a 'success' row, exactly the malformed
+-- writes it was meant to reject. Every branch below now uses an explicit
+-- IS NOT NULL/IS NULL test before any IN (...) comparison, so a NULL
+-- input can never make the overall expression evaluate to NULL -- it
+-- always resolves to a definite TRUE or FALSE.
 ALTER TABLE public.pincode_availability_results
   ADD CONSTRAINT pincode_availability_results_new_row_consistency_chk
   CHECK (
     check_attempt_id IS NULL
     OR (
-      check_status IN ('success', 'failed', 'blocked')
+      check_status IS NOT NULL
       AND (
-        (check_status = 'success' AND availability_status IN ('available', 'unavailable', 'unknown'))
+        (
+          check_status = 'success'
+          AND availability_status IS NOT NULL
+          AND availability_status IN ('available', 'unavailable', 'unknown')
+        )
         OR
-        (check_status IN ('failed', 'blocked') AND availability_status IS NULL)
+        (
+          check_status IN ('failed', 'blocked')
+          AND availability_status IS NULL
+        )
       )
     )
   );
 ```
+
+**Correction 1's note on the deferred, general `check_status` backfill constraint (§4a):** when that
+separate, audit-gated constraint is eventually added, it must remain explicitly legacy-compatible and
+equally NULL-safe: `CHECK (check_status IS NULL OR check_status IN ('success', 'failed', 'blocked'))` — this
+document does **not** make `check_status` globally `NOT NULL` in P0-A, because the existing legacy
+bulk-checker writer may continue creating legacy rows without this new field indefinitely; a blanket
+`NOT NULL` would break that writer the moment it's applied.
 
 Allowed vs. rejected combinations for every **new** unified-scheduler write (constraint B above, mirrored by
 `finalize_pincode_check`'s own input validation, `IMPLEMENTATION_PLAN.md` §2.7):
@@ -811,9 +1070,18 @@ Allowed vs. rejected combinations for every **new** unified-scheduler write (con
 | `failed` + `NULL` | Yes |
 | `blocked` + `NULL` | Yes |
 | any `check_status` not in `('success','failed','blocked')` | **Rejected** |
+| `check_status = NULL` (actual SQL `NULL`, not the string `'NULL'`) | **Rejected** — round-3's constraint form would have wrongly *accepted* this; round 4's explicit `IS NOT NULL` fixes it |
 | `success` + `NULL` | **Rejected** (a successful check must report a definite availability reading) |
 | `failed`/`blocked` + any non-null `availability_status` | **Rejected** (a check that didn't succeed cannot also claim to have observed availability) |
 | any arbitrary/unrecognized `availability_status` string | **Rejected** |
+
+**Required test additions (round 4, Correction 1):** the constraint/RPC test suite
+(`IMPLEMENTATION_PLAN.md` §5, and `finalize_pincode_check`'s own tests, §2.7) must include cases using an
+actual SQL `NULL` for `check_status` and for `availability_status` on a `'success'` row — not only a
+TypeScript/JS `undefined` value at the calling-code layer, which a client library might coerce differently
+than a raw `NULL` reaching the database. The point of this correction is specifically that three-valued SQL
+logic behaves differently from application-language null-handling; a test that only exercises the
+application layer would not have caught the round-3 bug.
 
 **Required on every new unified-scheduler result:** `monitored_product_id`, `tracking_target_id`, and
 `check_attempt_id` must all be populated — `finalize_pincode_check` (`IMPLEMENTATION_PLAN.md` §2.7) inserts
@@ -932,8 +1200,11 @@ application-level (not database-trigger) reconciliation step that:
 1. Runs as part of the same recurring scheduler cycle (cheap: one query per cycle checking whether any
    linked `amazon_listing_item_id`/`tracked_asin_id`'s source row went archived/removed since the last
    check).
-2. On detecting an archived source: sets `pincode_monitored_products.status = 'archived'` and cascades to
-   child targets — **Correction 5 (2026-07-18, round 3): not a blind "set every child to `paused`."** A
+2. On detecting an archived source: `UPDATE pincode_monitored_products SET status = 'archived' WHERE id =
+   :id AND status NOT IN ('archived', 'removed')` (the `NOT IN ('archived', 'removed')` guard is Correction 9,
+   round 4 — see below; a product the seller already removed is never overwritten back to `'archived'`) and
+   cascades to child targets — **Correction 5 (2026-07-18, round 3): not a blind "set every child to
+   `paused`."** A
    blind cascade would try to `UPDATE` a target currently `status = 'checking'` into `'paused'`, which
    directly violates `pincode_tracking_targets_claim_consistency_chk` (§3 — a `'checking'` row must retain
    its claim fields, a non-`'checking'` row must not) while the worker still holds that claim, and would race
@@ -978,11 +1249,29 @@ read migrations).
 **Correction 1 (2026-07-18) — two more cases the same reconciliation pass must cover:**
 
 1. **Owned row, FK gone null.** `UPDATE pincode_monitored_products SET status = 'archived' WHERE
-   product_source = 'owned' AND status <> 'archived' AND amazon_listing_item_id IS NULL` — this is the row
-   shape produced when the source `amazon_listing_items` row is hard-deleted and `ON DELETE SET NULL (
-   amazon_listing_item_id)` fires (§2). Same corrected, in-flight-safe cascade to child targets as the
-   soft-archive case above (Correction 5 — `status IN ('active','paused','failed')` only, `checking` targets
-   left alone); same history-preservation guarantee.
+   product_source = 'owned' AND status NOT IN ('archived', 'removed') AND amazon_listing_item_id IS NULL` —
+   this is the row shape produced when the source `amazon_listing_items` row is hard-deleted and `ON DELETE
+   SET NULL (amazon_listing_item_id)` fires (§2). Same corrected, in-flight-safe cascade to child targets as
+   the soft-archive case above (Correction 5 — `status IN ('active','paused','failed')` only, `checking`
+   targets left alone); same history-preservation guarantee.
+   **Correction 9 (2026-07-18, round 4) — `removed` must take precedence over `archived`, and the WHERE
+   clause above is corrected accordingly (this applies equally to the parent-status UPDATE described in step
+   2 of the main cascade above, wherever it is implemented — any reconciliation write to
+   `pincode_monitored_products.status` must use this same guard).** Round 3's condition was `status <>
+   'archived'`, which is true for a `status = 'removed'` row too — meaning
+   the reconciliation pass could have overwritten a user-removed product's `status` to `'archived'` while
+   `removed_at`/`removal_reason` stayed populated underneath it, directly contradicting
+   `pincode_monitored_products_removed_consistency_chk` (§2, which requires `removed_at IS NULL` whenever
+   `status <> 'removed'`) and — even setting the CHECK violation aside — silently discarding the seller's own
+   stated reason for removing the product the moment its source later happened to disappear too. **User
+   removal takes precedence over later source disappearance**: once a product is `'removed'`, the
+   reconciliation pass must never touch its `status` again — `status NOT IN ('archived', 'removed')` in both
+   WHERE clauses ensures this. The **only** path that clears `removed_at`/`removal_reason` and moves a
+   `'removed'` product out of that state is an explicit re-add through `enroll_pincode_monitored_products`
+   (§2a's atomic restore path) — never the reconciliation pass, never any other automated process.
+   **Required test (round 4):** remove a product (user action) → then archive/delete its source listing →
+   run reconciliation → assert the product remains `status = 'removed'` with its original `removed_at`/
+   `removal_reason` untouched, never flipped to `'archived'`.
 2. **Other→Owned promotion.** As part of the same cycle (cheap — one query, same cadence as the archive
    check): `SELECT id, workspace_id, marketplace_id, asin FROM pincode_monitored_products WHERE
    product_source = 'other'`, LEFT JOIN against `amazon_listing_items` on `(workspace_id, marketplace_id,
@@ -1082,51 +1371,58 @@ worker.
 
 ---
 
-## 7. Migration count (revised 2026-07-18, round 3)
+## 7. Migration count (revised 2026-07-18, round 4)
 
 **3 new tables + 2 additive columns on `pincode_monitored_products` (`.removed_at`, `.removal_reason`) + 4
 additive columns on `pincode_availability_results` + 3 new indexes on that table + 1 partial unique index on
-`pincode_tracking_targets.claim_token` + 2 precondition constraints on existing tables + 3 new CHECK
-constraints (`removed`-consistency, identity-consistency, new-row-result-consistency) + 5 RPC functions,
-across an estimated 4 migrations** (RPC count revised again this round — Correction 3 adds
-`set_pincode_tracking_state`, the fifth; column/constraint count revised for Correction 6's soft-removal
-state and Correction 11's immediately-addable CHECK constraints; not committed to exact numbering, next
-available migration number to be confirmed at implementation time):
+`pincode_tracking_targets.claim_token` + 1 composite identity unique constraint on `pincode_tracking_targets`
++ 2 precondition constraints on existing tables + 3 CHECK constraints (`removed`-consistency,
+identity-consistency, new-row-result-consistency, the last now NULL-safe per round-4 Correction 1) + **6**
+RPC functions, across an estimated 4 migrations** (RPC count revised again this round — Correction 8 adds
+`remove_pincode_monitored_products`, the sixth; `pincode_monitored_products_status_chk` narrowed from four
+values to three per Correction 13 (no parent-level `'paused'`); `pincode_availability_results`' two FKs
+switched from `ON DELETE SET NULL` to `ON DELETE RESTRICT`, and the `tracking_target_id` FK widened to a
+three-column composite per Correction 11/12; not committed to exact numbering, next available migration
+number to be confirmed at implementation time):
 
 1. One migration: `ALTER TABLE amazon_listing_items ADD CONSTRAINT ... UNIQUE (workspace_id, id)` and the
    same for `tracked_asins` (§2, Correction 2 precondition) — trivial, additive, zero data risk (both
    columns are already unique via each table's own primary key), but touches two existing, in-use tables, so
    it is kept as its own reviewable step rather than folded silently into migration #2.
 2. One migration: `workspace_default_pincodes`, `pincode_monitored_products` (including `.removed_at`/
-   `.removal_reason` and the `removed`-consistency CHECK, Correction 6), `pincode_tracking_targets` — all
-   three together, since `pincode_tracking_targets` FKs to `pincode_monitored_products` and both are new,
-   they belong in one migration (matches this codebase's existing convention of grouping tightly coupled new
-   tables, e.g. migration `059` created `review_solicitation_orders` alone since nothing else depended on it
-   that same migration; migration `016` created `scraping_jobs` + `pincode_availability_results` together
-   since the latter FKs the former). Includes the RLS policies (§6 — `SELECT`-only for members on all three
-   tables, Correction 5 round 2), the `updated_at` triggers, the two due-work indexes (§3), and the
-   `claim_token` partial unique index (§3, Correction 2 round 2).
+   `.removal_reason`, the `removed`-consistency CHECK, and the **three-value** `status` CHECK per round-4
+   Correction 13), `pincode_tracking_targets` (including the composite `pincode_tracking_targets_identity_
+   uidx` per round-4 Correction 12) — all three together, since `pincode_tracking_targets` FKs to
+   `pincode_monitored_products` and both are new, they belong in one migration (matches this codebase's
+   existing convention of grouping tightly coupled new tables). Includes the RLS policies (§6 —
+   `SELECT`-only for members on all three tables), the `updated_at` triggers, the two due-work indexes (§3),
+   and the `claim_token` partial unique index (§3).
 3. One migration: `pincode_availability_results.monitored_product_id` + `.tracking_target_id` +
-   `.check_attempt_id` + `.check_status` additive columns (§4, Correction 1 round 2) + their composite FKs,
-   the `check_attempt_id` partial unique index, the three history indexes (§4/§4a), **and the two
-   immediately-addable CHECK constraints from Correction 11 round 3** (identity-consistency,
-   new-row-result-consistency — both safe against existing data, unlike the `check_status`-format constraint
-   below) — kept separate from #2 so the new tables can be reviewed/applied independently of touching an
-   existing, already-in-use table. **Still does not** include the `check_status`/result-state-format CHECK
-   constraint — that alone remains deferred until the read-only production audit (§4a, recorded with real
-   numbers — 18 available/no-error, 7 unknown/error) has its backfill applied.
-4. One migration: the **five** RPC functions this spec's corrections require —
-   `claim_due_pincode_targets(...)` (`IMPLEMENTATION_PLAN.md` §2.8, Corrections 4/6/7/8), `finalize_pincode_
-   check(...)` (`IMPLEMENTATION_PLAN.md` §2.7, Corrections 3/4/5/10/11), `enroll_pincode_monitored_products
-   (...)` (§2a, Corrections 1/2), `queue_pincode_manual_check(...)` (`IMPLEMENTATION_PLAN.md` §2.10,
-   Corrections 4/9), and **`set_pincode_tracking_state(...)` (§3a, Correction 3 — new this round)** — all
-   five `SECURITY DEFINER`, `search_path` set explicitly, `REVOKE EXECUTE ... FROM PUBLIC` + `GRANT EXECUTE
-   ... TO service_role` only (never broadly granted to `authenticated`), per Correction 4's explicit
-   requirement, unchanged this round.
+   `.check_attempt_id` + `.check_status` additive columns (§4) + their FKs — **`ON DELETE RESTRICT`, not
+   `SET NULL`, per round-4 Correction 11; the `tracking_target_id` FK is now the three-column composite
+   `(workspace_id, tracking_target_id, monitored_product_id)` per round-4 Correction 12** — the
+   `check_attempt_id` partial unique index, the three history indexes (§4/§4a), and the two
+   immediately-addable CHECK constraints (identity-consistency, new-row-result-consistency — the latter
+   rewritten NULL-safe per round-4 Correction 1; both safe against existing data, unlike the
+   `check_status`-format constraint below) — kept separate from #2 so the new tables can be reviewed/applied
+   independently of touching an existing, already-in-use table. **Still does not** include the
+   `check_status`/result-state-format CHECK constraint — that alone remains deferred until the read-only
+   production audit (§4a, recorded with real numbers — 18 available/no-error, 7 unknown/error) has its
+   backfill applied.
+4. One migration: the **six** RPC functions this spec's corrections require —
+   `claim_due_pincode_targets(...)` (`IMPLEMENTATION_PLAN.md` §2.8, now also taking `p_allowed_workspace_ids`
+   per round-4 Correction 4), `finalize_pincode_check(...)` (`IMPLEMENTATION_PLAN.md` §2.7, NULL-safe input
+   validation per round-4 Correction 1), `enroll_pincode_monitored_products(...)` (§2a, atomic re-add restore
+   per round-4 Correction 10), `queue_pincode_manual_check(...)` (`IMPLEMENTATION_PLAN.md` §2.10),
+   `set_pincode_tracking_state(...)` (§3a), and **`remove_pincode_monitored_products(...)` (§3b, round-4
+   Correction 8 — new this round)** — all six `SECURITY DEFINER`, `search_path` set explicitly, `REVOKE
+   EXECUTE ... FROM PUBLIC` + `GRANT EXECUTE ... TO service_role` only (never broadly granted to
+   `authenticated`), all following the one global lock order (`IMPLEMENTATION_PLAN.md` §2.0, round-4
+   Correction 2) and validating their own parameters before any lock or query (round-4 Correction 14).
 
 A fifth, follow-up migration (not counted above, deliberately deferred) adds the `check_status`-format CHECK
 constraint once the backfill from the confirmed audit (§4a) is applied — this is the *only* CHECK constraint
-still deferred; Correction 11's two new ones are not (see migration #3 above).
+still deferred; the others are not (see migration #3 above).
 
 **No migration is proposed or applied in this round** — this section exists to size the work, not to
 schedule it. Per round-2 Correction 10, migration #1/#2/#3 belong to implementation phase **P0-A**, migration

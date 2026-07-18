@@ -35,9 +35,22 @@ a real gap, the round-1/2 drafts described a "Remove" action in the wireframe (�
 to back it; (3) bulk enrollment and bulk pause/resume are now specified as genuinely all-or-nothing, and
 concurrent enrollment/resume requests are concurrency-safe (§5.1/§5.2, `DATA_MODEL.md` §2a Corrections 1/2);
 (4) pause on an in-flight `checking` target is explicitly rejected rather than silently invalidating the
-scheduler's claim (§5.4, `DATA_MODEL.md` §3a Correction 3). Section-by-section changes are called out inline
-as **"Correction N (2026-07-18)"** blocks; each round restarts its own correction numbering from 1 (see
-`BRAHMASTRA_MASTER_TRACKER.md` §22 for the full mapping of what each round's corrections mean).
+scheduler's claim (§5.4, `DATA_MODEL.md` §3a Correction 3).
+
+**Amendment round 4 (2026-07-18) — final architecture consistency pass, still not approved to merge.** This
+round does not change product scope or add new decisions — it makes the already-locked round 1–3 design
+internally consistent under real concurrency. Product-facing consequences: (1) "Remove Tracking" now moves a
+product to Removed immediately even with an in-flight check running, rather than waiting for it (§5.4,
+`DATA_MODEL.md` §3b Correction 8 — deliberately different from Pause's stricter in-flight rejection); (2) the
+tracker table's Paused/Failed/Partially-active labels are now explicitly documented as *derived* from
+individual pincode states, never a stored product-level value (§7, Correction 13); (3) re-adding a removed
+product now reactivates its previously-tracked pincodes in the same action, never requiring a separate Resume
+click afterward (§5.4, §7, Correction 10); (4) a removed product can never be silently reclassified as
+Archived by an automated process (§7, Correction 9). Everything else this round fixes is internal
+concurrency-safety (lock ordering, NULL-handling, cross-RPC validation) with no seller-visible behavior
+change. Section-by-section changes are called out inline as **"Correction N (2026-07-18)"** blocks; each
+round restarts its own correction numbering from 1 (see `BRAHMASTRA_MASTER_TRACKER.md` §22 for the full
+mapping of what each round's corrections mean).
 
 ---
 
@@ -210,17 +223,28 @@ reconciliation query and `IMPLEMENTATION_PLAN.md` §5 test #13 for the required 
    invalidating the scheduler's claim out from under it. A bulk Pause that includes one or more in-flight
    targets is rejected as a whole with the specific in-flight target(s) named, so the seller can retry
    without them rather than getting a silently partial pause.
-6. **"Remove Tracking" is a truthful soft-removal, not a hard delete (Correction 6, round 3).** Distinct
-   from a product going **Archived** (which happens automatically when its source listing disappears from
-   the seller's catalog — no user action) — Remove Tracking is something the seller explicitly chooses.
-   Removing a product: pauses all future checks immediately (with the same in-flight-safety rule as Pause,
-   above); clears any pending manual check request; stops it from consuming quota; keeps its full check
-   history intact and still viewable; hides it from the default tracker view; and surfaces it under a
-   dedicated **Removed filter** (parallel to the existing Archived filter — the two are never conflated in
-   the UI, different label, different filter). Re-adding the same ASIN later (from either tab) **restores**
-   the same monitored-product record and its full history — it does not create a duplicate, silently
-   discard the old history, or require the seller to notice they're "really" re-adding rather than adding
-   fresh. `DATA_MODEL.md` §2/§3a has the full schema and RPC contract.
+6. **"Remove Tracking" is a truthful soft-removal, not a hard delete, via its own dedicated RPC (Correction
+   6 round 3, Correction 8 round 4).** Distinct from a product going **Archived** (which happens
+   automatically when its source listing disappears from the seller's catalog — no user action) — Remove
+   Tracking is something the seller explicitly chooses, product-level, backed by the dedicated
+   `remove_pincode_monitored_products` RPC (`DATA_MODEL.md` §3b) rather than `set_pincode_tracking_state`
+   (§3a is target-level pause/resume only; it cannot truthfully represent "this whole product is gone").
+   Removing a product: clears any pending manual check request and pauses non-in-flight checks immediately;
+   stops it from consuming quota; keeps its full check history intact and still viewable; hides it from the
+   default tracker view; and surfaces it under a dedicated **Removed filter** (parallel to the existing
+   Archived filter — the two are never conflated in the UI, different label, different filter). Re-adding
+   the same ASIN later (from either tab) **restores** the same monitored-product record, its full history,
+   and reactivates its previously-tracked pincodes in the same action (round-4 Correction 10) — it does not
+   create a duplicate, silently discard the old history, or leave the seller needing a second Resume click
+   after re-adding.
+7. **Remove Tracking's in-flight behavior differs deliberately from Pause's (round 4, `DATA_MODEL.md` §3b).**
+   Pause rejects a bulk request outright if any selected target is mid-check (item 5 above) — but requiring
+   a seller to wait out every in-flight check across a potentially large product before they can remove it
+   would be poor UX for a "get this off my tracker" action. Remove Tracking instead: moves the parent to
+   Removed immediately regardless of in-flight targets; leaves any `checking` target running untouched; and
+   lets it finalize normally in the background (the scheduler still records its result honestly, then parks
+   it as `paused` under the now-removed parent — the same mechanism already built for archival). The seller
+   sees the product move to Removed right away, never blocked on a currently-running check.
 
 ---
 
@@ -275,15 +299,23 @@ timeout, so the lookup route's behavior stays consistent with the rest of the ap
 
 ## 7. Product states (My Products tab, tracker table)
 
-| State | Meaning |
+**Correction 13 (2026-07-18, round 4) — lifecycle vs. derived display states are now explicitly separated,
+not one flat list.** The underlying `pincode_monitored_products.status` column has exactly **three**
+lifecycle values — `active`, `archived`, `removed` (`DATA_MODEL.md` §2) — there is no parent-level "paused."
+What the tracker table displays as "Paused," "Failed," and "Partially active" are **derived** from the
+child `pincode_tracking_targets` rows underneath a lifecycle-`active` product, computed at read time, never
+stored as the parent's own status:
+
+| Tracker-table state | Underlying facts |
 |---|---|
 | **Not tracked** | No `pincode_monitored_products` row exists for this catalog item yet. |
-| **Partially tracked** | A monitored-product row exists, but fewer pincodes are configured than the current workspace defaults (a signal, not an error). |
-| **Active** | Monitored, at least one `pincode_tracking_targets` row is `active`. |
-| **Paused** | Monitored, but every target for this product is `paused` — no future checks will run. |
-| **Archived** | The underlying `amazon_listing_items`/`tracked_asins` source (or the monitored-product row itself) is archived or its owned-listing reference was removed from the sync — **source-driven, no user action** — all non-in-flight targets auto-paused (`DATA_MODEL.md` §5, archived-cascade behavior, corrected in round 3 to leave an in-flight `checking` target alone until it finalizes or is reclaimed), history preserved, visible only under the Archived filter (decision #10). **Correction 1 (2026-07-18):** an owned product's `amazon_listing_item_id` can legitimately become `NULL` (the source listing row was removed) without the monitored product or its history being lost — this is exactly the case that must land here, not error out or silently vanish. |
-| **Removed** | **Correction 6 (2026-07-18, round 3) — new state, distinct from Archived.** The seller explicitly clicked "Remove Tracking" (§5.4) — a **user-driven** action, never automatic. Same auto-pause/history-preservation behavior as Archived, but rendered with a different label and surfaced under a separate **Removed filter**, never conflated with a source-driven Archived state. Re-adding the same ASIN restores this same record and its history rather than creating a duplicate. |
-| **Failed** | Every target for this product has exceeded its `consecutive_failures` threshold (see `IMPLEMENTATION_PLAN.md` §Scheduler retry policy) — distinct from Paused: this state means the system tried and couldn't get a clean signal, not that the seller chose to stop. |
+| **Partially tracked** | A monitored-product row exists, but fewer pincodes are configured than the current workspace defaults (a signal, not an error) — orthogonal to the derived states below, can co-occur with any of them. |
+| **Active** *(derived)* | Parent lifecycle is `active`, and every child target is `active` or `checking` — a clean, fully-running product. |
+| **Paused** *(derived)* | Parent lifecycle is `active`, and every non-`checking` child target is `paused` — the seller (or a bulk pause action) stopped this product's checks, but the product itself hasn't been removed or archived; clicking Pause on a product row is a UI convenience that bulk-pauses its child targets, it does not change the parent's own lifecycle status (`DATA_MODEL.md` §2 Correction 13). |
+| **Partially active** *(derived, new this round)* | Parent lifecycle is `active`, and its child targets are a genuine mix of `active`/`paused`/`failed` — some pincodes are being checked, some aren't. Collapsing this into "Active" or "Paused" would misrepresent the real state to the seller, so it gets its own honest label rather than being forced into one of the other two. |
+| **Failed** *(derived)* | Parent lifecycle is `active`, and every "should be running" child target (i.e. not individually paused) has exceeded its `consecutive_failures` threshold (see `IMPLEMENTATION_PLAN.md` §Scheduler retry policy) — distinct from Paused: this state means the system tried and couldn't get a clean signal, not that the seller chose to stop. |
+| **Archived** *(lifecycle)* | The underlying `amazon_listing_items`/`tracked_asins` source (or the monitored-product row itself) is archived or its owned-listing reference was removed from the sync — **source-driven, no user action** — all non-in-flight targets auto-paused (`DATA_MODEL.md` §5, archived-cascade behavior, corrected in round 3 to leave an in-flight `checking` target alone until it finalizes or is reclaimed), history preserved, visible only under the Archived filter (decision #10). **Correction 1 (2026-07-18):** an owned product's `amazon_listing_item_id` can legitimately become `NULL` (the source listing row was removed) without the monitored product or its history being lost — this is exactly the case that must land here, not error out or silently vanish. **Correction 9 (round 4):** once a product is `removed`, the reconciliation pass never overwrites it back to `archived` — user removal takes precedence over later source disappearance. |
+| **Removed** *(lifecycle)* | **Correction 6 (2026-07-18, round 3) — distinct from Archived.** The seller explicitly clicked "Remove Tracking" (§5.4) — a **user-driven** action, never automatic, via the dedicated `remove_pincode_monitored_products` RPC (round-4 Correction 8, `DATA_MODEL.md` §3b). Same auto-pause/history-preservation behavior as Archived, but rendered with a different label and surfaced under a separate **Removed filter**, never conflated with a source-driven Archived state. Re-adding the same ASIN restores this same record and its history rather than creating a duplicate, and reactivates its previously-tracked pincodes in the same action (round-4 Correction 10) — no second Resume step required. |
 
 ## 8. Pincode-level states (expanded rows)
 
@@ -461,6 +493,23 @@ All new routes follow this codebase's existing auth conventions: session-based f
 20. **(Round 3, Correction 12)** Every API route and RPC this feature adds independently rejects requests for
     a non-allowlisted workspace during the internal-workspace rollout phase — not merely because the UI is
     hidden — verified by a feature-flag-bypass-rejection test covering every route/RPC.
+21. **(Round 4, Correction 13)** `pincode_monitored_products.status` never holds `'paused'` — the tracker
+    table's Paused/Failed/Partially-active labels are always computed from child target statuses under a
+    lifecycle-`active` parent, never read from a stored parent-level pause value, verified by a
+    schema-level CHECK rejecting any write attempting `status = 'paused'` on this table.
+22. **(Round 4, Correction 9)** Once a product is Removed, no automated reconciliation process can move it to
+    Archived — user removal is permanent until the seller explicitly re-adds, verified by a
+    remove-then-source-disappears test asserting the product stays Removed with its original removal metadata
+    intact.
+23. **(Round 4, Correction 10)** Re-adding a previously-removed product with a subset of its historical
+    pincodes selected reactivates exactly those targets and restores the parent to Active in one action —
+    never leaving a restored product with all-paused targets requiring a separate Resume click.
+24. **(Round 4, Correction 11)** A direct hard-delete attempt against a monitored product or tracking target
+    that has history is rejected outright at the database layer, never silently converted into orphaned
+    history via a nulled reference — verified by a hard-delete-rejection test.
+25. **(Round 4, Correction 2)** No two Pincode RPCs can deadlock against each other under concurrent access to
+    the same product — verified by a concurrent multi-RPC test (queue/pause/finalize/reconciliation against
+    the same product) asserting no deadlock, no lock-wait timeout, and no invalid final state.
 
 ---
 

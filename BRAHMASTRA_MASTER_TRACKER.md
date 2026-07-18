@@ -3671,3 +3671,106 @@ now-canonical `claim_due_pincode_targets` (`IMPLEMENTATION_PLAN.md` §2.8), the 
 check` (§2.7), the rewritten `queue_pincode_manual_check` (§2.10), and the new `set_pincode_tracking_state`
 (`DATA_MODEL.md` §3a) — and either approve for a P0-A implementation PR to be opened, or request further
 changes. PR #53 itself is not merged.
+
+### §22 update 4 (2026-07-18) — PR #53 amended a fourth time: final architecture consistency pass, still not merged
+
+**Decision received:** "PR #53 is close" — but 14 more corrections required as a final architecture
+consistency pass, explicitly scoped to not expand product scope or rewrite unrelated history. This entry
+summarizes round 4. **PR #53 remains spec-only, still not merged, no code, no migration, no deployment.**
+
+**What round 4 actually is:** rounds 1–3 each fixed real, independent defects, but nobody had checked
+whether the fixes were *consistent with each other as one system*. Round 4 found they weren't — three
+different lock orders across RPCs that can run concurrently against the same rows, NULL-unsafe SQL validation
+that could silently accept malformed writes, unvalidated caller-supplied workspace/marketplace parameters, a
+claim RPC allowlist the rollout plan required but the signature never had, and a parent-status enum that
+conflated lifecycle with a display concept. All 14 are closed without changing any locked product decision.
+
+**The 14 corrections:**
+
+1. **NULL-safe result validation.** Postgres three-valued logic means `NULL NOT IN (...)` evaluates to
+   `NULL`, and a CHECK constraint passes on `NULL` — so round 3's validation and CHECK constraint would have
+   silently *accepted* `check_status = NULL` and `success` + `NULL` availability. Fixed with explicit `IS
+   NULL`/`IS NOT NULL` tests before every `IN (...)` comparison, in both `finalize_pincode_check`'s
+   application-level validation and the database CHECK constraint. The deferred, audit-gated general
+   `check_status` constraint is documented to stay legacy-compatible (`check_status IS NULL OR check_status
+   IN (...)`) when it's eventually added. New tests use actual SQL `NULL` inputs, not just JS `undefined`.
+2. **One global database lock order**, defined once (new `IMPLEMENTATION_PLAN.md` §2.0) and applied without
+   exception to all six RPCs plus reconciliation and stale-claim reclaim: advisory lock (when
+   quota/manual-queue serialization applies) → parent rows (`id` order) → target rows (`id` order) → result
+   insertion/finalization. `finalize_pincode_check` and `queue_pincode_manual_check` were both rewritten to
+   follow it — both had target-before-parent or advisory-lock-last orderings that could deadlock against
+   other RPCs. New required test: run queue/pause/finalize/reconciliation concurrently against the same
+   product, assert no deadlock, no lock timeout, no invalid final state.
+3. **Every RPC now re-validates workspace/marketplace after locking**, not trusting caller-supplied
+   parameters — specifically closes a gap in `queue_pincode_manual_check`, where the supplied marketplace
+   controls the advisory-lock key and outstanding-count pool but was never checked against the actual locked
+   parent.
+4. **The claim RPC's allowlist is now real.** `claim_due_pincode_targets` gains a fourth parameter,
+   `p_allowed_workspace_ids` — `NULL`/empty fails closed (zero rows, never "unrestricted"); the candidate
+   query filters on it directly; REVOKE/GRANT and every reference across both documents updated to the
+   four-parameter signature; no second signature exists anywhere.
+5. **Claim eligibility is revalidated after locking, not just at candidate selection.** A pause/remove/
+   archive that commits between the unlocked ranking read and the row lock must win — the final `UPDATE`'s
+   `WHERE` clause now repeats every guarded predicate (target status/due-time, parent status, allowlist,
+   exclusion), not just an ID-membership check.
+6. **Manual-request priority is preserved globally, not just within each workspace's own slot.** The
+   round-3 `ranked_ids` step ordered by `id` alone, which could drop a manual request in a late-sorting
+   workspace before a merely-scheduled check in an early-sorting one, once eligible-workspace count exceeded
+   the chunk size. Fixed: order by `has_manual_request DESC, next_check_at ASC, workspace_id, id`.
+7. **Stale-claim reclaim is now parent-aware**, not a blind reset to `'active'`. Three branches: parent
+   `active` → reset to `active`, manual-request fields preserved so a crashed manual check retries; parent
+   `archived`/`removed` → reset to `paused`, `next_check_at = NULL`, manual fields cleared, never claimable
+   again. New tests for all four combinations (scheduled/manual × active/non-active parent).
+8. **Sixth RPC added: `remove_pincode_monitored_products`.** `set_pincode_tracking_state` is target-level
+   only and can't truthfully represent product-level removal. New atomic, bulk RPC: locks every parent and
+   target per the global lock order, leaves in-flight `checking` targets running (deliberately more lenient
+   than Pause — removal shouldn't require waiting out every in-flight check), sets `status='removed'` +
+   `removed_at`/`removal_reason`, pauses non-checking children, clears pending manual requests, never
+   hard-deletes. P0-A RPC count revised from 5 to **6**.
+9. **`removed` now takes precedence over `archived`** in the reconciliation pass. Round 3's guard was
+   `status <> 'archived'`, which is true for a `removed` row too — meaning reconciliation could have
+   overwritten a user-removed product back to `archived` while `removed_at`/`removal_reason` stayed
+   populated, violating the removed-consistency CHECK. Fixed to `status NOT IN ('archived', 'removed')`; only
+   an explicit re-add clears removal metadata, never an automated process.
+10. **Re-add is now a complete atomic restore.** Round 3 restored the parent but left existing paused/failed
+    targets for a separate Resume call. Fixed: `enroll_pincode_monitored_products` now reactivates selected
+    existing paused/failed targets (resetting `consecutive_failures` for failed ones) in the *same*
+    transaction as the parent restore, with the projected quota calculation including both genuinely-new and
+    reactivated targets — no second Resume click needed after re-adding. Same behavior extended to
+    re-enrolling a confirmed-owned ASIN whose product had gone `archived`.
+11. **History FKs switched from `SET NULL` to `RESTRICT`.** Since products/targets now use soft removal and
+    are never hard-deleted in normal operation, a hard `DELETE` against either table is not a normal event
+    this schema should silently absorb — it's now flatly rejected. Workspace-level cascade (deleting an
+    entire workspace) is unaffected.
+12. **Composite target↔product consistency enforced.** Added `UNIQUE (workspace_id, id,
+    monitored_product_id)` on `pincode_tracking_targets`; the result table's target FK became a matching
+    three-column composite, proving a result's `tracking_target_id` and `monitored_product_id` actually agree
+    with each other — closes a gap where two independently-valid same-workspace FKs could still point at a
+    target belonging to a *different* product than the result claims.
+13. **Parent lifecycle simplified to three states.** `pincode_monitored_products.status` is now
+    `active`/`archived`/`removed` only — there is no parent-level `'paused'`. Product-level "Paused,"
+    "Failed," and "Partially active" (a new, honestly-named state for a genuine active/paused/failed mix) are
+    derived from child target statuses at read time, never stored on the parent. Product-level Pause is a UI
+    convenience that bulk-pauses child targets; the parent stays lifecycle-`active` throughout.
+14. **Every RPC validates its own parameter bounds** before any lock or query — chunk/limit sizes, quota/
+    manual-pending limits (must be positive), cooldown seconds (non-negative, capped), array lengths
+    (bounded), `p_action`/`removal_reason` (narrow allowed values only), duplicate IDs/pincodes in input
+    arrays (normalized before quota calculation) — an environment-variable typo can no longer produce an
+    unbounded claim or an effectively-unlimited quota.
+
+**Files amended (same PR, no replacement):** `PINCODE_UNIFIED_PAGE_PRODUCT_SPEC.md`,
+`PINCODE_UNIFIED_PAGE_DATA_MODEL.md`, `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md`,
+`BRAHMASTRA_MASTER_TRACKER.md` (this entry). RPC count revised from 5 to **6**
+(`remove_pincode_monitored_products` added). No product-scope change — round 4 is a consistency/safety pass
+over already-locked decisions, with four narrow product-facing consequences (Remove Tracking's in-flight
+leniency, derived-state labeling made explicit, atomic re-add restore, removed-takes-precedence) all noted in
+`PRODUCT_SPEC.md`'s own round-4 amendment note.
+
+**Still not done in this round:** no migration applied, no application code written, no deployment.
+
+**Next step (needs the founder):** review the round-4 amended spec set — particularly the new global lock
+order (`IMPLEMENTATION_PLAN.md` §2.0), the corrected `claim_due_pincode_targets` and `finalize_pincode_check`
+bodies (§2.7/§2.8), the corrected `queue_pincode_manual_check` (§2.10), the new `remove_pincode_monitored_
+products` (`DATA_MODEL.md` §3b), and the simplified parent-lifecycle model (`DATA_MODEL.md` §2 Correction
+13) — and either approve for a P0-A implementation PR to be opened, or request further changes. PR #53
+itself is not merged.
