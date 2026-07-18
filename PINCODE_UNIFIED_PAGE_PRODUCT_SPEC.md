@@ -1,13 +1,22 @@
 # Pincode Checker — Unified Page Product Spec
 
-**Status:** Spec only. No application code, migration, or deployment in this round.
-**Worktree:** `C:\Vinay\amazon-seller-toolkit-pincode-unified-page`, branch `spec/pincode-unified-page`, off
-latest `origin/master` (`ac29080`).
+**Status:** Spec only, amended. No application code, migration, or deployment in this round or the prior
+one — this PR remains spec-and-review only; **do not merge, implement, or deploy** until separately
+approved.
+**Worktree:** branch `spec/pincode-unified-page`, off latest `origin/master`.
 **Inputs:** `PINCODE_CHECKER_PRODUCT_AUDIT.md` (2026-07-17 audit, 2 P0s already fixed separately —
 `BRAHMASTRA_MASTER_TRACKER.md` §20), the Pincode-unified-page background research pass (§20/§21 history,
-same tracker), and the founder-locked decisions below. Companion documents:
-`PINCODE_UNIFIED_PAGE_DATA_MODEL.md` (schema) and `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md` (scheduler,
-phasing, rollout).
+same tracker), the founder-locked decisions below, and a 2026-07-18 correction round (13 technical
+corrections to the first draft — see `BRAHMASTRA_MASTER_TRACKER.md` §22 amendment entry for the full list).
+Companion documents: `PINCODE_UNIFIED_PAGE_DATA_MODEL.md` (schema) and
+`PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md` (scheduler, phasing, rollout).
+
+**Amendment (2026-07-18):** the first draft locked recurring tracking into P0 correctly, but its schema had
+a self-contradictory owned-product FK, no cross-workspace FK enforcement, an RLS model that let ordinary
+members write scheduler state, a non-atomic claim design, and a P0/P1 split that quietly demoted the
+founder-required trustworthy Other Products lookup to P1 while allowing blind manual enrollment in P0. This
+round corrects all of that without changing the locked product decisions themselves. Section-by-section
+changes are called out inline as **"Correction N (2026-07-18)"** blocks.
 
 ---
 
@@ -121,8 +130,19 @@ either source table directly.
 7. **Duplicate prevention:** the unique constraint on `pincode_monitored_products (workspace_id,
    marketplace_id, asin)` (see `DATA_MODEL.md` §2) rejects a second enrollment of the same ASIN in the same
    workspace regardless of which tab it was added from — if a seller's own catalog ASIN is later also
-   entered as "Other," the system detects the existing row and offers to link/resume it rather than
-   silently erroring.
+   entered as "Other," the enrollment RPC detects the existing row and returns it (already tracked) rather
+   than silently erroring or creating a second row.
+
+**Correction 1 (2026-07-18) — Other Product becoming Owned:** if an ASIN enrolled as "Other Product" later
+appears in the seller's synced catalog (`amazon_listing_items`, e.g. after a new SP-API listings sync), it
+must **not** remain labelled "Other Product" once ownership is confirmed. Resolution (recommended, applies
+to both the periodic reconciliation pass and any future listings-sync job): when a matching
+`(workspace_id, marketplace_id, asin)` row appears in `amazon_listing_items` for an existing
+`pincode_monitored_products` row with `product_source = 'other'`, that row is **updated in place** —
+`product_source` flips to `'owned'`, `amazon_listing_item_id` is attached, and the row's `id`,
+`created_at`, and all `pincode_availability_results` history stay exactly as they were. No new monitored
+product is created, no history is duplicated or orphaned. See `DATA_MODEL.md` §2a for the exact
+reconciliation query and `IMPLEMENTATION_PLAN.md` §5 test #13 for the required test.
 
 ### 5.3 Pincode Settings
 
@@ -150,30 +170,52 @@ either source table directly.
 
 ---
 
-## 6. Approved product lookup path (Other Products)
+## 6. Approved product lookup path (Other Products) — P0, trustworthy SP-API resolve/preview
 
-Per instruction, the current `AddAsinDialog`/`handleAddAsin` flow on the ASIN Tracking page's Competitors
-tab (`asins/page.tsx:284-295` → `addTrackedAsin`/`addOrRestoreTrackedAsin`,
-`src/lib/supabase/asins.ts:117-193`) does **not** perform a live SP-API catalog lookup — it validates ASIN
-format only and inserts whatever title/brand/image the dialog itself collected (or blank). This is **not**
-the "approved existing lookup path" the founder wants reused, because it cannot produce a trustworthy
-product preview for a truly unknown ASIN.
+**Correction 11 (2026-07-18):** the first draft flagged this lookup as "unconfirmed" and the companion
+Implementation Plan then quietly moved it to P1, while still allowing P0 to enroll an Other Product from a
+bare typed ASIN with no verification. That is a direct contradiction of the founder's request ("search by
+ASIN, preview the product, select it, then track it") and is corrected here: **a trustworthy ASIN
+resolve/preview is P0, not P1.** Blind manual enrollment (typing an ASIN with no verification it resolves
+to a real product) is no longer part of the P0 Other Products flow.
 
-**Recommendation (needs confirmation before implementation, not locked by the founder decisions above):**
-use the SP-API Catalog Items API directly — the same API family the ASIN checker pipeline already calls
-for BSR/catalog data (per `BRAHMASTRA_MASTER_TRACKER.md`'s ASIN snapshot pipeline history: "SP-API Catalog"
-is already a live, approved, in-use data source for this app). A dedicated
-`resolveOtherProductPreview(asin, marketplaceId)` server function should call the existing Catalog Items
-lookup helper (the exact function name in `src/lib/amazon/catalog.ts` or equivalent needs a direct read
-before implementation — **not verified in this research/spec pass**, flagged as an implementation-time
-confirmation step, not assumed). This must **never** hit Seller Central pages (hard rule, matches the
-founder's explicit instruction and this app's existing "no scraping outside the checker-worker's approved
-Playwright checkers" discipline).
+The current `AddAsinDialog`/`handleAddAsin` flow on the ASIN Tracking page's Competitors tab
+(`asins/page.tsx:284-295` → `addTrackedAsin`/`addOrRestoreTrackedAsin`, `src/lib/supabase/asins.ts:117-193`)
+still does **not** perform a live SP-API catalog lookup — confirmed unchanged, it validates ASIN format only
+and inserts whatever title/brand/image the dialog itself collected (or blank). This is correctly **not**
+reused for Other Products' lookup.
 
-If, at implementation time, no clean reusable Catalog lookup helper exists, the fallback is: show the
-autocomplete/typed ASIN with a plain, honest "Preview not available — add anyway?" state rather than
-fabricate title/image/brand. This mirrors this codebase's established discipline of never inventing product
-data (see the Pincode P0 fix's "never guess" principle, `BRAHMASTRA_MASTER_TRACKER.md` §20).
+**The reusable helper is now confirmed, not speculative:** `getCatalogItemForAsin({ accessToken,
+marketplaceId, asin, signal })` in `src/lib/amazon/catalog.ts` is a real, already-shipped, server-only SP-API
+Catalog Items (2022-04-01) helper — already called from three existing routes
+(`src/app/api/keywords/products/route.ts`, `src/app/api/asins/jobs/process-next/route.ts`,
+`src/app/api/asins/[asin]/refresh/route.ts`), each following the same pattern: load the workspace's
+`amazon_connections` row, `refreshAccessToken(decryptToken(connection.refresh_token_encrypted))`, then call
+`getCatalogItemForAsin` under an `AbortController` timeout. The new `POST
+/api/pincode-monitoring/lookup-asin` route (§11) reuses this exact pattern verbatim — no new SP-API
+integration code, no scraping, no user cookies, no Seller Central page ever touched.
+
+**Honest failure, never fabricated data:**
+- No active `amazon_connections` row for the workspace → `503 { errorCode: 'catalog_connection_unavailable'
+  }`, surfaced in the UI as "Amazon connection required before looking up a product."
+- `getCatalogItemForAsin` throws `catalog_not_found` (SP-API 404) → the UI shows an honest "Amazon could not
+  confirm this ASIN — check the ASIN and try again," and **the product is not enrollable** from this state.
+  The founder's instruction is explicit on this point: *"if Amazon cannot confirm the ASIN, do not enroll it
+  as a valid product."* There is no manual override that skips a confirmed lookup for the P0 Other Products
+  path.
+- `getCatalogItemForAsin` throws `catalog_unavailable` (SP-API non-404 error) or the lookup call times out →
+  a distinct, honest "Lookup failed — try again" state, retryable, still not enrollable until it succeeds.
+  This is a transient-failure state, not a "confirmed does not exist" state, and must render differently
+  from the 404 case above.
+- A successful lookup with a partially empty payload (e.g. `title` present, `image_url` null) renders
+  whatever fields SP-API actually returned — matches this codebase's "never fabricate" discipline
+  (`BRAHMASTRA_MASTER_TRACKER.md` §20) — it does not block enrollment on a missing image alone, only on a
+  confirmed-nonexistent or failed-to-resolve ASIN.
+
+**Rate/timeout discipline:** the lookup call reuses the same `AbortController` + fixed-timeout pattern as
+the three existing callers (see `keywords/products/route.ts` for the exact shape) — implementation should
+confirm the existing `ENRICHMENT_TIMEOUT_MS` constant's value and reuse it rather than inventing a new
+timeout, so the lookup route's behavior stays consistent with the rest of the app's SP-API call sites.
 
 ---
 
@@ -185,18 +227,29 @@ data (see the Pincode P0 fix's "never guess" principle, `BRAHMASTRA_MASTER_TRACK
 | **Partially tracked** | A monitored-product row exists, but fewer pincodes are configured than the current workspace defaults (a signal, not an error). |
 | **Active** | Monitored, at least one `pincode_tracking_targets` row is `active`. |
 | **Paused** | Monitored, but every target for this product is `paused` — no future checks will run. |
-| **Archived** | The underlying `amazon_listing_items`/`tracked_asins` source (or the monitored-product row itself) is archived — all targets auto-paused (§`DATA_MODEL.md` §2, archived-cascade behavior), history preserved, visible only under the Archived filter (decision #10). |
+| **Archived** | The underlying `amazon_listing_items`/`tracked_asins` source (or the monitored-product row itself) is archived or its owned-listing reference was removed from the sync — all targets auto-paused (`DATA_MODEL.md` §5, archived-cascade behavior), history preserved, visible only under the Archived filter (decision #10). **Correction 1 (2026-07-18):** an owned product's `amazon_listing_item_id` can legitimately become `NULL` (the source listing row was removed) without the monitored product or its history being lost — this is exactly the case that must land here, not error out or silently vanish. |
 | **Failed** | Every target for this product has exceeded its `consecutive_failures` threshold (see `IMPLEMENTATION_PLAN.md` §Scheduler retry policy) — distinct from Paused: this state means the system tried and couldn't get a clean signal, not that the seller chose to stop. |
 
 ## 8. Pincode-level states (expanded rows)
 
-Same four-state vocabulary as the already-shipped Pincode P0 fix (`src/lib/pincode-status.ts`), reused
-verbatim for consistency:
+**Correction 8 (2026-07-18):** the first draft called this a "four-state vocabulary" but conflated "blocked"
+into "check failed," which the unified page must not do — a CAPTCHA/block is an honest, distinct signal
+(the checker *ran*, Amazon *blocked* it), not the same thing as a checker crash/timeout. Corrected to the
+actual **five-state** vocabulary, backed by two orthogonal database columns (`DATA_MODEL.md` §4 —
+`check_status` × `availability_status`) rather than one overloaded field:
 
-- **Available** — confirmed `available = true`.
-- **Unavailable** — confirmed `available = false`.
-- **Check failed** — a check was attempted and the checker itself failed/errored.
-- **Not confirmed** — never checked yet, or an uncertain (non-success, non-thrown) result.
+- **Available** — `check_status = 'success'`, `availability_status = 'available'`.
+- **Unavailable** — `check_status = 'success'`, `availability_status = 'unavailable'`.
+- **Not confirmed** — `check_status = 'success'`, `availability_status = 'unknown'`, **or** never checked
+  yet (no row exists for this target).
+- **Check failed** — `check_status = 'failed'` (checker errored/timed out/crashed).
+- **Blocked** — `check_status = 'blocked'` (a CAPTCHA/anti-bot response was detected) — rendered distinctly
+  from "Check failed" so a seller can tell "Amazon blocked us" from "our checker broke," which is also the
+  scheduler's own signal for whether to back off harder (`IMPLEMENTATION_PLAN.md` §2.6).
+
+This reuses `src/lib/pincode-status.ts`'s existing rendering helper where its logic already matches (the
+Available/Unavailable/Not-confirmed cases are unchanged), extended with the explicit Blocked case per the
+corrected `DATA_MODEL.md` §4 result-state model.
 
 Fulfillment: **FBA (Amazon Fulfilled)** / **FBM (Merchant Fulfilled)** / **Not confirmed** — same helper,
 `getFulfillmentDisplay()`, reused as-is.
@@ -216,6 +269,14 @@ Fulfillment: **FBA (Amazon Fulfilled)** / **FBM (Merchant Fulfilled)** / **Not c
 - A catalog listing (`amazon_listing_items` row) is not automatically an actively monitored product —
   enrollment is an explicit, separate action.
 - An Other Product is not automatically a competitor.
+- **(Correction 1)** An Other Product confirmed to be seller-owned does not stay labelled "Other Product" —
+  and does not lose its enrollment history when relabelled.
+- **(Correction 3)** A browser client's own claim about scheduler state (`status='checking'`, `claimed_at`,
+  `next_check_at`, `consecutive_failures`, etc.) is never trusted — only server/service-role writes to these
+  fields are truthful by construction, so the UI never lets a member fabricate "checking" or a fake
+  `next_check_at`.
+- **(Correction 10)** "Checking" shown in the UI reflects a genuinely queued/claimed request, never a
+  synchronous fire-and-hope call the browser is blocking on.
 
 ---
 
@@ -261,7 +322,7 @@ Fulfillment: **FBA (Amazon Fulfilled)** / **FBM (Merchant Fulfilled)** / **Not c
 | Enroll (bulk or single) | new `POST /api/pincode-monitoring/products` |
 | Update pincodes for a product | new `PATCH /api/pincode-monitoring/products/[id]/pincodes` |
 | Pause/resume/archive a product | new `PATCH /api/pincode-monitoring/products/[id]` |
-| Manual Check Now (product or single pincode) | new `POST /api/pincode-monitoring/check-now` (quota-gated, §`IMPLEMENTATION_PLAN.md`) |
+| Manual Check Now (product or single pincode) | new `POST /api/pincode-monitoring/check-now` — **queued, not synchronous** (Correction 10; validates workspace access + cooldown/quota, records the request atomically, returns `Accepted`/`Queued` immediately; see `IMPLEMENTATION_PLAN.md` §2.10) |
 | Workspace default pincodes | new `GET`/`PUT /api/pincode-monitoring/default-pincodes` |
 | Tracker table data | new `GET /api/pincode-monitoring/tracker` (paginated, product-row + nested pincode-row shape) |
 | Scheduler cron | new `GET /api/cron/pincode-monitoring/process-eligibility` (mirrors the review-requests split-worker pattern — see `IMPLEMENTATION_PLAN.md`) |
@@ -277,22 +338,37 @@ All new routes follow this codebase's existing auth conventions: session-based f
 
 1. A seller can see their full owned catalog (`amazon_listing_items`) in My Products, searchable/paginated.
 2. A seller can select 1..N products and enroll them with the workspace default pincodes in one action.
-3. A seller can add an Other Product by ASIN, see a real (or honestly-absent) preview, and enroll it,
-   without it ever being written to `tracked_asins` as a side effect.
+3. A seller can add an Other Product by ASIN, get a **real, SP-API-confirmed** preview or an honest lookup
+   failure, and enroll only a confirmed ASIN — never a blind, unverified one (Correction 11) — without it
+   ever being written to `tracked_asins` as a side effect.
 4. Enrolling the same ASIN twice (from either tab, or from both) never creates a duplicate
-   `pincode_monitored_products` row.
+   `pincode_monitored_products` row; an existing "Other Product" that turns out to be owned is converted in
+   place, preserving its `id` and history, never duplicated (Correction 1).
 5. The tracker table shows one row per enrolled product, expandable to per-pincode rows, never a flat
    product×pincode table.
-6. Every availability/fulfillment cell uses the same four-state vocabulary as the existing Pincode P0 fix
-   — no truthy-coercion regressions.
-7. Archiving a product (in its source table) pauses its future checks, keeps its history queryable, and
-   surfaces it only under an explicit Archived filter — never a silent disappearance.
-8. Manual "Check Now" is rate/quota-limited and queued, never fires an unbounded/instant synchronous check.
-9. `pincode_checks` and `pincode_availability_results` are unmodified by this phase — read-only legacy
-   sources, still queryable for history where applicable.
+6. Every availability/fulfillment cell uses the corrected five-state vocabulary (Correction 8: Available /
+   Unavailable / Blocked / Check failed / Not confirmed) — no truthy-coercion regressions, and Blocked never
+   renders identically to Check failed.
+7. Archiving a product (in its source table, or the removal of an owned product's source listing row) pauses
+   its future checks, keeps its history queryable, and surfaces it only under an explicit Archived filter —
+   never a silent disappearance (Correction 1).
+8. Manual "Check Now" is genuinely queued (Correction 10) — the browser gets an immediate
+   Accepted/Queued response, never blocks on the storefront check itself; duplicate manual requests for the
+   same target are coalesced.
+9. `pincode_checks` and `pincode_availability_results` are unmodified in their existing columns/rows by this
+   phase (only additive columns per `DATA_MODEL.md` §4/§9) — read-only legacy sources, still queryable for
+   history where applicable; existing rows remain readable under the corrected result-state model
+   (Correction 8).
 10. The recurring scheduler (decision #8) runs at least once end-to-end against real enrolled data in a
-    supervised, approved production check before the workstream is considered P0-complete (see
-    `IMPLEMENTATION_PLAN.md` §Rollout).
+    supervised, approved production check, on an **internal-workspace feature flag** (Correction 12) before
+    any broader rollout, before the workstream is considered P0-complete (see `IMPLEMENTATION_PLAN.md`
+    §Rollout).
+11. **(Correction 2)** No monitored product, tracking target, or result row can reference a source row
+    (listing, tracked ASIN, or monitored product) belonging to a different workspace — enforced at the
+    database layer, verified by a cross-workspace-FK-rejection test, not merely assumed from RLS.
+12. **(Correction 3)** No ordinary member session can directly set `status='checking'`, `claimed_at`,
+    `next_check_at`, or any other scheduler-owned field via a raw table write — verified by an
+    unauthorized-mutation-rejection test.
 
 ---
 

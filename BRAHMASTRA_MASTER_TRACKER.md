@@ -3375,3 +3375,91 @@ spec-and-review round only.
 **Next step (needs the founder):** review all 3 spec documents and the recurring-scheduler-into-P0
 trade-off flag specifically; approve, adjust, or reject the P0/P1/P2 split before any implementation
 worktree is opened.
+
+### §22 update (2026-07-18) — PR #53 amended: 13 technical corrections applied, still not merged
+
+**Decision received:** PR #52 (Keywords production-verification docs) approved and merged (`672be9f`). PR
+#53 (this spec) **not** approved to merge as-is — recurring standing Pincode tracking **stays in P0** (the
+trade-off resolution above is confirmed, not reversed), but 13 technical corrections were required before
+re-review. This entry summarizes the amendment; **PR #53 is still spec-only, still not merged, no code, no
+migration, no deployment** — none of that changed.
+
+**What was actually wrong with the first draft, corrected in place (not superseded — same 3 documents
+amended, same PR):**
+
+1. **Owned-product FK contradiction** — the schema's `ON DELETE SET NULL` on `amazon_listing_item_id` and a
+   permanent CHECK requiring that same column non-null for every owned row directly contradicted each other.
+   Fixed: the CHECK is removed; the owned-listing requirement now lives in a new atomic enrollment RPC
+   (`enroll_pincode_monitored_products`, `DATA_MODEL.md` §2a) instead of a standing constraint; an owned
+   row's FK may legitimately go null (source listing removed) without losing the monitored-product row or
+   its history — it archives instead. An Other Product later confirmed owned is converted in place
+   (`product_source` flips, same `id`, same history), never left mislabelled.
+2. **Cross-workspace FK integrity** — the original FKs proved a referenced row *existed*, never that it
+   belonged to the *same workspace*. Fixed with workspace-scoped composite FKs (`(workspace_id, id)`
+   uniqueness added to `amazon_listing_items`/`tracked_asins`, composite FKs from `pincode_monitored_
+   products`, `pincode_tracking_targets`, and `pincode_availability_results`) — database-enforced, not
+   RLS-dependent.
+3. **RLS let members write scheduler state** — the first draft gave ordinary members blanket `UPDATE` on
+   `pincode_tracking_targets`/`pincode_monitored_products`, meaning any member could fabricate
+   `status='checking'`, fake claim fields, or a fake `next_check_at`. Fixed: both tables are now
+   `SELECT`-only for members; every mutation goes through authenticated server routes / service-role RPCs
+   that verify workspace membership and role first. `workspace_default_pincodes` (no automation fields)
+   keeps direct member CRUD, unchanged.
+4. **Claim wasn't actually atomic** — a Supabase/Next.js client doing `SELECT ... FOR UPDATE SKIP LOCKED`
+   then a separate `UPDATE` call is two round-trips, not one transaction. Fixed with a real
+   `claim_due_pincode_targets` database function (`SECURITY DEFINER`, explicit `search_path`,
+   `service_role`-only `EXECUTE`) that performs the row-lock selection and guarded update inside one
+   PL/pgSQL transaction, minting a fresh `claim_token` per claim.
+5. **40 rows claimed up front, budget checked per-unit** — could leave unstarted claimed rows stuck
+   `'checking'` on a runtime cutoff. Fixed with bounded chunk claims (claim a small chunk ≤ concurrency,
+   fully finalize it, check budget, only then claim another) — structurally impossible to strand a claimed,
+   unstarted row. Reporting now distinguishes `targetsSelected/Claimed/Completed/Failed/Released`,
+   `dueBacklogRemaining`, `stoppedDueToRuntimeBudget`.
+6. **40/8 batch/concurrency was asserted "proven," not measured for this checker** — review-requests calls
+   Amazon APIs; pincode checks drive a Playwright storefront checker with a confirmed
+   `OVERALL_TIMEOUT_MS = 55_000` (`checker-worker/src/checkers/pincodeAvailability.ts:63`, read directly).
+   5 waves × 55s = 275s doesn't fit a 220s budget. Fixed: defaults are now explicitly "to be finalized by
+   pre-implementation benchmark," with a documented calculation method, a conservative starting point
+   (concurrency 4 / chunk size 4), and a ≥20% safety-margin acceptance threshold.
+7. **"Two rows for the same repeated check" was mislabelled idempotency.** Fixed with a real idempotent
+   attempt model: a unique `claim_token`/`check_attempt_id` per claim, a `UNIQUE` constraint on
+   `pincode_availability_results.check_attempt_id`, and one atomic `finalize_pincode_check` RPC that inserts
+   the result (or returns the already-recorded one on retry) and updates the target's state together,
+   guarded by the token.
+8. **`availability_status` was unconstrained text, couldn't enforce the claimed 4/5-state model.** Fixed
+   with two orthogonal columns — `check_status` (`success`/`failed`/`blocked`) × `availability_status`
+   (`available`/`unavailable`/`unknown`) — mapped to the five product-facing states (Available / Unavailable
+   / Blocked / Check failed / Not confirmed). A read-only production audit is required before any CHECK
+   constraint is added; legacy rows are preserved, never rewritten.
+9. **Due index led with `workspace_id` while the actual due-query is global**, and the 200/workspace cap was
+   a no-op against a 40-row batch. Fixed: index corrected to `(next_check_at, workspace_id)` (plus a second,
+   distinct workspace-scoped index for per-workspace reads), and a round-robin/partitioned per-workspace
+   fairness pass added inside the claim function.
+10. **Manual Check Now was synchronous**, contradicting founder decision #9 ("safely queued"). Fixed: Check
+    Now now atomically records a coalesced request and returns `Accepted/Queued` immediately; the scheduler
+    picks it up via the same atomic claim path.
+11. **Other Products SP-API lookup was demoted to P1** while P0 still allowed blind manual ASIN entry —
+    directly contradicting the founder's "search, preview, then track" request. Fixed: the reusable helper
+    is now confirmed real (`getCatalogItemForAsin()`, `src/lib/amazon/catalog.ts`, already used at 3 existing
+    call sites) — the trustworthy lookup/preview moves into P0, unconfirmed ASINs are never enrollable.
+12. **Rollout shipped the enrollment UI to 100% of production before the scheduler was wired** — real
+    sellers could have enrolled real products with no scheduler yet running. Fixed with an 8-step staged
+    rollout behind an internal-workspace feature flag/allowlist, expanding only after a GREEN-verified first
+    natural cron cycle.
+13. **Missing defensible constraints** — added: `cadence_hours` bounds, non-negative `consecutive_failures`,
+    a claim-field-consistency CHECK, ASIN/pincode format checks, and `updated_at` triggers (`fn_set_
+    updated_at`) on all three new tables.
+
+**Files amended (same PR, no replacement):** `PINCODE_UNIFIED_PAGE_PRODUCT_SPEC.md`,
+`PINCODE_UNIFIED_PAGE_DATA_MODEL.md`, `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md`,
+`BRAHMASTRA_MASTER_TRACKER.md` (this entry). Test plan expanded from a general description to 18 named,
+correction-mapped required tests (cross-workspace FK rejection, unauthorized scheduler-state mutation
+rejection, atomic concurrent claims, idempotent finalize retry, crash recovery, workspace fairness, queued
+Check Now coalescing, SP-API lookup success/failure, Other↔Owned promotion/history preservation, legacy-row
+compatibility, and the capacity/runtime-budget margin check).
+
+**Still not done in this round:** no migration applied, no application code written, no deployment — the PR
+remains spec-and-review only, per the explicit instruction not to implement.
+
+**Next step (needs the founder):** review the amended spec set and either approve for an implementation
+worktree to be opened, or request further changes. PR #53 itself is not merged.
