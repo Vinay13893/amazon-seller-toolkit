@@ -20,6 +20,20 @@ session's own code reads, relied on throughout this amendment:
   **owner/admin/member/viewer** — there is no distinct "Analyst" role. §6 documents access by these four
   real roles, not the "Owner/Admin/Analyst/Viewer" naming used in the correction request.
 
+**Amendment 2 (2026-07-18) — confirmed against production, not re-derived:**
+
+- **PostgreSQL version: 17.6 (`server_version_num = 170006`)**, confirmed by independent production check.
+  §2's `ON DELETE SET NULL (column_name)` column-specific syntax (PG15+) is therefore **supported, not a
+  risk to hedge on** — the composite-FK design in §2/§3/§4 is the primary path, not a "recommended if
+  available" one. The PG-version fallback (trigger-based enforcement) remains documented for portability
+  (e.g. a future non-Supabase or downgraded environment) but is explicitly **not a blocker for this
+  project**.
+- **Read-only production audit of `pincode_availability_results` (Correction 8/§4a), actual counts:**
+  `availability_status = 'available'` with `error_code` absent: **18 rows**; `availability_status =
+  'unknown'` with `error_code` present: **7 rows**. No other `(availability_status, error_code presence)`
+  combination currently exists in production. §4a's backfill rule is updated to these exact facts, not a
+  hypothetical value set.
+
 ---
 
 ## 0. Confirmed facts this design relies on
@@ -170,11 +184,12 @@ CREATE TABLE public.pincode_monitored_products (
   -- Workspace-scoped composite FKs (Correction 2): the referenced row must
   -- belong to the SAME workspace_id, enforced by Postgres, not just RLS.
   -- ON DELETE SET NULL (<col>) is PostgreSQL 15+ syntax that nulls only the
-  -- named column, never workspace_id itself -- confirm the target Postgres
-  -- version before writing the migration (Supabase-managed projects have
-  -- defaulted to PG15+ for some time, but this is a stated precondition,
-  -- not assumed). If the target version predates PG15, use the documented
-  -- trigger-based fallback below instead.
+  -- named column, never workspace_id itself -- CONFIRMED SUPPORTED: this
+  -- production project runs PostgreSQL 17.6 (server_version_num=170006,
+  -- independently verified 2026-07-18). This is the primary design, not a
+  -- version-gated one. The trigger-based fallback below is kept only for
+  -- portability to a hypothetical future non-PG15+ environment, not because
+  -- this project needs it.
   CONSTRAINT pincode_monitored_products_listing_fk
     FOREIGN KEY (workspace_id, amazon_listing_item_id)
     REFERENCES public.amazon_listing_items (workspace_id, id)
@@ -200,15 +215,16 @@ CREATE TRIGGER trg_pincode_monitored_products_updated_at
   FOR EACH ROW EXECUTE FUNCTION public.fn_set_updated_at();
 ```
 
-**PG15 fallback (only if the target Postgres version predates 15):** replace the two composite FKs' `ON
-DELETE SET NULL (<col>)` clause with plain `ON DELETE NO ACTION`, keep the single-column
-`amazon_listing_item_id uuid REFERENCES amazon_listing_items(id) ON DELETE SET NULL` FK **in addition** to
-the composite one for the actual null-on-delete behavior, and add a `BEFORE INSERT OR UPDATE` trigger that
-rejects any row where `amazon_listing_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM amazon_listing_items
-WHERE id = NEW.amazon_listing_item_id AND workspace_id = NEW.workspace_id)` (same for `tracked_asin_id`) —
-equally strong, database-enforced, just trigger-based instead of a single composite FK. This fallback is
-documented so implementation isn't blocked on confirming the Postgres version first, but the composite-FK
-form above is the recommended default.
+**Portability fallback (not needed for this project — production is confirmed PG17.6):** if this schema were
+ever ported to a Postgres <15 environment, replace the two composite FKs' `ON DELETE SET NULL (<col>)`
+clause with plain `ON DELETE NO ACTION`, keep the single-column `amazon_listing_item_id uuid REFERENCES
+amazon_listing_items(id) ON DELETE SET NULL` FK **in addition** to the composite one for the actual
+null-on-delete behavior, and add a `BEFORE INSERT OR UPDATE` trigger that rejects any row where
+`amazon_listing_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM amazon_listing_items WHERE id =
+NEW.amazon_listing_item_id AND workspace_id = NEW.workspace_id)` (same for `tracked_asin_id`) — equally
+strong, database-enforced, just trigger-based instead of a single composite FK. This is retained purely for
+documentation completeness/portability; implementation should use the composite-FK form above directly, with
+no version-gating logic, since the version is already confirmed.
 
 **Marketplace consistency (Correction 2, "confirm whether required"):** `amazon_listing_items.marketplace_id`
 is nullable (`007_amazon_account_data_foundation.sql:77`), so it cannot be folded into the composite FK
@@ -261,6 +277,59 @@ enrollment path itself, not the schema:
   valid listing succeeds; enrolling an owned product with a fabricated/foreign-workspace listing ID is
   rejected; enrolling the same ASIN as owned after it was already "other" performs the promotion in place
   and does not duplicate history.
+
+---
+
+## 2b. Quota enforcement — locked founder decision (2026-07-18)
+
+**Locked:** capped enrollment with explicit rejection. Unlimited enrollment followed by silent scheduler
+throttling is **not** the P0 design — this resolves the prior round's open risk (§8 item 2, previously
+"needs explicit confirmation") with a specific, binding answer.
+
+**Quota unit:** one **active** `pincode_tracking_targets` row, scoped `(workspace_id, marketplace_id)`.
+
+- My Products and Other Products consume the **same** quota pool — `product_source` is irrelevant to the
+  count.
+- `status IN ('paused', 'archived')` targets **do not** count toward the active total — pausing or archiving
+  frees quota immediately.
+- `status = 'checking'` targets **do** count (they're still an active, currently-in-flight target; excluding
+  them would let a seller enroll past the limit by racing the scheduler).
+- Resuming a paused target (`status: 'paused' → 'active'`) **re-checks** quota exactly like a fresh
+  enrollment — quota is not a one-time gate at initial enrollment only.
+
+**Enforcement point:** the same atomic enrollment RPC (`enroll_pincode_monitored_products`, above) and a new
+resume RPC/route both perform, inside the same transaction as the status change:
+
+```sql
+SELECT count(*) FROM pincode_tracking_targets t
+JOIN pincode_monitored_products p ON p.id = t.monitored_product_id
+WHERE p.workspace_id = :workspace_id
+  AND p.marketplace_id = :marketplace_id
+  AND t.status IN ('active', 'checking');
+```
+
+If `current_count + requested_additional_count > limit`, the enrollment/resume is **rejected in the same
+transaction** — no partial enrollment (e.g. 3 of 5 requested pincodes succeeding, 2 silently dropped) is
+created. Required response shape (service-role RPC raises a distinguishable error; the calling server route
+maps it to HTTP):
+
+```
+HTTP 409
+{
+  "errorCode": "pincode_tracking_quota_exceeded",
+  "currentActiveTargets": <int>,
+  "requestedAdditionalTargets": <int>,
+  "limit": <int>
+}
+```
+
+**The limit itself is config-driven, not a schema value.** P0 ships **one configurable internal-workspace
+limit** (an environment variable, e.g. `PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE`, read by the
+enrollment/resume RPC's calling server route and passed as a parameter — not hardcoded inside the RPC, so it
+can be tuned without a migration) — the exact numeric value is **not invented in this spec**, it is a
+product/ops decision to be set alongside the P0-A implementation PR (`IMPLEMENTATION_PLAN.md` §9). Commercial
+plan-specific quota tiers (different limits per subscription plan) stay explicitly P1 — P0's single
+configurable limit does not attempt to model per-plan tiering.
 
 ---
 
@@ -370,6 +439,14 @@ CREATE INDEX pincode_tracking_targets_monitored_product_idx
 CREATE UNIQUE INDEX pincode_tracking_targets_manual_request_idx
   ON public.pincode_tracking_targets (manual_request_token) WHERE manual_request_token IS NOT NULL;
 
+-- Correction 2 (2026-07-18): claim_token must be database-enforced unique,
+-- not just assumed collision-free by virtue of being a UUID. The finalize
+-- RPC (IMPLEMENTATION_PLAN.md §2.7) locates exactly one claimed target by
+-- claim_token alone -- without this index, that lookup is only
+-- probabilistically safe, not provably safe.
+CREATE UNIQUE INDEX pincode_tracking_targets_claim_token_uidx
+  ON public.pincode_tracking_targets (claim_token) WHERE claim_token IS NOT NULL;
+
 CREATE TRIGGER trg_pincode_tracking_targets_updated_at
   BEFORE UPDATE ON public.pincode_tracking_targets
   FOR EACH ROW EXECUTE FUNCTION public.fn_set_updated_at();
@@ -406,35 +483,79 @@ consumers' assumptions. `pincode_availability_results` is architecturally *alrea
 (better state model, better index, ASIN-text-keyed so it never needed a `tracked_asins` dependency in the
 first place) and has **zero** existing consumers to risk breaking.
 
-**Minimum additive change required (still no migration in this round, documented for the next phase):**
-add one nullable FK, plus the corrected result-state columns below, plus an index
-`(monitored_product_id, pincode, checked_at DESC)` for the unified page's per-target history queries.
-
-**Correction 2 (2026-07-18) — the new FK must also be workspace-scoped**, for the same reason as §2/§3: a
-plain `monitored_product_id uuid REFERENCES pincode_monitored_products(id)` cannot prove the referenced
-monitored product belongs to the same workspace as the result row.
+**Correction 1 (2026-07-18) — the first draft's additive-column list was incomplete.** The Implementation
+Plan's idempotent-finalize design (`IMPLEMENTATION_PLAN.md` §2.7) requires `check_attempt_id` to exist on
+this table, and the atomic finalize RPC needs a direct FK to the specific `pincode_tracking_targets` row
+(not just the parent monitored product) so it can insert one result row with everything the RPC already
+knows in a single statement — neither of these were actually added to the schema in the prior round, only
+described in prose. Corrected: **four** additive columns, not one, all workspace-scoped where they reference
+another table:
 
 ```sql
 ALTER TABLE public.pincode_availability_results
-  ADD COLUMN monitored_product_id uuid;
+  ADD COLUMN monitored_product_id uuid,
+  ADD COLUMN tracking_target_id   uuid,
+  ADD COLUMN check_attempt_id     uuid,
+  ADD COLUMN check_status         text;  -- 'success' | 'failed' | 'blocked' -- see §4a
 
+-- Workspace-scoped composite FKs (Correction 2, same discipline as §2/§3).
+-- Both confirmed safe on this project's PostgreSQL 17.6 -- see the
+-- amendment note at the top of this document.
 ALTER TABLE public.pincode_availability_results
   ADD CONSTRAINT pincode_availability_results_monitored_product_fk
   FOREIGN KEY (workspace_id, monitored_product_id)
   REFERENCES public.pincode_monitored_products (workspace_id, id)
-  ON DELETE SET NULL (monitored_product_id);  -- PG15+; see §2's fallback note if unavailable
+  ON DELETE SET NULL (monitored_product_id);
 
+ALTER TABLE public.pincode_availability_results
+  ADD CONSTRAINT pincode_availability_results_tracking_target_fk
+  FOREIGN KEY (workspace_id, tracking_target_id)
+  REFERENCES public.pincode_tracking_targets (workspace_id, id)
+  ON DELETE SET NULL (tracking_target_id);
+
+-- Correction 2: claim_token uniqueness -- the finalize RPC's idempotency
+-- key. Partial (non-null only) because legacy/bulk-checker rows never set
+-- it.
+CREATE UNIQUE INDEX pincode_availability_results_check_attempt_uidx
+  ON public.pincode_availability_results (check_attempt_id)
+  WHERE check_attempt_id IS NOT NULL;
+
+-- Per-target history (the unified tracker table's expanded-row query) --
+-- new, addresses the gap the first draft's monitored_product_id-only index
+-- couldn't serve as precisely (a product can have many targets/pincodes;
+-- this indexes the one-target case directly).
+CREATE INDEX pincode_availability_results_tracking_target_idx
+  ON public.pincode_availability_results (tracking_target_id, checked_at DESC)
+  WHERE tracking_target_id IS NOT NULL;
+
+-- Retained from the first draft, unchanged -- per-product history across
+-- all of a product's pincodes.
 CREATE INDEX pincode_availability_results_monitored_product_idx
   ON public.pincode_availability_results (monitored_product_id, pincode, checked_at DESC)
   WHERE monitored_product_id IS NOT NULL;
+
+-- Existing composite index, retained unchanged (016_scraping_jobs_foundation.sql:50-51):
+-- pincode_availability_results_workspace_asin_pin_checked_idx
+-- ON public.pincode_availability_results (workspace_id, asin, pincode, checked_at DESC)
 ```
 
-`job_id` stays nullable and optional — a scheduler-originated check populates `monitored_product_id` and
-leaves `job_id` null (this isn't a `scraping_jobs`-queue check anymore, it's a new scheduler, see
-`IMPLEMENTATION_PLAN.md`); a legacy bulk-checker-originated check keeps working exactly as today, `job_id`
-populated, `monitored_product_id` null. **No backfill of historical rows is required or recommended** —
-decision #11 preserves both legacy tables untouched; old rows simply predate the new FK and stay queryable
-by their existing keys.
+**Required on every new unified-scheduler result:** `monitored_product_id`, `tracking_target_id`, and
+`check_attempt_id` must all be populated — `finalize_pincode_check` (`IMPLEMENTATION_PLAN.md` §2.7) inserts
+all three in the same statement it already has all three values available for (the claimed target row IS
+the source of `tracking_target_id` and `monitored_product_id`; `check_attempt_id` is the target's own
+`claim_token`). **Legacy bulk-checker rows may keep all four new columns `NULL`** — no backfill, no
+retroactive assignment; this is consistent with decision #11 (both legacy tables preserved, no
+consolidation).
+
+`job_id` stays nullable and optional — a scheduler-originated check populates `monitored_product_id`/
+`tracking_target_id`/`check_attempt_id` and leaves `job_id` null (this isn't a `scraping_jobs`-queue check
+anymore, it's a new scheduler, see `IMPLEMENTATION_PLAN.md`); a legacy bulk-checker-originated check keeps
+working exactly as today, `job_id` populated, all four new columns null. **No backfill of historical rows'
+new-column values is required or recommended** — decision #11 preserves both legacy tables untouched; old
+rows simply predate the new columns and stay queryable by their existing keys (the separate, required
+`check_status` backfill in §4a is a different, narrower operation — it populates `check_status` on existing
+rows so legacy history stays readable under the corrected state model, it does not touch the four columns
+above).
 
 **`pincode_checks` is not deleted, not migrated, not touched.** It remains the ASIN-detail widget's data
 source exactly as today (out of scope, §`PRODUCT_SPEC.md` §4) and continues serving its 5 existing
@@ -451,13 +572,9 @@ nothing stops `availability_status` from holding an arbitrary string, and nothin
 ran and confirmed unknown availability" from "the check itself failed/was blocked" — those are conflated
 into whatever ad hoc value was written at each call site historically.
 
-**Corrected model — two orthogonal columns, not one overloaded field:**
-
-```sql
--- New column, additive:
-ALTER TABLE public.pincode_availability_results
-  ADD COLUMN check_status text;  -- 'success' | 'failed' | 'blocked'
-```
+**Corrected model — two orthogonal columns, not one overloaded field.** `check_status` is added in §4's
+column list above (part of the same additive migration as `monitored_product_id`/`tracking_target_id`/
+`check_attempt_id`, not a separate ALTER):
 
 - `check_status`: **did the check itself complete cleanly?** `'success'` | `'failed'` | `'blocked'`.
 - `availability_status` (existing column, unchanged type): **what did a successful check observe?**
@@ -474,26 +591,52 @@ Mapping to the product-facing five-state vocabulary (`PRODUCT_SPEC.md` §8):
 | `blocked` | *(any/null)* | **Blocked** |
 | *(no row)* | — | **Not confirmed** (never checked) |
 
-**Before adding any CHECK constraint to this existing, already-populated table:**
+**Correction 9 (2026-07-18) — the read-only production audit is done; recorded here with real numbers, not
+a method description.** Query run: `SELECT availability_status, (error_code IS NOT NULL) AS has_error,
+count(*) FROM pincode_availability_results GROUP BY 1, 2`. Actual result, confirmed independently:
 
-1. **Audit first, read-only.** Run `SELECT DISTINCT availability_status, error_code IS NOT NULL AS has_error
-   FROM pincode_availability_results GROUP BY 1, 2` (and the equivalent for `pincode_checks`, out of scope
-   for schema changes but relevant context) against production **before** writing the backfill/constraint
-   migration. This spec does not assume what that audit will find — it specifies the method and the
-   acceptance bar, not invented distinct values.
-2. **Backfill `check_status` for existing rows without guessing.** A defensible, mechanical rule using
-   already-present columns: `error_code IS NOT NULL → 'failed'`, `availability_status = 'blocked' →
-   'blocked'` (and correspondingly clear/normalize `availability_status` to `NULL`/`'unknown'` for those
-   blocked rows so it stops double-encoding the same fact), everything else with a recognized
-   `availability_status` value → `'success'`. Any row that doesn't cleanly match one of these buckets after
-   the audit must be reported, not silently forced into a bucket — **do not write a CHECK constraint that
-   existing rows would violate**, and do not rewrite ambiguous legacy history to make a constraint pass.
+| `availability_status` | `error_code` present | Row count |
+|---|---|---|
+| `available` | no | **18** |
+| `unknown` | yes | **7** |
+
+**No other `(availability_status, error_code presence)` combination currently exists in production** —
+specifically, **no rows exist today with `unavailable`, `blocked`, or `unknown`-without-error.** This spec
+does not fabricate those combinations to demonstrate the five-state model; they simply have zero current
+production examples, and the corrected model still supports them correctly for future rows (the mapping
+table above is unconditional, not audit-conditional).
+
+**Backfill rule, updated to these confirmed facts (mechanical, not guessed):**
+
+- `availability_status = 'available' AND error_code IS NULL` (18 rows) → `check_status = 'success'`,
+  `availability_status` **unchanged** (`'available'`).
+- `availability_status = 'unknown' AND error_code IS NOT NULL` (7 rows) → `check_status = 'failed'`,
+  **preserve** the original `availability_status`/`error_code`/`error_message` values as-is for legacy
+  readability — do not null or rewrite them, only add the new `check_status` value alongside.
+- No third bucket is needed for the migration that actually runs against current production data — the
+  general "any row that doesn't cleanly match" fallback below is retained for defensiveness (a future row
+  written between this audit and the migration running could theoretically land outside these two buckets),
+  not because today's data requires it.
+
+**Before adding any CHECK constraint to this existing, already-populated table (sequencing unchanged from
+the first round, now backed by the actual numbers above rather than a hypothetical):**
+
+1. ~~Audit first, read-only~~ — **done**, see the table above.
+2. **Backfill `check_status` for existing rows using the two confirmed buckets above** — not a guessed rule
+   anymore, the exact production value set. Any row that doesn't cleanly match one of these two buckets
+   after re-running the audit at migration time (e.g. new rows written since 2026-07-18) must be reported,
+   not silently forced into a bucket — **do not write a CHECK constraint that existing rows would violate**,
+   and do not rewrite ambiguous legacy history to make a constraint pass. Given only two clean buckets exist
+   today, this is a low-risk step, but the re-check-before-migrating discipline stays as written.
 3. **Preserve legacy rows exactly.** No historical row's `availability_status`/`error_code`/`error_message`
    values are deleted or overwritten beyond the mechanical `check_status` backfill above — old rows remain
-   readable under their original meaning.
-4. Only after the audit confirms a clean (or cleanly-bucketed) value set does a `CHECK
-   (check_status IN ('success','failed','blocked'))` constraint get added — as its own, separate, reviewed
-   migration, not bundled with the additive-column migration.
+   readable under their original meaning. New unified-scheduler writes follow the corrected
+   `check_status`/`availability_status` model from day one (§4's required-columns note); legacy rows are
+   never retroactively forced to look like new ones.
+4. Only after the backfill above is applied does a `CHECK (check_status IN ('success','failed','blocked'))`
+   constraint get added — as its own, separate, reviewed migration, not bundled with the additive-column
+   migration. With only two clean production buckets confirmed, this constraint is low-risk to add once the
+   backfill runs, but remains a separate migration per the original sequencing discipline.
 
 This audit-before-constrain sequencing is itself a P0 requirement of this spec (it blocks writing the
 CHECK, not the additive column) — see `IMPLEMENTATION_PLAN.md` §3 P0 list and §5 test #16/#17.
@@ -574,31 +717,31 @@ column isn't" — Postgres RLS is row-scoped, not column-scoped. Revised model:
   shared between user actions (pause/resume/remove) and the archival reconciliation pass (§5), so it carries
   the same "don't let a client fabricate it" risk. Enrollment, pause/resume, and edits all go through the
   server routes in `PRODUCT_SPEC.md` §11, using the service-role client after a membership/role check.
-- **`workspace_default_pincodes`: members keep direct CRUD via RLS** — this table has no automation-owned
-  fields (no claim/status-machine columns), so the original member-CRUD pattern is still correct here and is
-  unchanged, **provided** `workspace_id` in every `INSERT`/`UPDATE` is still validated against
-  `user_workspace_ids()` in the `WITH CHECK`/`USING` clause below — a member cannot supply an arbitrary
-  `workspace_id` they don't belong to, RLS already prevents that, this is confirmed unchanged from the first
-  draft, not a new gap.
+- **Correction 5 (2026-07-18) — `workspace_default_pincodes` is corrected to `SELECT`-only too, reversing the
+  prior round's "members keep direct CRUD" call.** The prior round's reasoning ("no automation-owned fields,
+  so direct member CRUD is safe") missed a real gap: `user_workspace_ids()` returns every workspace a user
+  belongs to **regardless of role**, including `viewer`. A blanket member-CRUD RLS policy on this table would
+  let a `viewer` — who this spec elsewhere promises is read-only — bypass the server route's role check
+  entirely by calling the Supabase client directly with `INSERT`/`UPDATE`/`DELETE` on
+  `workspace_default_pincodes`, since RLS has no role-column awareness, only workspace membership. **Simpler,
+  safe rule adopted instead: all three new configuration tables are `SELECT`-only for members, with zero
+  exceptions** — there is exactly one mutation path (authenticated server route → role check → service-role
+  write), never two competing paths where one (RLS-direct) accidentally has weaker enforcement than the
+  other (the route's own role check).
 
 ```sql
 ALTER TABLE public.workspace_default_pincodes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pincode_monitored_products  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pincode_tracking_targets    ENABLE ROW LEVEL SECURITY;
 
--- workspace_default_pincodes: unchanged member CRUD (no automation fields).
+-- All three tables: SELECT only for members. No member-facing
+-- INSERT/UPDATE/DELETE policy exists on ANY of them (Correction 5) -- every
+-- mutation, including workspace_default_pincodes changes, goes through an
+-- authenticated server route that checks role before writing via the
+-- service-role client. This is deliberately the ONLY mutation path -- see
+-- the role table below.
 CREATE POLICY "workspace_default_pincodes: member select" ON public.workspace_default_pincodes FOR SELECT
   USING (workspace_id IN (SELECT public.user_workspace_ids()));
-CREATE POLICY "workspace_default_pincodes: member insert" ON public.workspace_default_pincodes FOR INSERT
-  WITH CHECK (workspace_id IN (SELECT public.user_workspace_ids()));
-CREATE POLICY "workspace_default_pincodes: member update" ON public.workspace_default_pincodes FOR UPDATE
-  USING (workspace_id IN (SELECT public.user_workspace_ids()));
-CREATE POLICY "workspace_default_pincodes: member delete" ON public.workspace_default_pincodes FOR DELETE
-  USING (workspace_id IN (SELECT public.user_workspace_ids()));
-
--- pincode_monitored_products / pincode_tracking_targets: SELECT only for
--- members. No member-facing INSERT/UPDATE/DELETE policy on either table --
--- all writes go through service-role server routes (Correction 3).
 CREATE POLICY "pincode_monitored_products: member select" ON public.pincode_monitored_products FOR SELECT
   USING (workspace_id IN (SELECT public.user_workspace_ids()));
 CREATE POLICY "pincode_tracking_targets: member select" ON public.pincode_tracking_targets FOR SELECT
@@ -619,17 +762,18 @@ needs a role check, so it must be written new, not reused from a precedent that 
 
 | Role | Pincode Checker access via the new server routes |
 |---|---|
-| `owner`, `admin` | Full: enroll/pause/resume/remove products, manage `workspace_default_pincodes`, request Manual Check Now. |
-| `member` | Same as `owner`/`admin` for this feature — Pincode tracking is a working-day tool, not an admin-only one; no existing precedent in this codebase restricts `member` from equivalent actions on `tracked_asins` today, so this preserves consistency rather than inventing a new restriction. |
-| `viewer` | `SELECT` only (already enforced by RLS regardless of route logic) — every mutating route additionally rejects a `viewer`-role caller server-side with `403`, so a `viewer` cannot mutate even if a future RLS change were misconfigured. Defense in depth, not reliance on RLS alone. |
+| `owner`, `admin`, `member` | Full: enroll/pause/resume/remove products, manage `workspace_default_pincodes`, request Manual Check Now — Pincode tracking is a working-day tool, not an admin-only one; no existing precedent in this codebase restricts `member` from equivalent actions on `tracked_asins` today, so this preserves consistency rather than inventing a new restriction. |
+| `viewer` | `SELECT` only — enforced **twice, redundantly by design** (Correction 5): (1) RLS itself grants no role, `viewer` included, any direct write path on any of the three tables (no member-CRUD RLS policy exists to bypass), and (2) every mutating server route additionally rejects a `viewer`-role caller with `403` before it would ever reach the service-role write. Because RLS alone already blocks it, the server-side role check is defense-in-depth, not the only line of defense — this is the material difference from the prior round, where `workspace_default_pincodes`'s RLS was the *only* thing separating a `viewer`'s direct Supabase call from a successful write, and RLS doesn't check role at all (it only checks workspace membership) — so a `viewer` could have bypassed the route's role check entirely. |
 
 Every mutating server route validates, in this order: (1) authenticated session exists, (2) the caller is a
 member of the target `workspace_id` (via `user_workspace_ids()` server-side, the same check RLS itself
-uses), (3) the caller's role is not `viewer`. A `workspace_id` is never accepted from the request body/query
-string as the sole authority — it is always cross-checked against the session's actual membership, so a
-crafted request cannot target a workspace the caller doesn't belong to (this applies to
-`workspace_default_pincodes`'s CRUD routes too, per the correction's explicit callout that "workspace
-default-pincode management ... cannot accept a `workspace_id` supplied without membership validation").
+uses), (3) the caller's role is `owner`/`admin`/`member` (not `viewer`). A `workspace_id` is never accepted
+from the request body/query string as the sole authority — it is always cross-checked against the session's
+actual membership, so a crafted request cannot target a workspace the caller doesn't belong to (this applies
+to `workspace_default_pincodes`'s routes too, per the correction's explicit callout that "workspace
+default-pincode management ... cannot accept a `workspace_id` supplied without membership validation"). **No
+table has a second, RLS-direct mutation path that could disagree with this server-side role check** —
+Correction 5's explicit "do not create two competing mutation paths" requirement.
 
 The scheduler's own reads/writes go through the service-role client (`createAdminClient()`, same as every
 other worker in this codebase), which bypasses RLS entirely — consistent with every existing background
@@ -637,13 +781,16 @@ worker.
 
 ---
 
-## 7. Migration count
+## 7. Migration count (revised 2026-07-18)
 
-**3 new tables + 2 additive columns (`pincode_availability_results.monitored_product_id`,
-`.check_status`) + 2 precondition constraints on existing tables + 3 RPC functions, across an estimated 4
-migrations** (revised from the first draft's 2 — Correction 2's workspace-scoped FKs and Correction 4/7's
-atomic RPCs add real, separately-reviewable steps; not committed to exact numbering, next available
-migration number to be confirmed at implementation time):
+**3 new tables + 4 additive columns (`pincode_availability_results.monitored_product_id`,
+`.tracking_target_id`, `.check_attempt_id`, `.check_status`) + 3 new indexes on that table + 1 partial
+unique index on `pincode_tracking_targets.claim_token` + 2 precondition constraints on existing tables + 4
+RPC functions, across an estimated 4 migrations** (column/index/RPC count revised again this round —
+Correction 1 added `tracking_target_id`/`check_attempt_id` that the prior round's prose described but never
+actually added to the schema, Correction 2 added the `claim_token` uniqueness index, Correction 4 added a
+fourth RPC; not committed to exact numbering, next available migration number to be confirmed at
+implementation time):
 
 1. One migration: `ALTER TABLE amazon_listing_items ADD CONSTRAINT ... UNIQUE (workspace_id, id)` and the
    same for `tracked_asins` (§2, Correction 2 precondition) — trivial, additive, zero data risk (both
@@ -654,21 +801,28 @@ migration number to be confirmed at implementation time):
    new, they belong in one migration (matches this codebase's existing convention of grouping tightly
    coupled new tables, e.g. migration `059` created `review_solicitation_orders` alone since nothing else
    depended on it that same migration; migration `016` created `scraping_jobs` +
-   `pincode_availability_results` together since the latter FKs the former). Includes the RLS policies (§6),
-   the `updated_at` triggers, and the two due-work indexes (§3).
-3. One migration: `pincode_availability_results.monitored_product_id` + `.check_status` additive columns +
-   their indexes (§4/§4a) — kept separate from #2 so the new tables can be reviewed/applied independently of
-   touching an existing, already-in-use table. **Does not** include the `check_status`/result-state CHECK
-   constraint — that is explicitly deferred until the read-only production audit (§4a) is complete.
-4. One migration: the three RPC functions this spec's corrections require —
+   `pincode_availability_results` together since the latter FKs the former). Includes the RLS policies (§6 —
+   `SELECT`-only for members on all three tables, Correction 5), the `updated_at` triggers, the two due-work
+   indexes (§3), and the `claim_token` partial unique index (§3, Correction 2).
+3. One migration: `pincode_availability_results.monitored_product_id` + `.tracking_target_id` +
+   `.check_attempt_id` + `.check_status` additive columns (§4, Correction 1) + their composite FKs, the
+   `check_attempt_id` partial unique index, and the three history indexes (§4/§4a) — kept separate from #2 so
+   the new tables can be reviewed/applied independently of touching an existing, already-in-use table.
+   **Does not** include the `check_status`/result-state CHECK constraint — that is explicitly deferred until
+   the read-only production audit (§4a, now recorded with real numbers — 18 available/no-error, 7
+   unknown/error) has its backfill applied.
+4. One migration: the four RPC functions this spec's corrections require —
    `claim_due_pincode_targets(...)` (`IMPLEMENTATION_PLAN.md` §2.8, Correction 4), `finalize_pincode_check
-   (...)` (`IMPLEMENTATION_PLAN.md` §2.7, Correction 7), and `enroll_pincode_monitored_products(...)` (§2a,
-   Correction 1) — `SECURITY DEFINER`, `search_path` set explicitly, `REVOKE EXECUTE ... FROM PUBLIC` +
-   `GRANT EXECUTE ... TO service_role` only (never broadly granted to `authenticated`), per Correction 4's
-   explicit requirement.
+   (...)` (`IMPLEMENTATION_PLAN.md` §2.7, Corrections 3/7), `enroll_pincode_monitored_products(...)` (§2a,
+   Correction 1), and `queue_pincode_manual_check(...)` (`IMPLEMENTATION_PLAN.md` §2.10, Correction 4) — all
+   four `SECURITY DEFINER`, `search_path` set explicitly, `REVOKE EXECUTE ... FROM PUBLIC` + `GRANT EXECUTE
+   ... TO service_role` only (never broadly granted to `authenticated`), per Correction 4's explicit
+   requirement.
 
 A fifth, follow-up migration (not counted above, deliberately deferred) adds the `check_status` CHECK
-constraint once the audit (§4a) confirms the existing value set is clean or cleanly backfillable.
+constraint once the backfill from the confirmed audit (§4a) is applied.
 
 **No migration is proposed or applied in this round** — this section exists to size the work, not to
-schedule it.
+schedule it. Per Correction 10, migration #1/#2/#3 belong to implementation phase **P0-A**, migration #4
+also belongs to **P0-A** (`IMPLEMENTATION_PLAN.md` §9) — none of the 4 migrations are applied until P0-A is
+its own separately reviewed and approved implementation PR.

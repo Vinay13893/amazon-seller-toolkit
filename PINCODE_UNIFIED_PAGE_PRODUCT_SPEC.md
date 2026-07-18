@@ -11,12 +11,23 @@ corrections to the first draft — see `BRAHMASTRA_MASTER_TRACKER.md` §22 amend
 Companion documents: `PINCODE_UNIFIED_PAGE_DATA_MODEL.md` (schema) and
 `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md` (scheduler, phasing, rollout).
 
-**Amendment (2026-07-18):** the first draft locked recurring tracking into P0 correctly, but its schema had
-a self-contradictory owned-product FK, no cross-workspace FK enforcement, an RLS model that let ordinary
-members write scheduler state, a non-atomic claim design, and a P0/P1 split that quietly demoted the
-founder-required trustworthy Other Products lookup to P1 while allowing blind manual enrollment in P0. This
-round corrects all of that without changing the locked product decisions themselves. Section-by-section
-changes are called out inline as **"Correction N (2026-07-18)"** blocks.
+**Amendment round 1 (2026-07-18):** the first draft locked recurring tracking into P0 correctly, but its
+schema had a self-contradictory owned-product FK, no cross-workspace FK enforcement, an RLS model that let
+ordinary members write scheduler state, a non-atomic claim design, and a P0/P1 split that quietly demoted the
+founder-required trustworthy Other Products lookup to P1 while allowing blind manual enrollment in P0.
+Corrected without changing the locked product decisions.
+
+**Amendment round 2 (2026-07-18) — still not approved to merge.** This round: (1) locks the founder's
+enrollment-quota decision (capped, explicit `409` rejection — §5.1/§5.2/§12 below, full design in
+`DATA_MODEL.md` §2b); (2) unifies the scheduler route names with `IMPLEMENTATION_PLAN.md` (§11 below — the
+two documents disagreed in round 1); (3) closes a viewer-role RLS gap on `workspace_default_pincodes`
+(`DATA_MODEL.md` §6); (4) reflects the round-2 corrections to the claim/finalize/manual-check RPCs
+(`IMPLEMENTATION_PLAN.md` §2.7–2.10) wherever this document references them. Product-facing behavior is
+otherwise unchanged from round 1 — these are consistency and enforcement-detail corrections, not new
+product decisions. Section-by-section changes are called out inline as **"Correction N (2026-07-18)"**
+blocks; round-2-specific corrections are marked "round 2" to distinguish from round 1's own numbered
+corrections (the two rounds each restart correction numbering from 1 — see `BRAHMASTRA_MASTER_TRACKER.md`
+§22 for the full mapping of what each round's corrections mean).
 
 ---
 
@@ -113,6 +124,12 @@ either source table directly.
    (product × pincode) pair, `status = 'active'`, `next_check_at = now()` (immediately due).
 7. No synchronous check happens here — enrollment only queues future work; the recurring scheduler
    (`IMPLEMENTATION_PLAN.md` §Scheduler) picks it up on its own cadence, same as decision #8 requires.
+8. **Quota, locked founder decision (round 2):** if this enrollment's requested pincode×product targets
+   would push the workspace+marketplace's active-target count over its configured limit, the request is
+   **rejected in full** — `409 { errorCode: 'pincode_tracking_quota_exceeded', currentActiveTargets,
+   requestedAdditionalTargets, limit }` — never partially applied (e.g. 3 of 5 selected products enrolled,
+   2 silently dropped). The UI surfaces the exact numbers from the response so the seller can deselect down
+   to what fits, or pause other targets first. See `DATA_MODEL.md` §2b for the full quota model.
 
 ### 5.2 Other Products — single-ASIN enrollment
 
@@ -127,6 +144,8 @@ either source table directly.
 6. Confirm → one `pincode_monitored_products` row (`product_source = 'other'`, FK to nothing mandatory; a
    `tracked_asins` link is attempted opportunistically and stored if a matching row already exists, but its
    absence never blocks enrollment) + one `pincode_tracking_targets` row per pincode, same as §5.1 step 6.
+   **Same quota check as §5.1 step 8** — My Products and Other Products draw from the same quota pool
+   (`DATA_MODEL.md` §2b), so an Other Products enrollment can be rejected with the same `409` shape.
 7. **Duplicate prevention:** the unique constraint on `pincode_monitored_products (workspace_id,
    marketplace_id, asin)` (see `DATA_MODEL.md` §2) rejects a second enrollment of the same ASIN in the same
    workspace regardless of which tab it was added from — if a seller's own catalog ASIN is later also
@@ -167,6 +186,11 @@ reconciliation query and `IMPLEMENTATION_PLAN.md` §5 test #13 for the required 
 3. Row-level actions: Check Now (§9), Edit Pincodes, Pause/Resume, View History, Remove. Per-pincode
    actions inside the expanded view: Check Now (single pincode), Pause/Resume (single pincode), History,
    Remove (single pincode from this product's list).
+4. **Resume is quota-checked (round 2, locked founder decision):** clicking Resume on a paused target
+   re-checks quota exactly like a fresh enrollment — `DATA_MODEL.md` §2b, "resuming a paused target must
+   re-check quota." If the workspace+marketplace is at its limit, Resume is rejected with the same `409
+   pincode_tracking_quota_exceeded` shape as enrollment, not silently allowed to exceed the limit just
+   because the target already existed once before.
 
 ---
 
@@ -319,14 +343,14 @@ Fulfillment: **FBA (Amazon Fulfilled)** / **FBM (Merchant Fulfilled)** / **Not c
 | Page | `src/app/(dashboard)/dashboard/pincode-checker/page.tsx` (replaces existing content) |
 | My Products list | reuses `GET /api/asins/listings` (existing, unchanged) |
 | Other Products lookup | new `POST /api/pincode-monitoring/lookup-asin` (§6) |
-| Enroll (bulk or single) | new `POST /api/pincode-monitoring/products` |
+| Enroll (bulk or single) | new `POST /api/pincode-monitoring/products` — **quota-checked, round 2** (locked founder decision: rejects with `409 pincode_tracking_quota_exceeded` if the enrollment would exceed the workspace+marketplace active-target limit; `DATA_MODEL.md` §2b) |
 | Update pincodes for a product | new `PATCH /api/pincode-monitoring/products/[id]/pincodes` |
-| Pause/resume/archive a product | new `PATCH /api/pincode-monitoring/products/[id]` |
-| Manual Check Now (product or single pincode) | new `POST /api/pincode-monitoring/check-now` — **queued, not synchronous** (Correction 10; validates workspace access + cooldown/quota, records the request atomically, returns `Accepted`/`Queued` immediately; see `IMPLEMENTATION_PLAN.md` §2.10) |
+| Pause/resume/archive a product | new `PATCH /api/pincode-monitoring/products/[id]` — **resume is quota-checked too** (round 2: resuming a paused target re-checks quota exactly like a fresh enrollment, same `409` shape) |
+| Manual Check Now (product or single pincode) | new `POST /api/pincode-monitoring/check-now` — **queued via one atomic RPC** (`queue_pincode_manual_check`, round-2 Correction 4; validates workspace access, then atomically checks status/cooldown/quota and records the request in a single database transaction — not a route-level read followed by a separate write; returns `202`/`Accepted`/`Queued` only when genuinely queued; see `IMPLEMENTATION_PLAN.md` §2.10) |
 | Workspace default pincodes | new `GET`/`PUT /api/pincode-monitoring/default-pincodes` |
 | Tracker table data | new `GET /api/pincode-monitoring/tracker` (paginated, product-row + nested pincode-row shape) |
-| Scheduler cron | new `GET /api/cron/pincode-monitoring/process-eligibility` (mirrors the review-requests split-worker pattern — see `IMPLEMENTATION_PLAN.md`) |
-| Scheduler worker | new `POST /api/pincode-monitoring/jobs/process-eligibility` |
+| Scheduler cron | new `GET /api/cron/pincode-monitoring/scheduler` (Correction 8, 2026-07-18 round 2 — name locked and unified with `IMPLEMENTATION_PLAN.md` §2.14; one Vercel cron entry) |
+| Scheduler worker | new `POST /api/pincode-monitoring/jobs/scheduler` (Correction 8 — one protected worker route, called by the cron relay above) |
 
 All new routes follow this codebase's existing auth conventions: session-based for user-facing routes,
 `resolveJobsAuth()`/background-worker-secret for the cron/worker pair (same pattern as
@@ -369,6 +393,15 @@ All new routes follow this codebase's existing auth conventions: session-based f
 12. **(Correction 3)** No ordinary member session can directly set `status='checking'`, `claimed_at`,
     `next_check_at`, or any other scheduler-owned field via a raw table write — verified by an
     unauthorized-mutation-rejection test.
+13. **(Round 2, locked quota decision)** Enrollment and Resume both enforce the workspace+marketplace active
+    -target quota atomically — a request that would exceed the limit is rejected in full (never partially
+    applied) with the exact `409 pincode_tracking_quota_exceeded` shape, verified by a quota-enforcement
+    test covering both enrollment and resume.
+14. **(Round 2, Correction 5)** No workspace member of any role, including `viewer`, can write directly to
+    `workspace_default_pincodes`, `pincode_monitored_products`, or `pincode_tracking_targets` via a raw
+    Supabase client call — all three tables are `SELECT`-only under RLS, verified by a per-table
+    unauthorized-write-rejection test (this closes the round-1 gap where `workspace_default_pincodes` still
+    allowed direct member CRUD).
 
 ---
 

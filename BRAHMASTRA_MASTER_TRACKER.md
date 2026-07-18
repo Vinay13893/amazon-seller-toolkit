@@ -3463,3 +3463,101 @@ remains spec-and-review only, per the explicit instruction not to implement.
 
 **Next step (needs the founder):** review the amended spec set and either approve for an implementation
 worktree to be opened, or request further changes. PR #53 itself is not merged.
+
+### §22 update 2 (2026-07-18) — PR #53 amended again: 10 more corrections + locked quota decision, still not merged
+
+**Decision received:** PR #53 "much improved but not approved to merge yet." Ten more technical corrections
+required, plus the founder locked the enrollment-quota UX (previously an open risk). This entry summarizes
+round 2. **PR #53 remains spec-only, still not merged, no code, no migration, no deployment.**
+
+**Confirmed facts supplied and incorporated (not re-derived by this session):**
+- PostgreSQL version: **17.6** (`server_version_num = 170006`), confirmed against production. The
+  column-specific `ON DELETE SET NULL (column_name)` syntax (PG15+) used throughout `DATA_MODEL.md`'s
+  composite FKs is therefore the primary design, not a version-gated fallback — the PG-version fallback stays
+  documented for portability only.
+- Read-only production audit of `pincode_availability_results`: **18 rows** `availability_status='available'`
+  with no `error_code`; **7 rows** `availability_status='unknown'` with `error_code` present; no other
+  combination exists. `DATA_MODEL.md` §4a's backfill rule is updated to these exact numbers.
+
+**Founder quota decision, locked:** capped enrollment with explicit rejection, not unlimited-enroll-then-
+silent-throttle. Quota unit = one active `pincode_tracking_targets` row per `(workspace_id, marketplace_id)`;
+My Products and Other Products share the pool; paused/archived targets don't count; resuming a paused target
+re-checks quota; both enrollment and resume return `409 { errorCode: 'pincode_tracking_quota_exceeded',
+currentActiveTargets, requestedAdditionalTargets, limit }` on rejection. One configurable internal-workspace
+limit for P0; commercial per-plan tiers stay P1. Full design: `DATA_MODEL.md` §2b.
+
+**The 10 corrections:**
+
+1. **Missing attempt columns added.** `IMPLEMENTATION_PLAN.md`'s idempotent-finalize design required
+   `check_attempt_id`, but round 1's `DATA_MODEL.md` never actually added it (or `tracking_target_id`) to
+   `pincode_availability_results` — only described them in prose. Fixed: `monitored_product_id`,
+   `tracking_target_id`, `check_attempt_id`, `check_status` are now all real additive columns, with
+   workspace-scoped composite FKs to `pincode_monitored_products` and `pincode_tracking_targets`, a
+   `UNIQUE` partial index on `check_attempt_id`, and a `(tracking_target_id, checked_at DESC)` index. Every
+   new unified-scheduler result populates all three ID columns; legacy bulk-checker rows keep them null.
+2. **`claim_token` uniqueness enforced.** Added `CREATE UNIQUE INDEX ... ON pincode_tracking_targets
+   (claim_token) WHERE claim_token IS NOT NULL` — the finalize function no longer relies on UUID-collision
+   probability alone to locate exactly one claimed target.
+3. **Finalize write order fixed — a real race, not a style issue.** Round 1's `finalize_pincode_check`
+   inserted the result *before* validating the target still belonged to that claim, so a stale worker
+   response arriving after a reclaim could insert a result for an attempt that no longer owned its target.
+   Corrected order: check for an already-recorded result first (idempotent short-circuit) → lock and
+   validate the target (`status='checking'`, matching `claim_token`) → if no currently-owned target, raise
+   `stale_check_attempt` and write nothing → only then insert the result and finalize the target, atomically.
+   Required race test added: claim A → reclaim A → claim B → late finalize from A must be rejected with zero
+   writes → finalize B succeeds → exactly one result exists.
+4. **Manual Check Now gets one atomic queue RPC.** Round 1 still had the route doing cooldown/quota/status
+   reads followed by a separate service-role `UPDATE` — a real race window. Fixed with
+   `queue_pincode_manual_check(...)`, a single `SECURITY DEFINER`, service-role-only RPC that locks the
+   target and atomically checks workspace/status/cooldown/quota/existing-pending-request before creating one
+   `manual_request_token`. Locked P0 status behavior: `active` → may queue; `checking` → `already_checking`,
+   no second request; `paused`/`failed` → reject, require Resume first; `archived` → cannot check. The API
+   route returns `202` only when genuinely queued; concurrent clicks are guaranteed to produce exactly one
+   token by the RPC's row lock, not client debouncing.
+5. **Viewer role RLS gap closed.** Round 1 gave `workspace_default_pincodes` direct member CRUD via RLS
+   while separately claiming viewers are read-only — but `user_workspace_ids()` doesn't know about roles, so
+   a `viewer` could have bypassed the server route's role check entirely via a direct Supabase call. Fixed:
+   all three new configuration tables are now `SELECT`-only for members, zero exceptions — one mutation path
+   (authenticated server route → role check → service-role write), never two competing paths.
+6. **Fair claiming made actually implementable.** Round 1's fairness prose assumed the database could infer
+   "which workspaces this invocation already served" from target rows — but `finalize_pincode_check` clears
+   `claimed_by` on completion, so that state doesn't persist anywhere in the database. Fixed: the **worker**
+   holds a served-workspace set in memory; `claim_due_pincode_targets` gains a `p_excluded_workspace_ids`
+   parameter; each round claims at most one target per non-excluded workspace (via `ROW_NUMBER() OVER
+   (PARTITION BY workspace_id)`, manual requests ordered first); the worker adds served workspaces to its
+   excluded set after each chunk and clears it to start a new round.
+7. **Target-filter contradiction removed.** Round 1 said Manual Check Now uses the claim function "with
+   `p_limit=1` and a target-id filter" — a parameter that was never defined. Removed; manual requests become
+   eligible through the same due-query as everything else (`manual_requested_at IS NOT NULL` +
+   `next_check_at` pulled forward), claimed through the one claim path, not a hidden second one.
+8. **Scheduler route names unified.** The Product Spec and Implementation Plan disagreed on names in round
+   1. Locked everywhere: cron relay `GET /api/cron/pincode-monitoring/scheduler`, protected worker `POST
+   /api/pincode-monitoring/jobs/scheduler` — one new Vercel cron entry, one protected worker route (round 1
+   overstated this as "two new cron entries").
+9. **Result-audit/backfill plan updated with the real numbers above** — 18 available/no-error →
+   `check_status='success'`, `availability_status` unchanged; 7 unknown/error → `check_status='failed'`,
+   original fields preserved for legacy readability. No production rows exist today for `unavailable`,
+   `blocked`, or `unknown`-without-error — the spec does not fabricate them; the corrected state model still
+   supports them unconditionally for future rows.
+10. **P0 implementation split into 4 reviewable PRs.** New `IMPLEMENTATION_PLAN.md` §9 locks the sequence:
+    **P0-A** (data audit, additive migrations, composite FKs, RLS, quota enforcement, all 4 RPCs, staging
+    integration tests, feature disabled) → **P0-B** (API/data-access routes, no public UI) → **P0-C**
+    (internal-workspace-only UI) → **P0-D** (checker adapter, bounded worker, cron wiring, benchmark-derived
+    defaults, controlled test set, natural-cycle verification, broader rollout blocked until GREEN). Each
+    stage is its own separately reviewed and approved PR; no migration is applied while the spec itself is
+    still being built or amended.
+
+**Files amended (same PR, no replacement):** `PINCODE_UNIFIED_PAGE_PRODUCT_SPEC.md`,
+`PINCODE_UNIFIED_PAGE_DATA_MODEL.md`, `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md`,
+`BRAHMASTRA_MASTER_TRACKER.md` (this entry). RPC count revised from 3 to 4
+(`queue_pincode_manual_check` added); migration count revised from 4 to 4 with materially larger scope per
+migration (more columns/indexes/constraints per step, `DATA_MODEL.md` §7); test plan strengthened with a
+stronger stale-claim race test (7a), a manual-check status-behavior matrix (9a), and quota-rejection coverage
+folded into test 10.
+
+**Still not done in this round:** no migration applied, no application code written, no deployment.
+
+**Next step (needs the founder):** review the round-2 amended spec set (particularly the 4 RPC bodies now
+fully written out in `IMPLEMENTATION_PLAN.md` §2.7/§2.8/§2.9/§2.10, and the locked P0-A/B/C/D sequencing in
+§9) and either approve for a P0-A implementation PR to be opened, or request further changes. PR #53 itself
+is not merged.
