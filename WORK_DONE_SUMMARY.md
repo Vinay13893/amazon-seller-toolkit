@@ -912,3 +912,42 @@ of these block P0-A; they gate P0-D (the scheduler worker).
 **Opened as a PR from `feature/pincode-p0a-schema-rpcs`. Not merged. P0-B (API/data-access layer) remains
 blocked until this PR is separately reviewed and approved**, per the locked "no stage starts until the prior
 stage is approved" sequencing.
+
+### PR #54 implementation-review round: committed test suite + 6 corrections (2026-07-18)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 7. Same PR #54, same branch — no redesign, no
+P0-B, no migration applied, no deployment._
+
+**The gap this round closes:** the round above reported strong testing, but shipped zero test files in the
+6-file diff — everything was ad hoc and unrepeatable. Now committed: `esolz-app/supabase/tests/pincode-p0a/`
+(`README.md`, `sequential.sql` ~20 test groups, `concurrency.sh` 4 real multi-connection tests,
+`explain-analyze.sql`, `run-tests.sh`). The runner refuses any non-local target (host, six connection-shaped
+env vars, and database-name pattern all checked independently, no override flag), bootstraps from the real
+migration history, and exits non-zero on any failure — verified end-to-end in this session (`exit 0`, all 3
+phases pass, scratch database confirmed dropped afterward).
+
+**Six correctness/safety corrections found by writing that suite, not by re-reading the spec a second time:**
+1. `set_pincode_tracking_state` / `remove_pincode_monitored_products` now require the count of valid, in-scope
+   locked rows to exactly equal the count of distinct requested IDs — a missing or foreign-workspace ID
+   previously could be silently dropped rather than rejecting the whole batch.
+2. `enroll_pincode_monitored_products`'s owned-listing check now verifies the listing's own `asin` column
+   matches the request, not just that a listing with that ID exists in the account; `tracked_asin_id` gets the
+   same treatment against `tracked_asins.marketplace` (confirmed by schema, not assumed); UUID inputs are
+   regex-validated before casting; `'other'`-source can't carry a listing reference; conflicting duplicate-ASIN
+   metadata is rejected instead of letting `DISTINCT ON` pick an arbitrary winner.
+3. Hard, code-level ceilings added on every configured quota/limit and every marketplace string, distinct from
+   the commercial-configured value itself, plus a total-flattened-combination cap on bulk enrollment.
+4. `pincode_tracking_targets_monitored_product_fk` changed `CASCADE` → `RESTRICT` — a direct hard delete of a
+   product could previously silently erase its targets. Empirically re-verified the whole-workspace cascade
+   cleanup still works correctly with this change (two independent `CASCADE` paths from `workspaces`, no
+   conflict).
+5. The removed-consistency `CHECK` now also requires a non-null, narrow-valued `removal_reason`.
+6. Migration 060's "locks no rows" comment corrected (index builds do take a lock) and given real operational
+   guidance — grounded in a fresh read-only production audit re-run (confirmed unchanged since the original:
+   18 available/no-error + 7 unknown/error rows, 25 total; confirmed the four new result-table columns still
+   don't exist in production; `amazon_listing_items` 482 rows / `tracked_asins` 19 rows).
+
+**Re-verified after all corrections:** full committed suite passes end-to-end from a from-scratch database.
+`npx tsc --noEmit` clean, `npm run build` clean, `git status` confirms only the three edited migration files
+plus the new `tests/` directory changed — zero application/API/UI/cron files touched. No migration applied to
+production, no production row modified (Correction 8's audit was read-only), no deployment.

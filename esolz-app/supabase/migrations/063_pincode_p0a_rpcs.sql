@@ -23,6 +23,41 @@
 -- queue_pincode_manual_check's spec already established, since the spec
 -- text explicitly calls for "a distinguishable error the calling route maps
 -- to HTTP" and gives no literal RETURNS clause of its own for these three.
+--
+-- PR #54 implementation-review round (2026-07-18), three corrections:
+-- 1. Correction 2 -- set_pincode_tracking_state and
+--    remove_pincode_monitored_products now perform COMPLETE-BATCH ID
+--    validation (workspace/marketplace non-null and length-bounded, no
+--    NULL array elements, duplicate IDs normalized, and the count of
+--    existing-and-in-scope locked rows must equal the count of distinct
+--    requested IDs) before any mutation -- a missing, foreign, or
+--    scope-mismatched ID now rejects the ENTIRE request with a single
+--    distinguishable `not_found_or_scope_mismatch` result, never a
+--    silent partial success against whichever subset happened to exist.
+-- 2. Correction 3 -- enroll_pincode_monitored_products now verifies
+--    product IDENTITY, not just existence: an 'owned' amazon_listing_
+--    item_id must belong to the caller's workspace/marketplace AND its
+--    own `asin` column must match the requested ASIN (previously only
+--    existence+workspace+marketplace was checked, silently accepting any
+--    of the workspace's own listing IDs regardless of which product they
+--    actually named); a supplied tracked_asin_id is now verified the same
+--    way against tracked_asins' own `marketplace` column (confirmed by
+--    name directly against the schema, not assumed); every UUID-shaped
+--    input is regex-validated before any ::uuid cast, so a malformed UUID
+--    returns invalid_parameters instead of an uncontrolled 22P02
+--    exception; 'other'-source products can no longer carry a listing
+--    reference (explicit rejection, not silent reinterpretation); and
+--    duplicate ASIN objects with conflicting product_source/listing/
+--    tracked-ASIN metadata are rejected outright rather than letting a
+--    later DISTINCT ON silently pick an arbitrary winner.
+-- 3. Correction 4 -- every RPC that takes p_marketplace_id now bounds its
+--    length; every RPC that takes a caller-configured quota/limit
+--    parameter (p_quota_limit, p_manual_pending_limit) now also enforces
+--    a hard, code-level ceiling distinct from that configured value, so a
+--    malformed environment/config value can never become an effectively
+--    unlimited quota; enroll_pincode_monitored_products additionally
+--    bounds the TOTAL flattened (asin, pincode) combination count, not
+--    just each array's own length independently.
 
 -- ============================================================
 -- 1. enroll_pincode_monitored_products
@@ -43,21 +78,43 @@ DECLARE
   v_pincode              text;
   v_asin                 text;
   v_product_source       text;
+  v_listing_id_text      text;
+  v_tracked_id_text      text;
   v_bad_listing_asin     text;
+  v_bad_tracked_asin     text;
+  v_conflicting_asin     text;
+  v_total_combinations   integer;
   v_current_active       integer;
   v_requested_additional integer;
+  -- Correction 4 (2026-07-18, PR #54 review round): hard safety ceilings --
+  -- code-enforced, never configurable, distinct from p_quota_limit itself.
+  -- p_quota_limit remains the caller-supplied commercial/configured value
+  -- (DATA_MODEL.md sec2b -- "not invented in this spec"); it must now also
+  -- be <= MAX_QUOTA_LIMIT, so a malformed env value can never become an
+  -- effectively unlimited quota. The other four bound the request shape
+  -- itself, independent of any commercial configuration.
+  MAX_QUOTA_LIMIT          CONSTANT integer := 100000;
+  MAX_MARKETPLACE_LEN      CONSTANT integer := 40;
+  MAX_PRODUCTS             CONSTANT integer := 200;
+  MAX_PINCODES_PER_PRODUCT CONSTANT integer := 100;
+  MAX_TOTAL_COMBINATIONS   CONSTANT integer := 2000;
+  UUID_RE                  CONSTANT text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 BEGIN
-  -- Correction 14: parameter validation, before any lock or query.
-  IF p_workspace_id IS NULL OR p_marketplace_id IS NULL OR length(p_marketplace_id) = 0 THEN
-    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'missing_workspace_or_marketplace');
+  -- Correction 14 (original) + Correction 4 (PR #54 review round):
+  -- parameter validation, before any lock or query.
+  IF p_workspace_id IS NULL THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'missing_workspace_id');
   END IF;
-  IF p_quota_limit IS NULL OR p_quota_limit <= 0 THEN
+  IF p_marketplace_id IS NULL OR length(p_marketplace_id) = 0 OR length(p_marketplace_id) > MAX_MARKETPLACE_LEN THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_marketplace_id');
+  END IF;
+  IF p_quota_limit IS NULL OR p_quota_limit <= 0 OR p_quota_limit > MAX_QUOTA_LIMIT THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_quota_limit');
   END IF;
   IF p_products IS NULL OR jsonb_typeof(p_products) <> 'array' OR jsonb_array_length(p_products) = 0 THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'empty_products');
   END IF;
-  IF jsonb_array_length(p_products) > 200 THEN
+  IF jsonb_array_length(p_products) > MAX_PRODUCTS THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'too_many_products');
   END IF;
 
@@ -65,20 +122,43 @@ BEGIN
   LOOP
     v_asin := upper(v_element->>'asin');
     v_product_source := v_element->>'product_source';
+    v_listing_id_text := NULLIF(v_element->>'amazon_listing_item_id', '');
+    v_tracked_id_text := NULLIF(v_element->>'tracked_asin_id', '');
+
     IF v_asin IS NULL OR v_asin !~ '^[A-Z0-9]{10}$' THEN
       RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_asin', 'asin', v_element->>'asin');
     END IF;
     IF v_product_source IS NULL OR v_product_source NOT IN ('owned', 'other') THEN
       RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_product_source', 'asin', v_asin);
     END IF;
-    IF v_product_source = 'owned' AND NULLIF(v_element->>'amazon_listing_item_id', '') IS NULL THEN
+
+    -- Correction 3 (2026-07-18, PR #54 review round): UUID text must be
+    -- validated BEFORE any ::uuid cast -- a malformed UUID string cast
+    -- directly raises an uncontrolled 22P02 exception (unhandled in this
+    -- function) instead of a normal, handled invalid_parameters result.
+    IF v_listing_id_text IS NOT NULL AND v_listing_id_text !~* UUID_RE THEN
+      RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'malformed_listing_id', 'asin', v_asin);
+    END IF;
+    IF v_tracked_id_text IS NOT NULL AND v_tracked_id_text !~* UUID_RE THEN
+      RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'malformed_tracked_asin_id', 'asin', v_asin);
+    END IF;
+
+    IF v_product_source = 'owned' AND v_listing_id_text IS NULL THEN
       RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'owned_requires_listing_id', 'asin', v_asin);
     END IF;
+    -- Correction 3: 'other' must not carry an owned-style listing
+    -- reference while staying labelled 'other' -- contradictory input.
+    -- P0 preferred behavior is explicit rejection, not silent
+    -- normalization to the owned path.
+    IF v_product_source = 'other' AND v_listing_id_text IS NOT NULL THEN
+      RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'other_source_cannot_have_listing_id', 'asin', v_asin);
+    END IF;
+
     IF v_element->'pincodes' IS NULL OR jsonb_typeof(v_element->'pincodes') <> 'array'
        OR jsonb_array_length(v_element->'pincodes') = 0 THEN
       RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'empty_pincodes', 'asin', v_asin);
     END IF;
-    IF jsonb_array_length(v_element->'pincodes') > 100 THEN
+    IF jsonb_array_length(v_element->'pincodes') > MAX_PINCODES_PER_PRODUCT THEN
       RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'too_many_pincodes', 'asin', v_asin);
     END IF;
     FOR v_pincode IN SELECT jsonb_array_elements_text(v_element->'pincodes')
@@ -88,6 +168,38 @@ BEGIN
       END IF;
     END LOOP;
   END LOOP;
+
+  -- Correction 4: total expanded (asin, pincode) combination ceiling --
+  -- MAX_PRODUCTS x MAX_PINCODES_PER_PRODUCT alone would still allow 20,000
+  -- combinations even though each individual field is bounded; bound the
+  -- ACTUAL flattened total separately.
+  SELECT count(*) INTO v_total_combinations
+  FROM jsonb_array_elements(p_products) AS elem
+  CROSS JOIN LATERAL jsonb_array_elements_text(elem->'pincodes') AS pin(pincode);
+  IF v_total_combinations > MAX_TOTAL_COMBINATIONS THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'too_many_combinations', 'count', v_total_combinations);
+  END IF;
+
+  -- Correction 3: duplicate ASIN objects within one request must not be
+  -- resolved by an arbitrary DISTINCT ON winner later in this function.
+  -- Duplicate PINCODE lists for the same ASIN are fine and are merged via
+  -- DISTINCT further down -- this check is specifically about conflicting
+  -- METADATA (product_source / listing / tracked-ASIN) for the same ASIN.
+  SELECT grouped.asin INTO v_conflicting_asin
+  FROM (
+    SELECT upper(elem->>'asin') AS asin,
+           count(DISTINCT elem->>'product_source') AS distinct_sources,
+           count(DISTINCT COALESCE(elem->>'amazon_listing_item_id', '')) AS distinct_listing_ids,
+           count(DISTINCT COALESCE(elem->>'tracked_asin_id', '')) AS distinct_tracked_ids
+    FROM jsonb_array_elements(p_products) AS elem
+    GROUP BY upper(elem->>'asin')
+  ) grouped
+  WHERE distinct_sources > 1 OR distinct_listing_ids > 1 OR distinct_tracked_ids > 1
+  LIMIT 1;
+
+  IF v_conflicting_asin IS NOT NULL THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'conflicting_duplicate_asin_metadata', 'asin', v_conflicting_asin);
+  END IF;
 
   -- Lock order step 1: advisory lock, held for the remainder of this
   -- transaction (DATA_MODEL.md sec2a).
@@ -104,10 +216,12 @@ BEGIN
   ORDER BY p.id
   FOR UPDATE;
 
-  -- Owned-listing requirement, enforced once at enrollment time
-  -- (DATA_MODEL.md sec2): every 'owned' element's listing must exist,
-  -- belong to this workspace, and match this marketplace -- reject the
-  -- ENTIRE request on the first failure found, write nothing.
+  -- Correction 3 (2026-07-18, PR #54 review round): the owned-listing
+  -- check now verifies the listing's OWN asin column actually matches the
+  -- requested ASIN, not merely that a listing with the supplied ID exists
+  -- somewhere in this workspace/marketplace -- previously a caller could
+  -- supply any of the workspace's own listing IDs alongside an unrelated
+  -- requested ASIN and have it accepted, silently mislabeling the product.
   SELECT elem->>'asin' INTO v_bad_listing_asin
   FROM jsonb_array_elements(p_products) AS elem
   WHERE elem->>'product_source' = 'owned'
@@ -116,11 +230,34 @@ BEGIN
       WHERE li.id = (elem->>'amazon_listing_item_id')::uuid
         AND li.workspace_id = p_workspace_id
         AND li.marketplace_id = p_marketplace_id
+        AND upper(li.asin) = upper(elem->>'asin')
     )
   LIMIT 1;
 
   IF v_bad_listing_asin IS NOT NULL THEN
     RETURN jsonb_build_object('result', 'listing_verification_failed', 'asin', v_bad_listing_asin);
+  END IF;
+
+  -- Correction 3: tracked_asin_id, when supplied (an optional legacy
+  -- cross-reference either product_source may independently carry), must
+  -- belong to the same workspace, the same marketplace via tracked_asins'
+  -- own `marketplace` column -- confirmed directly against the schema:
+  -- tracked_asins has no `marketplace_id` column, only `marketplace` --
+  -- and the same normalized ASIN.
+  SELECT elem->>'asin' INTO v_bad_tracked_asin
+  FROM jsonb_array_elements(p_products) AS elem
+  WHERE NULLIF(elem->>'tracked_asin_id', '') IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM public.tracked_asins ta
+      WHERE ta.id = (elem->>'tracked_asin_id')::uuid
+        AND ta.workspace_id = p_workspace_id
+        AND ta.marketplace = p_marketplace_id
+        AND upper(ta.asin) = upper(elem->>'asin')
+    )
+  LIMIT 1;
+
+  IF v_bad_tracked_asin IS NOT NULL THEN
+    RETURN jsonb_build_object('result', 'listing_verification_failed', 'asin', v_bad_tracked_asin, 'reason', 'tracked_asin_mismatch');
   END IF;
 
   -- Lock order step 3: lock EXISTING target rows second, ordered by id, one
@@ -321,27 +458,49 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_target_ids           uuid[];
-  v_bad_scope_count       integer;
+  v_requested_count       integer;
+  v_valid_count           integer;
   v_checking_ids          uuid[];
   v_current_active        integer;
   v_projected_additional  integer;
+  -- Correction 4 (2026-07-18, PR #54 review round): hard safety ceilings,
+  -- distinct from p_quota_limit, the caller-supplied commercial/configured
+  -- value -- see the matching comment in enroll_pincode_monitored_products.
+  MAX_QUOTA_LIMIT      CONSTANT integer := 100000;
+  MAX_MARKETPLACE_LEN  CONSTANT integer := 40;
+  MAX_TARGET_IDS       CONSTANT integer := 500;
 BEGIN
-  -- Correction 14: parameter validation, before any lock or query.
+  -- Correction 14 (original) + Correction 2/4 (PR #54 review round):
+  -- parameter validation, before any lock or query.
+  IF p_workspace_id IS NULL THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'missing_workspace_id');
+  END IF;
+  IF p_marketplace_id IS NULL OR length(p_marketplace_id) = 0 OR length(p_marketplace_id) > MAX_MARKETPLACE_LEN THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_marketplace_id');
+  END IF;
   IF p_target_ids IS NULL OR array_length(p_target_ids, 1) IS NULL THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'empty_target_ids');
   END IF;
-  IF array_length(p_target_ids, 1) > 500 THEN
+  IF array_length(p_target_ids, 1) > MAX_TARGET_IDS THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'too_many_target_ids');
+  END IF;
+  -- Correction 2: no null ID inside the array -- a NULL element would
+  -- otherwise silently vanish from every downstream ANY()/IN() comparison
+  -- (NULL never equals anything, including itself via `=`) rather than
+  -- being rejected as the malformed input it actually is.
+  IF EXISTS (SELECT 1 FROM unnest(p_target_ids) AS x WHERE x IS NULL) THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'null_id_in_array');
   END IF;
   IF p_action IS NULL OR p_action NOT IN ('pause', 'resume') THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_action');
   END IF;
-  IF p_quota_limit IS NULL OR p_quota_limit <= 0 THEN
+  IF p_quota_limit IS NULL OR p_quota_limit <= 0 OR p_quota_limit > MAX_QUOTA_LIMIT THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_quota_limit');
   END IF;
 
   -- Duplicate IDs normalized before any counting.
   SELECT array_agg(DISTINCT x) INTO v_target_ids FROM unnest(p_target_ids) AS x;
+  v_requested_count := array_length(v_target_ids, 1);
 
   -- Lock order step 1: advisory lock. Pausing alone cannot oversubscribe
   -- quota, but the same lock is acquired uniformly for both actions so this
@@ -350,20 +509,48 @@ BEGIN
   PERFORM pg_advisory_xact_lock(hashtextextended(p_workspace_id::text || ':' || p_marketplace_id, 0));
 
   -- Lock order step 2: lock parent rows first, ordered by id, one query.
+  -- Only EXISTING targets contribute a parent to this set -- a foreign or
+  -- nonexistent target id simply locks nothing here; that gap is caught
+  -- explicitly by the complete-batch validation below, not silently
+  -- ignored.
   PERFORM 1 FROM public.pincode_monitored_products p
   WHERE p.id IN (SELECT DISTINCT t.monitored_product_id FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids))
   ORDER BY p.id
   FOR UPDATE;
 
-  -- Correction 3: re-validate every locked parent belongs to the caller's
-  -- stated scope; reject the entire operation on any mismatch.
-  SELECT count(*) INTO v_bad_scope_count
-  FROM public.pincode_monitored_products p
-  WHERE p.id IN (SELECT DISTINCT t.monitored_product_id FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids))
-    AND (p.workspace_id <> p_workspace_id OR p.marketplace_id <> p_marketplace_id);
+  -- Lock order step 3: lock target rows second, ordered by id, one query --
+  -- moved ahead of the action branch (originally duplicated inside each of
+  -- pause/resume separately) so the complete-batch validation right below
+  -- covers both actions from one lock pass, not two divergent ones.
+  PERFORM 1 FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids) ORDER BY t.id FOR UPDATE;
 
-  IF v_bad_scope_count > 0 THEN
-    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'workspace_marketplace_mismatch');
+  -- Correction 2 (2026-07-18, PR #54 review round) -- complete-batch ID
+  -- validation, replacing the narrower "existing rows only" scope check
+  -- this used to be. Count how many of the DISTINCT requested IDs (a) still
+  -- exist as a locked pincode_tracking_targets row, (b) belong to the
+  -- caller's stated workspace, and (c) whose locked PARENT belongs to the
+  -- caller's stated workspace AND marketplace. If this is less than the
+  -- number of distinct requested IDs, at least one ID was missing, foreign,
+  -- or scope-mismatched -- reject the ENTIRE request, perform NO mutation,
+  -- and return one distinguishable result rather than silently operating
+  -- on whichever subset happened to resolve (the bug this correction
+  -- exists to close: the previous version's per-branch checks only ever
+  -- asserted "every FOUND row is in scope," never "every REQUESTED id was
+  -- found").
+  SELECT count(*) INTO v_valid_count
+  FROM public.pincode_tracking_targets t
+  JOIN public.pincode_monitored_products p ON p.id = t.monitored_product_id
+  WHERE t.id = ANY (v_target_ids)
+    AND t.workspace_id = p_workspace_id
+    AND p.workspace_id = p_workspace_id
+    AND p.marketplace_id = p_marketplace_id;
+
+  IF v_valid_count <> v_requested_count THEN
+    RETURN jsonb_build_object(
+      'result', 'not_found_or_scope_mismatch',
+      'requestedCount', v_requested_count,
+      'validCount', v_valid_count
+    );
   END IF;
 
   IF p_action = 'resume' THEN
@@ -375,13 +562,6 @@ BEGIN
         AND p.status IN ('archived', 'removed')
     ) THEN
       RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'parent_archived_or_removed');
-    END IF;
-
-    -- Lock order step 3: lock target rows second, ordered by id, one query.
-    PERFORM 1 FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids) ORDER BY t.id FOR UPDATE;
-
-    IF EXISTS (SELECT 1 FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids) AND t.workspace_id <> p_workspace_id) THEN
-      RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'workspace_marketplace_mismatch');
     END IF;
 
     -- Projected active-target count: current active/checking total, PLUS
@@ -412,17 +592,12 @@ BEGIN
         consecutive_failures = CASE WHEN t.status = 'failed' THEN 0 ELSE t.consecutive_failures END
     WHERE t.id = ANY (v_target_ids) AND t.status IN ('paused', 'failed');
 
-    RETURN jsonb_build_object('result', 'success', 'action', 'resume', 'targetCount', array_length(v_target_ids, 1));
+    RETURN jsonb_build_object('result', 'success', 'action', 'resume', 'targetCount', v_valid_count);
   END IF;
 
-  -- p_action = 'pause'.
-  -- Lock order step 3: lock target rows second, ordered by id, one query.
-  PERFORM 1 FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids) ORDER BY t.id FOR UPDATE;
-
-  IF EXISTS (SELECT 1 FROM public.pincode_tracking_targets t WHERE t.id = ANY (v_target_ids) AND t.workspace_id <> p_workspace_id) THEN
-    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'workspace_marketplace_mismatch');
-  END IF;
-
+  -- p_action = 'pause'. Parent and target locks, and the complete-batch ID
+  -- validation, already happened once above (shared by both actions) --
+  -- nothing further to lock or re-validate here.
   -- In-flight safety: a 'checking' target is never yanked out from under
   -- the worker. All-or-nothing: any selected target still checking rejects
   -- the WHOLE batch, naming which target(s), rather than silently pausing a
@@ -443,7 +618,7 @@ BEGIN
   -- paused/failed targets already in the batch are already not-running:
   -- no-op, not an error (DATA_MODEL.md sec3a step 4's third bullet).
 
-  RETURN jsonb_build_object('result', 'success', 'action', 'pause', 'targetCount', array_length(v_target_ids, 1));
+  RETURN jsonb_build_object('result', 'success', 'action', 'pause', 'targetCount', v_valid_count);
 END;
 $$;
 
@@ -466,14 +641,30 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
   v_product_ids     uuid[];
-  v_bad_scope_count integer;
+  v_requested_count integer;
+  v_valid_count     integer;
+  -- Correction 4 (2026-07-18, PR #54 review round): hard safety ceilings --
+  -- see the matching comment in enroll_pincode_monitored_products.
+  MAX_MARKETPLACE_LEN CONSTANT integer := 40;
+  MAX_PRODUCT_IDS     CONSTANT integer := 200;
 BEGIN
-  -- Correction 14: parameter validation, before any lock or query.
+  -- Correction 14 (original) + Correction 2/4 (PR #54 review round):
+  -- parameter validation, before any lock or query.
+  IF p_workspace_id IS NULL THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'missing_workspace_id');
+  END IF;
+  IF p_marketplace_id IS NULL OR length(p_marketplace_id) = 0 OR length(p_marketplace_id) > MAX_MARKETPLACE_LEN THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_marketplace_id');
+  END IF;
   IF p_monitored_product_ids IS NULL OR array_length(p_monitored_product_ids, 1) IS NULL THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'empty_product_ids');
   END IF;
-  IF array_length(p_monitored_product_ids, 1) > 200 THEN
+  IF array_length(p_monitored_product_ids, 1) > MAX_PRODUCT_IDS THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'too_many_product_ids');
+  END IF;
+  -- Correction 2: no null ID inside the array.
+  IF EXISTS (SELECT 1 FROM unnest(p_monitored_product_ids) AS x WHERE x IS NULL) THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'null_id_in_array');
   END IF;
   -- Narrow, application-defined allowed-value set -- never an arbitrary
   -- free-text string written unchecked into the database.
@@ -482,6 +673,7 @@ BEGIN
   END IF;
 
   SELECT array_agg(DISTINCT x) INTO v_product_ids FROM unnest(p_monitored_product_ids) AS x;
+  v_requested_count := array_length(v_product_ids, 1);
 
   -- Lock order step 1: advisory lock -- removal frees quota, same uniform
   -- discipline as pause (DATA_MODEL.md sec3b).
@@ -490,15 +682,25 @@ BEGIN
   -- Lock order step 2: lock parent rows first, ordered by id, one query.
   PERFORM 1 FROM public.pincode_monitored_products p WHERE p.id = ANY (v_product_ids) ORDER BY p.id FOR UPDATE;
 
-  -- Correction 3: re-validate every locked parent's scope; reject the
-  -- entire operation on any mismatch.
-  SELECT count(*) INTO v_bad_scope_count
+  -- Correction 2 (2026-07-18, PR #54 review round) -- complete-batch ID
+  -- validation. Count how many of the distinct requested IDs actually
+  -- exist (now locked) and belong to the caller's stated workspace/
+  -- marketplace. A missing or foreign ID rejects the ENTIRE request with
+  -- no mutation, rather than silently removing whichever subset resolved
+  -- (replacing the narrower "every FOUND row is in scope" check this used
+  -- to be, which never asserted "every REQUESTED id was found").
+  SELECT count(*) INTO v_valid_count
   FROM public.pincode_monitored_products p
   WHERE p.id = ANY (v_product_ids)
-    AND (p.workspace_id <> p_workspace_id OR p.marketplace_id <> p_marketplace_id);
+    AND p.workspace_id = p_workspace_id
+    AND p.marketplace_id = p_marketplace_id;
 
-  IF v_bad_scope_count > 0 THEN
-    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'workspace_marketplace_mismatch');
+  IF v_valid_count <> v_requested_count THEN
+    RETURN jsonb_build_object(
+      'result', 'not_found_or_scope_mismatch',
+      'requestedCount', v_requested_count,
+      'validCount', v_valid_count
+    );
   END IF;
 
   -- Lock order step 3: lock target rows second, ordered by id, one query.
@@ -526,7 +728,7 @@ BEGIN
   WHERE p.id = ANY (v_product_ids)
     AND p.status <> 'removed';
 
-  RETURN jsonb_build_object('result', 'success', 'productCount', array_length(v_product_ids, 1));
+  RETURN jsonb_build_object('result', 'success', 'productCount', v_valid_count);
 END;
 $$;
 
@@ -554,14 +756,31 @@ DECLARE
   v_target  public.pincode_tracking_targets;
   v_product public.pincode_monitored_products;
   v_outstanding integer;
+  -- Correction 4 (2026-07-18, PR #54 review round): hard safety ceilings --
+  -- p_manual_pending_limit remains the caller-supplied commercial/
+  -- configured value (DATA_MODEL.md sec2c); it must now also be <=
+  -- MAX_MANUAL_PENDING_LIMIT, so a malformed env value can never become an
+  -- effectively unlimited manual-check queue.
+  MAX_MANUAL_PENDING_LIMIT CONSTANT integer := 10000;
+  MAX_MARKETPLACE_LEN      CONSTANT integer := 40;
 BEGIN
-  -- Round-4 Correction 14: parameter bounds, before any lock or query.
-  -- An environment-variable typo must never produce an unbounded
-  -- cooldown or an effectively-unlimited manual queue.
+  -- Round-4 Correction 14 + Correction 4 (PR #54 review round): parameter
+  -- bounds, before any lock or query. An environment-variable typo must
+  -- never produce an unbounded cooldown or an effectively-unlimited
+  -- manual queue.
+  IF p_target_id IS NULL THEN
+    RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'missing_target_id');
+  END IF;
+  IF p_workspace_id IS NULL THEN
+    RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'missing_workspace_id');
+  END IF;
+  IF p_marketplace_id IS NULL OR length(p_marketplace_id) = 0 OR length(p_marketplace_id) > MAX_MARKETPLACE_LEN THEN
+    RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'invalid_marketplace_id');
+  END IF;
   IF p_cooldown_seconds IS NULL OR p_cooldown_seconds < 0 OR p_cooldown_seconds > 3600 THEN
     RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'invalid_cooldown_seconds');
   END IF;
-  IF p_manual_pending_limit IS NULL OR p_manual_pending_limit <= 0 THEN
+  IF p_manual_pending_limit IS NULL OR p_manual_pending_limit <= 0 OR p_manual_pending_limit > MAX_MANUAL_PENDING_LIMIT THEN
     RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'invalid_manual_pending_limit');
   END IF;
 

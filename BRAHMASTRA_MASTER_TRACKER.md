@@ -4037,3 +4037,146 @@ new), `BRAHMASTRA_MASTER_TRACKER.md` (this entry), `WORK_DONE_SUMMARY.md` (new P
 **Next step (needs the founder):** review the P0-A implementation PR (migrations + RPC bodies), and either
 approve it for merge (still not applying the migration to production — that is a separate, explicit step
 after merge) or request changes. P0-B cannot start until this PR is approved.
+
+### §22 update 7 (2026-07-18) — PR #54 implementation-review round: committed test suite + 6 correctness/safety corrections, still not merged, migration still not applied anywhere
+
+**Decision received:** "PR #54 is implementation-complete but is not approved to merge yet" — one focused
+implementation-review amendment, 8 corrections, explicitly scoped to not redesign Pincode, not start P0-B,
+not apply any migration to production, not deploy. Stayed on branch `feature/pincode-p0a-schema-rpcs`, PR
+#54. All 8 corrections closed; full detail in the PR #54 description.
+
+**Correction 1 — the reported testing was real but uncommitted; it is now a real, committed, repeatable
+suite.** New directory `esolz-app/supabase/tests/pincode-p0a/`: `README.md` (prerequisites, exact commands,
+safety guarantees, what's shimmed and why), `sequential.sql` (~20 numbered test groups with lettered
+sub-cases, `RAISE EXCEPTION`-on-failure `DO` blocks), `concurrency.sh` (4 real multi-connection tests,
+programmatic pass/fail, chosen over `concurrency.ts`/`.py` specifically because true multi-connection
+PostgreSQL session control is what's being tested and `psql` backgrounded via bash gives that directly with
+zero new dependencies — documented explicitly in the README as a deliberate deviation from the suggested
+structure, not an oversight), `explain-analyze.sql` (seeds representative volume, asserts the query plan
+structurally via `EXPLAIN ... FORMAT JSON` + `jsonb_path_exists`, not eyeballed text), and `run-tests.sh` (the
+single entry point — refuses any `PGHOST` other than `localhost`/`127.0.0.1`/`::1`/unset, refuses if any of
+six connection-shaped environment variables looks like a hosted Supabase endpoint even though unused,
+refuses unless the target database name contains `scratch`/`test`, no flag overrides any refusal, bootstraps
+from the real `001`–`063` migration history, runs all three phases, drops the scratch database on exit unless
+`PINCODE_TEST_KEEP_DB=1`, exits non-zero on any failure). Verified end-to-end in this session: `exit code 0`,
+all 3 phases pass, scratch database confirmed dropped after the run.
+
+**Correction 2 — `set_pincode_tracking_state` and `remove_pincode_monitored_products` now perform
+complete-batch ID validation before any mutation.** Both RPCs previously only asserted "every row that
+resolved is in scope" — never "every requested ID actually resolved." A missing, foreign-workspace, or
+scope-mismatched ID could previously be silently dropped, with the RPC operating on and reporting a count
+for whichever subset happened to exist. Both RPCs now: validate `p_workspace_id`/`p_marketplace_id`
+non-null/length-bounded, reject any `NULL` element inside the ID array outright, normalize duplicates, lock
+parent-then-target as before, then require the count of existing-and-in-scope locked rows to exactly equal
+the count of distinct requested IDs — any shortfall rejects the **entire** request with a single
+distinguishable `not_found_or_scope_mismatch` result and performs **no** mutation. `targetCount`/
+`productCount` in a success response now reflects the validated count, never the raw requested-array length.
+Tests added (`sequential.sql` groups 17/18): one valid + one nonexistent ID, one local + one foreign-workspace
+ID, duplicate IDs (normalized, not a rejection by itself), `NULL` ID inside the array, and an explicit
+assertion that the valid ID's row was **not** mutated when the batch was rejected (proving no partial
+mutation) — all passing for both RPCs.
+
+**Correction 3 — `enroll_pincode_monitored_products` now verifies product *identity*, not just existence.**
+The owned-listing check previously confirmed a listing with the supplied ID existed in the caller's
+workspace/marketplace, but never that the listing's **own `asin` column** matched the requested ASIN — a
+caller could supply any of the workspace's own listing IDs alongside an unrelated ASIN and have it silently
+accepted. Fixed: the check now also requires `upper(li.asin) = upper(requested asin)`. A new,
+symmetric check was added for `tracked_asin_id` (previously not validated at all): workspace, the
+**`tracked_asins` table's own `marketplace` column** (confirmed by direct schema inspection — this table has
+no `marketplace_id` column, only `marketplace`, exactly the kind of assumption-checking the correction asked
+for), and normalized ASIN. Every UUID-shaped input (`amazon_listing_item_id`, `tracked_asin_id`) is now
+regex-validated **before** any `::uuid` cast, so a malformed UUID returns a normal `invalid_parameters`
+result instead of an uncontrolled `22P02` exception. `product_source = 'other'` can no longer carry a
+listing reference (explicit rejection, not silent reinterpretation to `'owned'`). Duplicate ASIN objects
+within one request with **conflicting** `product_source`/listing/tracked-ASIN metadata are now rejected
+outright, closing the gap where a later `DISTINCT ON` would otherwise silently pick an arbitrary winner
+(duplicate **pincode lists** for the same ASIN remain fine and are still merged). 6 new tests
+(`sequential.sql` 4a–4e) all passing, including one that specifically enrolls with a real, same-workspace
+listing whose own ASIN does *not* match the request and confirms rejection — the exact scenario the
+correction exists to close.
+
+**Correction 4 — hard, code-level safety ceilings added across every RPC that takes a caller-configured
+limit or a marketplace string, distinct from the commercial/configured value itself.** `p_quota_limit`
+(enroll, pause/resume) and `p_manual_pending_limit` (manual-check queue) remain the caller-supplied
+commercial/configured values (`DATA_MODEL.md` §2b/§2c — "not invented in this spec"); each is now also
+required to be `<=` a named, code-level constant (`MAX_QUOTA_LIMIT = 100000`, `MAX_MANUAL_PENDING_LIMIT =
+10000`) that is never itself configurable, so a malformed environment value can never become an effectively
+unlimited quota. Every RPC taking `p_marketplace_id` now bounds its length (`MAX_MARKETPLACE_LEN = 40`).
+`enroll_pincode_monitored_products` additionally bounds the **total flattened** `(asin, pincode)` combination
+count (`MAX_TOTAL_COMBINATIONS = 2000`) — closing the gap where each array's own per-field bound (200
+products x 100 pincodes) still permitted a 20,000-row expansion. New tests (`sequential.sql` group 20) assert
+each ceiling rejects independently of, and before, any business-logic quota check.
+
+**Correction 5 — `pincode_tracking_targets_monitored_product_fk` changed from `ON DELETE CASCADE` to `ON
+DELETE RESTRICT`.** Normal feature behavior is soft removal (`remove_pincode_monitored_products`); a direct
+hard `DELETE` of a `pincode_monitored_products` row is not a normal event and should never silently erase its
+targets — previously it would have, even for a product with zero result history (the pre-existing RESTRICT on
+`pincode_availability_results` only protected products *with* history). Migration 061 edited in place (not
+applied anywhere yet, safe to edit directly). **Empirically verified, not just asserted, that the
+workspace-level full-cleanup cascade still works correctly** despite this change: deleting an entire
+`workspaces` row fires two independent `ON DELETE CASCADE` actions (one each on `pincode_monitored_products`
+and `pincode_tracking_targets`, both referencing `workspaces` directly) — confirmed via a direct test that
+both child rows are gone with zero FK-violation error, proving Postgres's cascade graph resolves the two
+independent CASCADE paths correctly even with the parent-to-child RESTRICT in between. New tests
+(`sequential.sql` 13a–13c): direct target deletion with history rejected; direct product deletion with
+targets rejected **even with zero result history** (the specific new case this correction closes); and the
+workspace-cascade-still-works proof above.
+
+**Correction 6 — `pincode_monitored_products_removed_consistency_chk` strengthened.** Previously only
+required `removed_at IS NOT NULL` when `status = 'removed'`; `removal_reason` could be `NULL` on a
+`'removed'` row without violating the constraint. Now also requires `removal_reason IS NOT NULL AND
+removal_reason IN ('user_requested')` — the same narrow allowed-value set the remove RPC already enforced at
+the application layer, now backstopped at the database layer too. Migration 061 edited in place. New tests
+(`sequential.sql` 19a/19b): `NULL` removal_reason on a removed row rejected; an arbitrary/non-allow-listed
+removal_reason rejected.
+
+**Correction 7 — migration 060's "locks no rows" comment corrected; real operational guidance added.**
+Creating a `UNIQUE` constraint via `ADD CONSTRAINT` builds a new B-tree index and holds an `ACCESS EXCLUSIVE`
+table lock for the build's duration, even though the underlying data is already logically unique (the
+original comment conflated "will never reject an existing row" with "takes no lock," which are different
+claims). Corrected comment now documents: confirmed current production table sizes (482
+`amazon_listing_items` rows, 19 `tracked_asins` rows — read via the Correction 8 audit below, at this size the
+lock window is sub-second and not a real operational risk), the actual lock type/impact, a recommended
+low-traffic window, a preflight duplicate-check query (expected to return zero rows, verifying rather than
+assuming the "already unique via PK" reasoning), a `lock_timeout` strategy (`SET LOCAL lock_timeout = '5s'`,
+now actually added to the migration, not just described), and an explicit restatement that this PR does not
+apply anything to production.
+
+**Correction 8 — read-only production audit re-run.** Executed directly against the production project
+(`okxfwcfxxrtmijmvztdq`) via read-only `SELECT` queries only, no `apply_migration`, no write of any kind:
+- `pincode_availability_results` distinct `(availability_status, error_code presence)` combinations: `available`
+  / no-error: **18 rows**; `unknown` / error: **7 rows** — identical to the original audit recorded in
+  `DATA_MODEL.md` §4a, confirming no drift in this table since that audit.
+- `pincode_availability_results` total row count: **25**, date range 2026-06-17 to 2026-07-02.
+- Confirmed the four new columns (`monitored_product_id`, `tracking_target_id`, `check_attempt_id`,
+  `check_status`) **do not yet exist** in production (`information_schema.columns` query returned zero rows)
+  — consistent with "migration not applied," verified directly rather than assumed.
+- `amazon_listing_items`: **482** rows. `tracked_asins`: **19** rows (both used above, in Correction 7, to
+  ground the lock-impact documentation in real current numbers, not estimates).
+- **Zero production rows modified** — every query above was a plain `SELECT`.
+
+**Files changed this round:** `esolz-app/supabase/migrations/060_pincode_p0a_precondition_fks.sql` (Correction
+7, comment + `lock_timeout`), `061_pincode_p0a_core_tables.sql` (Corrections 5/6, FK + CHECK), `063_pincode_
+p0a_rpcs.sql` (Corrections 2/3/4, all three prose-derived RPCs + `queue_pincode_manual_check`'s ceilings) —
+all edited in place, not layered as new migrations, since none has been applied anywhere yet; `esolz-app/
+supabase/tests/pincode-p0a/` (new: `README.md`, `sequential.sql`, `concurrency.sh`, `explain-analyze.sql`,
+`run-tests.sh`); `BRAHMASTRA_MASTER_TRACKER.md` (this entry); `WORK_DONE_SUMMARY.md` (updated Pincode P0-A
+entry). No `062` change this round (its additive columns/FKs/indexes were not touched by any of the 8
+corrections). Still zero application code, zero API routes, zero UI, zero cron — feature remains fully
+disabled.
+
+**Re-verification after all 8 corrections:** scratch database rebuilt from scratch (`001`–`063`, same two
+pre-existing unrelated skips as before), full committed suite (`run-tests.sh`) re-run end-to-end: sequential
+suite passed (all ~20 groups), concurrency suite passed (4/4, including the same real-lock-contention proof
+from the original P0-A round, now committed rather than ad hoc), EXPLAIN ANALYZE check passed (due-index
+confirmed used, no sequential scan, at 50,000-row/10%-due representative volume). `npx tsc --noEmit` clean.
+`npm run build` clean. `git status` confirms only migration files 060/061/063 and the new `tests/` directory
+changed — zero application/API/UI/cron files touched.
+
+**No migration applied to production. No production row modified (the Correction 8 audit was read-only). No
+Vercel/Supabase environment variable changed. No deployment. P0-B remains blocked.**
+
+**Next step (needs the founder):** review the amended PR #54 (migrations 060/061/063 diffs, the new committed
+test suite, the production audit results above), and either approve it for merge (migration still not
+applied to production automatically on merge — that remains its own separate, explicit step) or request
+further changes. P0-B cannot start until this PR is approved.

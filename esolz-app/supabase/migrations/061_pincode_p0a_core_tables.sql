@@ -73,9 +73,20 @@ CREATE TABLE public.pincode_monitored_products (
     CHECK (status IN ('active', 'archived', 'removed')),
   CONSTRAINT pincode_monitored_products_asin_format_chk
     CHECK (asin ~ '^[A-Z0-9]{10}$'),
+  -- Correction 6 (2026-07-18, PR #54 review round): strengthened. The
+  -- original form only required removed_at when status='removed', leaving
+  -- a row that was 'removed' with a NULL removal_reason structurally
+  -- valid -- silently losing the seller's stated reason (or the RPC's own
+  -- narrow value) at the database layer, even though the RPC itself only
+  -- ever writes 'user_requested'. The CHECK now also requires
+  -- removal_reason to be both non-null AND drawn from the same narrow
+  -- allowed-value set the remove RPC enforces (DATA_MODEL.md sec3b) --
+  -- defense-in-depth so a future write path can't silently create a
+  -- 'removed' row with an arbitrary or missing reason.
   CONSTRAINT pincode_monitored_products_removed_consistency_chk
     CHECK (
-      (status = 'removed' AND removed_at IS NOT NULL)
+      (status = 'removed' AND removed_at IS NOT NULL AND removal_reason IS NOT NULL
+        AND removal_reason IN ('user_requested'))
       OR
       (status <> 'removed' AND removed_at IS NULL AND removal_reason IS NULL)
     ),
@@ -157,10 +168,29 @@ CREATE TABLE public.pincode_tracking_targets (
       OR
       (status <> 'checking' AND claimed_at IS NULL AND claimed_by IS NULL AND claim_token IS NULL)
     ),
+  -- Correction 5 (2026-07-18, PR #54 review round): RESTRICT, not CASCADE.
+  -- Normal feature behavior is SOFT removal -- remove_pincode_monitored_
+  -- products (DATA_MODEL.md sec3b) sets the parent's status='removed' and
+  -- pauses child targets, it never DELETEs the parent row. A plain CASCADE
+  -- here meant a direct hard DELETE of a pincode_monitored_products row
+  -- (an operational mistake, a manual psql session, a future bug) would
+  -- silently erase every one of its tracking targets -- and, transitively,
+  -- get blocked by pincode_availability_results' own RESTRICT FK (062)
+  -- only if history existed; a product with targets but zero results yet
+  -- would have had its targets silently cascaded away with no error at
+  -- all. Matches the same reasoning already applied to the result table's
+  -- FKs (062, Correction 11 from the original spec round): this feature's
+  -- own tables are never hard-deleted in normal operation, so a hard
+  -- DELETE against them should be loudly rejected, not silently absorbed.
+  -- Workspace-level cascade (ON DELETE CASCADE from workspaces, above,
+  -- unaffected by this correction) is retained deliberately -- deleting an
+  -- entire workspace is a real, intentional, whole-tenant operation this
+  -- schema still needs to clean up after, tested separately from the
+  -- per-row RESTRICT case this correction addresses.
   CONSTRAINT pincode_tracking_targets_monitored_product_fk
     FOREIGN KEY (workspace_id, monitored_product_id)
     REFERENCES public.pincode_monitored_products (workspace_id, id)
-    ON DELETE CASCADE
+    ON DELETE RESTRICT
 );
 
 -- Global due-work query (claim_due_pincode_targets) selects across all
