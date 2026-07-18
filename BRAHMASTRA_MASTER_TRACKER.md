@@ -3561,3 +3561,113 @@ folded into test 10.
 fully written out in `IMPLEMENTATION_PLAN.md` §2.7/§2.8/§2.9/§2.10, and the locked P0-A/B/C/D sequencing in
 §9) and either approve for a P0-A implementation PR to be opened, or request further changes. PR #53 itself
 is not merged.
+
+### §22 update 3 (2026-07-18) — PR #53 amended a third time: "close, not merged yet," 12 corrections + locked manual-quota decision
+
+**Decision received:** "PR #53 is close, but do not merge it yet." Twelve more corrections required, plus the
+founder locked the Manual Check Now rate-control decision (separate from the enrollment quota). This entry
+summarizes round 3. **PR #53 remains spec-only, still not merged, no code, no migration, no deployment.**
+
+**Founder decision, locked this round:** Manual Check Now does **not** consume the enrollment quota (locked
+round 2) — the target is already enrolled and already consumes standing recurring-check capacity, so
+charging it a second time for being manually checked would double-count the same capacity. P0 Manual Check
+Now rate control is exactly two mechanisms: (1) a per-target cooldown (unchanged from round 2), (2) a
+configurable maximum number of outstanding manual requests per workspace+marketplace
+(`PINCODE_MANUAL_MAX_OUTSTANDING_PER_WORKSPACE_MARKETPLACE`) — "outstanding" defined precisely as queued
+(request recorded, not yet claimed) or checking (claimed, check in flight). No daily/monthly manual-request
+pool in P0; commercial usage-based limits stay P1. Full design: `DATA_MODEL.md` §2c.
+
+**The 12 corrections:**
+
+1. **Enrollment quota made concurrency-safe.** The round-2 count-then-insert design could oversubscribe
+   under concurrent enrollment/resume requests (both count the same total, both conclude room exists, both
+   insert). Fixed with `pg_advisory_xact_lock`, keyed deterministically from `(workspace_id, marketplace_id)`
+   via `hashtextextended`, acquired inside every quota-affecting RPC's transaction — chosen over a dedicated
+   quota-settings row since P0 needs no such table otherwise. A hash collision causes only harmless extra
+   serialization, never oversubscription.
+2. **Bulk enrollment made genuinely all-or-nothing.** Round 2 said "one transaction per product" while also
+   promising bulk requests never partially enroll — a direct contradiction. `enroll_pincode_monitored_
+   products` now accepts a full JSONB array of products + pincodes, validates every product/pincode before
+   writing any row, makes one quota decision for the whole batch, and either creates the complete request or
+   rejects it whole.
+3. **Fifth trusted RPC added: `set_pincode_tracking_state`.** The spec referenced "quota-safe resume
+   behavior" but never actually specified a dedicated RPC for it. New bulk-capable RPC: Resume re-checks
+   quota atomically (same advisory lock), resets `consecutive_failures` on an explicit resume of a `failed`
+   target, never partially resumes a bulk request. Pause: `active`/queued targets pause immediately and clear
+   manual-request fields; a `checking` target is rejected with `409 check_in_progress` rather than
+   invalidating an in-flight claim; archived/removed products cannot resume.
+4. **`queue_pincode_manual_check` no longer tests a nonexistent `target.status = 'archived'` value** —
+   `pincode_tracking_targets.status` has never had an `'archived'` value (that's a fact about the *parent*
+   product). Fixed: the RPC now locks and checks the parent `pincode_monitored_products` row's status first,
+   independently of the target's own status, with a corrected status-test matrix (parent
+   archived/removed → cannot check regardless of target state; parent active + target
+   active/checking/paused/failed handled as before).
+5. **Archival cascade no longer tries to pause an in-flight `checking` target.** A blind "set every child
+   target to paused" would have violated the claim-consistency CHECK and raced the worker's own eventual
+   finalize. Fixed: the cascade UPDATE excludes `status = 'checking'` rows explicitly; `finalize_pincode_
+   check` re-reads the (locked) parent product at finalize time — if it's gone archived/removed mid-flight,
+   the result is still recorded honestly, but the target finalizes to `paused` with no new schedule instead
+   of being rescheduled. No new claim can ever select a target whose parent isn't `active`.
+6. **Soft "Remove Tracking" state added**, distinct from source-driven `archived`. New `pincode_monitored_
+   products.status = 'removed'` + `removed_at` + `removal_reason`. User-driven only, never set by
+   reconciliation. Same history-preservation and in-flight-safety behavior as archival, but a separate label
+   and filter in the UI, and a re-add restores the same record rather than duplicating it.
+7. **One canonical `claim_due_pincode_targets` signature, not two.** Round 2 described this function twice —
+   an earlier two-parameter version and a later three-parameter fairness version — with no explicit statement
+   that the first was superseded. Removed; the three-parameter signature
+   (`p_limit, p_invocation_id, p_excluded_workspace_ids`) is now described exactly once, in one place, as the
+   only current version.
+8. **Fixed the claim RPC's locking shape.** The round-2 body applied `FOR UPDATE SKIP LOCKED` to a **derived,
+   windowed** result (a `ROW_NUMBER() OVER (PARTITION BY workspace_id)` subquery) — not a defensible base-row
+   locking design. Corrected to a CTE chain: rank candidates first with no lock, select the ID list, **then**
+   lock the real `pincode_tracking_targets` base rows by that exact ID set (`FOR UPDATE OF` the real table,
+   `SKIP LOCKED`), then update only the successfully-locked rows. Must be concurrency-tested with two
+   database connections and checked with `EXPLAIN ANALYZE` before the migration is finalized — both now
+   explicit requirements in the spec.
+9. **Manual quota computed atomically inside the RPC, not passed in from the route.** Round 2's
+   `p_manual_quota_remaining` was computed by the calling route *outside* the transaction — stale the instant
+   a concurrent request changed the count. Fixed: `queue_pincode_manual_check` now takes only the
+   **configured** limit (`p_manual_pending_limit`) and computes current outstanding usage itself, under the
+   same advisory lock discipline as enrollment. New, distinct error contract: `409 { errorCode:
+   'pincode_manual_queue_limit_reached', currentOutstanding, limit }` — deliberately not the same `errorCode`
+   as the enrollment quota, since the founder was explicit these are different concepts.
+10. **Concurrent duplicate finalize calls for the same still-valid token no longer misdiagnosed as stale.**
+    The validate-before-insert fix (round 2) closed the stale-reclaimed-attempt race, but two concurrent
+    finalize calls carrying the *same, still-valid* token could still race: the second call's target lookup
+    finds nothing (the first already changed status), and round 2's logic would have wrongly raised
+    `stale_check_attempt` for this legitimate case. Fixed: after a failed target lookup, re-query the result
+    by `check_attempt_id` a second time before concluding it's stale — only raise if a result genuinely
+    doesn't exist after that second check. The guarded final `UPDATE ... WHERE id=... AND claim_token=... AND
+    status='checking'` is retained as defense-in-depth.
+11. **`finalize_pincode_check` now validates result combinations before writing.** Until the deferred
+    `check_status` CHECK constraint is applied, this RPC is the primary write-integrity boundary — it now
+    rejects an unrecognized `check_status`, `success` with a null availability, and `failed`/`blocked` with a
+    non-null availability, before any write. Two new database CHECK constraints added immediately (not
+    audit-gated, since both are structurally satisfied by all-null legacy rows): identity-consistency (the
+    three new ID columns are all-null or all-non-null together) and new-row-result-consistency (only fires
+    when `check_attempt_id IS NOT NULL`, so legacy rows can never violate it).
+12. **Feature flag now required to protect every API/RPC layer, not just the hidden UI.** P0-B ships API
+    routes before P0-C ships the UI that calls them, so the routes are technically reachable by direct call
+    before any UI gate exists. Every layer — lookup, enrollment, defaults, pause/resume/remove, manual-check
+    queue, and the scheduler's own claim RPC — now independently enforces the internal-workspace allowlist;
+    the claim RPC specifically must never return a non-allowlisted workspace's targets even if rows exist for
+    it.
+
+**Files amended (same PR, no replacement):** `PINCODE_UNIFIED_PAGE_PRODUCT_SPEC.md`,
+`PINCODE_UNIFIED_PAGE_DATA_MODEL.md`, `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md`,
+`BRAHMASTRA_MASTER_TRACKER.md` (this entry). RPC count revised from 4 to **5**
+(`set_pincode_tracking_state` added). Migration count remains 4, with materially larger per-migration scope
+(new columns, new CHECK constraints, the 5th RPC). Test plan extended with tests #19–25 (bulk all-or-nothing,
+concurrent quota serialization, pause/resume atomicity and in-flight safety, removed-vs-archived
+distinguishability, claim-RPC concurrency/query-plan validation, feature-flag-bypass rejection at every
+layer) plus several tests embedded directly in their RPC sections (concurrent duplicate finalize, archival
+during in-flight check, result-combination validation, manual status-behavior matrix, manual-quota
+independence).
+
+**Still not done in this round:** no migration applied, no application code written, no deployment.
+
+**Next step (needs the founder):** review the round-3 amended spec set — particularly the corrected,
+now-canonical `claim_due_pincode_targets` (`IMPLEMENTATION_PLAN.md` §2.8), the rewritten `finalize_pincode_
+check` (§2.7), the rewritten `queue_pincode_manual_check` (§2.10), and the new `set_pincode_tracking_state`
+(`DATA_MODEL.md` §3a) — and either approve for a P0-A implementation PR to be opened, or request further
+changes. PR #53 itself is not merged.

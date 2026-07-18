@@ -24,10 +24,20 @@ two documents disagreed in round 1); (3) closes a viewer-role RLS gap on `worksp
 (`DATA_MODEL.md` §6); (4) reflects the round-2 corrections to the claim/finalize/manual-check RPCs
 (`IMPLEMENTATION_PLAN.md` §2.7–2.10) wherever this document references them. Product-facing behavior is
 otherwise unchanged from round 1 — these are consistency and enforcement-detail corrections, not new
-product decisions. Section-by-section changes are called out inline as **"Correction N (2026-07-18)"**
-blocks; round-2-specific corrections are marked "round 2" to distinguish from round 1's own numbered
-corrections (the two rounds each restart correction numbering from 1 — see `BRAHMASTRA_MASTER_TRACKER.md`
-§22 for the full mapping of what each round's corrections mean).
+product decisions.
+
+**Amendment round 3 (2026-07-18) — "close, but do not merge yet."** This round makes two real product-facing
+additions and several correctness closures: (1) **Manual Check Now no longer shares the enrollment quota** —
+locked founder decision, it has its own separate outstanding-request limit (§5.4, §9, `DATA_MODEL.md` §2c);
+(2) **"Remove Tracking" now has a truthful soft-removal model**, distinguishable from a product going
+`archived` because its source listing disappeared (§5.4, §7, `DATA_MODEL.md` §2 Correction 6) — this closes
+a real gap, the round-1/2 drafts described a "Remove" action in the wireframe (§10) without the schema state
+to back it; (3) bulk enrollment and bulk pause/resume are now specified as genuinely all-or-nothing, and
+concurrent enrollment/resume requests are concurrency-safe (§5.1/§5.2, `DATA_MODEL.md` §2a Corrections 1/2);
+(4) pause on an in-flight `checking` target is explicitly rejected rather than silently invalidating the
+scheduler's claim (§5.4, `DATA_MODEL.md` §3a Correction 3). Section-by-section changes are called out inline
+as **"Correction N (2026-07-18)"** blocks; each round restarts its own correction numbering from 1 (see
+`BRAHMASTRA_MASTER_TRACKER.md` §22 for the full mapping of what each round's corrections mean).
 
 ---
 
@@ -183,14 +193,34 @@ reconciliation query and `IMPLEMENTATION_PLAN.md` §5 test #13 for the required 
    which tab is selected — this is the standing tracking view, not a per-tab list.
 2. Each product is a collapsed top-level row; expanding it reveals its individual pincode rows (§10 — this
    avoids a 100-product × 10-pincode = 1,000-row flat table).
-3. Row-level actions: Check Now (§9), Edit Pincodes, Pause/Resume, View History, Remove. Per-pincode
-   actions inside the expanded view: Check Now (single pincode), Pause/Resume (single pincode), History,
-   Remove (single pincode from this product's list).
-4. **Resume is quota-checked (round 2, locked founder decision):** clicking Resume on a paused target
+3. Row-level actions: Check Now (§9), Edit Pincodes, Pause/Resume, View History, **Remove Tracking**.
+   Per-pincode actions inside the expanded view: Check Now (single pincode), Pause/Resume (single pincode),
+   History, Remove (single pincode from this product's list). Bulk versions of Pause/Resume/Check Now are
+   available from the multi-select bar, same pattern as My Products' bulk enrollment (§5.1).
+4. **Resume is quota-checked (locked founder decision):** clicking Resume on a paused or failed target
    re-checks quota exactly like a fresh enrollment — `DATA_MODEL.md` §2b, "resuming a paused target must
    re-check quota." If the workspace+marketplace is at its limit, Resume is rejected with the same `409
    pincode_tracking_quota_exceeded` shape as enrollment, not silently allowed to exceed the limit just
-   because the target already existed once before.
+   because the target already existed once before. **Correction 3 (2026-07-18, round 3):** a bulk Resume
+   (multiple targets at once) is atomic — either the complete selection resumes, or none of it does; a
+   partial resume that silently drops some targets over quota never happens (`DATA_MODEL.md` §3a).
+5. **Pause on an in-flight check is rejected, not silently overridden (Correction 3, round 3):** if a
+   selected target is currently `checking` (the scheduler is actively running a check against it right now),
+   clicking Pause returns an honest "check in progress, try again in a moment" response rather than
+   invalidating the scheduler's claim out from under it. A bulk Pause that includes one or more in-flight
+   targets is rejected as a whole with the specific in-flight target(s) named, so the seller can retry
+   without them rather than getting a silently partial pause.
+6. **"Remove Tracking" is a truthful soft-removal, not a hard delete (Correction 6, round 3).** Distinct
+   from a product going **Archived** (which happens automatically when its source listing disappears from
+   the seller's catalog — no user action) — Remove Tracking is something the seller explicitly chooses.
+   Removing a product: pauses all future checks immediately (with the same in-flight-safety rule as Pause,
+   above); clears any pending manual check request; stops it from consuming quota; keeps its full check
+   history intact and still viewable; hides it from the default tracker view; and surfaces it under a
+   dedicated **Removed filter** (parallel to the existing Archived filter — the two are never conflated in
+   the UI, different label, different filter). Re-adding the same ASIN later (from either tab) **restores**
+   the same monitored-product record and its full history — it does not create a duplicate, silently
+   discard the old history, or require the seller to notice they're "really" re-adding rather than adding
+   fresh. `DATA_MODEL.md` §2/§3a has the full schema and RPC contract.
 
 ---
 
@@ -251,7 +281,8 @@ timeout, so the lookup route's behavior stays consistent with the rest of the ap
 | **Partially tracked** | A monitored-product row exists, but fewer pincodes are configured than the current workspace defaults (a signal, not an error). |
 | **Active** | Monitored, at least one `pincode_tracking_targets` row is `active`. |
 | **Paused** | Monitored, but every target for this product is `paused` — no future checks will run. |
-| **Archived** | The underlying `amazon_listing_items`/`tracked_asins` source (or the monitored-product row itself) is archived or its owned-listing reference was removed from the sync — all targets auto-paused (`DATA_MODEL.md` §5, archived-cascade behavior), history preserved, visible only under the Archived filter (decision #10). **Correction 1 (2026-07-18):** an owned product's `amazon_listing_item_id` can legitimately become `NULL` (the source listing row was removed) without the monitored product or its history being lost — this is exactly the case that must land here, not error out or silently vanish. |
+| **Archived** | The underlying `amazon_listing_items`/`tracked_asins` source (or the monitored-product row itself) is archived or its owned-listing reference was removed from the sync — **source-driven, no user action** — all non-in-flight targets auto-paused (`DATA_MODEL.md` §5, archived-cascade behavior, corrected in round 3 to leave an in-flight `checking` target alone until it finalizes or is reclaimed), history preserved, visible only under the Archived filter (decision #10). **Correction 1 (2026-07-18):** an owned product's `amazon_listing_item_id` can legitimately become `NULL` (the source listing row was removed) without the monitored product or its history being lost — this is exactly the case that must land here, not error out or silently vanish. |
+| **Removed** | **Correction 6 (2026-07-18, round 3) — new state, distinct from Archived.** The seller explicitly clicked "Remove Tracking" (§5.4) — a **user-driven** action, never automatic. Same auto-pause/history-preservation behavior as Archived, but rendered with a different label and surfaced under a separate **Removed filter**, never conflated with a source-driven Archived state. Re-adding the same ASIN restores this same record and its history rather than creating a duplicate. |
 | **Failed** | Every target for this product has exceeded its `consecutive_failures` threshold (see `IMPLEMENTATION_PLAN.md` §Scheduler retry policy) — distinct from Paused: this state means the system tried and couldn't get a clean signal, not that the seller chose to stop. |
 
 ## 8. Pincode-level states (expanded rows)
@@ -301,6 +332,15 @@ Fulfillment: **FBA (Amazon Fulfilled)** / **FBM (Merchant Fulfilled)** / **Not c
   `next_check_at`.
 - **(Correction 10)** "Checking" shown in the UI reflects a genuinely queued/claimed request, never a
   synchronous fire-and-hope call the browser is blocking on.
+- **(Round 3, Correction 6)** A seller choosing to remove a product is not the same fact as Amazon's data
+  disappearing out from under them — Removed and Archived are never rendered identically, even though both
+  pause future checks and preserve history the same way underneath.
+- **(Round 3, Correction 4)** A CAPTCHA/checker failure/quota rejection are never presented as "this product
+  doesn't exist" — a target that is `checking`, `paused`, or `failed` is not the same fact as its parent
+  product being `archived`/`removed`; Manual Check Now's honest rejection reasons distinguish all of these.
+- **(Round 3, locked founder decision)** Manual Check Now hitting its own outstanding-request limit is not
+  the same fact as the workspace being out of enrollment quota — the UI never conflates
+  `pincode_manual_queue_limit_reached` with `pincode_tracking_quota_exceeded`.
 
 ---
 
@@ -343,10 +383,11 @@ Fulfillment: **FBA (Amazon Fulfilled)** / **FBM (Merchant Fulfilled)** / **Not c
 | Page | `src/app/(dashboard)/dashboard/pincode-checker/page.tsx` (replaces existing content) |
 | My Products list | reuses `GET /api/asins/listings` (existing, unchanged) |
 | Other Products lookup | new `POST /api/pincode-monitoring/lookup-asin` (§6) |
-| Enroll (bulk or single) | new `POST /api/pincode-monitoring/products` — **quota-checked, round 2** (locked founder decision: rejects with `409 pincode_tracking_quota_exceeded` if the enrollment would exceed the workspace+marketplace active-target limit; `DATA_MODEL.md` §2b) |
+| Enroll (bulk or single) | new `POST /api/pincode-monitoring/products` — **quota-checked, all-or-nothing** (locked founder decision + round-3 Correction 2: rejects with `409 pincode_tracking_quota_exceeded` if the enrollment would exceed the workspace+marketplace active-target limit; a bulk request is validated and written as one atomic unit via `enroll_pincode_monitored_products`, concurrency-safe under an advisory lock per round-3 Correction 1; `DATA_MODEL.md` §2a/§2b) |
 | Update pincodes for a product | new `PATCH /api/pincode-monitoring/products/[id]/pincodes` |
-| Pause/resume/archive a product | new `PATCH /api/pincode-monitoring/products/[id]` — **resume is quota-checked too** (round 2: resuming a paused target re-checks quota exactly like a fresh enrollment, same `409` shape) |
-| Manual Check Now (product or single pincode) | new `POST /api/pincode-monitoring/check-now` — **queued via one atomic RPC** (`queue_pincode_manual_check`, round-2 Correction 4; validates workspace access, then atomically checks status/cooldown/quota and records the request in a single database transaction — not a route-level read followed by a separate write; returns `202`/`Accepted`/`Queued` only when genuinely queued; see `IMPLEMENTATION_PLAN.md` §2.10) |
+| Pause/resume targets (bulk-capable) | new `PATCH /api/pincode-monitoring/products/[id]/pause` and `.../resume`, calling `set_pincode_tracking_state` (round-3 Correction 3, new RPC) — **resume is quota-checked** (resuming re-checks quota exactly like a fresh enrollment, same `409` shape, atomic across a bulk selection); **pause on an in-flight `checking` target is rejected** with `409 check_in_progress`, never silently overriding the scheduler's claim (`DATA_MODEL.md` §3a) |
+| Remove Tracking (soft removal) | new `PATCH /api/pincode-monitoring/products/[id]/remove` — **round 3, Correction 6, new route** — sets `status='removed'`, distinct from source-driven archival; re-adding the same ASIN restores this record (`DATA_MODEL.md` §2) |
+| Manual Check Now (product or single pincode) | new `POST /api/pincode-monitoring/check-now` — **queued via one atomic RPC** (`queue_pincode_manual_check`; validates workspace access, then atomically checks parent-product status/target status/cooldown/its own separate outstanding-request limit — round-3 Corrections 4/9 — and records the request in a single database transaction; returns `202`/`Accepted`/`Queued` only when genuinely queued; **does not draw from the enrollment quota**, locked founder decision, `DATA_MODEL.md` §2c; see `IMPLEMENTATION_PLAN.md` §2.10) |
 | Workspace default pincodes | new `GET`/`PUT /api/pincode-monitoring/default-pincodes` |
 | Tracker table data | new `GET /api/pincode-monitoring/tracker` (paginated, product-row + nested pincode-row shape) |
 | Scheduler cron | new `GET /api/cron/pincode-monitoring/scheduler` (Correction 8, 2026-07-18 round 2 — name locked and unified with `IMPLEMENTATION_PLAN.md` §2.14; one Vercel cron entry) |
@@ -402,6 +443,24 @@ All new routes follow this codebase's existing auth conventions: session-based f
     Supabase client call — all three tables are `SELECT`-only under RLS, verified by a per-table
     unauthorized-write-rejection test (this closes the round-1 gap where `workspace_default_pincodes` still
     allowed direct member CRUD).
+15. **(Round 3, Correction 2)** A bulk enrollment or bulk resume request is genuinely all-or-nothing — a
+    request that partially fits under quota is rejected in full, never applied to a subset, verified by a
+    bulk-all-or-nothing test.
+16. **(Round 3, Correction 1)** Two concurrent enrollment or resume requests that would jointly exceed quota
+    cannot both succeed — verified by a concurrent-quota-serialization test using two overlapping requests.
+17. **(Round 3, Correction 3)** Pausing a target currently mid-check (`status='checking'`) is rejected with
+    an honest "check in progress" response, never silently overriding the scheduler's in-flight claim —
+    verified by an in-flight-pause-rejection test.
+18. **(Round 3, Correction 6)** "Remove Tracking" and a source-driven "Archived" state are never rendered
+    identically, both preserve full history, and re-adding a removed ASIN restores the same record rather
+    than duplicating it — verified by a removed-vs-archived-distinguishability test and a
+    remove-then-re-add-preserves-history test.
+19. **(Round 3, locked founder decision)** Manual Check Now's outstanding-request limit is enforced
+    completely independently of the enrollment quota — exhausting one never affects the other — verified by
+    a manual-quota-independence test.
+20. **(Round 3, Correction 12)** Every API route and RPC this feature adds independently rejects requests for
+    a non-allowlisted workspace during the internal-workspace rollout phase — not merely because the UI is
+    hidden — verified by a feature-flag-bypass-rejection test covering every route/RPC.
 
 ---
 

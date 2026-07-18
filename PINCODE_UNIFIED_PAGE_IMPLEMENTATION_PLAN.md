@@ -26,6 +26,21 @@ the actual `pincode_availability_results` audit (18 `available`/no-error rows, 7
 other combinations exist today). The founder's quota decision (capped enrollment, explicit `409` rejection)
 is also locked in this round, closing round 1's open risk #2.
 
+**Amendment round 3 (2026-07-18) — "close, but do not merge yet."** Round 2's RPC designs were directionally
+correct but not yet safe under real concurrency or complete in scope: the enrollment quota was count-then-
+insert (a genuine oversubscription race under concurrent requests), bulk enrollment's "one transaction per
+product" contradicted its own all-or-nothing promise, no dedicated pause/resume RPC existed despite the spec
+referencing "quota-safe resume behavior," `queue_pincode_manual_check` tested a `target.status = 'archived'`
+value the target's status enum has never had, the archival reconciliation cascade would have tried to pause
+an in-flight `'checking'` target (violating its own claim-consistency CHECK), no soft-removal state existed
+for the UI's Remove Tracking action, this document described `claim_due_pincode_targets` twice with
+different signatures, the fairness query applied row-locking to a windowed derived table rather than real
+base rows, manual-check quota was computed outside the RPC's transaction (stale under concurrency), and two
+concurrent legitimate finalize calls for the same still-valid token could be misdiagnosed as a stale attempt.
+**Corrections 1–12 below** (round 3's own numbering, restarting at 1 again) fix all of these. The founder
+also locked a new decision this round: **Manual Check Now does not consume the enrollment quota** — it has
+its own separate, configurable outstanding-request limit (`DATA_MODEL.md` §2c).
+
 ---
 
 ## 1. The trade-off the founder decisions force — flagged explicitly, not silently resolved
@@ -197,7 +212,26 @@ the time a slow/stale worker's response for the *original* attempt finally arriv
 still succeed (the `check_attempt_id` is unique to that original attempt, so nothing stops the insert), and
 only the target `UPDATE` would silently no-op — leaving a real result row on the books for an attempt that no
 longer owned the target when it wrote, while never checking whether the target it's about to touch is even
-still the same logical check. Corrected order — **validate before insert, not after**:
+still the same logical check. Corrected order — **validate before insert, not after**.
+
+**Round 3 adds four more fixes to the same function** (Corrections 4, 5, 10, 11 — all incorporated into the
+one body below, not four separate functions):
+
+- **Correction 4** — the target's own `status` enum never had an `'archived'` value; the parent product's
+  archived/removed state must be read from `pincode_monitored_products`, locked in the same transaction.
+- **Correction 5** — if the parent went `archived`/`removed` while this check was in flight (§`DATA_MODEL.md`
+  §5), the result is still recorded (a real check ran), but the target finalizes to `paused` with
+  `next_check_at = NULL` instead of being rescheduled.
+- **Correction 10** — two concurrent finalize calls carrying the **same still-valid** token can race: both
+  see no existing result, one locks and finalizes first, the second's target lookup then finds nothing
+  (the first call already changed `status` away from `'checking'`) — round 1's version would have
+  incorrectly raised `stale_check_attempt` for this **legitimate** duplicate. Fixed: after a failed target
+  lookup, re-query the result by `check_attempt_id` a second time before concluding it's stale — only raise
+  `stale_check_attempt` if a result genuinely does not exist after that second check.
+- **Correction 11** — validate the `(check_status, availability_status)` combination against
+  `DATA_MODEL.md` §4a's mapping table *before* writing anything; reject invalid combinations outright (this
+  is the actual write-integrity boundary the deferred CHECK constraint backstops, `DATA_MODEL.md` §4's
+  Correction 11).
 
 ```sql
 CREATE OR REPLACE FUNCTION public.finalize_pincode_check(
@@ -216,8 +250,25 @@ AS $$
 DECLARE
   v_existing public.pincode_availability_results;
   v_target   public.pincode_tracking_targets;
+  v_product  public.pincode_monitored_products;
   v_result   public.pincode_availability_results;
+  v_next_status     text;
+  v_next_check_at   timestamptz;
+  v_consecutive     integer;
 BEGIN
+  -- Correction 11: validate the input combination FIRST, before any lookup
+  -- or write -- an invalid combination is a caller bug, not a legitimate
+  -- race, and must never reach the database in any row.
+  IF p_check_status NOT IN ('success', 'failed', 'blocked') THEN
+    RAISE EXCEPTION 'invalid_check_status' USING ERRCODE = 'P0002';
+  END IF;
+  IF p_check_status = 'success' AND p_availability_status NOT IN ('available', 'unavailable', 'unknown') THEN
+    RAISE EXCEPTION 'invalid_availability_for_success' USING ERRCODE = 'P0002';
+  END IF;
+  IF p_check_status IN ('failed', 'blocked') AND p_availability_status IS NOT NULL THEN
+    RAISE EXCEPTION 'availability_must_be_null_for_non_success' USING ERRCODE = 'P0002';
+  END IF;
+
   -- Step 1: idempotency check FIRST. If this exact attempt already
   -- recorded a result (a retried finalize call after the app lost the
   -- original response, but the transaction had already committed),
@@ -237,46 +288,98 @@ BEGIN
     WHERE claim_token = p_claim_token AND status = 'checking'
     FOR UPDATE;
 
-  -- Step 3: no currently-owned target -- this claim_token was reclaimed
-  -- (stale-claim reclaim, §2.4) and possibly already re-claimed by a
-  -- different attempt. Do NOT insert a result, do NOT touch any target --
-  -- the caller must treat this as a stale attempt, not a success.
   IF NOT FOUND THEN
+    -- Correction 10: do NOT immediately conclude "stale." A concurrent
+    -- finalize call for the SAME still-valid token may have already run
+    -- steps 2-5 and committed between this call's step 1 (which found
+    -- nothing) and this step's lookup (which now also finds nothing,
+    -- because the winning call already flipped status away from
+    -- 'checking'). Re-check for the result a second time before deciding.
+    SELECT * INTO v_existing FROM public.pincode_availability_results
+      WHERE check_attempt_id = p_claim_token;
+    IF FOUND THEN
+      RETURN v_existing;  -- legitimate concurrent duplicate -- same result, not an error
+    END IF;
+    -- Genuinely stale: this claim_token was reclaimed (stale-claim
+    -- reclaim, §2.4) and possibly already re-claimed by a different
+    -- attempt. Do NOT insert a result, do NOT touch any target.
     RAISE EXCEPTION 'stale_check_attempt' USING ERRCODE = 'P0001';
   END IF;
 
+  -- Correction 4/5: lock and read the PARENT product -- the target's own
+  -- status enum has no 'archived' value; archived/removed is a fact about
+  -- pincode_monitored_products, read here so the scheduling decision below
+  -- can react to a mid-flight archive/removal correctly.
+  SELECT * INTO v_product FROM public.pincode_monitored_products
+    WHERE id = v_target.monitored_product_id
+    FOR UPDATE;
+
   -- Step 4: insert the one result row this attempt owns, now that the
-  -- target lock proves this claim_token is still valid.
+  -- target lock proves this claim_token is still valid. The result is
+  -- recorded regardless of parent status -- a real check ran and
+  -- completed; that fact is never discarded.
   INSERT INTO public.pincode_availability_results (
     workspace_id, asin, pincode, monitored_product_id, tracking_target_id,
     check_attempt_id, check_status, availability_status,
     delivery_message, error_code, error_message, checked_at
   ) VALUES (
-    v_target.workspace_id,
-    (SELECT asin FROM public.pincode_monitored_products WHERE id = v_target.monitored_product_id),
-    v_target.pincode, v_target.monitored_product_id, v_target.id,
+    v_target.workspace_id, v_product.asin, v_target.pincode,
+    v_target.monitored_product_id, v_target.id,
     p_claim_token, p_check_status, p_availability_status,
     p_delivery_message, p_error_code, p_error_message, now()
   ) RETURNING * INTO v_result;
 
-  -- Step 5: finalize the SAME target this attempt validated in step 2 --
-  -- clear all claim fields, compute next_check_at/consecutive_failures per
-  -- §2.5/§2.6, clear manual-request fields if this was a manual check
-  -- (§2.10).
+  -- Step 5: compute the target's next state.
+  IF v_product.status IN ('archived', 'removed') THEN
+    -- Correction 5: parent went archived/removed while this check was in
+    -- flight -- finalize to paused, never reschedule a product that's no
+    -- longer active.
+    v_next_status := 'paused';
+    v_next_check_at := NULL;
+    v_consecutive := v_target.consecutive_failures;  -- unchanged; this isn't a failure
+  ELSIF p_check_status = 'blocked' THEN
+    v_next_status := 'active';
+    v_next_check_at := now() + (v_target.cadence_hours * 2 || ' hours')::interval;  -- §2.6
+    v_consecutive := v_target.consecutive_failures;  -- blocked does not increment failures, §2.6
+  ELSIF p_check_status = 'failed' AND v_target.consecutive_failures + 1 >= <max_failures> THEN
+    v_next_status := 'failed';
+    v_next_check_at := NULL;
+    v_consecutive := v_target.consecutive_failures + 1;
+  ELSIF p_check_status = 'failed' THEN
+    v_next_status := 'active';
+    v_next_check_at := now() + (v_target.cadence_hours || ' hours')::interval;  -- §2.5, flat retry delay
+    v_consecutive := v_target.consecutive_failures + 1;
+  ELSE
+    v_next_status := 'active';
+    v_next_check_at := now() + (v_target.cadence_hours || ' hours')::interval;
+    v_consecutive := 0;
+  END IF;
+
+  -- Step 6: finalize the SAME target this attempt validated in step 2 --
+  -- clear all claim fields, clear manual-request fields (this was either a
+  -- scheduled or manual check either way; both clear the same way).
+  -- Correction 10's guarded WHERE clause: even though this row is already
+  -- locked (FOR UPDATE, step 2) and cannot have changed underneath us,
+  -- the explicit claim_token + status='checking' guard is retained as a
+  -- second, defensive check -- if it were ever to affect zero rows despite
+  -- the lock, that is itself a bug worth surfacing loudly rather than
+  -- silently succeeding.
   UPDATE public.pincode_tracking_targets
-  SET status = CASE WHEN p_check_status = 'failed' AND consecutive_failures + 1 >= <max_failures>
-                     THEN 'failed' ELSE 'active' END,
+  SET status = v_next_status,
       last_checked_at = now(),
-      next_check_at = <computed per §2.5/§2.6>,
-      consecutive_failures = CASE WHEN p_check_status = 'failed'
-                                   THEN consecutive_failures + 1 ELSE 0 END,
+      next_check_at = v_next_check_at,
+      consecutive_failures = v_consecutive,
       last_error_code = p_error_code,
       claimed_at = NULL, claimed_by = NULL, claim_token = NULL,
       manual_requested_at = NULL, manual_requested_by = NULL, manual_request_token = NULL
-  WHERE id = v_target.id;
+  WHERE id = v_target.id AND claim_token = p_claim_token AND status = 'checking';
 
-  -- Step 6: insert + update commit together or not at all (implicit
-  -- transaction, same function body).
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'finalize_target_update_affected_zero_rows_unexpectedly' USING ERRCODE = 'XX000';
+  END IF;
+
+  -- Step 7: insert + product lock + update commit together or not at all
+  -- (implicit transaction, same function body).
   RETURN v_result;
 END;
 $$;
@@ -294,29 +397,66 @@ GRANT EXECUTE ON FUNCTION public.finalize_pincode_check(uuid, text, text, text, 
   make an external network call transactional, that's not possible and isn't what "atomic finalization"
   means here.
 - Cycle-level reporting is corrected to the fields Correction 5 requires (§2.13) — `targetsCompleted` is
-  only incremented after `finalize_pincode_check` returns a result (fresh or already-recorded, step 1),
-  never assumed from the external call succeeding alone. A `stale_check_attempt` exception (step 3) is
-  counted separately — it means the worker did real work whose result cannot be safely recorded, not a
-  target-level failure, so it must not increment `targetsFailed` either; log it distinctly.
-- **Required race test (round 2, replaces the round-1 idempotent-retry test with a stronger version):** claim
-  attempt A → force-reclaim A (simulate stale-claim reclaim firing) → claim attempt B (same target, new
-  `claim_token`) → call `finalize_pincode_check` with A's now-stale token → assert it raises
-  `stale_check_attempt`, inserts no result, and does not mutate B's claim or target state → finalize B
-  normally → assert exactly one new `pincode_availability_results` row exists, owned by B's `check_attempt_id`.
+  only incremented after `finalize_pincode_check` returns a result (fresh, already-recorded, or a legitimate
+  concurrent duplicate), never assumed from the external call succeeding alone. A `stale_check_attempt`
+  exception is counted separately — it means the worker did real work whose result cannot be safely
+  recorded, not a target-level failure, so it must not increment `targetsFailed` either; log it distinctly.
+- **Required tests:**
+  - **Round 2's stale-reclaimed-attempt test (unchanged):** claim attempt A → force-reclaim A → claim
+    attempt B (same target, new `claim_token`) → call `finalize_pincode_check` with A's now-stale token →
+    assert it raises `stale_check_attempt`, inserts no result, and does not mutate B's claim or target state
+    → finalize B normally → assert exactly one new `pincode_availability_results` row exists.
+  - **Round 3, new — concurrent duplicate finalize with the same still-valid token** (Correction 10): claim
+    one target, then fire two `finalize_pincode_check` calls with the **same** `claim_token` from two
+    separate database connections, overlapping in time; assert exactly one `pincode_availability_results` row
+    is created, both calls return the identical recorded result, and **neither** call raises
+    `stale_check_attempt` — this is a legitimate race, not a stale attempt, and must be handled as such.
+  - **Round 3, new — archival during an in-flight check** (Correction 5): claim a target, archive its parent
+    product while the target is still `'checking'`, then finalize; assert the result is recorded normally but
+    the target finalizes to `paused` with `next_check_at = NULL`, not a fresh schedule.
+  - **Round 3, new — result-combination validation** (Correction 11): call `finalize_pincode_check` with each
+    of the rejected combinations from `DATA_MODEL.md` §4's table (`success`+`NULL`, `failed`+`available`,
+    `blocked`+`unavailable`, an unrecognized `check_status`); assert every one raises before any write.
 
-### 2.8 Atomic claim RPC and bounded chunk claims — Corrections 4 and 5 (2026-07-18)
+### 2.8 The one canonical claim RPC: atomic, base-row-locking, fair — Corrections 4, 5, 7, 8, 9 (round 1/2/3, unified)
 
-**Correction 4 — the claim must be a real database transaction, not app-code SELECT-then-UPDATE.** The
-first draft's `SELECT ... FOR UPDATE SKIP LOCKED` followed by "the same transaction sets status='checking'"
-described the right Postgres primitive but the wrong boundary: a Supabase/Next.js client issuing a `SELECT`
-over one round-trip and an `UPDATE` over a second round-trip is **two statements**, not one transaction —
-Postgres-JS/PostgREST does not hold a transaction open across separate client calls by default. Corrected to
-a single database function:
+**Round 3, Correction 7 — this document previously described `claim_due_pincode_targets` twice: an earlier
+two-parameter version (round 1/2, `p_limit`, `p_invocation_id`) and a later three-parameter fairness version
+(round 2, adding `p_excluded_workspace_ids`).** Two bodies for one function name is exactly the kind of
+"which one is current" ambiguity Correction 7 requires removed. **There is now exactly one signature,
+described once, in this section:**
+
+```
+claim_due_pincode_targets(
+  p_limit                  integer,
+  p_invocation_id          text,
+  p_excluded_workspace_ids uuid[] DEFAULT '{}'
+)
+```
+
+Every other section of this document, the migration plan (`DATA_MODEL.md` §7), the test plan (§5), and the
+route/worker code that calls it must use this signature and no other — no section describes a two-parameter
+version as current.
+
+**Correction 4 — the claim must be a real database transaction, not app-code SELECT-then-UPDATE.** A
+Supabase/Next.js client issuing a `SELECT` over one round-trip and an `UPDATE` over a second round-trip is
+two statements, not one transaction — Postgres-JS/PostgREST does not hold a transaction open across separate
+client calls by default. The entire claim (selection + lock + update) happens inside one PL/pgSQL function
+body, one implicit transaction.
+
+**Round 3, Correction 8 — the locking shape itself was wrong, not just the transaction boundary.** The
+round-2 body applied `FOR UPDATE SKIP LOCKED` to a **derived table** — a subquery containing a
+`ROW_NUMBER() OVER (PARTITION BY workspace_id ...)` window function. `FOR UPDATE` on a windowed/aggregated
+result is not a defensible base-row locking design: Postgres requires (and the round-2 SQL awkwardly worked
+around, via correlated subqueries in the outer `ORDER BY`) locking to apply to the actual heap rows being
+read, not to a computed window over them. Corrected to a **CTE chain that ranks candidates first (no lock),
+then locks the exact real base-table rows by ID**:
 
 ```sql
 CREATE OR REPLACE FUNCTION public.claim_due_pincode_targets(
-  p_limit         integer,   -- bounded chunk size, NOT a large up-front batch -- see below
-  p_invocation_id text
+  p_limit                  integer,   -- bounded chunk size, NOT a large up-front batch -- §2.9 below
+  p_invocation_id          text,
+  p_excluded_workspace_ids uuid[] DEFAULT '{}'
 )
 RETURNS SETOF public.pincode_tracking_targets
 LANGUAGE plpgsql
@@ -325,52 +465,93 @@ SET search_path = public, pg_temp  -- explicit, per Correction 4 -- never rely o
 AS $$
 BEGIN
   RETURN QUERY
+  WITH candidates AS (
+    -- Step 1: rank candidates. Plain read, no lock -- Postgres is free to
+    -- plan this however it likes against the due-index (DATA_MODEL.md §3).
+    -- Correction 4/8: joins the PARENT product and filters p.status='active'
+    -- -- a target's own status enum has no 'archived' value (DATA_MODEL.md
+    -- §2b Correction 4), so "is this claimable" genuinely requires the
+    -- parent join, not a column on the target row alone.
+    SELECT t.id,
+           ROW_NUMBER() OVER (
+             PARTITION BY t.workspace_id
+             ORDER BY (t.manual_requested_at IS NOT NULL) DESC, t.next_check_at ASC
+           ) AS rn
+    FROM public.pincode_tracking_targets t
+    JOIN public.pincode_monitored_products p ON p.id = t.monitored_product_id
+    WHERE t.status = 'active'
+      AND t.next_check_at IS NOT NULL AND t.next_check_at <= now()
+      AND p.status = 'active'
+      AND NOT (t.workspace_id = ANY (p_excluded_workspace_ids))
+  ),
+  ranked_ids AS (
+    -- Step 2: exactly one target per workspace this fairness round
+    -- (rn = 1), manual-requests-first ordering already applied by the
+    -- ROW_NUMBER() above, capped at the chunk size. Still just IDs -- no
+    -- lock yet.
+    SELECT id FROM candidates WHERE rn = 1
+    ORDER BY id  -- deterministic tie-break only; real priority already set by ROW_NUMBER()
+    LIMIT p_limit
+  ),
+  locked AS (
+    -- Step 3: NOW lock the real base-table rows, by that exact ID set --
+    -- FOR UPDATE OF the actual pincode_tracking_targets table (not a
+    -- window/derived result), SKIP LOCKED so a concurrent invocation's
+    -- already-locked rows are simply skipped, never waited on. This is the
+    -- fix for Correction 8: locking base rows, not a windowed CTE.
+    SELECT t.id FROM public.pincode_tracking_targets t
+    WHERE t.id IN (SELECT id FROM ranked_ids)
+    FOR UPDATE OF t SKIP LOCKED
+  )
   UPDATE public.pincode_tracking_targets t
   SET status = 'checking',
       claimed_at = now(),
       claimed_by = p_invocation_id,
       claim_token = gen_random_uuid()
-  FROM (
-    SELECT id FROM public.pincode_tracking_targets
-    WHERE status = 'active' AND next_check_at IS NOT NULL AND next_check_at <= now()
-    ORDER BY next_check_at ASC
-    LIMIT p_limit
-    FOR UPDATE SKIP LOCKED
-  ) AS due
-  WHERE t.id = due.id
+  FROM locked
+  WHERE t.id = locked.id
   RETURNING t.*;
+  -- Returns only rows successfully updated -- if SKIP LOCKED dropped some
+  -- candidates because a concurrent invocation already held their lock,
+  -- fewer than p_limit rows come back, never an incorrect double-claim.
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.claim_due_pincode_targets(integer, text) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.claim_due_pincode_targets(integer, text) TO service_role;
+REVOKE EXECUTE ON FUNCTION public.claim_due_pincode_targets(integer, text, uuid[]) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.claim_due_pincode_targets(integer, text, uuid[]) TO service_role;
 ```
 
-The `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED)` shape runs the row-lock selection and the guarded
-update **inside one PL/pgSQL function body, inside one implicit transaction** — this is the actual atomic
-primitive Correction 4 requires, not the two-round-trip version. `claim_token` is freshly minted per claim
-(`gen_random_uuid()`), giving every claim a unique check-attempt token per Correction 7. The function is
-`SECURITY DEFINER` with `search_path` pinned explicitly (never left to resolve against the caller's
-session-mutable `search_path` — a documented Postgres `SECURITY DEFINER` footgun) and its `EXECUTE`
-privilege is revoked from `PUBLIC` and granted only to `service_role` — it is **never** exposed broadly to
-`authenticated` users, satisfying Correction 4's explicit requirement.
+`claim_token` is freshly minted per claim (`gen_random_uuid()`), giving every claim a unique check-attempt
+token (round 1 Correction 7 / round 2 idempotency design, §2.7). The function is `SECURITY DEFINER` with
+`search_path` pinned explicitly and its `EXECUTE` privilege is revoked from `PUBLIC` and granted only to
+`service_role` — never exposed broadly to `authenticated` users.
 
-**Round-2 Correction 7 (2026-07-18) — removes a contradiction.** The round-1 text here claimed Manual Check
-Now uses "the same function (with `p_limit = 1` and a target-id filter)," but `claim_due_pincode_targets`
-was never given a target-id parameter, and §2.10's own corrected design (below) doesn't queue manual
-requests through a second, target-specific claim call at all — it makes them eligible through the **same**
-due-query Manual Check Now shares with the normal scheduler. There is **one** claim path
-(`claim_due_pincode_targets`, unmodified signature — `p_limit`, `p_invocation_id`), not two: a manual
-request becomes visible to it the moment `manual_requested_at IS NOT NULL` and `next_check_at` is pulled
-forward to `now()` (set atomically by the new `queue_pincode_manual_check` RPC, §2.10) — it is claimed by the
-ordinary due-query, optionally prioritized within a chunk, never claimed through a separate hidden path.
+**Required before this migration is finalized (Correction 8's explicit requirement):**
+- **Concurrency-tested with two database connections** — fire two concurrent `claim_due_pincode_targets`
+  calls against an overlapping due set; assert the returned row sets are disjoint (no target claimed twice)
+  and that `SKIP LOCKED` causes the second caller to simply get fewer/different rows, never to block
+  indefinitely or error.
+- **Checked with `EXPLAIN ANALYZE`** against realistic data volume (representative due-target count and
+  workspace-count distribution) before the migration is finalized — the `ROW_NUMBER() OVER (PARTITION BY
+  workspace_id)` ranking step's query plan, and the subsequent ID-list lock step, must both be confirmed to
+  use the due-index (`DATA_MODEL.md` §3) efficiently, not assumed.
+
+**Correction 7 (round 2, restated here since this is now the canonical location) — Manual Check Now uses
+this same one claim path, not a second hidden one.** A manual request becomes eligible the moment
+`manual_requested_at IS NOT NULL` and `next_check_at` is pulled forward to `now()` (set atomically by
+`queue_pincode_manual_check`, §2.10) — the `ROW_NUMBER() ... ORDER BY (manual_requested_at IS NOT NULL) DESC`
+clause above already prioritizes it within its workspace's turn. There is no `p_limit = 1`/target-id-filter
+variant of this function anywhere — that was a round-1 description of a parameter that was never actually
+added, corrected in round 2, restated here for clarity since this section is the signature's single source
+of truth.
 
 **Correction 5 — do not claim a large batch up front while checking budget per-unit.** The first draft
 claimed `LIMIT 40` rows, then checked the runtime budget before processing each one — a cutoff mid-batch
 leaves the *remaining already-claimed* rows stuck in `'checking'` with no worker touching them until
 stale-claim reclaim eventually notices (15 minutes later, §2.4). Corrected to **bounded chunk claims**:
 
-1. Call `claim_due_pincode_targets(p_limit = <chunk size, ≤ concurrency, §2.2>, p_invocation_id)`.
+1. Call `claim_due_pincode_targets(p_limit = <chunk size, ≤ concurrency, §2.2>, p_invocation_id,
+   p_excluded_workspace_ids)`.
 2. Process and **fully finalize** every row in that chunk (via `finalize_pincode_check`, §2.7) before doing
    anything else — a chunk is never left partially processed.
 3. Check the runtime budget.
@@ -388,7 +569,7 @@ This changes the batch/concurrency relationship from "one 40-row claim, 8-wide w
 claims, each sized to fit inside one wave of the chosen concurrency" — consistent with §2.2's corrected,
 benchmark-pending default (concurrency 4, chunk size 4 as the starting point).
 
-### 2.9 Per-workspace limits and fairness — Correction 9 (2026-07-18)
+### 2.9 Per-workspace limits and fairness — Correction 9 (round 2), fairness mechanism (round 2 Correction 6, round 3 Correction 8)
 
 **The first draft's cap was a no-op.** `PINCODE_SCHEDULER_MAX_TARGETS_PER_WORKSPACE_PER_CYCLE, default
 200` cannot do anything when the per-invocation batch size is 40 (§2.2's first-draft number) — a single
@@ -396,80 +577,25 @@ workspace fills the *entire* batch at 40 targets, 5x under its own 200 cap, and 
 targets simply wait, cap or no cap. The cap was solving a problem the batch size made structurally
 impossible to reach.
 
-**Round-2 Correction 6 (2026-07-18) — the round-1 fairness design was not actually implementable.** It
-referred to "a per-workspace cap per invocation" and reasoned about "workspaces already claimed once this
-invocation," but `finalize_pincode_check` (§2.7) clears `claimed_by`/`claim_token` on every completed target
-— by design, so a finalized row doesn't look perpetually claimed. That means the **database alone cannot
-tell**, by looking at current target rows, which workspaces this invocation already served — the information
-doesn't persist anywhere once a chunk finalizes. A fairness rule that implicitly assumes the database can
-infer "already served this invocation" from row state was underspecified, not a real algorithm. Corrected to
-a mechanism where the **worker process**, not the database, holds invocation-scoped fairness state, and the
-claim RPC is given that state explicitly on each call:
+**The round-2 fairness design was not actually implementable** (Correction 6) — it referred to "a
+per-workspace cap per invocation" and reasoned about "workspaces already claimed once this invocation," but
+`finalize_pincode_check` (§2.7) clears `claimed_by`/`claim_token` on every completed target — by design, so a
+finalized row doesn't look perpetually claimed. That means the **database alone cannot tell**, by looking at
+current target rows, which workspaces this invocation already served — the information doesn't persist
+anywhere once a chunk finalizes. Corrected to a mechanism where the **worker process**, not the database,
+holds invocation-scoped fairness state, and the canonical claim RPC (§2.8, now with its locking shape also
+fixed per round-3 Correction 8) is given that state explicitly on each call:
 
 1. The worker (not the database) maintains a **served-workspace set** in memory, scoped to the current
    invocation, empty at invocation start.
-2. `claim_due_pincode_targets` gains two new parameters:
-   `claim_due_pincode_targets(p_limit integer, p_invocation_id text, p_excluded_workspace_ids uuid[])`.
-3. **One fairness round** = one call claiming **at most one target per distinct workspace** among the due
-   set, excluding any workspace already in `p_excluded_workspace_ids`, manually-requested targets
-   prioritized first within the round:
-
-```sql
-CREATE OR REPLACE FUNCTION public.claim_due_pincode_targets(
-  p_limit                  integer,
-  p_invocation_id          text,
-  p_excluded_workspace_ids uuid[] DEFAULT '{}'
-)
-RETURNS SETOF public.pincode_tracking_targets
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, pg_temp
-AS $$
-BEGIN
-  RETURN QUERY
-  UPDATE public.pincode_tracking_targets t
-  SET status = 'checking',
-      claimed_at = now(),
-      claimed_by = p_invocation_id,
-      claim_token = gen_random_uuid()
-  FROM (
-    SELECT id FROM (
-      SELECT id, workspace_id,
-             ROW_NUMBER() OVER (
-               PARTITION BY workspace_id
-               ORDER BY (manual_requested_at IS NOT NULL) DESC, next_check_at ASC
-             ) AS rn
-      FROM public.pincode_tracking_targets
-      WHERE status = 'active'
-        AND next_check_at IS NOT NULL AND next_check_at <= now()
-        AND NOT (workspace_id = ANY (p_excluded_workspace_ids))
-    ) ranked
-    WHERE rn = 1  -- exactly one target per workspace this round
-    ORDER BY (SELECT manual_requested_at IS NOT NULL FROM public.pincode_tracking_targets WHERE id = ranked.id) DESC,
-             (SELECT next_check_at FROM public.pincode_tracking_targets WHERE id = ranked.id) ASC
-    LIMIT p_limit
-    FOR UPDATE SKIP LOCKED
-  ) AS due
-  WHERE t.id = due.id
-  RETURNING t.*;
-END;
-$$;
-```
-
-   (The `ROW_NUMBER() OVER (PARTITION BY workspace_id ...)` shape is equivalent to `DISTINCT ON
-   (workspace_id) ... ORDER BY (manual_requested_at IS NOT NULL) DESC, next_check_at ASC` — either is
-   acceptable; `ROW_NUMBER()` is written out above because it composes more readably with the outer `LIMIT
-   p_limit`/`FOR UPDATE SKIP LOCKED`. Whichever form is implemented, it must be validated with `EXPLAIN
-   ANALYZE` against realistic data volume before being locked — the *algorithm* (one target per workspace per
-   round, manual-first ordering) is what this spec fixes, not the exact query text, since index-usage
-   characteristics should be confirmed against real cardinality.)
-
-4. After each chunk returns, the worker adds every distinct `workspace_id` present in the returned rows to
+2. Each call to `claim_due_pincode_targets` (§2.8's one canonical signature) claims **at most one target per
+   distinct, non-excluded workspace** — one fairness round.
+3. After each chunk returns, the worker adds every distinct `workspace_id` present in the returned rows to
    its in-memory excluded set and calls again with the updated `p_excluded_workspace_ids`.
-5. When a call returns **zero rows** (every workspace with due work has now had a claim this round, or no
+4. When a call returns **zero rows** (every workspace with due work has now had a claim this round, or no
    due work remains), the worker **clears the excluded set** and begins another round — provided runtime
    budget remains (§2.3/§2.8) and `dueBacklogRemaining` (§2.13) is still nonzero.
-6. A per-workspace-per-invocation processed-count cap (`PINCODE_SCHEDULER_MAX_TARGETS_PER_WORKSPACE_PER_
+5. A per-workspace-per-invocation processed-count cap (`PINCODE_SCHEDULER_MAX_TARGETS_PER_WORKSPACE_PER_
    CYCLE`) remains as **defense-in-depth** on top of the round-robin mechanism above — even with fair
    round-robin claiming, a single very-large workspace could still consume many rounds' worth of capacity
    over a long invocation; the cap bounds that independent of how fair each individual round is. Default set
@@ -477,58 +603,82 @@ $$;
    batch could never reach.
 
 This makes "no single workspace's backlog starves another's" an actual, testable property of the algorithm
-(round-robin across workspaces, one target per workspace per round) rather than an emergent hope from
-`ORDER BY next_check_at`. Required test: fair selection across multiple workspaces with simultaneously due
-backlogs (§5 test #8) — assert no single workspace's backlog starves another's within one invocation, using
-the round mechanism above, not a vaguer "assert fairness" check.
+(round-robin across workspaces, one target per workspace per round, locking real base rows per Correction 8)
+rather than an emergent hope from `ORDER BY next_check_at`. Required test: fair selection across multiple
+workspaces with simultaneously due backlogs (§5 test #8) — assert no single workspace's backlog starves
+another's within one invocation, using the round mechanism above, not a vaguer "assert fairness" check.
 
 Full quota-tiering by plan remains explicitly P1 (ties into "shared tracking quota," decision #6 — now
 **locked** for P0 as a single configurable capped-enrollment limit, `DATA_MODEL.md` §2b — commercial
 per-plan tiers are the P1 item, separate from this per-cycle scheduler fairness mechanism).
 
-### 2.10 Manual "Check Now" — genuinely queued via an atomic RPC, round-2 Correction 4 (2026-07-18)
+### 2.10 Manual "Check Now" — genuinely queued via an atomic RPC, corrected through round 3
 
-**Round 1 fixed "synchronous" but left a race.** The round-1 design had the API route perform cooldown/quota/
-status reads, then a *separate* service-role `UPDATE ... WHERE manual_request_token IS NULL` — two steps,
-not one transaction, so a concurrent second click could pass the route's own cooldown/quota read before the
-first click's `UPDATE` commits, defeating the coalescing guard under real concurrency. Corrected to a single
-service-role-only RPC that does everything atomically:
+**Round 1 fixed "synchronous" but left a race** — cooldown/quota/status reads in the route, then a separate
+service-role `UPDATE`, letting a concurrent second click pass the route's own checks before the first
+click's write commits. **Round 2 fixed that with one atomic RPC, but left two more problems, both closed in
+round 3:**
+
+- **Correction 4** — the RPC tested `v_target.status = 'archived'`, but the target's own status enum has no
+  such value; archived is a fact about the **parent** `pincode_monitored_products` row.
+- **Correction 9** — `p_manual_quota_remaining` was computed by the calling route **outside** the RPC's
+  transaction, so it was stale the instant a concurrent request changed the count between the route's read
+  and the RPC's write.
+
+**Round 3 also incorporates the founder's locked manual-quota decision (`DATA_MODEL.md` §2c): Manual Check
+Now does not consume the enrollment quota at all** — it has its own, separate outstanding-request limit,
+computed atomically inside this same RPC.
 
 ```sql
 CREATE OR REPLACE FUNCTION public.queue_pincode_manual_check(
   p_target_id uuid,
   p_workspace_id uuid,
+  p_marketplace_id text,
   p_user_id uuid,
   p_cooldown_seconds integer,
-  p_manual_quota_remaining integer  -- computed by the caller from workspace quota state, §DATA_MODEL.md §2b
+  p_manual_pending_limit integer  -- the CONFIGURED limit only -- current usage is computed inside, not passed in
 )
-RETURNS jsonb  -- { result: 'queued'|'already_queued'|'checking'|'cooldown'|'quota_exceeded'|'invalid_status', ... }
+RETURNS jsonb  -- { result: 'queued'|'already_queued'|'checking'|'invalid_status'|'cooldown'|'quota_exceeded', ... }
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
-  v_target public.pincode_tracking_targets;
+  v_target  public.pincode_tracking_targets;
+  v_product public.pincode_monitored_products;
+  v_outstanding integer;
 BEGIN
-  SELECT * INTO v_target FROM public.pincode_tracking_targets
-    WHERE id = p_target_id AND workspace_id = p_workspace_id
-    FOR UPDATE;  -- lock the target for the duration of this check+write
+  -- Correction 4: lock the target AND its parent product together --
+  -- "can this be checked" is a joint fact about both rows, never the
+  -- target's status column alone.
+  SELECT t.* INTO v_target FROM public.pincode_tracking_targets t
+    WHERE t.id = p_target_id AND t.workspace_id = p_workspace_id
+    FOR UPDATE;
 
   IF NOT FOUND THEN
     RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'not_found_or_wrong_workspace');
   END IF;
 
-  -- Locked P0 status behavior (this correction):
+  SELECT p.* INTO v_product FROM public.pincode_monitored_products p
+    WHERE p.id = v_target.monitored_product_id
+    FOR UPDATE;
+
+  -- Corrected status-test matrix (Correction 4): parent status checked
+  -- FIRST and independently of target status -- an archived/removed
+  -- parent rejects regardless of what the target's own status happens to
+  -- be.
+  IF v_product.status IN ('archived', 'removed') THEN
+    RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'product_archived_or_removed');
+  END IF;
+
   IF v_target.status = 'checking' THEN
     RETURN jsonb_build_object('result', 'checking');  -- already in flight, do not create another request
   ELSIF v_target.status = 'paused' THEN
     RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'paused_requires_resume');
   ELSIF v_target.status = 'failed' THEN
     RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'failed_requires_resume');
-  ELSIF v_target.status = 'archived' THEN
-    RETURN jsonb_build_object('result', 'invalid_status', 'reason', 'archived_cannot_check');
   END IF;
-  -- Only 'active' reaches here.
+  -- Only (parent active, target active) reaches here.
 
   IF v_target.manual_requested_at IS NOT NULL THEN
     RETURN jsonb_build_object('result', 'already_queued', 'manual_request_token', v_target.manual_request_token);
@@ -540,8 +690,26 @@ BEGIN
       'retry_after_seconds', p_cooldown_seconds - extract(epoch FROM now() - v_target.last_checked_at)::int);
   END IF;
 
-  IF p_manual_quota_remaining <= 0 THEN
-    RETURN jsonb_build_object('result', 'quota_exceeded');
+  -- Correction 9: acquire the SAME deterministic advisory lock as
+  -- enrollment/resume (DATA_MODEL.md §2a/§2c -- identical key derivation)
+  -- before counting outstanding manual requests, so this count can't race
+  -- a concurrent queue_pincode_manual_check call for a DIFFERENT target in
+  -- the same workspace+marketplace.
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_workspace_id::text || ':' || p_marketplace_id, 0));
+
+  -- "Outstanding" per DATA_MODEL.md §2c: queued (manual_requested_at set,
+  -- not yet checking) OR checking (manual_requested_at set, status =
+  -- 'checking'). Both count.
+  SELECT count(*) INTO v_outstanding
+  FROM public.pincode_tracking_targets t2
+  JOIN public.pincode_monitored_products p2 ON p2.id = t2.monitored_product_id
+  WHERE p2.workspace_id = p_workspace_id
+    AND p2.marketplace_id = p_marketplace_id
+    AND t2.manual_requested_at IS NOT NULL;
+
+  IF v_outstanding >= p_manual_pending_limit THEN
+    RETURN jsonb_build_object('result', 'quota_exceeded',
+      'currentOutstanding', v_outstanding, 'limit', p_manual_pending_limit);
   END IF;
 
   UPDATE public.pincode_tracking_targets
@@ -556,45 +724,60 @@ BEGIN
 END;
 $$;
 
-REVOKE EXECUTE ON FUNCTION public.queue_pincode_manual_check(uuid, uuid, uuid, integer, integer) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.queue_pincode_manual_check(uuid, uuid, uuid, integer, integer) TO service_role;
+REVOKE EXECUTE ON FUNCTION public.queue_pincode_manual_check(uuid, uuid, text, uuid, integer, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.queue_pincode_manual_check(uuid, uuid, text, uuid, integer, integer) TO service_role;
 ```
 
-**Locked P0 status behavior** (the row-lock via `FOR UPDATE` at the top makes every branch below atomic with
-respect to concurrent calls on the same target — two concurrent clicks cannot both observe "no existing
-manual request" and both proceed to the `UPDATE`):
+**Corrected status-behavior matrix (Correction 4 — parent-first, not a `target.status = 'archived'` test that
+never could have matched anything):**
 
-| Target status | Behavior |
-|---|---|
-| `active` | May queue (subject to cooldown/quota checks above). |
-| `checking` | Returns `already_checking`-equivalent (`result: 'checking'`) — **does not** create another request. |
-| `paused` | Rejected — requires Resume first (a separate, existing mutation, not silently auto-resumed by Check Now). |
-| `failed` | Rejected — requires Resume first (same reasoning — Check Now is not a backdoor around the failed-state's explicit resume requirement, §2.5). |
-| `archived` | Rejected — cannot check an archived target at all. |
+| Parent product status | Target status | Behavior |
+|---|---|---|
+| `active` | `active` | May queue (subject to cooldown/outstanding-limit checks above). |
+| `active` | `checking` | Returns `result: 'checking'` — **does not** create another request. |
+| `active` | `paused` | Rejected — requires Resume first. |
+| `active` | `failed` | Rejected — requires Resume first (Check Now is not a backdoor around the failed-state's explicit resume requirement, §2.5). |
+| `archived` or `removed` | *(any)* | Rejected — cannot check, regardless of the target's own status. |
 
 **Route contract:** `POST /api/pincode-monitoring/check-now` validates session, workspace membership, and
-role (not `viewer`, `DATA_MODEL.md` §6), computes `p_manual_quota_remaining` from the workspace's current
-quota state (`DATA_MODEL.md` §2b), then calls `queue_pincode_manual_check` via the service-role client and
-maps its `result` field to HTTP: **`202 Accepted` only when `result = 'queued'`**; `result = 'already_queued'`
-or `'checking'` → `200` with the current status (not an error — the request is legitimately already in
-flight, coalesced); `'cooldown'` → `429` with `retry_after_seconds`; `'quota_exceeded'` → `409` (same shape
-as `DATA_MODEL.md` §2b's enrollment quota error); `'invalid_status'` → `409` with the specific reason.
-**Concurrent clicks are guaranteed to produce exactly one `manual_request_token`** — the `FOR UPDATE` lock
-inside the RPC, not client-side debouncing or a separate read-then-write pair, is what makes this true.
+role (not `viewer`, `DATA_MODEL.md` §6), then calls `queue_pincode_manual_check` via the service-role client
+supplying only the **configured** `p_manual_pending_limit` (`PINCODE_MANUAL_MAX_OUTSTANDING_PER_WORKSPACE_
+MARKETPLACE`, `DATA_MODEL.md` §2c) — never a precomputed usage count, which the round-2 design got wrong and
+this round fixes — and maps the RPC's `result` field to HTTP: **`202 Accepted` only when `result =
+'queued'`**; `'already_queued'` or `'checking'` → `200` with the current status (not an error — the request
+is legitimately already in flight, coalesced); `'cooldown'` → `429` with `retry_after_seconds`;
+`'quota_exceeded'` → **`409 { errorCode: 'pincode_manual_queue_limit_reached', currentOutstanding, limit }`**
+— a **distinct `errorCode` from `DATA_MODEL.md` §2b's `pincode_tracking_quota_exceeded`**, since enrollment
+capacity and manual-queue pressure are different concepts a seller should be able to tell apart, per the
+founder's explicit instruction not to reuse the enrollment error; `'invalid_status'` → `409` with the
+specific reason. **Concurrent clicks are guaranteed to produce exactly one `manual_request_token`** — the
+`FOR UPDATE` lock inside the RPC, not client-side debouncing or a separate read-then-write pair, is what
+makes this true.
 
 The scheduler's normal due-query (§2.8/§2.9) picks the request up — `next_check_at = now()` makes it
 immediately due, and the fairness round-robin (§2.9's corrected mechanism) orders manually-requested targets
 first within each workspace's turn. `finalize_pincode_check` (§2.7) clears `manual_requested_at`/
-`manual_requested_by`/`manual_request_token` alongside the normal claim fields on completion (see the
-function body in §2.7).
+`manual_requested_by`/`manual_request_token` alongside the normal claim fields on completion.
 
 The UI polls or subscribes for the target's status and renders **Queued → Checking → Complete/Failed** —
 never a numeric queue position in P0 (that stays P1, per §1).
 
 This satisfies decision #9 ("safely queued and rate-controlled") literally — the browser never blocks on the
-external check, one atomic RPC (not a read-then-write pair) makes cooldown/quota/status/coalescing checks
-race-free, and the same claim/finalize discipline (§2.7/§2.8) processes manual requests through the one
-scheduler claim path, per Correction 7 above.
+external check, one atomic RPC (not a read-then-write pair, not a stale precomputed value) makes
+cooldown/outstanding-limit/status/coalescing checks race-free, and the same claim/finalize discipline
+(§2.7/§2.8) processes manual requests through the one scheduler claim path.
+
+**Required tests (round 3):**
+- Manual status-behavior matrix — call `queue_pincode_manual_check` against every (parent status × target
+  status) combination in the table above; assert each returns the exact locked `result` value.
+- Outstanding-limit enforcement computed atomically — fire enough concurrent `queue_pincode_manual_check`
+  calls across different targets in the same workspace+marketplace to exceed
+  `PINCODE_MANUAL_MAX_OUTSTANDING_PER_WORKSPACE_MARKETPLACE`; assert exactly the configured number succeed
+  and the rest return `quota_exceeded` with an accurate `currentOutstanding` — never more than the limit
+  queued due to a race.
+- Manual quota is independent of enrollment quota — exhaust the enrollment quota (`DATA_MODEL.md` §2b) for a
+  workspace+marketplace, then assert Manual Check Now on an already-enrolled, already-active target still
+  succeeds (subject only to its own cooldown/outstanding limit) — confirms the two pools never interfere.
 
 ### 2.11 Duplicate-check protection
 The `pincode_tracking_targets_uidx UNIQUE (monitored_product_id, pincode)` constraint (Data Model §3)
@@ -662,54 +845,70 @@ only needs to run about as often as the scheduler itself already does.
 
 ### P0 — must ship together, this is the minimum that honors the 13 locked decisions, corrected
 
-**Round 2: this list is now sequenced into 4 separately-reviewed implementation PRs (P0-A/B/C/D) — see §9.
-The items below are unchanged in substance from round 1's P0 scope, plus this round's additions (item 4 now
-lists 4 RPCs, item 8 is corrected to SELECT-only per Correction 5, item 11 references the atomic queue RPC,
-a new item 15 locks the quota decision) — §9 is the authority on sequencing, this list is the authority on
-scope.**
+**Round 2 sequenced this list into 4 separately-reviewed implementation PRs (P0-A/B/C/D) — see §9. Round 3
+keeps that structure and adds items 16 (pause/resume RPC), 17 (removed-status), revises item 4 to 5 RPCs, and
+adds item 18 (feature-flag enforcement at every layer, not just the UI) — §9 is the authority on sequencing,
+this list is the authority on scope.**
 
 1. Migration: precondition composite-FK-target constraints on `amazon_listing_items`/`tracked_asins`
    (`DATA_MODEL.md` §2, Correction 2).
-2. Migration: `workspace_default_pincodes`, `pincode_monitored_products`, `pincode_tracking_targets` + RLS
-   (corrected — `SELECT`-only for members on **all three** tables, round-2 Correction 5) + `updated_at`
-   triggers (Correction 13) + the `claim_token` partial unique index (round-2 Correction 2) (`DATA_MODEL.md`
+2. Migration: `workspace_default_pincodes`, `pincode_monitored_products` (including `.removed_at`/
+   `.removal_reason`, round-3 Correction 6), `pincode_tracking_targets` + RLS (`SELECT`-only for members on
+   **all three** tables) + `updated_at` triggers + the `claim_token` partial unique index (`DATA_MODEL.md`
    §1–3, §6).
 3. Migration: `pincode_availability_results.monitored_product_id` + `.tracking_target_id` +
-   `.check_attempt_id` + `.check_status` additive columns + indexes (`DATA_MODEL.md` §4/§4a, round-2
-   Correction 1) — **not** the `check_status` CHECK constraint, which is gated on the read-only production
-   audit's backfill (Correction 8, now recorded with real numbers, `DATA_MODEL.md` §4a).
-4. Migration: `claim_due_pincode_targets`, `finalize_pincode_check`, `enroll_pincode_monitored_products`, and
-   `queue_pincode_manual_check` RPC functions (**4**, not 3 — round-2 Correction 4 adds the manual-queue RPC)
-   — `SECURITY DEFINER`, explicit `search_path`, `service_role`-only `EXECUTE` (Corrections 1, 4, 7;
-   `DATA_MODEL.md` §7).
+   `.check_attempt_id` + `.check_status` additive columns + indexes + **the two immediately-addable CHECK
+   constraints from round-3 Correction 11** (identity-consistency, new-row-result-consistency)
+   (`DATA_MODEL.md` §4/§4a) — **not** the `check_status`-format CHECK constraint, which alone is gated on the
+   read-only production audit's backfill (now recorded with real numbers, `DATA_MODEL.md` §4a).
+4. Migration: **five** RPC functions — `claim_due_pincode_targets` (§2.8, the one canonical signature per
+   round-3 Correction 7), `finalize_pincode_check` (§2.7, round-3 Corrections 4/5/10/11),
+   `enroll_pincode_monitored_products` (`DATA_MODEL.md` §2a, round-3 Corrections 1/2 — bulk, all-or-nothing,
+   advisory-lock-serialized), `queue_pincode_manual_check` (§2.10, round-3 Corrections 4/9), and
+   **`set_pincode_tracking_state` (`DATA_MODEL.md` §3a, round-3 Correction 3 — new this round, pause/resume)**
+   — all five `SECURITY DEFINER`, explicit `search_path`, `service_role`-only `EXECUTE` (`DATA_MODEL.md` §7).
 5. Route `/dashboard/pincode-checker` + nav item + legacy redirect confirmation (`PRODUCT_SPEC.md` §4).
 6. My Products tab: list from `amazon_listing_items`, bulk-enroll via `enroll_pincode_monitored_products`
-   (`PRODUCT_SPEC.md` §5.1, `DATA_MODEL.md` §2a) — quota-checked per item 15 below.
+   (`PRODUCT_SPEC.md` §5.1, `DATA_MODEL.md` §2a) — quota-checked per item 15 below, **all-or-nothing per
+   round-3 Correction 2** (a 5-product bulk request is never partially enrolled).
 7. Other Products tab: single-ASIN enrollment with a **real SP-API lookup and preview**
-   (`PRODUCT_SPEC.md` §6, Correction 11 — moved from P1 into P0, see the corrected §4 below), plus
-   Other→Owned promotion (`PRODUCT_SPEC.md` §5.2 Correction 1, `DATA_MODEL.md` §5).
-8. Pincode Settings panel: `workspace_default_pincodes` CRUD via authenticated server routes — **corrected,
-   round-2 Correction 5: `SELECT`-only RLS, no direct member table writes**, matching the other two tables
-   (`PRODUCT_SPEC.md` §5.3, `DATA_MODEL.md` §6).
+   (`PRODUCT_SPEC.md` §6, Correction 11 round 2 — moved from P1 into P0, see §4 below), plus Other→Owned
+   promotion (`PRODUCT_SPEC.md` §5.2 Correction 1, `DATA_MODEL.md` §5).
+8. Pincode Settings panel: `workspace_default_pincodes` CRUD via authenticated server routes — `SELECT`-only
+   RLS, no direct member table writes, matching the other two tables (`PRODUCT_SPEC.md` §5.3, `DATA_MODEL.md`
+   §6).
 9. Tracker table: product→pincode expansion, corrected five-state renders (`PRODUCT_SPEC.md` §7–8,
-   Correction 8).
-10. **Minimal recurring scheduler**, corrected: atomic bounded-chunk claim RPC with round-robin workspace
-    fairness (round-2 Correction 6), atomic idempotent finalize RPC with validate-before-insert ordering
-    (round-2 Correction 3), honest disambiguated reporting (§2 of this document, all subsections) — per the
-    trade-off resolution in §1, this is P0, not deferred.
-11. Manual Check Now — **genuinely queued through one atomic RPC** (`queue_pincode_manual_check`, round-2
-    Correction 4), with cooldown/quota and the locked per-status behavior table (§2.10).
+   Correction 8 round 1), **plus a Removed filter alongside the existing Archived filter** (round-3
+   Correction 6).
+10. **Minimal recurring scheduler**, corrected: the one canonical atomic bounded-chunk claim RPC with
+    base-row-locking round-robin workspace fairness (round-3 Corrections 7/8), atomic idempotent finalize RPC
+    with validate-before-insert ordering and parent-aware in-flight-archival handling (round-3 Corrections
+    4/5/10/11), honest disambiguated reporting (§2 of this document, all subsections) — per the trade-off
+    resolution in §1, this is P0, not deferred.
+11. Manual Check Now — **genuinely queued through one atomic RPC** (`queue_pincode_manual_check`), with
+    per-target cooldown and a **separate, configurable outstanding-request limit that does NOT draw from the
+    enrollment quota** (round-3 locked founder decision, `DATA_MODEL.md` §2c) and the corrected,
+    parent-aware per-status behavior table (§2.10).
 12. Archived-product cascade reconciliation, extended for the owned-FK-null and Other→Owned cases
-    (`DATA_MODEL.md` §5, Correction 1).
+    (`DATA_MODEL.md` §5, Correction 1 round 1) **and corrected to leave in-flight `checking` targets alone**
+    (round-3 Correction 5).
 13. **Internal-workspace feature flag / allowlist** gating enrollment and the scheduler cron until the
-    staged rollout (§6, Correction 12) reaches GREEN.
-14. Constraints and validation from Correction 13 (`DATA_MODEL.md` §2/§3): cadence bounds, non-negative
-    failure counts, claim-field consistency, ASIN/pincode format, `updated_at` triggers.
+    staged rollout (§6, Correction 12 round 1) reaches GREEN — **enforced at every API/RPC layer, not just
+    the UI** (round-3 Correction 12, item 18 below).
+14. Constraints and validation (`DATA_MODEL.md` §2/§3): cadence bounds, non-negative failure counts,
+    claim-field consistency, ASIN/pincode format, `updated_at` triggers.
 15. **Capped enrollment quota, locked founder decision** (`DATA_MODEL.md` §2b) — one active
-    product×pincode target per workspace+marketplace as the quota unit, enforced atomically inside
-    enrollment and resume, `409 pincode_tracking_quota_exceeded` on rejection, one configurable
-    internal-workspace limit for P0 (exact number set alongside the P0-A implementation PR, not invented in
-    this spec).
+    product×pincode target per workspace+marketplace as the quota unit, enforced atomically (advisory-lock
+    serialized, round-3 Correction 1) inside enrollment and resume, `409 pincode_tracking_quota_exceeded` on
+    rejection, one configurable internal-workspace limit for P0 (exact number set alongside the P0-A
+    implementation PR, not invented in this spec).
+16. **Pause/resume via the fifth RPC** (`set_pincode_tracking_state`, `DATA_MODEL.md` §3a, round-3
+    Correction 3) — bulk, atomic, quota-checked on resume, in-flight-safe on pause (`checking` targets
+    rejected with `409 check_in_progress`, never yanked out from under the worker).
+17. **Soft "Remove Tracking"** (`pincode_monitored_products.status = 'removed'`, round-3 Correction 6) —
+    distinguishable from source-driven `archived`, preserves history, quota-freeing, restorable on re-add.
+18. **Feature flag enforced at every layer, not just the hidden UI** (round-3 Correction 12) — see §6's
+    rollout plan, updated this round.
 
 ### P1 — real but not blocking the core promise
 - Per-workspace configurable cadence (schema already supports it, §2.1).
@@ -854,6 +1053,35 @@ type-ahead search experience is a UX enhancement, not part of the trustworthines
       threshold from §2.2).
   - Also retained from the first draft: full claim → check → finalize cycle with a mocked/stubbed
     pincode-check function (no real Amazon scraping in CI); archived-product cascade end-to-end.
+- **Round 3 additions (2026-07-18) — required, in addition to the 18 above:**
+  19. **Bulk enrollment is genuinely all-or-nothing** (Correction 2) — submit a 5-product×6-pincode bulk
+      enrollment where the total would exceed quota by a small margin; assert **zero** rows are created for
+      **any** product/pincode in the batch, not a partially-applied subset.
+  20. **Concurrent enrollment/resume requests serialize correctly under quota pressure** (Correction 1) —
+      fire two concurrent enrollment (or resume) requests that would jointly exceed quota if both succeeded
+      naively; assert they serialize on the advisory lock and the final active-target count never exceeds
+      the configured limit, regardless of which request "wins."
+  21. **Pause/resume bulk atomicity and in-flight safety** (Correction 3) — bulk-resume a mix of `paused` and
+      `failed` targets where the projected count would exceed quota; assert the whole operation is rejected,
+      none resumed. Separately, bulk-pause a mix including one `checking` target; assert the `checking`
+      target is rejected with `409 check_in_progress` and (per this RPC's all-or-nothing discipline) the
+      whole batch is rejected, not a partial pause.
+  22. **Manual Check Now parent-vs-target status matrix** (Correction 4) — covered in detail under §2.10's
+      own required-tests list; referenced here for completeness of the full required-test count.
+  23. **Removed vs. archived stay distinguishable** (Correction 6) — remove a product via the user-facing
+      Remove Tracking action; assert `removed_at`/`removal_reason` are set, the product is hidden from the
+      default tracker view but visible under a Removed filter, and it renders with a label distinct from an
+      `archived` product in the same list. Separately, re-add a previously-removed ASIN; assert the same
+      `pincode_monitored_products.id` and full history are restored, not a new row.
+  24. **`claim_due_pincode_targets` concurrency and query-plan validation** (Correction 8) — covered in detail
+      under §2.8's own required-tests list (two-connection concurrency test, `EXPLAIN ANALYZE`); referenced
+      here for completeness.
+  25. **Feature-flag bypass rejection at every layer** (Correction 12) — for a workspace **not** on the
+      internal allowlist, attempt a direct authenticated call to each of: the lookup route, the enrollment
+      route, the defaults routes, the pause/resume/remove routes, `queue_pincode_manual_check`, and confirm
+      `claim_due_pincode_targets` never returns that workspace's targets even if rows exist for it (e.g. from
+      before it was removed from the allowlist) — assert every layer rejects independently, not relying on
+      "the UI is hidden" as the only boundary.
 - **Manual/production verification (after deploy, before declaring done — same discipline as the Keywords
   and Pincode P0 rounds):**
   - Visual check of all five product/pincode state combinations reachable through a real authenticated
@@ -901,9 +1129,37 @@ P0 decision exists to prevent. Corrected to a staged rollout with an explicit ga
    requires separate approval, consistent with "do not expose recurring enrollment broadly while the
    scheduler is absent" and this doc's own "do not implement without separate explicit approval" framing.
 
-The feature flag/allowlist is the single gate controlling both "can this workspace see the enrollment UI"
-and "will the scheduler claim this workspace's targets" — there is no path where a workspace can enroll
-without the scheduler already being live and verified for it.
+**Round 3, Correction 12 — the flag must protect every layer, not just the hidden UI.** P0-B (`IMPLEMENTATION_
+PLAN.md` §9) ships the API routes before P0-C ships the UI that calls them — meaning the routes are
+technically reachable (a direct authenticated call, bypassing the UI entirely) before there's any UI gate to
+hide behind. **"No enrollment UI is reachable yet" (step 2 above) is necessary but not sufficient** — a
+caller who already knows the route shapes could otherwise enroll, request a manual check, or read tracker
+data for a non-allowlisted workspace by calling the API directly. Every layer below must independently
+enforce the same internal-workspace allowlist, not just the UI's own visibility check:
+
+- **Lookup route** (`POST /api/pincode-monitoring/lookup-asin`) — rejects for a non-allowlisted workspace.
+- **Enrollment route/RPC** (`enroll_pincode_monitored_products`) — rejects for a non-allowlisted workspace;
+  this was already true per step 5 above ("gating ... the RPC's acceptance of new enrollments"), restated
+  here as one instance of the general rule, not a special case.
+- **Defaults mutation routes** (`workspace_default_pincodes` CRUD) — rejects for a non-allowlisted workspace.
+- **Pause/resume/remove routes** (`set_pincode_tracking_state`, `DATA_MODEL.md` §3a) — rejects for a
+  non-allowlisted workspace.
+- **Manual Check Now queue RPC** (`queue_pincode_manual_check`) — rejects for a non-allowlisted workspace.
+- **Scheduler claim RPC** (`claim_due_pincode_targets`) — must receive or derive the allowed-workspace scope
+  and **never claim a target belonging to a non-allowlisted workspace**, even if one somehow exists (e.g. a
+  workspace was allowlisted, enrolled targets, then was removed from the allowlist before broader rollout
+  approval) — implemented as an additional `AND p.workspace_id = ANY(p_allowed_workspace_ids)` predicate (or
+  equivalent) in the candidates CTE (§2.8), sourced from the same allowlist config every other layer reads,
+  not a separately-maintained list that could drift out of sync.
+
+A caller must not be able to bypass the hidden UI by directly invoking a route or RPC — every mutation and
+every claim path checks the allowlist independently, so the UI being hidden is a convenience for normal
+users, not the actual security/scope boundary.
+
+The feature flag/allowlist is the single gate controlling "can this workspace see the enrollment UI," "will
+any API route accept a request for this workspace," and "will the scheduler claim this workspace's
+targets" — there is no path where a workspace can enroll, mutate, or get claimed by the scheduler without
+that same allowlist check passing at every layer independently.
 
 ## 7. Rollback plan
 - App code: standard Vercel rollback to the prior deployment — the new route is additive and, under the
@@ -947,17 +1203,31 @@ without the scheduler already being live and verified for it.
    backfill migration actually runs could theoretically fall outside these two buckets — the migration must
    re-run the audit query immediately before backfilling, not trust this document's numbers as still current
    after time has passed.
-6. **Per-workspace fairness algorithm's exact query shape is specified but not benchmarked** (round-2
-   Correction 6, §2.9) — the round-robin-via-`ROW_NUMBER() OVER (PARTITION BY workspace_id)` algorithm is now
-   concretely written out (not left as unspecified prose), but its performance at realistic data volume
-   (`EXPLAIN ANALYZE` against a representative due-target count and workspace-count distribution) is not yet
-   measured. This is a narrower risk than round 1's "fairness is undefined" — the algorithm is locked, only
-   its query-plan performance needs validating before the migration is finalized.
-7. **Manual quota computation (`p_manual_quota_remaining` passed into `queue_pincode_manual_check`, §2.10)
-   is not itself specified as its own quota pool** — this spec treats manual-check cooldown/quota as a
-   parameter the calling route computes and passes in, without defining whether "manual quota" is a separate
-   counter from the enrollment quota (`DATA_MODEL.md` §2b) or ties into it. Needs a decision before the
-   P0-B API layer (§9) is implemented — flagged honestly rather than assumed.
+6. **Per-workspace fairness algorithm's exact query shape is now locked (round 3, Corrections 7/8) but still
+   not benchmarked** — the round-2 windowed-derived-table locking flaw is fixed (§2.8 now locks real base
+   rows via a CTE chain), and there is now exactly one canonical function signature, but its performance at
+   realistic data volume (`EXPLAIN ANALYZE` against a representative due-target count and workspace-count
+   distribution) is still not yet measured. This is now purely a benchmarking task, not a design gap — both
+   the locking correctness and the algorithm are locked; only query-plan performance needs validating before
+   the migration is finalized (§2.8's explicit requirement).
+7. ~~Manual quota computation is not itself specified as its own quota pool~~ — **resolved, round 3, founder
+   decision locked.** Manual Check Now does **not** draw from the enrollment quota at all — it has its own
+   separate, configurable outstanding-request limit (`PINCODE_MANUAL_MAX_OUTSTANDING_PER_WORKSPACE_
+   MARKETPLACE`), computed atomically inside `queue_pincode_manual_check` itself under the same advisory lock
+   discipline as enrollment (`DATA_MODEL.md` §2c). No longer open.
+8. **`set_pincode_tracking_state`'s bulk-pause "reject the whole batch if any target is `checking`" behavior
+   has UX implications not fully explored** (round 3, `DATA_MODEL.md` §3a) — rejecting an entire bulk pause
+   because one of many selected targets happens to be mid-check is correct for safety but could be a mildly
+   frustrating UX if a seller selects 50 targets and 1 is checking; the spec's chosen behavior (reject whole
+   batch, let the UI prompt to retry without the in-flight target) is a reasonable P0 default but hasn't been
+   validated against a real multi-select UI mockup — flagged for P0-C's UI implementation to confirm the
+   error messaging is clear enough that this doesn't read as a confusing failure.
+9. **Advisory lock key collisions across truly unrelated workspaces are theoretically possible but
+   unmeasured in practice** (round 3, Correction 1) — `hashtextextended` is a 64-bit hash; collision
+   probability for realistic workspace/marketplace cardinality is astronomically low, but the spec has not
+   run a birthday-bound calculation against expected production scale. Flagged for completeness — the
+   consequence of a collision is harmless extra serialization (§2a), never incorrect quota enforcement, so
+   this is a performance risk at worst, not a correctness one.
 
 ---
 
@@ -975,30 +1245,47 @@ migration is applied merely because the spec (this document) is being built or a
 - Production-value read-only audit recorded (done in this document, §4a of `DATA_MODEL.md` — the PR
   re-confirms it's still current before backfilling).
 - Additive migrations (`DATA_MODEL.md` §7, all 4 steps): precondition composite-FK-target constraints, the 3
-  new tables + RLS + triggers + `claim_token` uniqueness, the 4 additive `pincode_availability_results`
-  columns + indexes, the 4 RPC functions.
+  new tables (including `pincode_monitored_products.removed_at`/`.removal_reason`, round-3 Correction 6) +
+  RLS + triggers + `claim_token` uniqueness, the 4 additive `pincode_availability_results` columns + indexes
+  + the two immediately-addable CHECK constraints (round-3 Correction 11), the **five** RPC functions.
 - Composite FKs (workspace-scoped, `DATA_MODEL.md` §2/§3/§4).
 - RLS (`SELECT`-only for members on all three new tables, `DATA_MODEL.md` §6).
-- Quota enforcement wired into `enroll_pincode_monitored_products` and the resume path (`DATA_MODEL.md` §2b).
-- `enroll_pincode_monitored_products`, `queue_pincode_manual_check`, `claim_due_pincode_targets`,
-  `finalize_pincode_check` RPCs, matching this document's corrected specs exactly (§2.7, §2.8, §2.9, §2.10,
-  `DATA_MODEL.md` §2a).
-- Scratch/staging integration tests — the 18 tests from §5, at minimum tests #1–7 and #12–17 (the
-  schema/RPC-level ones; the scheduler-runtime ones (#5, #8, #18) can run against P0-A's RPCs directly, ahead
-  of P0-D's full worker).
+- Quota enforcement wired into `enroll_pincode_monitored_products` and `set_pincode_tracking_state`'s resume
+  path, both serialized on the same deterministic advisory lock (`DATA_MODEL.md` §2a/§2b, round-3
+  Correction 1) — manual-check quota (`DATA_MODEL.md` §2c) wired separately, does not draw from this pool.
+- **Five** RPCs: `enroll_pincode_monitored_products` (bulk, all-or-nothing, round-3 Correction 2),
+  `set_pincode_tracking_state` (pause/resume, round-3 Correction 3, new this round), `queue_pincode_manual_
+  check` (round-3 Corrections 4/9), `claim_due_pincode_targets` (the one canonical signature, round-3
+  Corrections 7/8), `finalize_pincode_check` (round-3 Corrections 4/5/10/11) — matching this document's and
+  `DATA_MODEL.md`'s corrected specs exactly (§2.7, §2.8, §2.9, §2.10, `DATA_MODEL.md` §2a/§3a).
+- **Allowlist scoping wired into every RPC from the start** (round-3 Correction 12) — `claim_due_pincode_
+  targets` accepts/derives the allowed-workspace scope and never returns a non-allowlisted workspace's
+  targets, even before P0-B/C exist to call the other RPCs; this is a P0-A-stage requirement, not something
+  bolted on later.
+- Scratch/staging integration tests — the test plan from §5, including round-3's additions: the concurrent
+  duplicate-finalize test, the archival-during-in-flight-check test, the result-combination-validation tests,
+  the bulk all-or-nothing test, the concurrent-quota-serialization test, the pause/resume status-matrix
+  tests, and the base-row-locking concurrency test for `claim_due_pincode_targets` (§2.8's explicit
+  requirement, `EXPLAIN ANALYZE` included).
 - Feature disabled — no route, no UI, nothing user-reachable yet. This PR is pure database + RPC surface.
 
 ### P0-B — API and data-access layer
 - Lookup route (`POST /api/pincode-monitoring/lookup-asin`, `PRODUCT_SPEC.md` §6/§11).
-- Enrollment routes (`POST /api/pincode-monitoring/products`, calling `enroll_pincode_monitored_products`).
+- Enrollment routes (`POST /api/pincode-monitoring/products`, calling `enroll_pincode_monitored_products`
+  with the full bulk payload, never split into per-product calls).
 - Defaults routes (`GET`/`PUT /api/pincode-monitoring/default-pincodes`).
 - Tracker query route (`GET /api/pincode-monitoring/tracker`).
-- Pause/resume/remove routes (`PATCH /api/pincode-monitoring/products/[id]`, quota re-check on resume per
-  `DATA_MODEL.md` §2b).
+- Pause/resume routes (calling `set_pincode_tracking_state`, `DATA_MODEL.md` §3a) and a Remove Tracking route
+  (setting `pincode_monitored_products.status = 'removed'`, round-3 Correction 6, distinct from the
+  archival-only reconciliation path).
 - Check Now route (`POST /api/pincode-monitoring/check-now`, calling `queue_pincode_manual_check`).
-- All routes enforce the role model from `DATA_MODEL.md` §6 (session → membership → role, `viewer` → `403`).
+- All routes enforce the role model from `DATA_MODEL.md` §6 (session → membership → role, `viewer` → `403`)
+  **and independently enforce the internal-workspace allowlist** (round-3 Correction 12, §6's updated
+  rollout plan) — every route rejects a non-allowlisted workspace on its own, not relying on the UI being
+  hidden as the only gate.
 - No public UI enablement — these routes are reachable only by direct authenticated call (e.g. from tests or
-  internal tooling) until P0-C ships the UI that calls them.
+  internal tooling) until P0-C ships the UI that calls them; the allowlist check above is what actually
+  prevents a non-allowlisted caller from using them even at this stage, not merely the absence of a UI link.
 
 ### P0-C — Internal-workspace UI
 - Unified page (`/dashboard/pincode-checker`, `PRODUCT_SPEC.md` §4).
