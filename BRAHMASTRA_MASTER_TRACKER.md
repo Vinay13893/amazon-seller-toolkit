@@ -3279,3 +3279,73 @@ hunk comparison to be outside this diff, not introduced). `npm run build` clean.
 **Next step (needs the founder):** review the PR; once merged, a production deploy + verification would
 follow the same pattern as the Pincode P0 work (fresh `vercel deploy --prod` from the repo root, then a
 production visual/data check), pending approval at each step. P1/P2 items from the audit remain deferred.
+
+## 22. Pincode Checker — Unified Page: Product/Technical Spec (2026-07-18)
+
+**Status: spec only. No application code, no migration, no deployment in this round.** New worktree
+`C:\Vinay\amazon-seller-toolkit-pincode-unified-page`, branch `spec/pincode-unified-page`, off latest
+`origin/master` (`ac29080`). Built directly on 13 founder-locked V1 decisions (route, nav, tabs, sources,
+shared quota, workspace+marketplace default pincodes, recurring tracking in scope, rate-limited Check Now,
+archived-preserve-and-visible, no history consolidation, legacy redirect, alerts stay disabled). Three
+deliverables, all in this worktree's root:
+
+- `PINCODE_UNIFIED_PAGE_PRODUCT_SPEC.md` — founder decisions restated, the critical premise correction (My
+  Products = `amazon_listing_items`, not `tracked_asins` — confirmed via direct migration reads, no
+  `target_type`/`source` column exists on `tracked_asins`), end-to-end flows (My Products bulk enrollment,
+  Other Products single-ASIN enrollment with duplicate-prevention, Pincode Settings, tracker table), the
+  approved-lookup-path discussion (flags the current `AddAsinDialog` add-flow does not do a real SP-API
+  catalog lookup — the exact helper for a real one is **unconfirmed**, called out rather than guessed),
+  product/pincode state tables (reusing the exact 4-state truth vocabulary already shipped for Pincode
+  sec20 and Keywords sec21), the 9 data-truth rules verbatim, a markdown wireframe, a route/component/API
+  map, and acceptance criteria.
+- `PINCODE_UNIFIED_PAGE_DATA_MODEL.md` — exact schema for 3 new tables (`workspace_default_pincodes`,
+  `pincode_monitored_products`, `pincode_tracking_targets`), with indexes/constraints/RLS for each; resolves
+  the "unsafe polymorphic ID" instruction with two real, nullable, `ON DELETE SET NULL` foreign keys
+  (`amazon_listing_item_id`, `tracked_asin_id`) gated by an explicit `product_source` CHECK constraint,
+  rather than a table-name-plus-uuid polymorphic pair a real FK could never validate; recommends
+  `pincode_availability_results` (not `pincode_checks`) as the unified result-history table — it already
+  models the correct 4-state `availability_status`, has the superior composite index
+  `(workspace_id, asin, pincode, checked_at DESC)`, and (unlike `pincode_checks`) has zero existing
+  downstream consumers to risk breaking; specifies one small additive column
+  (`pincode_availability_results.monitored_product_id`) as the only change to an existing table; both
+  legacy tables preserved untouched, no consolidation, no backfill.
+- `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md` — full scheduler spec (cadence, batch size 40/concurrency 8
+  mirroring the review-requests worker precedent, 220s runtime budget under Vercel's ceiling, stale-claim
+  reclaim via the existing `updated_at` trigger — same pattern as `eligibility-processor.ts` — retry policy,
+  CAPTCHA/blocked handling reusing the schema's existing `blocked` state, `FOR UPDATE SKIP LOCKED` claim
+  query, per-workspace cap, manual Check Now with a cooldown, duplicate-check protection via the unique
+  constraint + claim status, monitoring), P0/P1/P2 phasing, test/rollout/rollback plans, and 4 explicitly
+  flagged unresolved risks (SP-API lookup helper unconfirmed, shared-quota enforcement point undecided,
+  block-rate untuned, cron-frequency-vs-backlog unmodeled).
+
+**The explicitly requested trade-off assessment:** founder decision #8 locks recurring standing tracking
+into V1 scope — not a phasing suggestion, a product requirement. A default instinct to treat "the
+scheduler" as P1 (ship manual-check first, automate later) was considered and **rejected**: shipping the
+unified page with only a manual Check Now button would deliver a smaller, different product than what
+decision #8 promises, while the UI (enrollment flow, "last checked"/"next checked" columns) visually implies
+standing tracking is already happening. **Resolution: a minimal, correctly-bounded recurring scheduler moves
+into P0** — the core claim/check/write/reclaim loop, not the full surface (no adaptive backoff, no
+per-workspace configurable cadence, no monitoring dashboard — those stay P1). This is flagged prominently in
+`IMPLEMENTATION_PLAN.md` §1, not silently deferred.
+
+**A second, smaller flag:** Other Products' ASIN-entry-and-trust flow (no real catalog lookup verifying the
+ASIN resolves to a real product before enrollment) is a P0 UX gap, not a data-integrity gap — the schema
+stays valid either way. Distinct from the scheduler trade-off; does not carry the same "must move to P0"
+force. Full reasoning in `IMPLEMENTATION_PLAN.md` §4.
+
+**Recommended phasing:**
+- **P0:** migrations for the 3 new tables + the 1 additive column; the unified route/nav/legacy redirect; My
+  Products bulk enrollment; Other Products manual-entry enrollment with duplicate prevention; workspace
+  default pincodes CRUD; the expandable tracker table with all state renders; **the minimal recurring
+  scheduler**; manual Check Now with cooldown; archived-product cascade reconciliation.
+- **P1:** configurable cadence; SP-API-backed Other Products catalog lookup (pending its own short research
+  pass); exponential/adaptive backoff; visible-position Check Now queue; full quota tiering; Data-Health
+  dashboard card; CSV export.
+- **P2:** alerts (stays disabled per decision #13); historical trend charts; bulk pincode-set templates.
+
+**Not done in this round:** no migration applied, no application code written, no deployment. This is a
+spec-and-review round only.
+
+**Next step (needs the founder):** review all 3 spec documents and the recurring-scheduler-into-P0
+trade-off flag specifically; approve, adjust, or reject the P0/P1/P2 split before any implementation
+worktree is opened.
