@@ -844,3 +844,71 @@ unreachable states are honestly reported as not observable rather than assumed o
 **Docs-only PR opened from `docs/keywords-p0-production-verification`, off latest master. Not merged.
 Keywords Tab P0 workstream closed for now** — P1/P2 items from `KEYWORDS_TAB_PRODUCT_AUDIT.md` remain
 deferred pending founder review.
+
+## Pincode Checker — P0-A: Schema/RPC Foundation Implemented, Not Applied (2026-07-18)
+
+_PR #53 (the 5-round-amended spec, `BRAHMASTRA_MASTER_TRACKER.md` §22 updates 1–5) approved and merged to
+`master` as merge commit `31b24e7084a9d532b652d37cd7ddfb94cf795206`. This entry covers P0-A only — the first
+of `IMPLEMENTATION_PLAN.md` §9's four locked implementation stages (schema/RPC foundation; P0-B/C/D remain
+blocked). New worktree, branch `feature/pincode-p0a-schema-rpcs`, off `origin/master` post-merge. Full
+detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 6._
+
+**What changed:** four new additive migrations, next available numbers after the existing `001`–`059`
+history:
+
+- `060_pincode_p0a_precondition_fks.sql` — `UNIQUE (workspace_id, id)` on `amazon_listing_items` and
+  `tracked_asins`.
+- `061_pincode_p0a_core_tables.sql` — three new tables (`workspace_default_pincodes`,
+  `pincode_monitored_products`, `pincode_tracking_targets`), indexes, `updated_at` triggers, `SELECT`-only
+  RLS on all three (no member-facing write policy on any of them — every mutation goes through a future
+  server route using the service-role client).
+- `062_pincode_p0a_results_extension.sql` — four additive columns on the existing
+  `pincode_availability_results` table (`monitored_product_id`, `tracking_target_id`, `check_attempt_id`,
+  `check_status`), `RESTRICT` FKs (direct + three-column composite), history indexes, two CHECK constraints
+  — **not** the deferred `check_status`-format constraint, which stays gated on the production backfill.
+- `063_pincode_p0a_rpcs.sql` — all **six** trusted, `SECURITY DEFINER` RPCs: `claim_due_pincode_targets`,
+  `finalize_pincode_check`, `queue_pincode_manual_check` (transcribed from the spec's own literal SQL, one
+  placeholder substitution — the failure-threshold constant, set to 5 per the documented default),
+  `enroll_pincode_monitored_products`, `set_pincode_tracking_state`, `remove_pincode_monitored_products`
+  (specified only as numbered prose steps in the spec — this migration is their first executable form).
+
+**A real bug was found and fixed by testing, not by re-reading the spec:** the first draft of
+`enroll_pincode_monitored_products` wrote new parent rows *before* the quota gate — a batch correctly
+rejected for exceeding quota could still leave a stray, empty product row behind for a genuinely-new ASIN.
+Caught by the required all-or-nothing bulk-enrollment test run against a real scratch database. Fixed by
+moving every write to strictly after the quota decision and correcting the additional-target count query to
+handle a not-yet-created parent via `LEFT JOIN`. Re-tested clean.
+
+**Testing (real, not simulated):** scratch PostgreSQL 16 database bootstrapped from the actual repository
+migration history (`001`–`063`, with two small Supabase Auth shims — production runs 17.6, not verified
+directly this session, no compatibility gap expected). 16/16 sequential correctness tests passed (cross-
+workspace FK rejection, RLS role behavior, enrollment happy path + quota rejection + all-or-nothing, NULL-
+safe finalize validation, full claim→finalize cycle, idempotent finalize retry, stale-reclaim race, allowlist
+fail-closed, history hard-delete rejection, remove→re-add atomic restore, pause/resume + quota + in-flight
+safety, manual-check coalescing/cooldown/status matrix). Real two-and-three-connection concurrency tests (not
+sequential simulation): claim genuinely **blocks** behind a concurrently-held parent lock and correctly
+observes the post-commit state (0 claimed when the parent went `archived` mid-lock, 1 claimed normally when
+it stayed `active`) — a direct empirical proof of PR #53's round-5 "claim RPC must follow its own lock order"
+correction; concurrent `finalize_pincode_check` with the same token from two connections produces exactly one
+result; concurrent `enroll_pincode_monitored_products` under joint-exceeding quota serializes correctly
+(exactly one of two concurrent requests succeeds); 5 rounds of claim + pause + manual-queue fired concurrently
+against the same product produced zero deadlocks. `EXPLAIN ANALYZE` against 50,000 seeded targets (5,000 due,
+10% selectivity, representative of a real 24h-cadence workload) confirmed the due-index is used via `Bitmap
+Index Scan`, not a sequential scan (5.8ms execution).
+
+**Repository checks:** `npx tsc --noEmit` clean. `npm run build` clean. No TypeScript/JavaScript file was
+changed by this PR (pure SQL migrations only) — a full-repo `eslint .` baseline check shows 50 pre-existing
+errors/39 warnings, all in files this PR does not touch, not introduced by this change.
+
+**Feature remains fully disabled — no application code of any kind:** no API route, no UI page, no cron
+entry. Pure database schema + RPC surface, nothing user-reachable references it. **No migration applied to
+production. No production row modified. No Vercel/Supabase environment variable changed. No deployment.**
+
+**Unresolved, explicitly deferred by the spec itself:** the scheduler concurrency/chunk-size benchmark
+(needs real `checker-worker` p50/p95 data this session doesn't have), the enrollment quota and manual-check
+outstanding-limit numeric values (config, not schema), the checker-worker's own concurrent-job ceiling — none
+of these block P0-A; they gate P0-D (the scheduler worker).
+
+**Opened as a PR from `feature/pincode-p0a-schema-rpcs`. Not merged. P0-B (API/data-access layer) remains
+blocked until this PR is separately reviewed and approved**, per the locked "no stage starts until the prior
+stage is approved" sequencing.
