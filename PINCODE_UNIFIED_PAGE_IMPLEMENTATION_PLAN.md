@@ -676,7 +676,23 @@ round-2 body applied `FOR UPDATE SKIP LOCKED` to a **derived table** — a subqu
 result is not a defensible base-row locking design: Postgres requires (and the round-2 SQL awkwardly worked
 around, via correlated subqueries in the outer `ORDER BY`) locking to apply to the actual heap rows being
 read, not to a computed window over them. Corrected to a **CTE chain that ranks candidates first (no lock),
-then locks the exact real base-table rows by ID**:
+then locks the exact real base-table rows by ID**.
+
+**Final narrow correction (2026-07-18) — the function still didn't lock the parent it was joining.** Every
+version through the prior amendment *joined* `pincode_monitored_products` to re-check `p.status = 'active'`
+as part of the locking CTE's `WHERE` clause, but the `FOR UPDATE OF t SKIP LOCKED` clause named only `t` —
+the parent was read, not locked. That does not fully enforce this document's own global lock order (§2.0:
+parent before target): with no lock on the parent row, there is no serialization point between this claim
+and a concurrent `remove_pincode_monitored_products`/archival-reconciliation/`set_pincode_tracking_state`
+transaction that also touches that same parent — an archive or removal could commit at effectively the same
+moment as the claim, and merely re-reading (not locking) `p.status` cannot guarantee which one the claim
+transaction actually observes. Corrected to **two explicit locking phases in strict sequence**: lock the
+distinct eligible parent rows first (`ORDER BY id`, plain `FOR UPDATE` — not `SKIP LOCKED`, see the code
+comment below for why), revalidate their status/allowlist membership against the now-locked value, *then*
+lock only the target rows whose parent survived that revalidation (`ORDER BY id`, `FOR UPDATE OF t SKIP
+LOCKED`), revalidating the target itself a second time. This is the same two-step "lock parent, then lock
+target, then revalidate" shape `finalize_pincode_check` (§2.7) and every mutating RPC in `DATA_MODEL.md`
+already follow — the claim RPC was the one place that had drifted from it despite claiming to:
 
 ```sql
 CREATE OR REPLACE FUNCTION public.claim_due_pincode_targets(
@@ -706,12 +722,13 @@ BEGIN
     -- 13), so "is this claimable" genuinely requires the parent join, not
     -- a column on the target row alone. Also filters the allowlist here
     -- (Correction 4) so non-allowlisted workspaces never even become
-    -- ranking candidates.
+    -- ranking candidates. Carries monitored_product_id out of this CTE too
+    -- -- needed to drive the parent-locking step below.
     --
     -- Round-4 Correction 6: has_manual_request/next_check_at/workspace_id
     -- carried out of this CTE (not just used inside the window function)
     -- so the NEXT step can order by them globally -- see ranked_ids below.
-    SELECT t.id, t.workspace_id,
+    SELECT t.id, t.workspace_id, t.monitored_product_id,
            (t.manual_requested_at IS NOT NULL) AS has_manual_request,
            t.next_check_at,
            ROW_NUMBER() OVER (
@@ -737,48 +754,84 @@ BEGIN
     -- by LIMIT before a merely-scheduled check in an earlier-sorting
     -- workspace, even though manual requests must be globally preferred.
     -- Still just IDs -- no lock yet.
-    SELECT id FROM candidates
+    SELECT id, monitored_product_id FROM candidates
     WHERE rn = 1
     ORDER BY has_manual_request DESC, next_check_at ASC, workspace_id, id
     LIMIT p_limit
   ),
-  locked AS (
-    -- Step 3: NOW lock the real base-table rows, by that exact ID set --
-    -- FOR UPDATE OF the actual pincode_tracking_targets table (not a
-    -- window/derived result), SKIP LOCKED so a concurrent invocation's
-    -- already-locked rows are simply skipped, never waited on (Correction
-    -- 8: locking base rows, not a windowed CTE).
-    --
-    -- Round-4 Correction 5: candidate selection alone is NOT sufficient --
-    -- status, due time, or parent state can change between the unlocked
-    -- ranking read (step 1) and this lock. Every guarded predicate is
-    -- REPEATED here, re-joining the parent, not just the ID-membership
-    -- check -- a pause/remove/archive that committed in between must win;
-    -- this claim must never turn such a target back into 'checking'.
+  locked_parents AS (
+    -- Round-4, final correction: lock order step 2 (§2.0) applied FOR
+    -- REAL here -- the round-4-Correction-5 version of this function
+    -- joined the parent to re-check its status but never actually LOCKED
+    -- it, so an archive/remove transaction committing between the
+    -- unlocked read and the target UPDATE below was not reliably excluded.
+    -- Corrected: lock the DISTINCT eligible PARENT rows FIRST, ordered by
+    -- id -- this is the real serialization point against
+    -- enroll_pincode_monitored_products/set_pincode_tracking_state/
+    -- remove_pincode_monitored_products/the archival reconciliation pass,
+    -- every one of which also locks the parent before any target per the
+    -- same global lock order. Deliberately plain FOR UPDATE, NOT SKIP
+    -- LOCKED: skipping a locked parent would silently drop every one of
+    -- its candidate targets from this chunk with no signal at all, whereas
+    -- every parent-touching transaction in this schema is a short,
+    -- single-row UPDATE (archive cascade, remove, pause, resume, manual-
+    -- queue) -- briefly waiting for one to commit and then re-reading the
+    -- fresh status is the correct, safe behavior, not a real stall risk.
+    SELECT p.id, p.status, p.workspace_id
+    FROM public.pincode_monitored_products p
+    WHERE p.id IN (SELECT DISTINCT monitored_product_id FROM ranked_ids)
+    ORDER BY p.id
+    FOR UPDATE
+  ),
+  eligible_parents AS (
+    -- Revalidate AFTER the parent lock -- status and allowlist/exclusion
+    -- membership are re-checked against the fresh, now-locked value, not
+    -- the unlocked read from step 1. A parent an archive/remove
+    -- transaction just committed against is caught here and excluded.
+    SELECT id FROM locked_parents
+    WHERE status = 'active'
+      AND workspace_id = ANY (p_allowed_workspace_ids)
+      AND NOT (workspace_id = ANY (p_excluded_workspace_ids))
+  ),
+  locked_targets AS (
+    -- Lock order step 3: lock the corresponding TARGET rows SECOND,
+    -- ordered by id, restricted to targets whose parent survived
+    -- revalidation above. FOR UPDATE OF t SKIP LOCKED is correct here --
+    -- a target-row lock held by a concurrent claim/mutation is the
+    -- ordinary SKIP LOCKED contention case (lose one row, not a
+    -- correctness gap), unlike skipping an entire locked parent above.
+    -- Revalidates the target itself too -- still 'active', still due,
+    -- still actually pointing at a locked, still-active parent (same
+    -- non-locking-lookup-then-lock-then-revalidate discipline as
+    -- finalize_pincode_check, §2.7).
     SELECT t.id FROM public.pincode_tracking_targets t
-    JOIN public.pincode_monitored_products p ON p.id = t.monitored_product_id
-    WHERE t.id IN (SELECT id FROM ranked_ids)
+    WHERE t.id IN (
+      SELECT r.id FROM ranked_ids r
+      JOIN eligible_parents ep ON ep.id = r.monitored_product_id
+    )
       AND t.status = 'active'
       AND t.next_check_at IS NOT NULL AND t.next_check_at <= now()
-      AND p.status = 'active'
-      AND p.workspace_id = ANY (p_allowed_workspace_ids)
-      AND NOT (t.workspace_id = ANY (p_excluded_workspace_ids))
+      AND t.monitored_product_id IN (SELECT id FROM eligible_parents)
+    ORDER BY t.id
     FOR UPDATE OF t SKIP LOCKED
   )
+  -- Step 7: update only targets that survived both the parent lock/
+  -- revalidation and the target lock/revalidation.
   UPDATE public.pincode_tracking_targets t
   SET status = 'checking',
       claimed_at = now(),
       claimed_by = p_invocation_id,
       claim_token = gen_random_uuid()
-  FROM locked
-  WHERE t.id = locked.id
+  FROM locked_targets
+  WHERE t.id = locked_targets.id
   RETURNING t.*;
-  -- Returns only rows successfully updated -- if SKIP LOCKED dropped some
-  -- candidates because a concurrent invocation already held their lock, or
-  -- the revalidation predicates excluded some because their eligibility
-  -- changed since ranking, fewer than p_limit rows come back -- never an
-  -- incorrect double-claim, never a claim of a row that stopped being
-  -- eligible.
+  -- Returns only rows successfully updated -- if a parent was locked by a
+  -- concurrent transaction and its status changed, if SKIP LOCKED dropped
+  -- some targets because a concurrent invocation already held their lock,
+  -- or the revalidation predicates excluded some because their
+  -- eligibility changed since ranking, fewer than p_limit rows come back
+  -- -- never an incorrect double-claim, never a claim of a row whose
+  -- parent is no longer active.
 END;
 $$;
 
@@ -814,6 +867,24 @@ token (round 1 Correction 7 / round 2 idempotency design, §2.7). The function i
   several purely-scheduled workspaces; assert the manual request's target is still claimed within the
   `p_limit`-bounded result (global `has_manual_request DESC` ordering, not workspace-id ordering, determines
   what survives the `LIMIT`).
+- **Final narrow correction — claim genuinely serializes against parent-locking transactions, not just a
+  re-read of parent status:**
+  - **Claim vs. parent archival** — start a claim transaction concurrently with an archival-reconciliation
+    transaction against the same product's parent row; assert whichever transaction locks the parent first
+    completes, the other observes the post-commit state (the claim never claims a target whose parent the
+    archival transaction just archived, regardless of statement interleaving).
+  - **Claim vs. product removal** — same shape, with `remove_pincode_monitored_products` in place of
+    archival; assert the same outcome.
+  - **Claim vs. pause** — same shape, with `set_pincode_tracking_state` (pause) in place of archival; a
+    concurrent pause of the target itself (not just the parent) must also be observed correctly by the claim.
+  - **No deadlock** — run claim concurrently with each of the above, and with `finalize_pincode_check` and
+    `queue_pincode_manual_check`, against overlapping products; assert none of these combinations deadlock or
+    lock-wait-timeout, confirming the claim RPC's now-explicit parent-then-target locking is consistent with
+    every other RPC's lock order (§2.0).
+  - **Non-active parent is never claimed** — directly assert, across many randomized concurrent
+    interleavings, that no claimed row's parent is ever observed to be non-`active` at the moment the claim's
+    `UPDATE` commits — the correctness property this whole correction exists to guarantee, not just its
+    individual test cases.
 
 **Correction 7 (round 2, restated here since this is now the canonical location) — Manual Check Now uses
 this same one claim path, not a second hidden one.** A manual request becomes eligible the moment
@@ -830,7 +901,7 @@ leaves the *remaining already-claimed* rows stuck in `'checking'` with no worker
 stale-claim reclaim eventually notices (15 minutes later, §2.4). Corrected to **bounded chunk claims**:
 
 1. Call `claim_due_pincode_targets(p_limit = <chunk size, ≤ concurrency, §2.2>, p_invocation_id,
-   p_excluded_workspace_ids)`.
+   p_excluded_workspace_ids, p_allowed_workspace_ids)` — all four canonical parameters, every call.
 2. Process and **fully finalize** every row in that chunk (via `finalize_pincode_check`, §2.7) before doing
    anything else — a chunk is never left partially processed.
 3. Check the runtime budget.

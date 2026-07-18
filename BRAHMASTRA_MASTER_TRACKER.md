@@ -3774,3 +3774,63 @@ bodies (§2.7/§2.8), the corrected `queue_pincode_manual_check` (§2.10), the n
 products` (`DATA_MODEL.md` §3b), and the simplified parent-lifecycle model (`DATA_MODEL.md` §2 Correction
 13) — and either approve for a P0-A implementation PR to be opened, or request further changes. PR #53
 itself is not merged.
+
+### §22 update 5 (2026-07-18) — PR #53 amended a fifth time: final narrow correction, claim RPC now locks the parent, still not merged
+
+**Decision received:** "PR #53 is nearly approved" — one final narrow correction, explicitly scoped to not
+expand product scope and not rewrite unrelated sections. **PR #53 remains spec-only, still not merged, no
+code, no migration, no deployment.**
+
+**What round 5 found:** round 4 (update 4, Correction 5) rewrote `claim_due_pincode_targets` to join the
+parent `pincode_monitored_products` row and re-check `p.status = 'active'` inside the locking CTE's `WHERE`
+clause — but the `FOR UPDATE OF t SKIP LOCKED` clause named only the target alias `t`. The parent was read,
+not locked. That did not fully enforce this document's own global lock order (§2.0: parent before target):
+with no lock on the parent row, there was no serialization point between the claim and a concurrent
+`remove_pincode_monitored_products` / archival-reconciliation / `set_pincode_tracking_state` transaction
+touching the same parent — an archive or removal could commit at effectively the same instant as the claim,
+and merely re-reading (not locking) `p.status` could not guarantee which transaction the claim actually
+observed.
+
+**The fix (`IMPLEMENTATION_PLAN.md` §2.8):** the claim CTE chain now has two explicit, sequential locking
+phases instead of one:
+
+1. `candidates`/`ranked_ids` — unchanged: rank candidate target IDs, no lock, and derive the distinct parent
+   product IDs those candidates belong to.
+2. `locked_parents` — **new.** Locks the eligible parent `pincode_monitored_products` rows first, ordered by
+   `id`, plain `FOR UPDATE` (deliberately not `SKIP LOCKED` — skipping a locked parent would silently drop
+   every one of its candidate targets with no signal, whereas every parent-touching transaction in this
+   schema is a short single-row update, so briefly waiting for the lock is the correct, safe behavior).
+3. `eligible_parents` — **new.** Revalidates `status = 'active'` and workspace allowlist/exclusion membership
+   against the now-locked parent value, not the earlier unlocked read.
+4. `locked_targets` — locks only the target rows whose parent survived that revalidation, ordered by `id`,
+   `FOR UPDATE OF t SKIP LOCKED` (unchanged — losing one target to ordinary lock contention is the acceptable
+   case here, unlike silently dropping an entire parent's candidates).
+5. Final `UPDATE` — revalidates the target a second time (status, due-time, still belongs to the locked
+   active parent) before writing `status = 'checking'`.
+
+This is the same "lock parent, then lock target, then revalidate" shape `finalize_pincode_check` (§2.7) and
+every mutating RPC in `DATA_MODEL.md` already followed — the claim RPC was the one place that had drifted
+from its own documented lock order despite its comments claiming to follow it.
+
+**Second, small correction:** the bounded-chunk-claims invocation example (§2.9) omitted the fourth
+parameter. Every invocation example of `claim_due_pincode_targets` now shows all four canonical parameters
+(`p_limit, p_invocation_id, p_excluded_workspace_ids, p_allowed_workspace_ids`) — no example anywhere in the
+document calls it with fewer than four.
+
+**New required concurrency tests (§2.8):** claim vs. parent archival, claim vs. product removal, claim vs.
+pause, no deadlock (claim run concurrently with archival/removal/pause/finalize/manual-queue against
+overlapping products), and — the correctness property the whole correction exists to guarantee — a direct
+randomized-interleaving assertion that no claimed row's parent is ever observed non-`active` at the moment
+the claim's `UPDATE` commits.
+
+**Files amended:** `PINCODE_UNIFIED_PAGE_IMPLEMENTATION_PLAN.md` (§2.8 claim RPC body + required-tests list,
+§2.9 invocation example), `BRAHMASTRA_MASTER_TRACKER.md` (this entry). `DATA_MODEL.md` and `PRODUCT_SPEC.md`
+were checked for contradictory claims about the claim RPC's locking behavior and found to have none — both
+already deferred locking detail to `IMPLEMENTATION_PLAN.md` §2.8 — so neither was touched. No product-scope
+change; RPC count unchanged at 6.
+
+**Still not done in this round:** no migration applied, no application code written, no deployment, no merge.
+
+**Next step (needs the founder):** review the round-5 amended `IMPLEMENTATION_PLAN.md` §2.8 claim RPC body
+and either approve PR #53 spec set for a P0-A implementation PR to be opened, or request further changes. PR
+#53 itself is not merged.
