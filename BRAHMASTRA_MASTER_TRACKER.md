@@ -3279,3 +3279,29 @@ hunk comparison to be outside this diff, not introduced). `npm run build` clean.
 **Next step (needs the founder):** review the PR; once merged, a production deploy + verification would
 follow the same pattern as the Pincode P0 work (fresh `vercel deploy --prod` from the repo root, then a
 production visual/data check), pending approval at each step. P1/P2 items from the audit remain deferred.
+
+### §21 update (2026-07-18) — PR #51 merged, deployed, production verification: GREEN
+
+**PR #51 merged** to `master` as `ac29080` (standard merge commit). File scope re-confirmed after merge via
+`git diff 609311a ac29080 --stat`: exactly the 5 expected files, no migration, no Ads/Pincode/review-request/
+rank-checker file touched.
+
+**Verification suite:** `git diff 86795fe ac29080` is empty and `86795fe` is a direct ancestor of `ac29080`
+— the merge is a clean, no-conflict merge, so the code on `master` is byte-identical to the PR branch tip
+already verified at 126/126 tests, `tsc` clean, `eslint` clean, `npm run build` clean (recorded above). Not
+re-run a second time against an identical tree; the identity itself is the stronger check.
+
+**Production deployment:** fresh `vercel deploy --prod` from the repo root → `dpl_2krCgfzfUabjDucKH8aGmTsyjBLA`.
+Confirmed via Vercel MCP: `READY`, `target: production`, commit SHA exact-matches `ac29080`, aliased to
+`esolz-app.vercel.app`, still the project's current `latestDeployment` for `production` at write-up time. No
+env var changed, no DB row changed.
+
+**Production visual verification (real authenticated browser session):** `B0D9QXVWLL` confirms **Found**
+(green) for 2 keywords; `B0CJJRQ1JD` confirms **Not found** (yellow) with "Not ranking" for a null rank,
+never "0". **Check unavailable** / **Not confirmed** states: zero qualifying rows exist among this account's
+active tracked ASINs — reported as not visually observable, not manufactured. Zero console/runtime errors on
+either page.
+
+**Classification: GREEN.** Docs-only PR opened from `docs/keywords-p0-production-verification`, off latest
+master. Not merged. **Keywords Tab P0 workstream closed** — P1/P2 items remain deferred pending founder
+review.

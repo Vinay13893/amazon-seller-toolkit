@@ -795,3 +795,52 @@ guard confirming no Ads/Pincode/review-requests/rank-checker file was touched). 
 `git diff` hunk comparison to be outside this diff). `npm run build` clean.
 
 **Opened as a PR from `fix/keywords-checker-unavailable-truth`. Not merged, not deployed.**
+
+## Keywords Tab — PR #51 Merged, Deployed, Production Verification: GREEN (2026-07-18)
+
+_PR #51 (the P0 fix above) merged to `master` as `ac29080` (standard merge commit). Fresh `vercel deploy
+--prod` from the repo root. Real browser production visual verification performed using the founder's own
+authenticated session. Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §21._
+
+**File-scope confirmed before merge, re-confirmed after via `git diff 609311a ac29080 --stat` (5 files,
+exactly as expected):** `BRAHMASTRA_MASTER_TRACKER.md`, `WORK_DONE_SUMMARY.md`,
+`esolz-app/scripts/test-keyword-found-status.ts` (new), `esolz-app/src/app/(dashboard)/dashboard/asins/[asin]/page.tsx`,
+`esolz-app/src/lib/keyword-found-status.ts` (new). No migration. No Ads file. No Pincode file. No
+review-request file. No rank-check worker/runtime file.
+
+**Verification suite on merged master:** `git diff 86795fe ac29080` (PR branch tip vs. the merge commit) is
+**empty**, and `git merge-base --is-ancestor 86795fe ac29080` confirms the merge introduced zero
+conflict-resolution changes — the code on `master` is byte-identical to what the PR branch already had
+126/126 tests passing, `npx tsc --noEmit` clean, `eslint` clean, and `npm run build` clean against (see the
+entry above). Re-running the full suite against an identical tree would only reproduce the same result, so
+it was not re-run a second time in this docs pass — the identity was verified structurally instead, which
+is the stronger guarantee.
+
+**Production deployment:** fresh `vercel deploy --prod` from the repository root (never from inside
+`esolz-app/`, per the standing "doubled root path" rule) produced `dpl_2krCgfzfUabjDucKH8aGmTsyjBLA`.
+Confirmed via Vercel MCP (`get_deployment` + `get_project`) at write-up time: `state: READY`,
+`target: production`, `gitCommitSha: ac2908071b69b93c0a407f9f63b8b7b3ce050a1b` (exact match to the merge
+commit), aliased to `esolz-app.vercel.app`, and still the project's `latestDeployment` for the `production`
+target — i.e., still the live build, not superseded. No environment variable changed. No database row
+changed.
+
+**Production visual verification (real authenticated browser session, not the unauthenticated preview
+pane):**
+- `https://esolz-app.vercel.app/dashboard/asins/B0D9QXVWLL` — **Found** state confirmed rendering green for
+  keywords "baby play mat" (#52) and "play mat for babies" (#39).
+- `https://esolz-app.vercel.app/dashboard/asins/B0CJJRQ1JD` — **Not found** state confirmed rendering yellow,
+  with "Not ranking" shown for a null rank (never rendered as "0").
+- **Check unavailable** and **Not confirmed** states: zero rows with `scrape_status IN
+  ('checker_unavailable', 'never_checked')` exist among this account's currently active tracked ASINs — not
+  visually observable through this account. No synthetic keyword-snapshot row was created to force these
+  states into view, per instruction. Both states are already covered by the 11/11 unit tests asserting the
+  exact rendered label/tone for every `classifyKeywordFound()` input, which changed no code between the PR
+  branch and this deployment (see the byte-identity confirmation above).
+- Zero console or runtime errors observed on either fresh navigation.
+
+**Classification: GREEN.** Every state reachable through the provided account renders correctly; the two
+unreachable states are honestly reported as not observable rather than assumed or faked.
+
+**Docs-only PR opened from `docs/keywords-p0-production-verification`, off latest master. Not merged.
+Keywords Tab P0 workstream closed for now** — P1/P2 items from `KEYWORDS_TAB_PRODUCT_AUDIT.md` remain
+deferred pending founder review.
