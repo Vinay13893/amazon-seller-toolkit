@@ -951,3 +951,50 @@ phases pass, scratch database confirmed dropped afterward).
 `npx tsc --noEmit` clean, `npm run build` clean, `git status` confirms only the three edited migration files
 plus the new `tests/` directory changed — zero application/API/UI/cron files touched. No migration applied to
 production, no production row modified (Correction 8's audit was read-only), no deployment.
+
+### PR #54 test-runner safety and reporting correction round: 4 corrections (2026-07-19)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 8. Same PR #54, same branch — zero migration files
+touched this round (no failing test required a schema/RPC change), no P0-B, no migration applied, no
+deployment._
+
+**The gap this round closes:** the committed test suite from the round above was real and repeatable, but the
+runner itself (`run-tests.sh`) had four remaining safety/reporting gaps, all found by review rather than by a
+failing test:
+
+1. **Secret values were printed.** The hosted-endpoint refusal echoed the full value of whichever env var
+   matched (e.g. a real `DATABASE_URL` with embedded credentials). Now names only the variable — never its
+   value — and a new `--self-test` mode proves this against the real refusal function using an injected fake
+   secret, asserting it never appears in the output.
+2. **`PGHOSTADDR`/`PGSERVICE`/`PGSERVICEFILE` were unguarded.** `PGHOSTADDR` overrides `PGHOST` in libpq;
+   `PGSERVICE`/`PGSERVICEFILE` resolve an independent named connection profile. Either could have silently
+   redirected the runner past the pre-existing `PGHOST`-only check. Both are now validated (loopback-or-unset,
+   and forced-empty respectively), and the script explicitly re-pins `PGHOST`/unsets `PGSERVICE*` after
+   validation so nothing later can reintroduce an override. `README.md` now documents, gate by gate, why the
+   connection cannot resolve remotely once validation passes.
+3. **The scratch database name was raw-interpolated into SQL text.** `PINCODE_TEST_DB_NAME` is now regex-
+   validated (`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`, must also contain `scratch`/`test`) and passed to
+   `CREATE`/`DROP DATABASE` via psql's safe `:"identifier"` substitution, not string interpolation. (Discovered
+   while wiring this up: psql only performs `:"var"` substitution when SQL is read as a script/stdin, not via
+   `-c` — confirmed empirically against the installed psql 16.13 — so both call sites use a heredoc.) Six new
+   self-tests cover valid names, missing-scratch/test, semicolon, quote, whitespace, and overlength cases —
+   none of which ever reach a `psql` call.
+4. **A concurrency-suite count/description mismatch was found and corrected — and one genuinely missing test
+   was added.** The prior round's PR description and tracker entry said `concurrency.sh` has "4 tests"; the
+   file has always asserted 5 (its own summary line prints `$PASSES`). Separately, `IMPLEMENTATION_PLAN.md`
+   §2.8 requires a distinct "claim vs. product removal" concurrency test that did not exist — only an ordinary
+   sequential remove/re-add test did, which is not a concurrency test. Added a third `remove` variant to the
+   existing parameterized lock-contention test: one connection holds the parent lock and calls the real
+   `remove_pincode_monitored_products` RPC before committing, a second connection concurrently calls
+   `claim_due_pincode_targets` and is asserted to claim 0 rows, with the parent's final status independently
+   re-queried as `'removed'`. (Also fixed a latent bug this surfaced: an earlier test's own state-reset step
+   didn't clear `removed_at`/`removal_reason`, which broke that test once a `remove` variant had run first.)
+   `concurrency.sh` now asserts 6 outcomes; `README.md` and the tracker both say "6," not "4."
+
+**Re-verified after all 4 corrections:** `./run-tests.sh --self-test` — 14/14 passed, touching no database.
+Full scratch-database run: sequential suite passed (~20 groups), concurrency suite passed (**6/6**, including
+the new claim-vs-product-removal test), `EXPLAIN ANALYZE` check passed, scratch database dropped, exit code 0.
+`npx tsc --noEmit` clean, `npm run build` clean, `git status` confirms only
+`esolz-app/supabase/tests/pincode-p0a/{run-tests.sh,concurrency.sh,README.md}` changed — zero migration,
+application, API, UI, or cron files touched. No migration applied to production, no production row modified,
+no deployment.

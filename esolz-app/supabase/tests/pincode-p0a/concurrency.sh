@@ -60,12 +60,16 @@ if [ $? -ne 0 ]; then echo "FATAL: seeding failed"; cat /tmp/pincode_conc_seed.l
 # ------------------------------------------------------------------
 # TEST C1: claim_due_pincode_targets genuinely BLOCKS behind a
 # concurrently-held parent lock, then observes the correct post-commit
-# state -- archived parent -> 0 claimed; active parent -> 1 claimed. This
-# is the direct empirical proof of the claim RPC's parent-first locking
-# (PR #53 round 5's "final narrow correction").
+# state -- archived parent -> 0 claimed; active parent -> 1 claimed;
+# removed parent (via a concurrently-committing real
+# remove_pincode_monitored_products call, not a raw status UPDATE) -> 0
+# claimed. This is the direct empirical proof of the claim RPC's
+# parent-first locking (PR #53 round 5's "final narrow correction"), and
+# the 'remove' variant is the "claim vs. product removal" concurrency
+# test required by IMPLEMENTATION_PLAN.md sec2.8.
 # ------------------------------------------------------------------
 run_lock_contention_test() {
-  local variant="$1"  # 'archive' or 'active'
+  local variant="$1"  # 'archive', 'active', or 'remove'
   local expect_claimed="$2"
 
   cat > /tmp/conc_a_$variant.sql <<SQL
@@ -74,6 +78,7 @@ BEGIN;
 SELECT id, status FROM public.pincode_monitored_products WHERE id = 'c0000000-0000-0000-0000-000000000001' FOR UPDATE;
 SELECT pg_sleep(3);
 $( [ "$variant" = "archive" ] && echo "UPDATE public.pincode_monitored_products SET status = 'archived' WHERE id = 'c0000000-0000-0000-0000-000000000001';" )
+$( [ "$variant" = "remove" ] && echo "SELECT public.remove_pincode_monitored_products('b0000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', ARRAY['c0000000-0000-0000-0000-000000000001']::uuid[], 'user_requested');" )
 COMMIT;
 SQL
 
@@ -85,9 +90,12 @@ SELECT count(*) AS b_claimed_count FROM public.claim_due_pincode_targets(
 ) WHERE id = 'd0000000-0000-0000-0000-000000000001';
 SQL
 
-  # Reset target to active/unclaimed and parent to active before each run.
+  # Reset target to active/unclaimed and parent to active (including the
+  # removed_at/removal_reason pair the 'remove' variant sets -- both must
+  # be cleared together or the next run's reset UPDATE itself violates
+  # pincode_monitored_products_removed_consistency_chk) before each run.
   psql_q "
-    UPDATE public.pincode_monitored_products SET status='active' WHERE id='c0000000-0000-0000-0000-000000000001';
+    UPDATE public.pincode_monitored_products SET status='active', removed_at=NULL, removal_reason=NULL WHERE id='c0000000-0000-0000-0000-000000000001';
     UPDATE public.pincode_tracking_targets SET status='active', claim_token=NULL, claimed_at=NULL, claimed_by=NULL, next_check_at=now()-interval '1 minute' WHERE id='d0000000-0000-0000-0000-000000000001';
   " > /dev/null
 
@@ -100,7 +108,15 @@ SQL
 
   local claimed
   claimed=$(grep -E '^[0-9]+$' /tmp/conc_b_${variant}_out.log | tail -1)
-  if [ "$claimed" = "$expect_claimed" ]; then
+  if [ "$variant" = "remove" ]; then
+    local final_status
+    final_status=$(psql_q "SELECT status FROM public.pincode_monitored_products WHERE id='c0000000-0000-0000-0000-000000000001';")
+    if [ "$claimed" = "$expect_claimed" ] && [ "$final_status" = "removed" ]; then
+      pass "C1-$variant: claim vs. held parent lock ($variant, via real remove_pincode_monitored_products) -- claimed=$claimed, final parent status=$final_status as expected"
+    else
+      fail "C1-$variant: claim vs. held parent lock ($variant) -- expected claimed=$expect_claimed and final status=removed, got claimed='$claimed' status='$final_status' (see /tmp/conc_a_${variant}_out.log, /tmp/conc_b_${variant}_out.log)"
+    fi
+  elif [ "$claimed" = "$expect_claimed" ]; then
     pass "C1-$variant: claim vs. held parent lock (${variant}) -- claimed=$claimed as expected"
   else
     fail "C1-$variant: claim vs. held parent lock (${variant}) -- expected claimed=$expect_claimed, got '$claimed' (see /tmp/conc_b_${variant}_out.log)"
@@ -109,6 +125,7 @@ SQL
 
 run_lock_contention_test archive 0
 run_lock_contention_test active 1
+run_lock_contention_test remove 0
 
 # ------------------------------------------------------------------
 # TEST C2: concurrent finalize_pincode_check with the SAME still-valid
@@ -116,7 +133,7 @@ run_lock_contention_test active 1
 # return the identical result, no error.
 # ------------------------------------------------------------------
 psql_q "
-UPDATE public.pincode_monitored_products SET status='active' WHERE id='c0000000-0000-0000-0000-000000000001';
+UPDATE public.pincode_monitored_products SET status='active', removed_at=NULL, removal_reason=NULL WHERE id='c0000000-0000-0000-0000-000000000001';
 UPDATE public.pincode_tracking_targets SET status='active', claim_token=NULL, claimed_at=NULL, claimed_by=NULL, next_check_at=now()-interval '1 minute' WHERE id='d0000000-0000-0000-0000-000000000001';
 " > /dev/null
 

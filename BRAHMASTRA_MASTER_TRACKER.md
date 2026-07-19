@@ -4180,3 +4180,93 @@ Vercel/Supabase environment variable changed. No deployment. P0-B remains blocke
 test suite, the production audit results above), and either approve it for merge (migration still not
 applied to production automatically on merge — that remains its own separate, explicit step) or request
 further changes. P0-B cannot start until this PR is approved.
+
+### §22 update 8 (2026-07-19) — PR #54 test-runner safety and reporting correction round: 4 corrections to the committed test suite itself, no schema/RPC change, still not merged, migration still not applied anywhere
+
+**Decision received:** a final test-runner safety and reporting correction round, explicitly scoped: do not
+change the product schema or RPC architecture unless a failing test proves it necessary (none did — zero
+migration files touched this round), do not start P0-B, do not apply any migration to production, do not
+deploy. Stayed on branch `feature/pincode-p0a-schema-rpcs`, PR #54. All 4 corrections closed.
+
+**Correction 1 — the hosted-endpoint refusal in `run-tests.sh` no longer prints secret values.**
+`redact_and_check_hosted_endpoint_vars()` previously interpolated the matched environment variable's own
+**value** into its refusal message. It now names only the variable, e.g. `REFUSED: environment variable
+DATABASE_URL is set and appears to reference a hosted database.` — the value itself is read (to pattern-match
+against `supabase.co`/`supabase.com`/`pooler.*`) but never echoed anywhere. Added a `--self-test` mode
+(`run_self_tests()`) that injects a fake secret (`sk_live_TOTALLY_FAKE_SECRET_VALUE_12345`) into a
+subshell-scoped `DATABASE_URL`, captures the real refusal function's output, and asserts programmatically that
+the fake value is absent while the variable name is present — proving the redaction property against the
+actual production code path, not a description of it.
+
+**Correction 2 — `run-tests.sh`'s local-only safety gate now also closes `PGHOSTADDR`, `PGSERVICE`, and
+`PGSERVICEFILE`.** Previously only `PGHOST` was validated; `PGHOSTADDR` overrides `PGHOST` in libpq when both
+are set, and `PGSERVICE`/`PGSERVICEFILE` resolve an entirely separate named connection profile
+(host/port/dbname/user/sslmode) independent of `PGHOST`/`PGHOSTADDR` — either could have silently redirected
+the runner to a real database even with the pre-existing `PGHOST` check passing. Added `validate_pghostaddr()`
+(rejects anything but a loopback literal or unset), `validate_no_service_override()` (rejects any non-empty
+`PGSERVICE` or `PGSERVICEFILE` outright — there is no safe way to validate a service definition's eventual
+target from the shell without reimplementing libpq's service-file parser). After all gates pass, the script
+now explicitly re-exports a pinned `PGHOST` (the validated loopback value if one was set, otherwise left
+unset for the local Unix socket) and unconditionally unsets `PGSERVICE`/`PGSERVICEFILE`, so nothing later in
+the process's environment can reintroduce an override. `README.md`'s "Safety guarantees" section now documents,
+gate by gate, why the connection cannot resolve remotely once all gates pass. 7 new self-tests cover both
+variables' reject/accept cases.
+
+**Correction 3 — `PINCODE_TEST_DB_NAME` is now strictly validated and safely quoted.** `validate_db_name()`
+requires the name to match `^[a-zA-Z_][a-zA-Z0-9_]{0,62}$` (a plain, unquoted Postgres identifier, ≤63 bytes)
+**and** still contain `scratch` or `test`, checked before the name is used anywhere. The `CREATE DATABASE`/
+`DROP DATABASE` calls no longer interpolate `$DB_NAME` as raw SQL text; they use psql's `-v db_name=... ` +
+`:"db_name"` safe-identifier substitution instead. **Implementation note surfaced by actually running this
+change, not assumed:** psql's `:"var"` interpolation only applies when SQL is read as a script (stdin/`-f`) —
+empirically confirmed against the installed psql 16.13 that the identical text passed via `-c` raises a syntax
+error at `:` even with the variable set — so both call sites were written as a heredoc fed via stdin, not
+`-c`. Six required self-tests added: two valid scratch-name variants accepted; a name without `scratch`/`test`
+rejected; a name containing a semicolon rejected; a name containing a quote rejected; a name containing
+whitespace rejected; an overlength name rejected — all six run `validate_db_name()` directly inside the
+`--self-test` subshell, so no rejected name ever reaches a `psql` invocation (touches no database at all).
+
+**Correction 4 — concurrency claims corrected to exactly match the committed suite, and the one described-but-
+missing test was added rather than the claim removed.** §22 update 7 above and `README.md` both said
+`concurrency.sh` has "4 real multi-connection tests"; the actually-committed file has always asserted 5
+outcomes (`claim vs. archived parent`, `claim vs. unchanged active parent`, `duplicate finalize`, `concurrent
+enrollment quota`, `claim/pause/manual-queue deadlock stress` — confirmed by re-running the suite and reading
+its own `$PASSES`-based summary line, not by re-reading the description). Separately, `IMPLEMENTATION_PLAN.md`
+§2.8 (merged in PR #53) lists a distinct **"claim vs. product removal"** concurrency test as required, which
+the committed suite did not have — the only place a removal+concurrency test existed was the ordinary
+sequential remove-then-re-add test in `sequential.sql`, which is not a concurrency test and was not
+represented as one anywhere audited this round. Per instruction, added the missing test rather than removing
+the claim: `concurrency.sh`'s existing parameterized `run_lock_contention_test()` (already proven for the
+`archive`/`active` variants) gained a third `remove` variant — connection A holds the parent row lock, sleeps,
+then calls the **real** `remove_pincode_monitored_products` RPC (not a raw status `UPDATE`) before committing;
+connection B concurrently calls `claim_due_pincode_targets` and is asserted to claim 0 rows, with the parent's
+final status independently re-queried and asserted to be `'removed'` — proving both the blocking behavior and
+that the actual production RPC ran, not just a status flip. (Fixed one latent bug surfaced while wiring this
+in: the pre-existing C2 test's own state-reset step set the parent back to `status='active'` without also
+clearing `removed_at`/`removal_reason`, which — only after a `remove` variant had ever run first — would violate
+`pincode_monitored_products_removed_consistency_chk` and made C2 fail with "setup claim did not return a
+token"; both reset sites now clear all three columns together.) `README.md` and this tracker now both say "6
+assertions" and describe the `remove` variant explicitly; `README.md`'s concurrency description also states
+this is specifically the `IMPLEMENTATION_PLAN.md` §2.8-required claim-vs-product-removal test.
+
+**Files changed this round:** `esolz-app/supabase/tests/pincode-p0a/run-tests.sh` (Corrections 1–3),
+`esolz-app/supabase/tests/pincode-p0a/concurrency.sh` (Correction 4 — new `remove` variant + C2 reset fix),
+`esolz-app/supabase/tests/pincode-p0a/README.md` (Corrections 2–4 — safety-guarantee documentation,
+self-test-mode documentation, corrected concurrency counts/description), `BRAHMASTRA_MASTER_TRACKER.md` (this
+entry), `WORK_DONE_SUMMARY.md` (updated Pincode P0-A entry). **Zero migration files touched** — no failing
+test required a schema or RPC change this round. Zero application/API/UI/cron files touched.
+
+**Re-verification after all 4 corrections:** `./run-tests.sh --self-test` — 14/14 self-tests passed (secret
+redaction, `PGHOSTADDR` x3, `PGSERVICE`/`PGSERVICEFILE` x3, database-name x6 — none touched a database). Full
+scratch-database run (`run-tests.sh`, real flow) re-run end-to-end after each fix, final clean run: sequential
+suite passed (all ~20 groups), concurrency suite passed (**6/6**, including the new `remove` variant), EXPLAIN
+ANALYZE check passed (due-index confirmed used, no sequential scan), scratch database dropped on exit, exit
+code 0. `npx tsc --noEmit` clean. `npm run build` clean. `git status` confirms only
+`esolz-app/supabase/tests/pincode-p0a/{run-tests.sh,concurrency.sh,README.md}` changed this round.
+
+**No migration applied to production. No production row modified. No Vercel/Supabase environment variable
+changed. No deployment. P0-B remains blocked.**
+
+**Next step (needs the founder):** review the amended PR #54 (test-runner safety hardening + the added
+claim-vs-product-removal concurrency test), and either approve it for merge (migration still not applied to
+production automatically on merge — that remains its own separate, explicit step) or request further changes.
+P0-B cannot start until this PR is approved.

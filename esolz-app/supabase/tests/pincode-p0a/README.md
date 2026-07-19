@@ -12,7 +12,7 @@ hosted Supabase project, and the runner actively refuses to try.
 |---|---|
 | `run-tests.sh` | Single entry point. Refuses non-local targets, bootstraps a scratch database from the real migration history, runs the two phases below plus the benchmark check, cleans up, exits non-zero on any failure. |
 | `sequential.sql` | One self-contained `psql` script: seeds fixtures, then runs ~20 numbered test groups (with lettered sub-cases) as `DO` blocks that `RAISE EXCEPTION` on the first failed assertion. A clean run prints only `NOTICE ... PASSED` lines and ends with a summary `SELECT`. |
-| `concurrency.sh` | Real multi-connection tests, launched as backgrounded `psql` processes against the same scratch database — not simulated sequentially. Each test asserts a specific outcome programmatically and prints `PASS:`/`FAIL:`; the script exits non-zero if any assertion failed. |
+| `concurrency.sh` | Real multi-connection tests (6 assertions), launched as backgrounded `psql` processes against the same scratch database — not simulated sequentially. Each test asserts a specific outcome programmatically and prints `PASS:`/`FAIL:`; the script exits non-zero if any assertion failed. |
 | `explain-analyze.sql` | Seeds ~50,000 representative targets (10% due, matching a real 24h-cadence/hourly-cron shape) and asserts — via the `EXPLAIN (ANALYZE, FORMAT JSON)` plan tree itself, not eyeballed text — that the claim RPC's candidate query uses the due-index, not a sequential scan. |
 
 ## Why bash + psql, not a Python/TS client
@@ -126,29 +126,81 @@ a `FAIL:`/`ERROR` line identifying exactly which assertion failed.
    unset.** An unset `PGHOST` makes libpq use the local Unix domain
    socket, which is inherently local (there is no such thing as a remote
    Unix socket path) — at least as safe as an explicit loopback host.
-2. **Refuses if any of `DATABASE_URL`, `SUPABASE_DB_URL`, `POSTGRES_URL`,
+2. **Refuses any `PGHOSTADDR` other than `127.0.0.1` / `::1` / unset.**
+   libpq resolves `PGHOSTADDR` *in preference to* `PGHOST` when both are
+   set, so a `PGHOST` guard alone is not sufficient — a real routable IP
+   in `PGHOSTADDR` would silently override an otherwise-safe `PGHOST`
+   and is rejected here independently.
+3. **Refuses any non-empty `PGSERVICE` or `PGSERVICEFILE`.** A libpq
+   "service" is a named connection profile (host/port/dbname/user/
+   sslmode) resolved from a `.pg_service.conf` file, entirely independent
+   of `PGHOST`/`PGHOSTADDR` — an operator's pre-existing service
+   definition could silently redirect this runner to a real database
+   even with every other guard passing. Both must be unset/empty.
+4. **After all of the above pass, explicitly (re-)exports a canonical
+   local connection target** — `PGHOST` is re-exported if already a
+   validated loopback value, otherwise left unset (Unix socket);
+   `PGSERVICE`/`PGSERVICEFILE` are unconditionally unset for the rest of
+   the run. This closes the gap between "validated at the top of the
+   script" and "still true by the time `psql` actually runs" — nothing
+   later in the script, or in its environment, can reintroduce a service
+   override or a stale `PGHOSTADDR` once this point is reached. Given (1)
+   `PGHOST` pinned to loopback/socket, (2) `PGHOSTADDR` pinned to
+   loopback/unset, and (3) no service profile in play, there is no
+   remaining libpq mechanism this script's environment could use to make
+   the actual connection resolve anywhere but local.
+5. **Refuses if any of `DATABASE_URL`, `SUPABASE_DB_URL`, `POSTGRES_URL`,
    `PGURL`, `DB_URL`, or `SUPABASE_URL` is set to something that looks
    like a hosted Supabase endpoint** (`supabase.co`, `supabase.com`, or a
    `pooler.*` host), even though this script does not itself read those
    variables — defense in depth against a future edit that starts using
-   one of them instead of the `PG*` vars.
-3. **Refuses unless the target database name contains `scratch` or
-   `test`.** Even on a trusted local host, this stops an operator from
-   accidentally pointing the runner at a real local database (e.g. a
-   local Supabase CLI project with real seeded data) that happens to be
-   reachable.
-4. **No credentials anywhere in this directory.** Connection parameters
+   one of them instead of the `PG*` vars. The refusal message names only
+   the **variable**, never its value — no database URL, password, token,
+   service key, or connection string is ever printed, logged, or echoed
+   anywhere in this script.
+6. **Refuses unless the target database name matches
+   `^[a-zA-Z_][a-zA-Z0-9_]{0,62}$` (a valid, unquoted Postgres
+   identifier, max 63 bytes) AND contains `scratch` or `test`.** The
+   regex is checked first and rejects anything with a semicolon, quote,
+   whitespace, or other non-identifier character *before* the name is
+   ever used in an SQL statement; the `scratch`/`test` substring
+   requirement then stops an operator from accidentally pointing the
+   runner at a real local database (e.g. a local Supabase CLI project
+   with real seeded data) that happens to be reachable and happens to
+   pass the regex. The validated name is never interpolated as raw SQL
+   text — every `CREATE`/`DROP DATABASE` uses psql's `-v db_name=... ` +
+   `:"db_name"` safe-identifier substitution, fed via stdin (`:"var"`
+   interpolation is a script-mode feature — it does not apply to `-c`
+   command-line arguments, so these always run as a heredoc/stdin
+   script, never as `-c`).
+7. **No credentials anywhere in this directory.** Connection parameters
    come entirely from the standard `PG*` libpq environment variables (or
    their defaults); nothing is hardcoded, nothing is read from a
    Claude/session-local temp file, nothing is written to one either.
-5. **Cleans up its own fixtures.** The scratch database is dropped at the
+8. **Cleans up its own fixtures.** The scratch database is dropped at the
    end of every run unless `PINCODE_TEST_KEEP_DB=1` is explicitly set.
 
-There is deliberately no flag to override any of the three refusals
-above. If you need to point this suite at something else, this is the
-wrong tool for that — it exists specifically to make "accidentally ran
-this against something real" structurally difficult, not just
-discouraged by a warning comment.
+There is deliberately no flag to override any of the refusals above. If
+you need to point this suite at something else, this is the wrong tool
+for that — it exists specifically to make "accidentally ran this against
+something real" structurally difficult, not just discouraged by a
+warning comment.
+
+### Self-test mode
+
+`./run-tests.sh --self-test` exercises the safety-gate functions above
+directly (secret redaction, `PGHOSTADDR`/`PGSERVICE`/`PGSERVICEFILE`
+guards, all six required database-name cases) in isolated subshells,
+asserting each property programmatically — including that a fake secret
+value injected into a subshell-scoped `DATABASE_URL` never appears in
+the refusal output — without ever invoking `psql` or touching a real
+database. The `--self-test` short-circuit is checked before any other
+code path, so a self-test invocation can never fall through into a real
+database operation. Run it any time to verify these guarantees hold:
+
+```bash
+./run-tests.sh --self-test
+```
 
 ## What this suite covers
 
@@ -173,11 +225,17 @@ duplicate IDs, `NULL` ID in array, zero partial mutation on rejection);
 removal-consistency `CHECK` strengthening; hard configuration ceilings
 independent of business-logic quota rejection.
 
-**Concurrency (`concurrency.sh`, 4 tests, real multi-connection):**
+**Concurrency (`concurrency.sh`, 6 assertions, real multi-connection):**
 claim genuinely blocks behind a concurrently-held parent lock and
-observes the correct post-commit state (0 claimed if the parent was
-archived mid-lock, 1 claimed normally if it stayed active) — this is the
-direct empirical proof of the claim RPC's parent-first locking; concurrent
+observes the correct post-commit state — 0 claimed if the parent was
+archived mid-lock, 1 claimed normally if it stayed active, 0 claimed if
+the parent was concurrently removed mid-lock via a real
+`remove_pincode_monitored_products` call (not a raw status `UPDATE`),
+with the parent's final status independently confirmed as `removed` —
+this is the direct empirical proof of the claim RPC's parent-first
+locking against all three ways a parent can leave `'active'`, and the
+`remove` variant is specifically the claim-vs-product-removal test
+required by `IMPLEMENTATION_PLAN.md` §2.8; concurrent
 `finalize_pincode_check` with the same still-valid token from two
 connections produces exactly one result; concurrent
 `enroll_pincode_monitored_products` under joint-exceeding quota
