@@ -844,3 +844,157 @@ unreachable states are honestly reported as not observable rather than assumed o
 **Docs-only PR opened from `docs/keywords-p0-production-verification`, off latest master. Not merged.
 Keywords Tab P0 workstream closed for now** — P1/P2 items from `KEYWORDS_TAB_PRODUCT_AUDIT.md` remain
 deferred pending founder review.
+
+## Pincode Checker — P0-A: Schema/RPC Foundation Implemented, Not Applied (2026-07-18)
+
+_PR #53 (the 5-round-amended spec, `BRAHMASTRA_MASTER_TRACKER.md` §22 updates 1–5) approved and merged to
+`master` as merge commit `31b24e7084a9d532b652d37cd7ddfb94cf795206`. This entry covers P0-A only — the first
+of `IMPLEMENTATION_PLAN.md` §9's four locked implementation stages (schema/RPC foundation; P0-B/C/D remain
+blocked). New worktree, branch `feature/pincode-p0a-schema-rpcs`, off `origin/master` post-merge. Full
+detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 6._
+
+**What changed:** four new additive migrations, next available numbers after the existing `001`–`059`
+history:
+
+- `060_pincode_p0a_precondition_fks.sql` — `UNIQUE (workspace_id, id)` on `amazon_listing_items` and
+  `tracked_asins`.
+- `061_pincode_p0a_core_tables.sql` — three new tables (`workspace_default_pincodes`,
+  `pincode_monitored_products`, `pincode_tracking_targets`), indexes, `updated_at` triggers, `SELECT`-only
+  RLS on all three (no member-facing write policy on any of them — every mutation goes through a future
+  server route using the service-role client).
+- `062_pincode_p0a_results_extension.sql` — four additive columns on the existing
+  `pincode_availability_results` table (`monitored_product_id`, `tracking_target_id`, `check_attempt_id`,
+  `check_status`), `RESTRICT` FKs (direct + three-column composite), history indexes, two CHECK constraints
+  — **not** the deferred `check_status`-format constraint, which stays gated on the production backfill.
+- `063_pincode_p0a_rpcs.sql` — all **six** trusted, `SECURITY DEFINER` RPCs: `claim_due_pincode_targets`,
+  `finalize_pincode_check`, `queue_pincode_manual_check` (transcribed from the spec's own literal SQL, one
+  placeholder substitution — the failure-threshold constant, set to 5 per the documented default),
+  `enroll_pincode_monitored_products`, `set_pincode_tracking_state`, `remove_pincode_monitored_products`
+  (specified only as numbered prose steps in the spec — this migration is their first executable form).
+
+**A real bug was found and fixed by testing, not by re-reading the spec:** the first draft of
+`enroll_pincode_monitored_products` wrote new parent rows *before* the quota gate — a batch correctly
+rejected for exceeding quota could still leave a stray, empty product row behind for a genuinely-new ASIN.
+Caught by the required all-or-nothing bulk-enrollment test run against a real scratch database. Fixed by
+moving every write to strictly after the quota decision and correcting the additional-target count query to
+handle a not-yet-created parent via `LEFT JOIN`. Re-tested clean.
+
+**Testing (real, not simulated):** scratch PostgreSQL 16 database bootstrapped from the actual repository
+migration history (`001`–`063`, with two small Supabase Auth shims — production runs 17.6, not verified
+directly this session, no compatibility gap expected). 16/16 sequential correctness tests passed (cross-
+workspace FK rejection, RLS role behavior, enrollment happy path + quota rejection + all-or-nothing, NULL-
+safe finalize validation, full claim→finalize cycle, idempotent finalize retry, stale-reclaim race, allowlist
+fail-closed, history hard-delete rejection, remove→re-add atomic restore, pause/resume + quota + in-flight
+safety, manual-check coalescing/cooldown/status matrix). Real two-and-three-connection concurrency tests (not
+sequential simulation): claim genuinely **blocks** behind a concurrently-held parent lock and correctly
+observes the post-commit state (0 claimed when the parent went `archived` mid-lock, 1 claimed normally when
+it stayed `active`) — a direct empirical proof of PR #53's round-5 "claim RPC must follow its own lock order"
+correction; concurrent `finalize_pincode_check` with the same token from two connections produces exactly one
+result; concurrent `enroll_pincode_monitored_products` under joint-exceeding quota serializes correctly
+(exactly one of two concurrent requests succeeds); 5 rounds of claim + pause + manual-queue fired concurrently
+against the same product produced zero deadlocks. `EXPLAIN ANALYZE` against 50,000 seeded targets (5,000 due,
+10% selectivity, representative of a real 24h-cadence workload) confirmed the due-index is used via `Bitmap
+Index Scan`, not a sequential scan (5.8ms execution).
+
+**Repository checks:** `npx tsc --noEmit` clean. `npm run build` clean. No TypeScript/JavaScript file was
+changed by this PR (pure SQL migrations only) — a full-repo `eslint .` baseline check shows 50 pre-existing
+errors/39 warnings, all in files this PR does not touch, not introduced by this change.
+
+**Feature remains fully disabled — no application code of any kind:** no API route, no UI page, no cron
+entry. Pure database schema + RPC surface, nothing user-reachable references it. **No migration applied to
+production. No production row modified. No Vercel/Supabase environment variable changed. No deployment.**
+
+**Unresolved, explicitly deferred by the spec itself:** the scheduler concurrency/chunk-size benchmark
+(needs real `checker-worker` p50/p95 data this session doesn't have), the enrollment quota and manual-check
+outstanding-limit numeric values (config, not schema), the checker-worker's own concurrent-job ceiling — none
+of these block P0-A; they gate P0-D (the scheduler worker).
+
+**Opened as a PR from `feature/pincode-p0a-schema-rpcs`. Not merged. P0-B (API/data-access layer) remains
+blocked until this PR is separately reviewed and approved**, per the locked "no stage starts until the prior
+stage is approved" sequencing.
+
+### PR #54 implementation-review round: committed test suite + 6 corrections (2026-07-18)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 7. Same PR #54, same branch — no redesign, no
+P0-B, no migration applied, no deployment._
+
+**The gap this round closes:** the round above reported strong testing, but shipped zero test files in the
+6-file diff — everything was ad hoc and unrepeatable. Now committed: `esolz-app/supabase/tests/pincode-p0a/`
+(`README.md`, `sequential.sql` ~20 test groups, `concurrency.sh` 4 real multi-connection tests,
+`explain-analyze.sql`, `run-tests.sh`). The runner refuses any non-local target (host, six connection-shaped
+env vars, and database-name pattern all checked independently, no override flag), bootstraps from the real
+migration history, and exits non-zero on any failure — verified end-to-end in this session (`exit 0`, all 3
+phases pass, scratch database confirmed dropped afterward).
+
+**Six correctness/safety corrections found by writing that suite, not by re-reading the spec a second time:**
+1. `set_pincode_tracking_state` / `remove_pincode_monitored_products` now require the count of valid, in-scope
+   locked rows to exactly equal the count of distinct requested IDs — a missing or foreign-workspace ID
+   previously could be silently dropped rather than rejecting the whole batch.
+2. `enroll_pincode_monitored_products`'s owned-listing check now verifies the listing's own `asin` column
+   matches the request, not just that a listing with that ID exists in the account; `tracked_asin_id` gets the
+   same treatment against `tracked_asins.marketplace` (confirmed by schema, not assumed); UUID inputs are
+   regex-validated before casting; `'other'`-source can't carry a listing reference; conflicting duplicate-ASIN
+   metadata is rejected instead of letting `DISTINCT ON` pick an arbitrary winner.
+3. Hard, code-level ceilings added on every configured quota/limit and every marketplace string, distinct from
+   the commercial-configured value itself, plus a total-flattened-combination cap on bulk enrollment.
+4. `pincode_tracking_targets_monitored_product_fk` changed `CASCADE` → `RESTRICT` — a direct hard delete of a
+   product could previously silently erase its targets. Empirically re-verified the whole-workspace cascade
+   cleanup still works correctly with this change (two independent `CASCADE` paths from `workspaces`, no
+   conflict).
+5. The removed-consistency `CHECK` now also requires a non-null, narrow-valued `removal_reason`.
+6. Migration 060's "locks no rows" comment corrected (index builds do take a lock) and given real operational
+   guidance — grounded in a fresh read-only production audit re-run (confirmed unchanged since the original:
+   18 available/no-error + 7 unknown/error rows, 25 total; confirmed the four new result-table columns still
+   don't exist in production; `amazon_listing_items` 482 rows / `tracked_asins` 19 rows).
+
+**Re-verified after all corrections:** full committed suite passes end-to-end from a from-scratch database.
+`npx tsc --noEmit` clean, `npm run build` clean, `git status` confirms only the three edited migration files
+plus the new `tests/` directory changed — zero application/API/UI/cron files touched. No migration applied to
+production, no production row modified (Correction 8's audit was read-only), no deployment.
+
+### PR #54 test-runner safety and reporting correction round: 4 corrections (2026-07-19)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 8. Same PR #54, same branch — zero migration files
+touched this round (no failing test required a schema/RPC change), no P0-B, no migration applied, no
+deployment._
+
+**The gap this round closes:** the committed test suite from the round above was real and repeatable, but the
+runner itself (`run-tests.sh`) had four remaining safety/reporting gaps, all found by review rather than by a
+failing test:
+
+1. **Secret values were printed.** The hosted-endpoint refusal echoed the full value of whichever env var
+   matched (e.g. a real `DATABASE_URL` with embedded credentials). Now names only the variable — never its
+   value — and a new `--self-test` mode proves this against the real refusal function using an injected fake
+   secret, asserting it never appears in the output.
+2. **`PGHOSTADDR`/`PGSERVICE`/`PGSERVICEFILE` were unguarded.** `PGHOSTADDR` overrides `PGHOST` in libpq;
+   `PGSERVICE`/`PGSERVICEFILE` resolve an independent named connection profile. Either could have silently
+   redirected the runner past the pre-existing `PGHOST`-only check. Both are now validated (loopback-or-unset,
+   and forced-empty respectively), and the script explicitly re-pins `PGHOST`/unsets `PGSERVICE*` after
+   validation so nothing later can reintroduce an override. `README.md` now documents, gate by gate, why the
+   connection cannot resolve remotely once validation passes.
+3. **The scratch database name was raw-interpolated into SQL text.** `PINCODE_TEST_DB_NAME` is now regex-
+   validated (`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`, must also contain `scratch`/`test`) and passed to
+   `CREATE`/`DROP DATABASE` via psql's safe `:"identifier"` substitution, not string interpolation. (Discovered
+   while wiring this up: psql only performs `:"var"` substitution when SQL is read as a script/stdin, not via
+   `-c` — confirmed empirically against the installed psql 16.13 — so both call sites use a heredoc.) Six new
+   self-tests cover valid names, missing-scratch/test, semicolon, quote, whitespace, and overlength cases —
+   none of which ever reach a `psql` call.
+4. **A concurrency-suite count/description mismatch was found and corrected — and one genuinely missing test
+   was added.** The prior round's PR description and tracker entry said `concurrency.sh` has "4 tests"; the
+   file has always asserted 5 (its own summary line prints `$PASSES`). Separately, `IMPLEMENTATION_PLAN.md`
+   §2.8 requires a distinct "claim vs. product removal" concurrency test that did not exist — only an ordinary
+   sequential remove/re-add test did, which is not a concurrency test. Added a third `remove` variant to the
+   existing parameterized lock-contention test: one connection holds the parent lock and calls the real
+   `remove_pincode_monitored_products` RPC before committing, a second connection concurrently calls
+   `claim_due_pincode_targets` and is asserted to claim 0 rows, with the parent's final status independently
+   re-queried as `'removed'`. (Also fixed a latent bug this surfaced: an earlier test's own state-reset step
+   didn't clear `removed_at`/`removal_reason`, which broke that test once a `remove` variant had run first.)
+   `concurrency.sh` now asserts 6 outcomes; `README.md` and the tracker both say "6," not "4."
+
+**Re-verified after all 4 corrections:** `./run-tests.sh --self-test` — 14/14 passed, touching no database.
+Full scratch-database run: sequential suite passed (~20 groups), concurrency suite passed (**6/6**, including
+the new claim-vs-product-removal test), `EXPLAIN ANALYZE` check passed, scratch database dropped, exit code 0.
+`npx tsc --noEmit` clean, `npm run build` clean, `git status` confirms only
+`esolz-app/supabase/tests/pincode-p0a/{run-tests.sh,concurrency.sh,README.md}` changed — zero migration,
+application, API, UI, or cron files touched. No migration applied to production, no production row modified,
+no deployment.
