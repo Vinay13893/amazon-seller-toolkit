@@ -4270,3 +4270,160 @@ changed. No deployment. P0-B remains blocked.**
 claim-vs-product-removal concurrency test), and either approve it for merge (migration still not applied to
 production automatically on merge — that remains its own separate, explicit step) or request further changes.
 P0-B cannot start until this PR is approved.
+
+### §22 update 9 (2026-07-19) — PR #54 merged (`1e5a044`); PR #55 opened for P0-B API/data-access layer, feature still fully disabled, migration still not applied anywhere
+
+**Decision received:** "Approved," with two explicit steps — (1) merge PR #54 at exactly commit `c4481ed`,
+(2) start P0-B only, on a fresh worktree/branch, per `IMPLEMENTATION_PLAN.md` §9's locked "no stage starts
+until the prior stage is approved" sequencing. Explicitly scoped: no page UI yet, no recurring cron/scheduler
+yet, do not broaden the feature flag, do not apply any migration to production without separate explicit
+review.
+
+**Step 1 — PR #54 merge.** Pre-merge verification: PR open, `mergeable_state: clean`, head exactly
+`c4481ed74df2d619c6f7cb652a058581527e65f1` (matches the approved commit), base was current `master` tip
+(zero commits behind), exactly 11 files changed (4 migrations + 5 test-suite files + `README.md` +
+`BRAHMASTRA_MASTER_TRACKER.md`/`WORK_DONE_SUMMARY.md`) — confirmed via `pull_request_read get_files`, zero
+application/API/UI/cron files. Merged via a standard merge commit (not squash, matching PR #53's own merge
+style): merge commit `1e5a04453dd1a010a717e799adfb5df57a6039ba`. **No migration applied to production as
+part of this merge** — merging a migration file into `master` is not the same act as running it against any
+Supabase project, and no `apply_migration`/`execute_sql` call was made against production this round.
+
+**Step 2 — P0-B: API and data-access layer.** New worktree at a separate path from the P0-A worktree (never
+reused), branch `feature/pincode-p0b-api-data-access`, created from `origin/master` post-merge (so it
+includes `060`–`063` and the full committed P0-A test suite). Implements exactly `IMPLEMENTATION_PLAN.md`
+§9's P0-B bullet list — the authenticated server/API and data-access layer only. **No page UI, no cron/
+scheduler route, no feature-flag broadening.** `claim_due_pincode_targets` and `finalize_pincode_check` (the
+scheduler's own two RPCs) are deliberately not wrapped or called anywhere in this PR — P0-D scope, untouched.
+
+**Routes added** (`esolz-app/src/app/api/pincode-monitoring/`), matching `IMPLEMENTATION_PLAN.md` §9's P0-B
+route list exactly:
+- `POST lookup-asin` — Other Products ASIN resolve/preview, reusing `getCatalogItemForAsin` verbatim
+  (`PRODUCT_SPEC.md` §6's required reuse — no new SP-API integration code). Honest three-way failure split
+  (`catalog_connection_unavailable` 503 / `catalog_not_found` 404 / `catalog_unavailable`+`catalog_timeout`
+  502) — never enrolls an unconfirmed ASIN, nothing written to `tracked_asins` as a side effect.
+- `POST products` — bulk-or-single enrollment via `enroll_pincode_monitored_products`, one RPC call for the
+  whole batch (never split per-product, preserving the RPC's own atomicity).
+- `PATCH products/[id]/pause`, `PATCH products/[id]/resume` — via `set_pincode_tracking_state`. **Design
+  decision, not literally pinned down by any spec document** (the RPC operates on target IDs, not a single
+  product ID, despite the spec's product-scoped URL): the URL's `[id]` is the default target set (every
+  current target of that product); the body may optionally supply `targetIds` to scope to specific pincodes
+  or to a genuine cross-product bulk action in one RPC call. Documented in the route/handler's own comments
+  and in the PR description.
+- `PATCH products/[id]/remove` — via `remove_pincode_monitored_products`, soft removal only, same
+  URL-default-plus-optional-body-array design as pause/resume (`productIds` override). No DELETE route
+  exists anywhere in this PR.
+- `POST check-now` — via `queue_pincode_manual_check`; `202` only when genuinely queued, `200` for the
+  already-queued/already-checking coalesced cases (never a synchronous checker call in the request), `429`
+  with a `Retry-After` header for cooldown (a deliberate, more precise status than this codebase's existing
+  403-for-quota convention — called out explicitly since it deviates from precedent).
+- `GET`/`PUT default-pincodes` — direct service-role CRUD against `workspace_default_pincodes` (not one of
+  the six RPCs — DATA_MODEL.md §6 confirms this table's only mutation path is server-route-then-service-role-
+  write, same as every other server-role write in this codebase). PUT replaces the full active list in one
+  call: upserts every supplied pincode, soft-deactivates (`is_active=false`, never a hard delete) any
+  currently-active pincode not in the new list.
+- `GET tracker` — paginated, product-row + nested-pincode-row shape, three lifecycle views
+  (active/archived/removed, `PRODUCT_SPEC.md` §7 — never conflating Archived and Removed). Five-state
+  availability vocabulary (`PRODUCT_SPEC.md` §8) and the derived product-tracker-state table (`PRODUCT_SPEC.md`
+  §7 — Active/Paused/Partially-active/Failed computed from child target statuses, never a stored parent
+  value) both implemented as pure, independently-tested functions.
+- **My Products listing is deliberately NOT a new route** — `PRODUCT_SPEC.md` §11 explicitly says this reuses
+  `GET /api/asins/listings` "existing, unchanged." Confirmed by reading that route directly: it is already
+  workspace-scoped, paginated (`.range()` + `count: 'exact'`), and search-capable. Zero lines of that file
+  touched by this PR.
+
+**Data-access modules added** (`esolz-app/src/lib/pincode-monitoring/`) — a new `lib/<feature>/` module,
+which the pre-implementation research pass confirmed is **not** this codebase's existing convention (every
+other feature inlines its Supabase queries directly in `route.ts`, no shared `lib/` layer) — a deliberate,
+documented deviation: eight routes share the same four RPCs and the same access gate, and duplicating that
+logic eight times (the exact anti-pattern the P0-A review rounds kept finding and fixing) was judged a real
+correctness risk outweighing convention-consistency.
+- `config.ts` — env-var-driven configuration, read fresh on every call (never cached). Introduces two names
+  with no prior lock anywhere in the spec (`IMPLEMENTATION_PLAN.md` §6 only gestures at "same shape as
+  `PINCODE_ALERTS_PAUSED` and the existing internal-test-account pattern," and direct inspection of both
+  confirmed neither is actually workspace-ID-based — `PINCODE_ALERTS_PAUSED` is a hardcoded boolean constant,
+  the internal-test-account pattern is an email allowlist): `PINCODE_MONITORING_ENABLED` (boolean, defaults
+  to **disabled** — fails closed) and `PINCODE_MONITORING_ALLOWED_WORKSPACE_IDS` (comma-separated UUID
+  allowlist, defaults to **empty** — also fails closed). The three P0-A-locked config names
+  (`PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE`, `PINCODE_MANUAL_CHECK_COOLDOWN_SECONDS`,
+  `PINCODE_MANUAL_MAX_OUTSTANDING_PER_WORKSPACE_MARKETPLACE`) are read here with conservative internal-
+  testing-only defaults (50 / 300s / 10) and each is independently bounded by the same hard ceiling its RPC
+  already enforces, so a malformed env value can never become an effectively unlimited quota — same
+  discipline PR #54's own Correction 4 established at the RPC layer, now mirrored at the config layer.
+- `access.ts` — the one access-control gate every route calls: authenticated session → workspace-membership
+  lookup (scoped to the SPECIFIC requested `workspace_id`, never inferred) → feature-flag/allowlist check →
+  role check (viewer rejected on any mutating route). The decision logic (`decidePincodeAccess`) is a pure
+  function, deliberately separated from the Supabase I/O around it, so it can be unit-tested directly.
+- `rpc.ts` — narrow, hardcoded wrappers around exactly the four P0-B-reachable RPCs
+  (`enroll_pincode_monitored_products`, `set_pincode_tracking_state`, `remove_pincode_monitored_products`,
+  `queue_pincode_manual_check`). No generic `.rpc(name, params)` passthrough exists anywhere in this module —
+  a route can never invoke an RPC this feature doesn't own.
+- `responses.ts` — maps each RPC's `result` discriminator to an HTTP status. The two quota-shaped errors
+  reproduce `DATA_MODEL.md` §2b/§2c's **locked** response shapes exactly
+  (`pincode_tracking_quota_exceeded`/`pincode_manual_queue_limit_reached`, deliberately different
+  `errorCode`s, verified never to collide by a dedicated test). Every other status code (404 for not-found/
+  scope-mismatch, 409 for check-in-progress/invalid-status conflicts, 422 for listing-verification-failed,
+  429 for cooldown, 202 for genuinely-queued) is this PR's own implementation decision where no spec document
+  pinned one down — called out here, not silently assumed.
+- `tracker.ts`, `defaults.ts`, `catalog-lookup.ts` — the three read/write data-access modules described above.
+- `validation.ts` — hand-rolled request validation (this codebase has no Zod dependency anywhere, confirmed
+  by the research pass — the existing convention is small type-narrowing functions on `unknown`, followed
+  here rather than introducing a new dependency). Every regex matches the exact CHECK constraint already
+  enforced inside migrations 060–063, so a malformed request is rejected with a clean `400` before ever
+  reaching a service-role RPC call.
+- `pause-resume-handler.ts` — the shared handler both pause and resume routes delegate to.
+
+**Feature flag / workspace allowlist.** Every one of the eight routes calls `resolvePincodeAccess`
+independently before doing anything else (verified by a source-scanning test, not just asserted) — there is
+no route that relies on a hidden UI as its only gate, matching `IMPLEMENTATION_PLAN.md` §6 round-3
+Correction 12's explicit requirement that every layer enforce the allowlist on its own. `PINCODE_MONITORING_
+ENABLED` defaults to disabled and `PINCODE_MONITORING_ALLOWED_WORKSPACE_IDS` defaults to empty — **the
+feature ships fully off** until both are explicitly set for a specific internal workspace, a separate
+operational step this PR does not itself take.
+
+**Role enforcement.** `owner`/`admin`/`member` may mutate; `viewer` may read but is rejected with `403
+viewer_forbidden` on every mutating route — enforced in `decidePincodeAccess`, checked AFTER the allowlist
+gate (a non-allowlisted workspace rejects a viewer's read too, not just a write).
+
+**Truth-state preservation.** `deriveAvailabilityState` (five-state: available/unavailable/blocked/
+check_failed/not_confirmed) and `deriveProductTrackerState` (active/paused/partially_active/failed/archived/
+removed) are both pure functions implementing `PRODUCT_SPEC.md` §7/§8's locked derivation rules exactly —
+unit-tested against every data-truth rule §9 requires (unknown is not unavailable, failed is not unavailable,
+blocked renders distinctly from check_failed, a missing row is not_confirmed never a negative result).
+
+**Tests added** (`esolz-app/src/lib/pincode-monitoring/__tests__/`, 87 tests across 8 files) — **this
+codebase had zero test tooling of any kind before this PR** (confirmed by the research pass: no jest/vitest/
+testing-library in `package.json`, no `*.test.ts` anywhere in `esolz-app/src`). Rather than add a new
+dependency, this PR uses Node's built-in test runner (`node:test`/`node:assert`) invoked via `tsx` (already a
+devDependency) — zero new packages installed, a new `"test"` script added to `package.json`
+(`node --import tsx --test 'src/**/*.test.ts'`). **Honest scope statement, not overclaimed:** these are unit
+tests against pure functions and a fake `RpcClient` double, covering the required scenario list
+(unauthenticated/non-member/viewer-read-allowed/viewer-mutation-rejected/non-allowlisted-workspace/feature-
+disabled, quota result mapping, check-in-progress 409, soft-removal semantics via the RPC contract, Manual
+Check Now queued/already-queued/cooldown/limit, unknown/failed/blocked preservation, RPC parameter-name
+correctness, service-role-never-in-a-client-component via source scan) — **not** a live-database or live-
+Next.js-server integration test. No PostgREST/GoTrue stack is available in this environment (the P0-A
+scratch-DB runner is deliberately raw Postgres only, `README.md`'s own "no Docker, no Supabase CLI" design
+choice, which means it cannot serve `supabase-js`'s `.rpc()`/`.from()` calls) — building a full integration
+harness was judged out of scope for this round and is flagged as a real gap, not hidden. The six RPCs'
+actual correctness against a real database remains what the unchanged P0-A SQL suite verifies.
+
+**Verification this round:** P0-A committed SQL suite re-run end-to-end, unmodified, from the new P0-B
+worktree — sequential suite passed (~20 groups), concurrency suite passed (**6/6**), EXPLAIN ANALYZE passed,
+exit code 0. New P0-B suite: **87/87 tests passed**, exit code 0. `npx tsc --noEmit` clean (after `npm
+install` — this worktree had no `node_modules`). `npx eslint src/app/api/pincode-monitoring src/lib/
+pincode-monitoring` clean, zero errors/warnings. `npm run build` clean, all 8 new routes registered as
+dynamic (`ƒ`) functions in the build output. `git status` confirms only `esolz-app/package.json` (one new
+`"test"` script line, no dependency change — `package-lock.json`'s `npm install`-driven metadata churn was
+reverted, not committed) plus the new `esolz-app/src/app/api/pincode-monitoring/` and `esolz-app/src/lib/
+pincode-monitoring/` directories changed — **zero migration files, zero UI files, zero cron files touched.**
+
+**No migration applied to production. No production row modified. No Vercel/Supabase environment variable
+changed. No deployment. Feature remains fully disabled** (`PINCODE_MONITORING_ENABLED` unset anywhere real).
+**P0-C (UI) and P0-D (scheduler) remain blocked** until this PR is separately reviewed and approved, per the
+locked "no stage starts until the prior stage is approved" sequencing.
+
+**Next step (needs the founder):** review PR #55 (the new `lib/pincode-monitoring/` data-access layer, the
+eight new routes, the design decisions called out above — particularly the pause/resume/remove URL-vs-RPC-
+shape decision and the new `lib/<feature>/` module convention), and either approve it for merge or request
+further changes. P0-C cannot start until this PR is approved. This PR does not merge itself, does not apply
+any migration, and does not deploy.

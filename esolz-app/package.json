@@ -8,6 +8,7 @@
     "vercel-build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
     "preview:sku-mappings": "tsx scripts/preview-sku-component-mappings.ts",
     "preview:sku-cost-master": "tsx scripts/preview-sku-cost-master.ts",
     "preview:payment-transactions": "tsx scripts/preview-payment-transactions.ts",

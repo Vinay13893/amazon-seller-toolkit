@@ -998,3 +998,53 @@ the new claim-vs-product-removal test), `EXPLAIN ANALYZE` check passed, scratch 
 `esolz-app/supabase/tests/pincode-p0a/{run-tests.sh,concurrency.sh,README.md}` changed — zero migration,
 application, API, UI, or cron files touched. No migration applied to production, no production row modified,
 no deployment.
+
+### PR #54 merged (2026-07-19); PR #55 opened — P0-B API/data-access layer
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 9. PR #54 merged as `1e5a044` after pre-merge
+verification (open, mergeable, head matched the approved commit exactly, exactly 11 files, zero application/
+API/UI/cron files). New worktree, branch `feature/pincode-p0b-api-data-access`, off `origin/master`
+post-merge. **P0-B only: no page UI, no cron/scheduler, no feature-flag broadening, no migration applied to
+production.**_
+
+**Eight new routes** under `esolz-app/src/app/api/pincode-monitoring/`, matching `IMPLEMENTATION_PLAN.md`
+§9's P0-B list: `POST lookup-asin` (Other Products ASIN preview, reusing `getCatalogItemForAsin` verbatim,
+never enrolling an unconfirmed ASIN), `POST products` (bulk-or-single enrollment via
+`enroll_pincode_monitored_products`, one atomic RPC call), `PATCH products/[id]/pause`/`.../resume` (via
+`set_pincode_tracking_state`), `PATCH products/[id]/remove` (via `remove_pincode_monitored_products`, soft
+removal only, no DELETE route anywhere), `POST check-now` (via `queue_pincode_manual_check`, `202` only when
+genuinely queued), `GET`/`PUT default-pincodes` (direct service-role CRUD — not an RPC, `workspace_default_
+pincodes`' only mutation path per `DATA_MODEL.md` §6), `GET tracker` (paginated product+pincode rows, three
+lifecycle views, five-state availability vocabulary). **My Products listing is not a new route** — confirmed
+`GET /api/asins/listings` already satisfies `PRODUCT_SPEC.md` §11's explicit "reuses, existing, unchanged"
+requirement; zero lines of it touched.
+
+**New `lib/pincode-monitoring/` data-access layer** (`config.ts`, `access.ts`, `rpc.ts`, `responses.ts`,
+`tracker.ts`, `defaults.ts`, `catalog-lookup.ts`, `validation.ts`, `pause-resume-handler.ts`) — a deliberate
+deviation from this codebase's existing "inline everything in route.ts" convention, called out explicitly:
+eight routes share the same four RPCs and the same access gate, and duplicating that logic eight times was
+judged the real risk. `rpc.ts` hardcodes exactly the four P0-B-reachable RPCs, no generic passthrough.
+`access.ts`'s core decision function is pure (session → per-workspace membership → feature-flag/allowlist →
+role), separated from its I/O wrapper specifically so it unit-tests without a live database. Two new,
+previously-unlocked env vars introduced (`PINCODE_MONITORING_ENABLED`, `PINCODE_MONITORING_ALLOWED_
+WORKSPACE_IDS`), both defaulting closed (disabled / empty allowlist) — confirmed no prior workspace-ID
+allowlist mechanism exists anywhere in this codebase before this PR.
+
+**Tests: 87 unit tests across 8 files, zero new npm dependencies.** This codebase had no test tooling
+whatsoever before this PR (no jest/vitest anywhere) — used Node's built-in `node:test` via `tsx` (already a
+devDependency) instead of adding one. Honest scope note: these are pure-function and mocked-Supabase-client
+unit tests (access-decision logic, RPC-result-to-HTTP mapping, five-state/product-state derivation, RPC
+parameter-name correctness via a fake client double, a source-scan confirming no route is a client component
+and every route reaches the access gate) — not a live-database integration test, since no PostgREST/GoTrue
+stack is available in this environment (the P0-A scratch-DB runner is deliberately raw Postgres only). The
+six RPCs' real correctness remains what the unchanged P0-A SQL suite verifies.
+
+**Verified:** P0-A SQL suite re-run unmodified from the new worktree — sequential passed (~20 groups),
+concurrency **6/6**, EXPLAIN ANALYZE passed. New P0-B suite: **87/87 passed**. `npx tsc --noEmit` clean.
+`npx eslint` clean on every changed file. `npm run build` clean, all 8 routes registered as dynamic functions.
+`git status`: only `esolz-app/package.json` (one new `"test"` script, no dependency change) plus the new
+`app/api/pincode-monitoring/` and `lib/pincode-monitoring/` directories — zero migration, UI, or cron files.
+
+**Feature remains fully disabled** (`PINCODE_MONITORING_ENABLED` unset anywhere real). No migration applied
+to production, no production row modified, no Vercel/Supabase environment variable changed, no deployment.
+PR #55 opened, not merged. P0-C (UI) and P0-D (scheduler) remain blocked until this PR is approved.
