@@ -12,7 +12,7 @@
  */
 import { NextRequest } from 'next/server'
 import { resolvePincodeAccess } from '@/lib/pincode-monitoring/access'
-import { jsonError, jsonOk } from '@/lib/pincode-monitoring/responses'
+import { jsonError, jsonOk, internalError, mapReplaceDefaultsResult } from '@/lib/pincode-monitoring/responses'
 import { fetchActiveDefaults, replaceActiveDefaults } from '@/lib/pincode-monitoring/defaults'
 import { isValidMarketplaceId, isValidPincode, parseJsonBody } from '@/lib/pincode-monitoring/validation'
 
@@ -28,8 +28,12 @@ export async function GET(request: NextRequest) {
   const access = await resolvePincodeAccess({ workspaceId, marketplaceId, requireWriteRole: false })
   if (!access.ok) return access.response
 
-  const defaults = await fetchActiveDefaults(access.context.workspaceId, access.context.marketplaceId)
-  return jsonOk({ defaults })
+  try {
+    const defaults = await fetchActiveDefaults(access.context.workspaceId, access.context.marketplaceId)
+    return jsonOk({ defaults })
+  } catch (error) {
+    return internalError('defaults_fetch_failed', error)
+  }
 }
 
 interface RequestPincode {
@@ -44,6 +48,8 @@ interface RequestBody {
 }
 
 const MAX_DEFAULT_PINCODES = 200 // generous bound above PRODUCT_SPEC.md sec5.3's P1 confirmation-threshold discussion (20) -- this is a hard request-size ceiling, not the UX confirmation threshold
+const MIN_DISPLAY_ORDER = 0
+const MAX_DISPLAY_ORDER = 100_000 // Correction 7 (PR #55 review round): displayOrder must be bounded, not merely "an integer"
 
 export async function PUT(request: NextRequest) {
   const body = await parseJsonBody(request) as RequestBody | null
@@ -57,8 +63,14 @@ export async function PUT(request: NextRequest) {
   const seen = new Set<string>()
   const pincodes: { pincode: string; displayOrder: number }[] = []
   for (const raw of body.pincodes as RequestPincode[]) {
-    if (!isValidPincode(raw?.pincode) || typeof raw?.displayOrder !== 'number' || !Number.isInteger(raw.displayOrder)) {
-      return jsonError(400, 'invalid_parameters', 'Each entry requires a valid 6-digit pincode and an integer displayOrder.', { pincode: raw?.pincode })
+    if (
+      !isValidPincode(raw?.pincode) ||
+      typeof raw?.displayOrder !== 'number' ||
+      !Number.isInteger(raw.displayOrder) ||
+      raw.displayOrder < MIN_DISPLAY_ORDER ||
+      raw.displayOrder > MAX_DISPLAY_ORDER
+    ) {
+      return jsonError(400, 'invalid_parameters', `Each entry requires a valid 6-digit pincode and an integer displayOrder between ${MIN_DISPLAY_ORDER} and ${MAX_DISPLAY_ORDER}.`, { pincode: raw?.pincode })
     }
     if (seen.has(raw.pincode)) {
       return jsonError(400, 'invalid_parameters', 'Duplicate pincode in request.', { pincode: raw.pincode })
@@ -74,6 +86,11 @@ export async function PUT(request: NextRequest) {
   })
   if (!access.ok) return access.response
 
-  const defaults = await replaceActiveDefaults(access.context.workspaceId, access.context.marketplaceId, pincodes)
-  return jsonOk({ defaults })
+  try {
+    const result = await replaceActiveDefaults(access.context.workspaceId, access.context.marketplaceId, pincodes)
+    if (!result.ok) return mapReplaceDefaultsResult(result.rpcResult)
+    return jsonOk({ defaults: result.defaults })
+  } catch (error) {
+    return internalError('defaults_replace_failed', error)
+  }
 }

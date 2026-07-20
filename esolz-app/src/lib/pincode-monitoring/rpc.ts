@@ -1,6 +1,9 @@
 /**
- * Pincode Monitoring P0-B — narrow, typed wrappers around exactly the four
- * mutating RPCs P0-B routes are allowed to call.
+ * Pincode Monitoring P0-B — narrow, typed wrappers around exactly the
+ * seven RPCs P0-B routes are allowed to call (four from the original P0-A
+ * set, plus three added by the PR #55 review round: `replace_pincode_
+ * product_targets`, `replace_workspace_default_pincodes`, `get_pincode_
+ * target_results`).
  *
  * SERVER-ROLE SAFETY: this module never accepts an RPC name as a parameter
  * and never exposes a generic `.rpc(name, params)` passthrough — each
@@ -106,5 +109,44 @@ export async function queueManualCheck(
     p_user_id: args.userId,
     p_cooldown_seconds: args.cooldownSeconds,
     p_manual_pending_limit: args.manualPendingLimit,
+  })
+}
+
+export async function replaceProductTargets(
+  client: RpcClient,
+  args: { workspaceId: string; marketplaceId: string; monitoredProductId: string; pincodes: string[]; quotaLimit: number },
+) {
+  return callRpc(client, 'replace_pincode_product_targets', {
+    p_workspace_id: args.workspaceId,
+    p_marketplace_id: args.marketplaceId,
+    p_monitored_product_id: args.monitoredProductId,
+    p_pincodes: args.pincodes,
+    p_quota_limit: args.quotaLimit,
+  })
+}
+
+export interface DefaultPincodeInput {
+  pincode: string
+  displayOrder: number
+}
+
+export async function replaceWorkspaceDefaultPincodes(
+  client: RpcClient,
+  args: { workspaceId: string; marketplaceId: string; pincodes: DefaultPincodeInput[] },
+) {
+  return callRpc(client, 'replace_workspace_default_pincodes', {
+    p_workspace_id: args.workspaceId,
+    p_marketplace_id: args.marketplaceId,
+    p_pincodes: args.pincodes.map(p => ({ pincode: p.pincode, displayOrder: p.displayOrder })),
+  })
+}
+
+export async function getTargetResults(
+  client: RpcClient,
+  args: { workspaceId: string; targetIds: string[] },
+) {
+  return callRpc(client, 'get_pincode_target_results', {
+    p_workspace_id: args.workspaceId,
+    p_target_ids: args.targetIds,
   })
 }

@@ -1,6 +1,9 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { mapEnrollResult, mapSetTrackingStateResult, mapRemoveResult, mapQueueManualCheckResult } from '../responses'
+import {
+  mapEnrollResult, mapSetTrackingStateResult, mapRemoveResult, mapQueueManualCheckResult,
+  mapReplaceProductTargetsResult, mapReplaceDefaultsResult,
+} from '../responses'
 
 async function bodyOf(response: Response) {
   return await response.json()
@@ -79,6 +82,58 @@ describe('mapRemoveResult', () => {
   test('not_found_or_scope_mismatch maps to 404', async () => {
     const response = mapRemoveResult({ result: 'not_found_or_scope_mismatch', requestedCount: 2, validCount: 1 })
     assert.equal(response.status, 404)
+  })
+})
+
+describe('mapReplaceProductTargetsResult (Correction 2, PR #55 review round)', () => {
+  test('success maps to 200 with all four counts', async () => {
+    const response = mapReplaceProductTargetsResult({ result: 'success', addedCount: 2, reconfiguredCount: 1, unconfiguredCount: 3, targetCount: 5 })
+    assert.equal(response.status, 200)
+    const body = await bodyOf(response)
+    assert.equal(body.addedCount, 2)
+    assert.equal(body.reconfiguredCount, 1)
+    assert.equal(body.unconfiguredCount, 3)
+    assert.equal(body.targetCount, 5)
+  })
+
+  test('empty-pincodes rejection maps to 400 invalid_parameters', async () => {
+    const response = mapReplaceProductTargetsResult({ result: 'invalid_parameters', reason: 'empty_pincodes_use_remove_tracking' })
+    assert.equal(response.status, 400)
+    const body = await bodyOf(response)
+    assert.equal(body.reason, 'empty_pincodes_use_remove_tracking')
+  })
+
+  test('quota_exceeded reuses the same locked errorCode as enrollment/resume', async () => {
+    const response = mapReplaceProductTargetsResult({ result: 'quota_exceeded', currentActiveTargets: 50, requestedAdditionalTargets: 1, limit: 50 })
+    assert.equal(response.status, 409)
+    const body = await bodyOf(response)
+    assert.equal(body.errorCode, 'pincode_tracking_quota_exceeded')
+  })
+
+  test('not_found_or_scope_mismatch maps to 404', async () => {
+    const response = mapReplaceProductTargetsResult({ result: 'not_found_or_scope_mismatch' })
+    assert.equal(response.status, 404)
+  })
+
+  test('invalid_status (parent not active) maps to 409', async () => {
+    const response = mapReplaceProductTargetsResult({ result: 'invalid_status', reason: 'parent_not_active' })
+    assert.equal(response.status, 409)
+  })
+})
+
+describe('mapReplaceDefaultsResult (Correction 3, PR #55 review round)', () => {
+  test('success maps to 200 with the final active default list', async () => {
+    const response = mapReplaceDefaultsResult({ result: 'success', defaults: [{ id: 'd-1', pincode: '110001', displayOrder: 0 }] })
+    assert.equal(response.status, 200)
+    const body = await bodyOf(response)
+    assert.equal(body.defaults.length, 1)
+  })
+
+  test('invalid_parameters maps to 400', async () => {
+    const response = mapReplaceDefaultsResult({ result: 'invalid_parameters', reason: 'duplicate_pincode', pincode: '110001' })
+    assert.equal(response.status, 400)
+    const body = await bodyOf(response)
+    assert.equal(body.reason, 'duplicate_pincode')
   })
 })
 

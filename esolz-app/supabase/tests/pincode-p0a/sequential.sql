@@ -1032,4 +1032,411 @@ BEGIN
   RAISE NOTICE 'TEST 20 PASSED: hard configuration ceilings reject malformed values independent of business quota logic';
 END $$;
 
+-- ============================================================
+-- PR #55 REVIEW ROUND -- Correction 2/3/4: target configuration lifecycle,
+-- replace_pincode_product_targets, replace_workspace_default_pincodes,
+-- get_pincode_target_results.
+-- ============================================================
+
+-- ============================================================
+-- TEST 21: replace_pincode_product_targets -- add/reconfigure/unconfigure,
+-- ID preservation, atomicity, empty-list rejection, quota rejection.
+-- ============================================================
+DO $$
+DECLARE
+  v_result jsonb;
+  v_product_id uuid;
+  v_target_110001_id uuid;
+  v_before_count integer;
+  v_after_count integer;
+BEGIN
+  v_result := public.enroll_pincode_monitored_products(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV',
+    jsonb_build_array(jsonb_build_object('product_source','other','asin','B000000EDT','pincodes', jsonb_build_array('110001','110002','110003'))),
+    100
+  );
+  IF v_result->>'result' <> 'success' THEN RAISE EXCEPTION 'TEST 21 SETUP FAILED: %', v_result; END IF;
+  SELECT id INTO v_product_id FROM public.pincode_monitored_products WHERE asin = 'B000000EDT';
+  SELECT id INTO v_target_110001_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110001';
+
+  -- Replace with {110002,110003,110004}: 110001 dropped (unconfigure),
+  -- 110002/110003 kept as-is, 110004 genuinely new.
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id,
+    ARRAY['110002','110003','110004'], 100
+  );
+  IF v_result->>'result' <> 'success' OR (v_result->>'addedCount')::int <> 1
+     OR (v_result->>'unconfiguredCount')::int <> 1 OR (v_result->>'reconfiguredCount')::int <> 0 THEN
+    RAISE EXCEPTION 'TEST 21a FAILED: unexpected replace result: %', v_result;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE id = v_target_110001_id AND is_configured = false AND unconfigured_at IS NOT NULL AND status = 'paused' AND next_check_at IS NULL) THEN
+    RAISE EXCEPTION 'TEST 21a FAILED: 110001 was not correctly unconfigured/paused/unscheduled';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110004' AND is_configured = true AND status = 'active') THEN
+    RAISE EXCEPTION 'TEST 21a FAILED: 110004 was not correctly added as a new active configured target';
+  END IF;
+
+  -- Reconfigure 110001, drop 110003/110004 -- same target ID reused, not a new row.
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id,
+    ARRAY['110001','110002'], 100
+  );
+  IF v_result->>'result' <> 'success' OR (v_result->>'addedCount')::int <> 0
+     OR (v_result->>'reconfiguredCount')::int <> 1 OR (v_result->>'unconfiguredCount')::int <> 2 THEN
+    RAISE EXCEPTION 'TEST 21b FAILED: unexpected reconfigure result: %', v_result;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE id = v_target_110001_id AND is_configured = true AND unconfigured_at IS NULL AND status = 'active') THEN
+    RAISE EXCEPTION 'TEST 21b FAILED: 110001 was not correctly reconfigured on the SAME target ID (%)', v_target_110001_id;
+  END IF;
+
+  -- Empty list is rejected outright (P0 decision: use Remove Tracking for
+  -- whole-product removal instead) -- no mutation.
+  SELECT count(*) INTO v_before_count FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND is_configured = true;
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id, '{}'::text[], 100
+  );
+  IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'empty_pincodes_use_remove_tracking' THEN
+    RAISE EXCEPTION 'TEST 21c FAILED: empty pincode list was not rejected, got %', v_result;
+  END IF;
+  SELECT count(*) INTO v_after_count FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND is_configured = true;
+  IF v_before_count <> v_after_count THEN
+    RAISE EXCEPTION 'TEST 21c FAILED: rejected empty-list call still mutated configured targets (% -> %)', v_before_count, v_after_count;
+  END IF;
+
+  -- Quota rejection: whole call atomic, zero mutation.
+  SELECT count(*) INTO v_before_count FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND is_configured = true;
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id,
+    ARRAY['110001','110002','110005','110006','110007'], 1
+  );
+  IF v_result->>'result' <> 'quota_exceeded' THEN
+    RAISE EXCEPTION 'TEST 21d FAILED: over-quota replace was not rejected, got %', v_result;
+  END IF;
+  SELECT count(*) INTO v_after_count FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND is_configured = true;
+  IF v_before_count <> v_after_count THEN
+    RAISE EXCEPTION 'TEST 21d FAILED: quota-rejected call still partially mutated configured targets (% -> %)', v_before_count, v_after_count;
+  END IF;
+
+  -- Duplicate pincodes within one request are deduplicated, not an error.
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id,
+    ARRAY['110001','110001','110002'], 100
+  );
+  IF v_result->>'result' <> 'success' OR (v_result->>'targetCount')::int <> 2 THEN
+    RAISE EXCEPTION 'TEST 21e FAILED: duplicate pincodes in request were not deduplicated, got %', v_result;
+  END IF;
+
+  -- Invalid pincode format rejected before any lock/mutation.
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id,
+    ARRAY['110001','bad'], 100
+  );
+  IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'invalid_pincode' THEN
+    RAISE EXCEPTION 'TEST 21f FAILED: malformed pincode was not rejected, got %', v_result;
+  END IF;
+
+  RAISE NOTICE 'TEST 21 PASSED: replace_pincode_product_targets add/reconfigure/unconfigure, ID preservation, empty-list rejection, quota atomicity, dedup, format validation';
+END $$;
+
+-- ============================================================
+-- TEST 22: an unconfigured target is never claimed, even if (via direct
+-- manipulation, proving the explicit is_configured filter is load-bearing,
+-- not an accident of status/next_check_at) it looks otherwise claimable.
+-- ============================================================
+DO $$
+DECLARE
+  v_product_id uuid;
+  v_target_id uuid;
+  v_claimed_count integer;
+BEGIN
+  SELECT id INTO v_product_id FROM public.pincode_monitored_products WHERE asin = 'B000000EDT';
+  SELECT id INTO v_target_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110001';
+
+  -- Force an impossible-via-RPC state: configured-looking active/due target
+  -- that is ALSO is_configured=false, to prove claim's explicit filter
+  -- (not just status/next_check_at) is what excludes it.
+  UPDATE public.pincode_tracking_targets
+  SET is_configured = false, unconfigured_at = now(), status = 'active', next_check_at = now() - interval '1 minute'
+  WHERE id = v_target_id;
+
+  SELECT count(*) INTO v_claimed_count FROM public.claim_due_pincode_targets(
+    50, 'test-22-claim', '{}'::uuid[], ARRAY['10000000-0000-0000-0000-000000000001']::uuid[]
+  ) WHERE id = v_target_id;
+
+  IF v_claimed_count <> 0 THEN
+    RAISE EXCEPTION 'TEST 22 FAILED: an is_configured=false target was claimed';
+  END IF;
+
+  -- Restore to a normal, valid state for later tests.
+  UPDATE public.pincode_tracking_targets SET status = 'paused', next_check_at = NULL WHERE id = v_target_id;
+
+  RAISE NOTICE 'TEST 22 PASSED: claim_due_pincode_targets never claims an is_configured=false target';
+END $$;
+
+-- ============================================================
+-- TEST 23: an unconfigured target cannot be manually queued.
+-- ============================================================
+DO $$
+DECLARE
+  v_product_id uuid;
+  v_target_id uuid;
+  v_result jsonb;
+BEGIN
+  SELECT id INTO v_product_id FROM public.pincode_monitored_products WHERE asin = 'B000000EDT';
+  SELECT id INTO v_target_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110001';
+
+  UPDATE public.pincode_tracking_targets
+  SET is_configured = false, unconfigured_at = now(), status = 'active', next_check_at = now()
+  WHERE id = v_target_id;
+
+  v_result := public.queue_pincode_manual_check(v_target_id, '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', '00000000-0000-0000-0000-000000000001'::uuid, 60, 10);
+  IF v_result->>'result' <> 'invalid_status' OR v_result->>'reason' <> 'target_unconfigured' THEN
+    RAISE EXCEPTION 'TEST 23 FAILED: unconfigured target manual-check was not rejected, got %', v_result;
+  END IF;
+
+  UPDATE public.pincode_tracking_targets SET status = 'paused', next_check_at = NULL WHERE id = v_target_id;
+  RAISE NOTICE 'TEST 23 PASSED: queue_pincode_manual_check rejects an is_configured=false target';
+END $$;
+
+-- ============================================================
+-- TEST 24: an unconfigured target cannot be resumed -- whole batch
+-- rejected even when mixed with an ordinary configured-and-paused target.
+-- ============================================================
+DO $$
+DECLARE
+  v_product_id uuid;
+  v_unconfigured_id uuid;
+  v_configured_paused_id uuid;
+  v_result jsonb;
+BEGIN
+  SELECT id INTO v_product_id FROM public.pincode_monitored_products WHERE asin = 'B000000EDT';
+  SELECT id INTO v_unconfigured_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110001';
+  SELECT id INTO v_configured_paused_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110002';
+
+  UPDATE public.pincode_tracking_targets SET status = 'paused', next_check_at = NULL WHERE id = v_configured_paused_id;
+
+  v_result := public.set_pincode_tracking_state(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV',
+    ARRAY[v_unconfigured_id, v_configured_paused_id], 'resume', 100
+  );
+  IF v_result->>'result' <> 'invalid_status' OR v_result->>'reason' <> 'target_unconfigured' THEN
+    RAISE EXCEPTION 'TEST 24 FAILED: resume batch including an unconfigured target was not rejected, got %', v_result;
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE id = v_configured_paused_id AND status = 'active') THEN
+    RAISE EXCEPTION 'TEST 24 FAILED: the configured target was partially resumed despite whole-batch rejection';
+  END IF;
+
+  RAISE NOTICE 'TEST 24 PASSED: set_pincode_tracking_state resume rejects the whole batch when any target is unconfigured, no partial resume';
+END $$;
+
+-- ============================================================
+-- TEST 25/26: in-flight unconfiguration does not interrupt a checking
+-- target; finalize then parks it paused/unscheduled; target and history
+-- IDs are preserved throughout (never deleted, never recreated).
+-- ============================================================
+DO $$
+DECLARE
+  v_product_id uuid;
+  v_target_id uuid;
+  v_claim_token uuid;
+  v_result jsonb;
+  v_history_count_before integer;
+  v_history_count_after integer;
+BEGIN
+  SELECT id INTO v_product_id FROM public.pincode_monitored_products WHERE asin = 'B000000EDT';
+  SELECT id INTO v_target_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110002';
+
+  UPDATE public.pincode_tracking_targets SET status = 'active', next_check_at = now() - interval '1 minute', is_configured = true, unconfigured_at = NULL WHERE id = v_target_id;
+  SELECT count(*) INTO v_history_count_before FROM public.pincode_availability_results WHERE tracking_target_id = v_target_id;
+
+  -- Claim it (simulates the scheduler picking it up).
+  SELECT claim_token INTO v_claim_token FROM public.claim_due_pincode_targets(
+    50, 'test-25-claim', '{}'::uuid[], ARRAY['10000000-0000-0000-0000-000000000001']::uuid[]
+  ) WHERE id = v_target_id;
+  IF v_claim_token IS NULL THEN RAISE EXCEPTION 'TEST 25 SETUP FAILED: target was not claimed'; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE id = v_target_id AND status = 'checking') THEN
+    RAISE EXCEPTION 'TEST 25 SETUP FAILED: target is not checking after claim';
+  END IF;
+
+  -- Edit Pincodes now omits 110002 while it is mid-flight -- must NOT
+  -- interrupt the checking target (requirement 11).
+  v_result := public.replace_pincode_product_targets(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', v_product_id,
+    ARRAY['110001'], 100
+  );
+  IF v_result->>'result' <> 'success' THEN RAISE EXCEPTION 'TEST 25 FAILED: mid-flight replace call itself failed: %', v_result; END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE id = v_target_id AND status = 'checking' AND is_configured = false AND unconfigured_at IS NOT NULL AND claim_token = v_claim_token) THEN
+    RAISE EXCEPTION 'TEST 25 FAILED: in-flight target was interrupted (status/claim changed) by unconfiguration -- must stay checking with its claim intact';
+  END IF;
+
+  -- Finalize the still-valid claim -- result is still honestly recorded.
+  PERFORM public.finalize_pincode_check(v_claim_token, 'success', 'available', 'Same-day', NULL, NULL);
+
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_tracking_targets WHERE id = v_target_id AND status = 'paused' AND next_check_at IS NULL AND is_configured = false) THEN
+    RAISE EXCEPTION 'TEST 25 FAILED: unconfigured target was not parked paused/unscheduled after finalize';
+  END IF;
+
+  SELECT count(*) INTO v_history_count_after FROM public.pincode_availability_results WHERE tracking_target_id = v_target_id;
+  IF v_history_count_after <> v_history_count_before + 1 THEN
+    RAISE EXCEPTION 'TEST 26 FAILED: finalize result for an unconfigured target was not recorded (history count % -> %)', v_history_count_before, v_history_count_after;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.pincode_availability_results WHERE tracking_target_id = v_target_id AND check_status = 'success' ORDER BY checked_at DESC LIMIT 1) THEN
+    RAISE EXCEPTION 'TEST 26 FAILED: the recorded result does not reference the SAME preserved target ID';
+  END IF;
+
+  RAISE NOTICE 'TEST 25 PASSED: in-flight unconfiguration never interrupts a checking target; finalize honestly records the result then parks it paused/unscheduled';
+  RAISE NOTICE 'TEST 26 PASSED: target ID and result history are preserved across unconfigure/finalize, never deleted or recreated';
+END $$;
+
+-- ============================================================
+-- TEST 27: replace_workspace_default_pincodes -- atomic, no partial write
+-- on validation failure, empty list allowed (unlike product pincode edit).
+-- ============================================================
+DO $$
+DECLARE
+  v_result jsonb;
+  v_before_count integer;
+  v_after_count integer;
+BEGIN
+  v_result := public.replace_workspace_default_pincodes(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV',
+    jsonb_build_array(
+      jsonb_build_object('pincode','500001','displayOrder',0),
+      jsonb_build_object('pincode','500002','displayOrder',1)
+    )
+  );
+  IF v_result->>'result' <> 'success' OR jsonb_array_length(v_result->'defaults') <> 2 THEN
+    RAISE EXCEPTION 'TEST 27a FAILED: initial default replacement failed: %', v_result;
+  END IF;
+
+  SELECT count(*) INTO v_before_count FROM public.workspace_default_pincodes
+    WHERE workspace_id = '10000000-0000-0000-0000-000000000001' AND marketplace_id = 'A21TJRUUN4KGV' AND is_active = true;
+
+  -- One invalid pincode among otherwise-valid ones: whole call rejected,
+  -- active set must be UNCHANGED (proves atomicity, not just "the RPC
+  -- validates first" -- this actually re-reads the table after the call).
+  v_result := public.replace_workspace_default_pincodes(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV',
+    jsonb_build_array(
+      jsonb_build_object('pincode','500003','displayOrder',0),
+      jsonb_build_object('pincode','bad','displayOrder',1)
+    )
+  );
+  IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'invalid_pincode' THEN
+    RAISE EXCEPTION 'TEST 27b FAILED: invalid pincode in list was not rejected: %', v_result;
+  END IF;
+  SELECT count(*) INTO v_after_count FROM public.workspace_default_pincodes
+    WHERE workspace_id = '10000000-0000-0000-0000-000000000001' AND marketplace_id = 'A21TJRUUN4KGV' AND is_active = true;
+  IF v_before_count <> v_after_count THEN
+    RAISE EXCEPTION 'TEST 27b FAILED: rejected replacement call still partially mutated the active default set (% -> %)', v_before_count, v_after_count;
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.workspace_default_pincodes WHERE workspace_id = '10000000-0000-0000-0000-000000000001' AND marketplace_id = 'A21TJRUUN4KGV' AND pincode = '500003') THEN
+    RAISE EXCEPTION 'TEST 27b FAILED: the valid pincode from the rejected batch was written anyway (no rollback)';
+  END IF;
+
+  -- Duplicate pincode within the request is rejected, no mutation.
+  v_result := public.replace_workspace_default_pincodes(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV',
+    jsonb_build_array(
+      jsonb_build_object('pincode','500001','displayOrder',0),
+      jsonb_build_object('pincode','500001','displayOrder',1)
+    )
+  );
+  IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'duplicate_pincode' THEN
+    RAISE EXCEPTION 'TEST 27c FAILED: duplicate pincode in request was not rejected: %', v_result;
+  END IF;
+
+  -- Empty list IS allowed for defaults (unlike product pincode edit) --
+  -- deactivates everything, atomically, no hard delete.
+  v_result := public.replace_workspace_default_pincodes(
+    '10000000-0000-0000-0000-000000000001'::uuid, 'A21TJRUUN4KGV', '[]'::jsonb
+  );
+  IF v_result->>'result' <> 'success' OR jsonb_array_length(v_result->'defaults') <> 0 THEN
+    RAISE EXCEPTION 'TEST 27d FAILED: empty default list was not accepted: %', v_result;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM public.workspace_default_pincodes WHERE workspace_id = '10000000-0000-0000-0000-000000000001' AND marketplace_id = 'A21TJRUUN4KGV' AND pincode = '500001' AND is_active = false) THEN
+    RAISE EXCEPTION 'TEST 27d FAILED: previously-active default was not soft-deactivated (row must still exist, is_active=false)';
+  END IF;
+
+  RAISE NOTICE 'TEST 27 PASSED: replace_workspace_default_pincodes is atomic, rejects invalid/duplicate lists with zero partial mutation, allows an empty list (soft-deactivate only, never a hard delete)';
+END $$;
+
+-- ============================================================
+-- TEST 28: get_pincode_target_results -- bounded latest-attempt and
+-- last-confirmed-availability selection, distinct from each other; a
+-- failed/blocked latest attempt does not hide an older confirmed result;
+-- correctness holds at volume (>1000 history rows for one target, well
+-- beyond PostgREST's default response row cap).
+-- ============================================================
+DO $$
+DECLARE
+  v_product_id uuid;
+  v_target_id uuid;
+  v_row record;
+BEGIN
+  SELECT id INTO v_product_id FROM public.pincode_monitored_products WHERE asin = 'B000000EDT';
+  SELECT id INTO v_target_id FROM public.pincode_tracking_targets WHERE monitored_product_id = v_product_id AND pincode = '110001';
+
+  -- 1,200 older synthetic history rows -- volume beyond PostgREST's default
+  -- row cap, all older than the two rows that actually decide this test's
+  -- assertions below.
+  INSERT INTO public.pincode_availability_results (
+    workspace_id, asin, pincode, monitored_product_id, tracking_target_id,
+    check_attempt_id, check_status, availability_status, checked_at
+  )
+  SELECT '10000000-0000-0000-0000-000000000001'::uuid, 'B000000EDT', '110001', v_product_id, v_target_id,
+         gen_random_uuid(), 'success', 'unknown', now() - interval '1000 hours' + (gs || ' minutes')::interval
+  FROM generate_series(1, 1200) gs;
+
+  -- The older CONFIRMED result (available).
+  INSERT INTO public.pincode_availability_results (
+    workspace_id, asin, pincode, monitored_product_id, tracking_target_id,
+    check_attempt_id, check_status, availability_status, delivery_message, checked_at
+  ) VALUES (
+    '10000000-0000-0000-0000-000000000001'::uuid, 'B000000EDT', '110001', v_product_id, v_target_id,
+    gen_random_uuid(), 'success', 'available', 'Same-day delivery', now() - interval '2 hours'
+  );
+
+  -- The newest attempt: FAILED -- must not overwrite/hide the confirmed result above.
+  INSERT INTO public.pincode_availability_results (
+    workspace_id, asin, pincode, monitored_product_id, tracking_target_id,
+    check_attempt_id, check_status, availability_status, error_code, checked_at
+  ) VALUES (
+    '10000000-0000-0000-0000-000000000001'::uuid, 'B000000EDT', '110001', v_product_id, v_target_id,
+    gen_random_uuid(), 'failed', NULL, 'timeout', now() - interval '5 minutes'
+  );
+
+  SELECT * INTO v_row FROM public.get_pincode_target_results(
+    '10000000-0000-0000-0000-000000000001'::uuid, ARRAY[v_target_id]
+  );
+
+  IF v_row.tracking_target_id IS NULL THEN
+    RAISE EXCEPTION 'TEST 28 FAILED: get_pincode_target_results returned no row for the target';
+  END IF;
+  IF v_row.latest_check_status <> 'failed' OR v_row.latest_availability_status IS NOT NULL OR v_row.latest_error_code <> 'timeout' THEN
+    RAISE EXCEPTION 'TEST 28 FAILED: latest attempt was not the most recent (failed) row -- got status=% availability=% error=%',
+      v_row.latest_check_status, v_row.latest_availability_status, v_row.latest_error_code;
+  END IF;
+  IF v_row.confirmed_availability_status <> 'available' OR v_row.confirmed_delivery_message <> 'Same-day delivery' THEN
+    RAISE EXCEPTION 'TEST 28 FAILED: last confirmed availability was not the older available result -- got status=% message=%',
+      v_row.confirmed_availability_status, v_row.confirmed_delivery_message;
+  END IF;
+  IF v_row.confirmed_checked_at >= v_row.latest_checked_at THEN
+    RAISE EXCEPTION 'TEST 28 FAILED: confirmed_checked_at (%) should be strictly older than latest_checked_at (%) in this scenario',
+      v_row.confirmed_checked_at, v_row.latest_checked_at;
+  END IF;
+
+  -- A bounds-rejecting call (too many target IDs) returns nothing, never an error.
+  IF EXISTS (
+    SELECT 1 FROM public.get_pincode_target_results(
+      '10000000-0000-0000-0000-000000000001'::uuid,
+      (SELECT array_agg(gen_random_uuid()) FROM generate_series(1, 501))
+    )
+  ) THEN
+    RAISE EXCEPTION 'TEST 28 FAILED: an over-limit target_ids array should return zero rows, not process a truncated/arbitrary subset';
+  END IF;
+
+  RAISE NOTICE 'TEST 28 PASSED: get_pincode_target_results returns latestAttempt and lastConfirmedAvailability as distinct, correct facts, including a failed latest attempt over an older confirmed result, correct at >1000-row volume';
+END $$;
+
 SELECT 'ALL SEQUENTIAL TESTS COMPLETED WITHOUT ERROR' AS summary;

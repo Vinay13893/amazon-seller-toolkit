@@ -32,6 +32,23 @@ export function jsonOk(body: Record<string, unknown>, status = 200) {
   return NextResponse.json(body, { status })
 }
 
+/**
+ * Correction 7 (PR #55 review round): converts an unexpected error (a
+ * thrown Postgres/PostgREST error surfaced by a data-access module, a
+ * network failure, anything not already a typed RPC-result branch) into a
+ * clean, generic customer-facing response — the raw error (which may
+ * contain table/column names, constraint names, or other internal detail)
+ * is logged server-side via `console.error` for diagnosis, never returned
+ * in the HTTP response body. Every P0-B route that calls a non-RPC data-
+ * access function (tracker.ts, defaults.ts's read path) wraps the call
+ * with this, matching the same "never leak internals" discipline already
+ * applied to `PincodeRpcTransportError` at every RPC call site.
+ */
+export function internalError(context: string, error: unknown) {
+  console.error(`[pincode-monitoring] ${context}:`, error)
+  return jsonError(500, 'internal_error', 'Something went wrong — try again.')
+}
+
 // ── enroll_pincode_monitored_products ───────────────────────────────────────
 
 export type EnrollRpcResult =
@@ -122,6 +139,61 @@ export function mapRemoveResult(rpcResult: RemoveRpcResult) {
       })
     case 'success':
       return jsonOk({ result: 'success', productCount: rpcResult.productCount })
+  }
+}
+
+// ── replace_pincode_product_targets (Correction 2, PR #55 review round) ────
+
+export type ReplaceProductTargetsRpcResult =
+  | { result: 'invalid_parameters'; reason: string; pincode?: string }
+  | { result: 'not_found_or_scope_mismatch' }
+  | { result: 'invalid_status'; reason: string }
+  | { result: 'quota_exceeded'; currentActiveTargets: number; requestedAdditionalTargets: number; limit: number }
+  | { result: 'success'; addedCount: number; reconfiguredCount: number; unconfiguredCount: number; targetCount: number }
+
+export function mapReplaceProductTargetsResult(rpcResult: ReplaceProductTargetsRpcResult) {
+  switch (rpcResult.result) {
+    case 'invalid_parameters':
+      return jsonError(400, 'invalid_parameters', 'The pincode-list update was invalid.', {
+        reason: rpcResult.reason,
+        ...(rpcResult.pincode ? { pincode: rpcResult.pincode } : {}),
+      })
+    case 'not_found_or_scope_mismatch':
+      return jsonError(404, 'not_found_or_scope_mismatch', 'This product does not exist in the given workspace/marketplace.')
+    case 'invalid_status':
+      return jsonError(409, 'invalid_status', 'This product\'s pincode list cannot be edited in its current state.', { reason: rpcResult.reason })
+    case 'quota_exceeded':
+      return jsonError(409, 'pincode_tracking_quota_exceeded', 'This pincode-list update would exceed the workspace pincode-tracking quota.', {
+        currentActiveTargets: rpcResult.currentActiveTargets,
+        requestedAdditionalTargets: rpcResult.requestedAdditionalTargets,
+        limit: rpcResult.limit,
+      })
+    case 'success':
+      return jsonOk({
+        result: 'success',
+        addedCount: rpcResult.addedCount,
+        reconfiguredCount: rpcResult.reconfiguredCount,
+        unconfiguredCount: rpcResult.unconfiguredCount,
+        targetCount: rpcResult.targetCount,
+      })
+  }
+}
+
+// ── replace_workspace_default_pincodes (Correction 3, PR #55 review round) ─
+
+export type ReplaceDefaultsRpcResult =
+  | { result: 'invalid_parameters'; reason: string; pincode?: string }
+  | { result: 'success'; defaults: { id: string; pincode: string; displayOrder: number }[] }
+
+export function mapReplaceDefaultsResult(rpcResult: ReplaceDefaultsRpcResult) {
+  switch (rpcResult.result) {
+    case 'invalid_parameters':
+      return jsonError(400, 'invalid_parameters', 'The default-pincode list was invalid.', {
+        reason: rpcResult.reason,
+        ...(rpcResult.pincode ? { pincode: rpcResult.pincode } : {}),
+      })
+    case 'success':
+      return jsonOk({ defaults: rpcResult.defaults })
   }
 }
 

@@ -106,6 +106,18 @@ pincode format at the database layer, not just client-side — matches the "vali
 Pincodes" requirement defensibly (client-side validation can be bypassed; a direct API call cannot bypass a
 CHECK constraint).
 
+**Correction (PR #55 review round): replacement is now atomic.** The P0-B API route originally issued two
+separate PostgREST write requests (an upsert, then a separate deactivate) to implement "replace the full
+default list" — not atomic; a crash/timeout between the two could leave the active set inconsistent with what
+the caller asked for. `replace_workspace_default_pincodes(p_workspace_id uuid, p_marketplace_id text,
+p_pincodes jsonb)` — `SECURITY DEFINER`, `search_path` pinned, `service_role`-only `EXECUTE` — now performs
+the entire replacement (validate → lock existing rows for this workspace+marketplace → upsert every supplied
+pincode as active → deactivate every currently-active pincode not in the new list) as one transaction,
+rejecting the whole call (no partial write) on any invalid/duplicate pincode or malformed `displayOrder`.
+Unlike Edit Pincodes (§3c), an **empty list IS allowed** here — it deactivates every default, atomically,
+never a hard delete. Required tests: atomic replacement; rollback (zero partial mutation) on an invalid list
+mixed with otherwise-valid entries; duplicate-pincode rejection; empty-list acceptance.
+
 ---
 
 ## 2. `pincode_monitored_products`
@@ -880,6 +892,138 @@ error; removing an already-archived product succeeds and sets `removed_at`/`remo
 
 ---
 
+## 3c. Target configuration lifecycle and "Edit Pincodes" — the seventh trusted RPC (PR #55 review round)
+
+**Gap found in review: the locked route map (`PRODUCT_SPEC.md` §11) always required `PATCH .../products/
+[id]/pincodes`, but no RPC or route ever implemented it.** Editing which pincodes a product tracks needs to
+distinguish two genuinely different facts the existing `pincode_tracking_targets.status` enum (`active`/
+`paused`/`failed`/`checking`, §3) cannot represent together: "this pincode is temporarily paused but still
+part of what the seller wants tracked" vs. "this pincode was removed from the product's configured list
+entirely." Adding a `'removed'`/`'unconfigured'` value to `status` would conflate an *operational* fact
+(is a check currently running/paused/failed) with a *configuration* fact (is this pincode still requested at
+all) into one column — the same anti-pattern round-4 Correction 13 already rejected once for the parent
+table's own status column. Corrected with a second, orthogonal pair of columns instead:
+
+```sql
+ALTER TABLE public.pincode_tracking_targets
+  ADD COLUMN is_configured   boolean     NOT NULL DEFAULT true,
+  ADD COLUMN unconfigured_at timestamptz NULL;
+
+ALTER TABLE public.pincode_tracking_targets
+  ADD CONSTRAINT pincode_tracking_targets_configured_consistency_chk
+  CHECK (
+    (is_configured = true  AND unconfigured_at IS NULL)
+    OR
+    (is_configured = false AND unconfigured_at IS NOT NULL)
+  );
+```
+
+A target's full state is now the CROSS PRODUCT of `status` (operational) and `is_configured` (configuration)
+— e.g. `status='paused', is_configured=true` (seller-paused, still wanted) is a different, distinguishable
+fact from `status='paused', is_configured=false` (removed from the pincode list). History (`pincode_
+availability_results`) is never affected by either column — every row remains queryable regardless of a
+target's current configuration state, matching this schema's standing "never delete, only reclassify"
+discipline (§2, §3b).
+
+**`replace_pincode_product_targets(p_workspace_id uuid, p_marketplace_id text, p_monitored_product_id uuid,
+p_pincodes text[], p_quota_limit integer)`** — `SECURITY DEFINER`, `search_path` pinned, `service_role`-only
+`EXECUTE`. Whole-list replacement for ONE product's configured pincodes (bulk across products is explicitly
+out of scope for this RPC — see `IMPLEMENTATION_PLAN.md` §9's P0-B note on why the route stays product-
+scoped).
+
+1. **Parameter validation:** pincodes bounded (≤100, matching `enroll_pincode_monitored_products`'
+   MAX_PINCODES_PER_PRODUCT) and each regex-validated, deduplicated. **Locked P0 decision: an empty list is
+   REJECTED outright** (`invalid_parameters`/`empty_pincodes_use_remove_tracking`), not treated as "unconfigure
+   every target." Removing an entire product from tracking is Remove Tracking's job (§3b); this RPC only ever
+   replaces a non-empty configured set — deliberately narrower than the RPC could technically support, chosen
+   over the alternative (silently allowing an empty list to unconfigure everything) because "remove all
+   pincodes" and "remove this product" are different seller intents that deserve different, explicit actions.
+2. **Lock order:** advisory lock → parent (single row, must be `status = 'active'` — an archived/removed
+   product's pincode list is not user-editable) → every EXISTING target row for the product, ordered by id.
+3. **Quota impact = genuinely new targets (no existing row for that pincode) + reconfigured targets not
+   currently `checking`** (an in-flight reconfigured target doesn't change the active/checking count — it was
+   already counted). Same deterministic advisory lock and `current + additional > limit` rejection shape as
+   enrollment/resume (§2a/§2b, §3a).
+4. **Write phase (all three happen together or not at all):**
+   - Genuinely new pincodes → new `pincode_tracking_targets` rows, `is_configured=true`, `status='active'`.
+   - Previously-unconfigured, now-requested pincodes → **reconfigured**: `is_configured=true`,
+     `unconfigured_at=NULL`; if the target is currently `checking`, its status/claim/schedule are left
+     untouched (only the configuration columns change); otherwise `status='active'`, rescheduled immediately,
+     `consecutive_failures` reset — the same "fresh start" semantics as Resume (§3a).
+   - Currently-configured pincodes NOT in the new list → **unconfigured**: `is_configured=false`,
+     `unconfigured_at=now()`, pending manual requests cleared, unconditionally. If the target is `checking`,
+     **it is not interrupted** — status/claim/schedule stay untouched, and `finalize_pincode_check`
+     (`IMPLEMENTATION_PLAN.md` §2.7, amended this round) parks it `paused`/unscheduled once the in-flight check
+     completes, honestly recording its result first. If not `checking`, it becomes `paused`/unscheduled
+     immediately (same "non-checking targets pause immediately" shape as Remove Tracking, §3b).
+5. Target IDs and all history are preserved throughout — this RPC only ever `UPDATE`s existing rows or
+   `INSERT`s genuinely new ones, never deletes or recreates a row for a pincode the product has ever tracked.
+
+**Amendments to the RPCs already documented above, all edited in place (none of migrations 060-064 have been
+applied anywhere yet):**
+- `claim_due_pincode_targets` (§2.8-equivalent, `IMPLEMENTATION_PLAN.md` §2.8): candidates CTE gains an
+  explicit `t.is_configured = true` predicate — structurally redundant with the existing `status='active'`
+  filter (an unconfigured, non-checking target is always `paused`) but added anyway as defense-in-depth
+  documentation, with a matching partial index.
+- `queue_pincode_manual_check` (`IMPLEMENTATION_PLAN.md` §2.10): rejects `is_configured=false` with
+  `invalid_status`/`target_unconfigured`, checked alongside the existing status-test matrix.
+- `set_pincode_tracking_state` (§3a) resume path: rejects the whole batch with `invalid_status`/
+  `target_unconfigured` if any requested target is unconfigured — Edit Pincodes (reconfiguring) is the only
+  way back for a removed pincode, not Resume. Pause is unaffected (pausing an already-paused unconfigured
+  target is already a harmless no-op).
+- `finalize_pincode_check` (`IMPLEMENTATION_PLAN.md` §2.7): step 5's next-state computation gains a new
+  branch, checked immediately after the existing archived/removed-parent branch — `NOT v_target.is_configured`
+  also parks the target `paused`/unscheduled instead of rescheduling, the same "this target left the running
+  set while in flight" treatment as an archived/removed parent.
+
+**Tracker read behavior (`IMPLEMENTATION_PLAN.md` §9 P0-B, `get_pincode_target_results` below):** the
+standing tracker view surfaces only `is_configured=true` targets by default — an unconfigured target is not
+part of "what the seller is currently tracking." Its full check history remains in `pincode_availability_
+results`, never deleted, and remains queryable (just not surfaced by the default tracker list in this PR).
+
+Required tests: configured→unconfigured transition; unconfigured→configured re-add (reconfigure) on the SAME
+target ID; quota re-checked on reconfiguration; whole-list-replace is all-or-nothing (no partial pincode-list
+update on validation/quota failure); in-flight unconfiguration followed by finalize parks the target paused/
+unscheduled without interrupting the check; an unconfigured target is never claimed, manually queued, or
+resumed; target ID and result-history rows are preserved (never deleted/recreated) across the whole cycle.
+
+---
+
+## 3d. Bounded tracker-result read — `get_pincode_target_results` (PR #55 review round)
+
+**Gap found in review: the P0-B tracker route fetched every historical `pincode_availability_results` row for
+a page's targets and picked the latest in application code** — unbounded, and silently incorrect once a
+target accumulated more history rows than the query layer's own default response cap (PostgREST defaults to
+1,000 rows per response) could return in one page; a target with more history than that could have its
+"latest" result picked from a truncated, non-latest subset.
+
+**`get_pincode_target_results(p_workspace_id uuid, p_target_ids uuid[])`** — `SECURITY DEFINER`, `search_path`
+pinned, `service_role`-only `EXECUTE`, `RETURNS TABLE`. Bounded (`p_target_ids` capped at 500, matching
+`set_pincode_tracking_state`'s own `MAX_TARGET_IDS`) and computed entirely in the database via two `LATERAL`
+subqueries per target, each `ORDER BY checked_at DESC LIMIT 1` — index-assisted by the existing
+`pincode_availability_results_tracking_target_idx (tracking_target_id, checked_at DESC)` (062 migration), so
+each fact costs one index-scan-and-stop per target, never a full-history download:
+
+- **Latest attempt** (any outcome): `check_status`, `availability_status`, `checked_at`, `delivery_message`,
+  `error_code`, `error_message` of the single most recent result row, whatever its outcome.
+- **Last confirmed availability**: the single most recent result row whose `check_status = 'success' AND
+  availability_status IN ('available', 'unavailable')` — i.e. a result that actually confirmed availability
+  one way or the other, never a `failed`/`blocked`/`unknown` row.
+
+These are surfaced to the API caller as two **explicitly separate** facts (`latestAttempt` /
+`lastConfirmedAvailability`) — never conflated. A `failed`/`blocked` latest attempt does not hide or overwrite
+an older confirmed result; both are returned together, so a seller can see "the last check failed" and "the
+last time we actually confirmed availability was 3 days ago, and it was available" as two honest, distinct
+facts. The previous P0-B implementation's `isLastConfirmedResult: latest !== null` field conflated "a result
+row exists at all" with "that result confirmed availability" — removed entirely, not merely deprecated.
+
+Required tests: latest attempt and last-confirmed-availability are returned as distinct facts; a failed/
+blocked latest attempt does not hide an older confirmed result; correctness holds at volume (>1,000 history
+rows for one target, beyond PostgREST's default response cap); an over-limit `p_target_ids` array returns
+zero rows rather than processing an arbitrary truncated subset.
+
+---
+
 ## 4. Check-result history — which table to use
 
 **Recommendation: `pincode_availability_results`, extended, not `pincode_checks`, and not a third table.**
@@ -1428,3 +1572,12 @@ still deferred; the others are not (see migration #3 above).
 schedule it. Per round-2 Correction 10, migration #1/#2/#3 belong to implementation phase **P0-A**, migration
 #4 also belongs to **P0-A** (`IMPLEMENTATION_PLAN.md` §9) — none of the 4 migrations are applied until P0-A
 is its own separately reviewed and approved implementation PR.
+
+**Addendum (PR #55 review round, P0-B):** a fifth migration, `064_pincode_p0b_config_lifecycle_and_rpcs.sql`,
+adds the target-configuration-lifecycle columns and CHECK (§3c), amends `claim_due_pincode_targets`/`queue_
+pincode_manual_check`/`set_pincode_tracking_state`/`finalize_pincode_check` in place (§3c), and adds two new
+RPCs (`replace_pincode_product_targets`, §3c; `replace_workspace_default_pincodes`, §1) plus one new bounded
+read RPC (`get_pincode_target_results`, §3d) — **9** trusted RPCs total. This migration belongs to **P0-B**
+(`IMPLEMENTATION_PLAN.md` §9), found necessary only after P0-B's own implementation review surfaced the
+missing Edit Pincodes contract — not part of the original P0-A migration count above, and (like migrations
+060-063) not applied anywhere until its own PR is approved.

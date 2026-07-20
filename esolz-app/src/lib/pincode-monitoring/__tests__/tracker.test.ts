@@ -7,7 +7,7 @@
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveAvailabilityState, deriveProductTrackerState } from '../tracker'
+import { deriveAvailabilityState, deriveProductTrackerState, deriveFreshnessState } from '../tracker'
 
 describe('deriveAvailabilityState', () => {
   test('success + available -> available', () => {
@@ -56,5 +56,36 @@ describe('deriveProductTrackerState', () => {
     assert.equal(state, 'partially_active')
     assert.notEqual(state, 'active')
     assert.notEqual(state, 'paused')
+  })
+})
+
+describe('deriveFreshnessState (Correction 4, PR #55 review round)', () => {
+  const NOW = '2026-07-20T12:00:00.000Z'
+
+  test('checking status always wins, regardless of lastCheckedAt/nextCheckAt', () => {
+    assert.equal(deriveFreshnessState('checking', null, null, NOW), 'checking')
+    assert.equal(deriveFreshnessState('checking', '2026-07-19T00:00:00.000Z', '2026-07-19T00:00:00.000Z', NOW), 'checking')
+  })
+
+  test('never checked -> never_checked', () => {
+    assert.equal(deriveFreshnessState('active', null, '2026-07-21T00:00:00.000Z', NOW), 'never_checked')
+  })
+
+  test('nextCheckAt IS NULL is never rendered as "fresh" -- it is unscheduled', () => {
+    const state = deriveFreshnessState('paused', '2026-07-19T00:00:00.000Z', null, NOW)
+    assert.equal(state, 'unscheduled')
+    assert.notEqual(state, 'current')
+  })
+
+  test('nextCheckAt in the future -> current', () => {
+    assert.equal(deriveFreshnessState('active', '2026-07-19T00:00:00.000Z', '2026-07-21T00:00:00.000Z', NOW), 'current')
+  })
+
+  test('nextCheckAt in the past -> overdue', () => {
+    assert.equal(deriveFreshnessState('active', '2026-07-18T00:00:00.000Z', '2026-07-19T00:00:00.000Z', NOW), 'overdue')
+  })
+
+  test('nextCheckAt exactly equal to now -> overdue (due now counts as due, not current)', () => {
+    assert.equal(deriveFreshnessState('active', '2026-07-19T00:00:00.000Z', NOW, NOW), 'overdue')
   })
 })

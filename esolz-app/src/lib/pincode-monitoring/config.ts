@@ -48,11 +48,22 @@ function parseBoolean(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true'
 }
 
-/** Positive-integer env var within (0, ceiling], falling back to a documented default on anything else (unset, non-numeric, non-positive, or over ceiling). */
+// Correction 5 (PR #55 review round): Number.parseInt parses a LEADING
+// numeric prefix and silently ignores the rest of the string --
+// Number.parseInt('10abc', 10) === 10, not a parse failure. That let a
+// typo'd env var silently become a valid, wrong number instead of falling
+// back to the documented default. This regex requires the ENTIRE trimmed
+// string to be a positive integer (no sign, no decimal point, no trailing
+// garbage) before any numeric parsing happens.
+const STRICT_POSITIVE_INT_RE = /^[1-9][0-9]*$/
+
+/** Positive-integer env var within (0, ceiling], falling back to a documented default on anything else (unset, empty, non-numeric, partially-numeric, non-positive, or over ceiling). */
 function parseBoundedPositiveInt(value: string | undefined, fallback: number, ceiling: number): number {
-  if (value === undefined || value.trim() === '') return fallback
-  const parsed = Number.parseInt(value, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > ceiling) return fallback
+  if (value === undefined) return fallback
+  const trimmed = value.trim()
+  if (!STRICT_POSITIVE_INT_RE.test(trimmed)) return fallback
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed) || parsed > ceiling) return fallback
   return parsed
 }
 

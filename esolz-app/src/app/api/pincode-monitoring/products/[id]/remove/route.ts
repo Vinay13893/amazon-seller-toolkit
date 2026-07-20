@@ -2,12 +2,17 @@
  * PATCH /api/pincode-monitoring/products/[id]/remove
  *
  * PRODUCT_SPEC.md sec5.4/sec11: soft removal only, via
- * `remove_pincode_monitored_products` -- never a DELETE route. `[id]` in
- * the URL is the primary product to remove; the body may optionally supply
- * `productIds` for a genuine atomic bulk removal across multiple products
- * in one RPC call (the RPC natively takes an array) -- same design
- * rationale as the pause/resume handler's `targetIds` override, documented
- * there and in the PR description.
+ * `remove_pincode_monitored_products` -- never a DELETE route.
+ *
+ * Correction 6 (PR #55 review round): the prior round accepted an optional
+ * body array of extra product IDs that could remove products OTHER than
+ * the one named in the URL -- a product-scoped URL silently acting as a hidden
+ * cross-product bulk endpoint. Removed: this route now ALWAYS acts on
+ * exactly the URL's `[id]`, nothing else. No dedicated cross-product bulk
+ * removal endpoint exists in this PR; if genuine multi-product bulk
+ * removal is required, it needs its own explicitly-named route and
+ * contract (per the correction's explicit instruction not to claim bulk
+ * support without that contract existing).
  */
 import { NextRequest } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
@@ -21,7 +26,6 @@ export const runtime = 'nodejs'
 interface RequestBody {
   workspaceId?: unknown
   marketplaceId?: unknown
-  productIds?: unknown
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -33,15 +37,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const body = await parseJsonBody(request) as RequestBody | null
   if (!body || typeof body.workspaceId !== 'string' || !isValidMarketplaceId(body.marketplaceId)) {
     return jsonError(400, 'invalid_parameters', 'workspaceId and marketplaceId are required.')
-  }
-
-  let productIds: string[]
-  if (body.productIds === undefined) {
-    productIds = [id]
-  } else if (Array.isArray(body.productIds) && body.productIds.every(isValidUuid) && body.productIds.length > 0) {
-    productIds = body.productIds
-  } else {
-    return jsonError(400, 'invalid_parameters', 'productIds, when provided, must be a non-empty array of valid UUIDs.')
   }
 
   const access = await resolvePincodeAccess({
@@ -57,7 +52,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const rpcResult = await removeProducts(admin, {
       workspaceId: access.context.workspaceId,
       marketplaceId: access.context.marketplaceId,
-      monitoredProductIds: productIds,
+      monitoredProductIds: [id],
     })
     return mapRemoveResult(rpcResult as RemoveRpcResult)
   } catch (error) {

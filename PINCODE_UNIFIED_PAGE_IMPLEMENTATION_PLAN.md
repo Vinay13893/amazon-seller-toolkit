@@ -252,12 +252,15 @@ Before claiming new targets, the worker runs one reclaim pass, following the glo
 the parent first, the target second, no advisory lock needed since reclaim doesn't affect quota):
 
 ```sql
--- One statement, parent-aware. Selects stale 'checking' targets, joins
--- their locked parent, and branches the reset behavior on the parent's
--- CURRENT status -- not a blind "always go back to active."
+-- One statement, parent-aware AND configuration-aware (PR #55 review
+-- round addendum). Selects stale 'checking' targets, joins their locked
+-- parent, and branches the reset behavior on the parent's CURRENT status
+-- AND the target's own is_configured flag -- not a blind "always go back
+-- to active."
 WITH stale AS (
   SELECT t.id, t.monitored_product_id, t.manual_requested_at, t.manual_requested_by,
-         t.manual_request_token, t.next_check_at AS prior_next_check_at, p.status AS parent_status
+         t.manual_request_token, t.next_check_at AS prior_next_check_at,
+         t.is_configured, p.status AS parent_status
   FROM public.pincode_tracking_targets t
   JOIN public.pincode_monitored_products p ON p.id = t.monitored_product_id
   WHERE t.status = 'checking'
@@ -266,10 +269,10 @@ WITH stale AS (
   FOR UPDATE OF p, t
 )
 UPDATE public.pincode_tracking_targets t
-SET status = CASE WHEN stale.parent_status = 'active' THEN 'active' ELSE 'paused' END,
+SET status = CASE WHEN stale.parent_status = 'active' AND stale.is_configured THEN 'active' ELSE 'paused' END,
     claimed_at = NULL, claimed_by = NULL, claim_token = NULL,
     next_check_at = CASE
-      WHEN stale.parent_status = 'active' THEN
+      WHEN stale.parent_status = 'active' AND stale.is_configured THEN
         -- Preserve/pull forward next_check_at appropriately: a manual
         -- request stays immediately due (now()); a scheduled check
         -- becomes immediately due too, since a stale/crashed attempt
@@ -277,32 +280,42 @@ SET status = CASE WHEN stale.parent_status = 'active' THEN 'active' ELSE 'paused
         now()
       ELSE NULL
     END,
-    -- Correction 7: preserve manual-request fields when the parent is
-    -- still active, so a crashed MANUAL request can be retried by the
-    -- next claim cycle rather than silently vanishing; clear them when
-    -- the parent is archived/removed, since a manual check against a
+    -- Correction 7 (round 4): preserve manual-request fields when the
+    -- parent is still active, so a crashed MANUAL request can be retried
+    -- by the next claim cycle rather than silently vanishing; clear them
+    -- when the parent is archived/removed, since a manual check against a
     -- non-active product no longer makes sense (mirrors §3b's
-    -- Remove-Tracking behavior).
-    manual_requested_at = CASE WHEN stale.parent_status = 'active' THEN stale.manual_requested_at ELSE NULL END,
-    manual_requested_by = CASE WHEN stale.parent_status = 'active' THEN stale.manual_requested_by ELSE NULL END,
-    manual_request_token = CASE WHEN stale.parent_status = 'active' THEN stale.manual_request_token ELSE NULL END
+    -- Remove-Tracking behavior). PR #55 addendum: also clear them when the
+    -- target itself was unconfigured mid-flight (DATA_MODEL.md §3c) --
+    -- a pincode the seller removed from the list should not have its
+    -- manual request silently retried either.
+    manual_requested_at = CASE WHEN stale.parent_status = 'active' AND stale.is_configured THEN stale.manual_requested_at ELSE NULL END,
+    manual_requested_by = CASE WHEN stale.parent_status = 'active' AND stale.is_configured THEN stale.manual_requested_by ELSE NULL END,
+    manual_request_token = CASE WHEN stale.parent_status = 'active' AND stale.is_configured THEN stale.manual_request_token ELSE NULL END
 FROM stale
 WHERE t.id = stale.id;
 ```
 
-**Three outcomes, corrected from round 3's single unconditional one:**
+**Four outcomes, extended from round 4's parent-only branching (PR #55 review round adds the configuration-lifecycle case):**
 
-- **`parent.status = 'active'`** — reset to `status = 'active'`, `next_check_at = now()` (immediately due —
-  a stale/crashed attempt means the scheduled or manual check never actually completed, so it's re-queued
-  rather than waiting out the rest of its original cadence). Manual-request fields are **preserved** if they
-  were set, so a crashed manual check is retried, not silently dropped.
+- **`parent.status = 'active'` AND `is_configured = true`** — reset to `status = 'active'`, `next_check_at =
+  now()` (immediately due — a stale/crashed attempt means the scheduled or manual check never actually
+  completed, so it's re-queued rather than waiting out the rest of its original cadence). Manual-request
+  fields are **preserved** if they were set, so a crashed manual check is retried, not silently dropped.
 - **`parent.status IN ('archived', 'removed')`** — reset to `status = 'paused'`, `next_check_at = NULL`,
   manual-request fields cleared. **The target is never made claimable again** — this is the same terminal
   state the in-flight-safe archival/removal cascades (`DATA_MODEL.md` §5, §3b) already produce for a target
   that finalizes normally under a non-active parent; stale-claim reclaim now produces the identical outcome
   for a target that *doesn't* finalize normally, so both paths converge on the same truthful end state.
-- **No third case exists** — per `DATA_MODEL.md` §2 Correction 13, the parent lifecycle has exactly two
+- **`parent.status = 'active'` AND `is_configured = false`** (PR #55 review round, `DATA_MODEL.md` §3c) — the
+  seller removed this pincode from the product's configured list (via Edit Pincodes) while the check was
+  in flight, but the crash means it never reached `finalize_pincode_check`'s own unconfigured-target
+  handling. Same terminal outcome as the archived/removed case: `status = 'paused'`, `next_check_at = NULL`,
+  manual-request fields cleared, never re-claimable — converges with the outcome a normal finalize on an
+  unconfigured target would have produced.
+- **No fifth case exists** — per `DATA_MODEL.md` §2 Correction 13, the parent lifecycle has exactly two
   non-active values (`archived`, `removed`); there is no parent-level `'paused'` to branch on separately.
+  `is_configured` is a target-level, not parent-level, fact (§3c).
 
 Clearing `claim_token` alongside the other claim fields in every branch is required by `DATA_MODEL.md` §3's
 claim-field-consistency CHECK (a non-`'checking'` row must not retain any claim field) — unchanged from
@@ -1713,17 +1726,43 @@ migration is applied merely because the spec (this document) is being built or a
 ### P0-B — API and data-access layer
 - Lookup route (`POST /api/pincode-monitoring/lookup-asin`, `PRODUCT_SPEC.md` §6/§11).
 - Enrollment routes (`POST /api/pincode-monitoring/products`, calling `enroll_pincode_monitored_products`
-  with the full bulk payload, never split into per-product calls).
-- Defaults routes (`GET`/`PUT /api/pincode-monitoring/default-pincodes`).
-- Tracker query route (`GET /api/pincode-monitoring/tracker`).
+  with the full bulk payload, never split into per-product calls). **PR #55 review round, Correction 1:**
+  every distinct `productSource: 'other'` ASIN is confirmed server-side (via the same Catalog Items helper as
+  the lookup route, connection/token loaded once per request, bounded concurrency) BEFORE this RPC ever
+  runs — the RPC has no SP-API access of its own and cannot verify anything, and a caller reaching this
+  route directly (skipping a prior lookup-asin call) must not be able to enroll a blind, unconfirmed ASIN.
+  The whole bulk request is rejected if any Other Product fails to confirm; only Amazon-confirmed metadata is
+  ever written for an 'other'-source product, never a client-supplied snapshot.
+- Edit Pincodes route (`PATCH /api/pincode-monitoring/products/[id]/pincodes`, calling the new
+  `replace_pincode_product_targets` RPC, `DATA_MODEL.md` §3c) — **PR #55 review round, Correction 2: this
+  route was missing entirely from the original P0-B implementation** despite being in this locked route map
+  since P0-B's own scope was first written; found and closed in review.
+- Defaults routes (`GET`/`PUT /api/pincode-monitoring/default-pincodes`, `PUT` now calling the new atomic
+  `replace_workspace_default_pincodes` RPC, `DATA_MODEL.md` §1 — **PR #55 review round, Correction 3:** the
+  original implementation issued two separate, non-atomic PostgREST write requests).
+- Tracker query route (`GET /api/pincode-monitoring/tracker`, now backed by the bounded
+  `get_pincode_target_results` RPC, `DATA_MODEL.md` §3d — **PR #55 review round, Correction 4:** the original
+  implementation fetched every historical result row for a page's targets and deduplicated in application
+  code, unbounded and silently wrong beyond the query layer's default response cap; replaced with a bounded,
+  indexed, database-side read returning `latestAttempt` and `lastConfirmedAvailability` as two explicit,
+  never-conflated facts).
 - Pause/resume routes (calling `set_pincode_tracking_state`, `DATA_MODEL.md` §3a) and a Remove Tracking route
   (setting `pincode_monitored_products.status = 'removed'`, round-3 Correction 6, distinct from the
-  archival-only reconciliation path).
+  archival-only reconciliation path). **PR #55 review round, Correction 6:** both are strictly product-scoped
+  to the URL's `[id]` — an optional request-body ID array may only NARROW the URL product's own target/
+  product set, never widen it to another product; the prior round's `productIds`/unrestricted `targetIds`
+  override let a product-scoped URL act as a hidden cross-product bulk endpoint, closed this round. No
+  dedicated cross-product bulk endpoint exists in P0-B.
 - Check Now route (`POST /api/pincode-monitoring/check-now`, calling `queue_pincode_manual_check`).
 - All routes enforce the role model from `DATA_MODEL.md` §6 (session → membership → role, `viewer` → `403`)
   **and independently enforce the internal-workspace allowlist** (round-3 Correction 12, §6's updated
   rollout plan) — every route rejects a non-allowlisted workspace on its own, not relying on the UI being
-  hidden as the only gate.
+  hidden as the only gate. **PR #55 review round, Correction 5:** the access gate additionally validates
+  `workspaceId` is a syntactically valid UUID before any query, validates the requested marketplace is
+  actually authorized for that exact workspace (the canonical source: `amazon_connections`, one row per
+  workspace, its own `marketplace_id` column — 006 migration), and checks role against an explicit runtime
+  allowlist (`owner`/`admin`/`member` write, `viewer` read-only, any OTHER role value rejected outright as
+  `unknown_role` rather than treated as either).
 - No public UI enablement — these routes are reachable only by direct authenticated call (e.g. from tests or
   internal tooling) until P0-C ships the UI that calls them; the allowlist check above is what actually
   prevents a non-allowlisted caller from using them even at this stage, not merely the absence of a UI link.

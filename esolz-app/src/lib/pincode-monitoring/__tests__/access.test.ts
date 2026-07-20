@@ -1,11 +1,12 @@
 /**
- * Covers the access-control scenarios the P0-B task explicitly requires:
- * unauthenticated rejection, non-member rejection, viewer read allowed,
- * viewer mutation rejected, non-allowlisted workspace rejected, feature
- * disabled rejected. `decidePincodeAccess` is the exact pure function
- * `resolvePincodeAccess` (the real I/O-backed gate every route calls)
- * delegates its decision to -- see access.ts's own doc comment for why the
- * two are split.
+ * Covers the access-control scenarios the P0-B task explicitly requires,
+ * plus Correction 5's additions (PR #55 review round): marketplace
+ * entitlement, unknown-role rejection. `decidePincodeAccess` is the exact
+ * pure function `resolvePincodeAccess` (the real I/O-backed gate every
+ * route calls) delegates its decision to -- see access.ts's own doc
+ * comment for why the two are split, and `__tests__/validation.test.ts`
+ * for the UUID/marketplace-string shape checks `resolvePincodeAccess`
+ * itself performs before this function is ever called.
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -17,11 +18,12 @@ const BASE: AccessDecisionInput = {
   requireWriteRole: false,
   featureEnabled: true,
   workspaceAllowlisted: true,
+  marketplaceAuthorized: true,
 }
 
 describe('decidePincodeAccess', () => {
   test('unauthenticated session is rejected with 401, before any other check', () => {
-    const result = decidePincodeAccess({ ...BASE, authenticated: false, membershipRole: null, featureEnabled: false, workspaceAllowlisted: false })
+    const result = decidePincodeAccess({ ...BASE, authenticated: false, membershipRole: null, featureEnabled: false, workspaceAllowlisted: false, marketplaceAuthorized: false })
     assert.equal(result.ok, false)
     if (!result.ok) {
       assert.equal(result.status, 401)
@@ -94,5 +96,40 @@ describe('decidePincodeAccess', () => {
   test('fully authorized owner on an allowlisted, enabled workspace is accepted for a mutating route', () => {
     const result = decidePincodeAccess({ ...BASE, membershipRole: 'owner', requireWriteRole: true })
     assert.equal(result.ok, true)
+  })
+
+  // ── Correction 5 (PR #55 review round) ──────────────────────────────────
+
+  test('marketplace not authorized for this workspace is rejected with 403, even for an owner with an otherwise-valid membership', () => {
+    const result = decidePincodeAccess({ ...BASE, marketplaceAuthorized: false })
+    assert.equal(result.ok, false)
+    if (!result.ok) {
+      assert.equal(result.status, 403)
+      assert.equal(result.errorCode, 'marketplace_not_authorized')
+    }
+  })
+
+  test('marketplace authorization is checked before the role check (an unauthorized marketplace rejects a viewer read too)', () => {
+    const result = decidePincodeAccess({ ...BASE, membershipRole: 'viewer', requireWriteRole: false, marketplaceAuthorized: false })
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.errorCode, 'marketplace_not_authorized')
+  })
+
+  test('an unknown/unrecognized role is rejected outright, not treated as either viewer or writable', () => {
+    const readResult = decidePincodeAccess({ ...BASE, membershipRole: 'superadmin', requireWriteRole: false })
+    assert.equal(readResult.ok, false)
+    if (!readResult.ok) {
+      assert.equal(readResult.status, 403)
+      assert.equal(readResult.errorCode, 'unknown_role')
+    }
+    const writeResult = decidePincodeAccess({ ...BASE, membershipRole: 'superadmin', requireWriteRole: true })
+    assert.equal(writeResult.ok, false)
+    if (!writeResult.ok) assert.equal(writeResult.errorCode, 'unknown_role')
+  })
+
+  test('an empty-string role is rejected as unknown, not silently coerced', () => {
+    const result = decidePincodeAccess({ ...BASE, membershipRole: '' })
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.errorCode, 'unknown_role')
   })
 })

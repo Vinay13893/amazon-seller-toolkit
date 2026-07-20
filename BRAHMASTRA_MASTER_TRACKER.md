@@ -4427,3 +4427,137 @@ eight new routes, the design decisions called out above — particularly the pau
 shape decision and the new `lib/<feature>/` module convention), and either approve it for merge or request
 further changes. P0-C cannot start until this PR is approved. This PR does not merge itself, does not apply
 any migration, and does not deploy.
+
+### §22 update 10 (2026-07-20) — PR #55 correctness amendment: 8 corrections closing real P0 contract gaps found in review, still not merged, migration still not applied anywhere
+
+**Decision received:** "PR #55 is not approved to merge yet ... the review found several actual P0 contract
+gaps. Make one focused P0-B correctness amendment." Stayed on branch `feature/pincode-p0b-api-data-access`,
+PR #55. Explicitly scoped: do not start P0-C, do not create the scheduler, do not apply migrations to
+production, do not change production environment variables, do not deploy. All 8 corrections closed.
+
+**Correction 1 — Other Product enrollment could bypass the required SP-API-confirmed lookup.**
+`POST /api/pincode-monitoring/products` previously passed any syntactically-valid ASIN with
+`productSource: 'other'` straight to `enroll_pincode_monitored_products`, which has no SP-API access and
+cannot verify anything — a caller hitting the route directly (skipping a prior `lookup-asin` call) could
+enroll a blind, unconfirmed ASIN. New `esolz-app/src/lib/pincode-monitoring/other-product-confirmation.ts`:
+resolves every DISTINCT `'other'`-source ASIN through the same Catalog Items helper as the lookup route,
+loading/refreshing the Amazon connection token exactly once per request (not once per ASIN), under bounded
+concurrency (3 at a time, a small dependency-free worker-pool loop). Rejects the ENTIRE bulk request — never
+partially enrolls the rest — if any ASIN is not found, unavailable, or times out, naming every failed ASIN
+and why. Only Amazon-confirmed `title`/`brand`/`image` overwrite whatever the client supplied for an
+`'other'`-source product; a client-supplied snapshot is never trusted for one. A separate `amazon_connections`
+query error (database/infrastructure failure) is now distinguished from "no active connection" — the former
+returns `500 catalog_connection_query_failed`, never falsely presented as "connect your Amazon account."
+Nothing is written to `tracked_asins` anywhere in this module.
+
+**Correction 2 — the locked "Edit Pincodes" route was missing entirely; a new target-configuration lifecycle
+closes the gap it needs.** `PATCH /api/pincode-monitoring/products/[id]/pincodes` (in the route map since
+P0-B's scope was first written) had no implementation. New migration `064_pincode_p0b_config_lifecycle_
+and_rpcs.sql` adds `pincode_tracking_targets.is_configured`/`.unconfigured_at` (orthogonal to the existing
+operational `status` enum, with a NULL-safe consistency CHECK — never conflating "temporarily paused" with
+"removed from the pincode list," the same discipline round-4 Correction 13 already established for the
+parent table) and a new RPC, `replace_pincode_product_targets` — atomic whole-list replacement for one
+product's configured pincodes: adds genuinely new targets, reconfigures previously-unconfigured ones (in-place
+on the SAME target ID, history intact), marks omitted configured targets unconfigured without deleting them
+(non-checking ones pause/unschedule immediately; an in-flight `checking` target is never interrupted —
+`finalize_pincode_check` parks it afterward), and re-checks quota on every reconfiguration under the same
+advisory lock discipline as enrollment/resume. **Locked P0 decision, recorded explicitly:** an empty pincode
+list is rejected outright (`empty_pincodes_use_remove_tracking`) — removing an entire product is Remove
+Tracking's job, not this RPC's. `claim_due_pincode_targets`, `queue_pincode_manual_check`, and
+`set_pincode_tracking_state`'s resume path are all amended in place to reject/exclude `is_configured=false`
+targets; `finalize_pincode_check` gains a new branch parking an unconfigured target paused/unscheduled after
+an in-flight check completes, same treatment as an archived/removed parent. The stale-claim-reclaim SQL prose
+(`IMPLEMENTATION_PLAN.md` §2.4, still P0-D scope, not yet a database object) is updated to be
+configuration-aware too, for when this ships.
+
+**Correction 3 — default-pincode replacement was two non-atomic PostgREST requests.** New RPC
+`replace_workspace_default_pincodes` performs the full validate → lock → upsert → deactivate sequence as one
+transaction; `defaults.ts` now calls only this RPC, never its own `.upsert()`/`.update()` pair. Rejects the
+whole call (zero partial mutation, verified by a dedicated rollback test) on any invalid/duplicate pincode or
+out-of-range `displayOrder`. An empty list IS allowed for defaults (unlike Edit Pincodes) — it soft-deactivates
+every default atomically, never a hard delete.
+
+**Correction 4 — the tracker read was unbounded and its `isLastConfirmedResult` field was wrong.** The prior
+implementation fetched every historical `pincode_availability_results` row for a page's targets and
+deduplicated in TypeScript — unbounded, and silently incorrect beyond the query layer's default row cap. New
+bounded, indexed, database-side RPC `get_pincode_target_results` returns exactly two facts per target —
+`latestAttempt` (whatever the most recent result was, any outcome) and `lastConfirmedAvailability` (the most
+recent result that actually confirmed `available`/`unavailable`) — as two **explicitly separate** objects,
+never conflated: a failed/blocked latest attempt no longer hides an older confirmed result. The prior
+`isLastConfirmedResult: latest !== null` field (which conflated "a result row exists" with "that result
+confirmed availability") is removed entirely, not deprecated. A new, documented freshness model
+(`never_checked`/`checking`/`current`/`overdue`/`unscheduled`) replaces the implicit assumption that a `NULL
+next_check_at` could ever be rendered as "fresh." Verified at volume: a dedicated SQL test seeds >1,000
+history rows for one target and confirms the RPC still returns the true latest/confirmed facts, not a
+truncated subset.
+
+**Correction 5 — the access gate was missing UUID validation, marketplace entitlement, and a real role
+allowlist.** `resolvePincodeAccess` now: rejects a malformed `workspaceId` before any database query;
+trims/bounds `marketplaceId`; checks the requested marketplace against the canonical entitlement source found
+by direct inspection (`amazon_connections`, one row per workspace — `UNIQUE` index on `workspace_id`, 006
+migration — with its own `marketplace_id` column populated after OAuth), failing closed if no connection row
+exists or the marketplace doesn't match; checks role against an explicit runtime allowlist
+(`WRITE_ROLES`/`KNOWN_ROLES`) instead of "anything that isn't literally `'viewer'`" — an unrecognized role
+value is now rejected outright (`unknown_role`) for both reads and writes, never silently treated as either.
+Membership-query and marketplace-query infrastructure errors now return a distinct `500`, never disguised as
+"you're not a member." Separately, `config.ts`'s integer parsing was fixed: `Number.parseInt('10abc', 10)`
+previously returned `10` (a leading-numeric-prefix parse, not a full-string one) — an env-var typo could
+silently become a valid, wrong number instead of falling back to the documented default. Now requires the
+entire trimmed string to match `^[1-9][0-9]*$` before parsing.
+
+**Correction 6 — product-scoped URLs could mutate other products' targets.** Pause/resume accepted an
+optional `targetIds` body array, and Remove accepted a `productIds` array, that could reference targets/
+products OTHER than the URL's own `[id]` — a product-scoped URL (`/products/A/pause`) silently acting as a
+hidden cross-product bulk endpoint. Fixed: the remove route now always acts on exactly the URL product,
+nothing else (the `productIds` override is removed entirely). The pause/resume handler always resolves the
+URL product's own target set first; an optional `targetIds` body array may only NARROW that set — every
+supplied ID must already belong to the URL product (verified against the resolved set), never widen it to
+another product. No dedicated cross-product bulk endpoint exists in this PR — per the correction's explicit
+instruction, bulk support is not claimed without its own contract and tests.
+
+**Correction 7 — request/response contract hardening.** Hard bounds added at the route layer (mirroring each
+RPC's own ceilings, so malformed requests get a clean `400` before an RPC round-trip): products-per-request,
+total product×pincode combinations, target-ID/product-ID array sizes, snapshot string lengths, tracker
+`offset` (both a floor and a new ceiling — an unbounded `OFFSET` is an unbounded scan), `displayOrder` range.
+Normalization: workspace UUIDs lowercased, marketplace strings trimmed, ASINs uppercased, pincodes trimmed —
+all already true from prior rounds, reconfirmed. New shared `internalError()` helper: every P0-B route that
+calls a non-RPC data-access function (tracker/defaults reads) now wraps the call and converts any thrown
+Postgres/PostgREST error into a clean, generic `500` — the raw error is logged server-side via
+`console.error` for diagnosis, never returned in the HTTP response body.
+
+**Tests — SQL suite extended (8 new numbered test groups, TEST 21-28) + TS suite extended (127 total tests,
+up from 87, across 4 new test files and additions to 6 existing ones).** New SQL tests cover: `replace_
+pincode_product_targets` add/reconfigure/unconfigure/ID-preservation/empty-list-rejection/quota-atomicity/
+dedup; an `is_configured=false` target is never claimed (even when directly forced into an otherwise-claimable
+shape, proving the filter is load-bearing, not coincidental); rejected from manual-check and from resume
+(whole-batch, no partial resume); in-flight unconfiguration followed by finalize parks paused/unscheduled
+without interrupting the check, with target ID and history preserved; `replace_workspace_default_pincodes`
+atomicity and rollback-on-invalid-list; `get_pincode_target_results` correctness including a failed-latest-
+over-confirmed-older scenario and >1,000-row volume. New TS tests: `other-product-confirmation.test.ts`
+(whole-batch rejection, bounded concurrency via a fake lookup function — an injectable pure core,
+`confirmAsinsWithLookup`, was extracted specifically to make this testable without a real network call);
+`pause-resume-handler.test.ts` (the exact "product-scoped URL cannot mutate another product" security
+property, via an extracted pure `resolveScopedTargetIds` function); extensions to `access.test.ts`
+(marketplace-not-authorized, unknown-role), `config.test.ts` (the `'10abc'` strict-parsing bug and five
+related malformed-numeric cases), `rpc.test.ts`/`responses.test.ts` (the three new RPC wrappers and their
+result mappings), `tracker.test.ts` (`deriveFreshnessState`), `static-checks.test.ts` (the Edit Pincodes route
+exists; defaults uses exactly one RPC; tracker uses the bounded RPC and the old buggy field name is gone;
+pause/resume/remove no longer accept a cross-product override).
+
+**Verification this round:** P0-A/P0-B SQL suite re-run end-to-end from this worktree (unmodified except the
+8 new test groups) — sequential suite passed (28 groups total), concurrency suite passed (**6/6**, unchanged),
+EXPLAIN ANALYZE passed, exit code 0. TS suite: **127/127 passed**, exit code 0. `npx tsc --noEmit` clean.
+`npx eslint src/app/api/pincode-monitoring src/lib/pincode-monitoring` clean, zero errors/warnings.
+`npm run build` clean, all 9 routes (8 original + the new Edit Pincodes route) registered as dynamic
+functions. `git status` confirms only the new migration file, the `sequential.sql` test additions, and
+`esolz-app/src/{app/api,lib}/pincode-monitoring/**` changed — zero application/UI/cron files touched, zero
+production environment variable changed.
+
+**No migration applied to production. No production row modified. No Vercel/Supabase environment variable
+changed. No deployment. Feature remains fully disabled. P0-C and P0-D remain blocked.**
+
+**Next step (needs the founder):** review the amended PR #55 (the target-configuration lifecycle and its
+three new RPCs, the Other Product server-side confirmation, the atomic defaults/bounded-tracker rewrites, the
+access-gate hardening, and the product-scoped-URL fix), and either approve it for merge or request further
+changes. P0-C cannot start until this PR is approved. This PR does not merge itself, does not apply any
+migration, and does not deploy.

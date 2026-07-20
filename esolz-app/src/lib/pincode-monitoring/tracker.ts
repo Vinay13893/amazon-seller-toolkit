@@ -1,27 +1,32 @@
 /**
  * Pincode Monitoring P0-B — tracker read data-access.
  *
- * `deriveAvailabilityState` and `deriveProductTrackerState` are pure
- * functions (no I/O), exercised directly by `__tests__/tracker.test.ts` --
- * both implement locked derivation rules from PRODUCT_SPEC.md sec7/sec8,
- * not this PR's own invention. Never fabricate: a missing/never-checked
- * target is `not_confirmed`, never coerced to `unavailable` (sec9's
- * data-truth rules).
+ * `deriveAvailabilityState`, `deriveProductTrackerState`, and
+ * `deriveFreshnessState` are pure functions (no I/O), exercised directly by
+ * `__tests__/tracker.test.ts` -- all three implement locked or documented
+ * derivation rules (PRODUCT_SPEC.md sec7/sec8, and this round's freshness
+ * model), not ad hoc guesses. Never fabricate: a missing/never-checked
+ * target is `not_confirmed`/`never_checked`, never coerced into a negative
+ * result (sec9's data-truth rules).
  *
- * `fetchTrackerPage` is the I/O half: one paginated `pincode_monitored_
- * products` query, then two follow-up `.in()` queries (targets for the
- * page's products, latest result per target) -- the same "fan-out by IDs
- * from page 1" pattern already used by `api/asins/listings/route.ts` for
- * attaching child data to a paginated parent list, not a new pattern.
- * `pincode_availability_results` has no per-target "latest" column, so
- * "latest per target" is resolved client-side after fetching every result
- * row for the page's target IDs ordered by `checked_at DESC` -- correct and
- * fine at this scale because the page size bounds the target-ID count, and
- * the query itself already leans on `pincode_availability_results_
- * tracking_target_idx (tracking_target_id, checked_at DESC)` (062
- * migration) to avoid a sort.
+ * Correction 4 (PR #55 review round): `fetchTrackerPage` previously fetched
+ * EVERY historical `pincode_availability_results` row for a page's targets
+ * and picked the latest client-side in TypeScript -- unbounded, and
+ * silently wrong beyond PostgREST's default row cap (a target with >1000
+ * result rows could have its "latest" picked from a truncated page, not
+ * the real latest). Replaced with one call to `get_pincode_target_results`
+ * (064 migration), a bounded, indexed, database-side read that returns
+ * exactly two facts per target: the latest attempt of any kind, and the
+ * last CONFIRMED (available/unavailable) result -- these are now surfaced
+ * as two explicitly separate objects (`latestAttempt` /
+ * `lastConfirmedAvailability`), never conflated. The prior `isLastConfirmed
+ * Result: latest !== null` field is REMOVED -- it conflated "a result row
+ * exists at all" with "that result was a confirmed availability reading,"
+ * which is not the same fact (a `failed`/`blocked` latest attempt is a
+ * result row too, but confirms nothing about availability).
  */
 import { createAdminClient } from '@/lib/supabase/admin'
+import { getTargetResults } from './rpc'
 
 export type AvailabilityState = 'available' | 'unavailable' | 'blocked' | 'check_failed' | 'not_confirmed'
 
@@ -43,9 +48,11 @@ export type ProductTrackerState = 'active' | 'paused' | 'partially_active' | 'fa
  * PRODUCT_SPEC.md sec7's derivation table, evaluated in the same priority
  * order the table documents. `pincode_monitored_products.status` itself
  * only ever holds active/archived/removed (round-4 Correction 13) --
- * Paused/Failed/Partially active are always computed here from child
- * `pincode_tracking_targets.status` values, never read from a stored
- * parent-level value.
+ * Paused/Failed/Partially active are always computed here from CONFIGURED
+ * child `pincode_tracking_targets.status` values only (Correction 2, PR
+ * #55 review round: an unconfigured target is not part of "what the
+ * seller is currently tracking" and must not skew this derivation --
+ * callers pass only is_configured=true target statuses here).
  */
 export function deriveProductTrackerState(
   parentStatus: 'active' | 'archived' | 'removed',
@@ -65,18 +72,54 @@ export function deriveProductTrackerState(
   return 'partially_active'
 }
 
+export type FreshnessState = 'never_checked' | 'checking' | 'current' | 'overdue' | 'unscheduled'
+
+/**
+ * Correction 4 (PR #55 review round): a documented, truthful freshness
+ * model -- `next_check_at IS NULL` is never rendered as "fresh," it is
+ * `unscheduled` (a paused, failed, or unconfigured target has no next
+ * check at all, which is a fact distinct from "was just checked and is
+ * current"). `nowIso` is a parameter, not `new Date()` read internally, so
+ * this function stays pure and deterministic for tests.
+ */
+export function deriveFreshnessState(
+  targetStatus: string,
+  lastCheckedAt: string | null,
+  nextCheckAt: string | null,
+  nowIso: string,
+): FreshnessState {
+  if (targetStatus === 'checking') return 'checking'
+  if (lastCheckedAt === null) return 'never_checked'
+  if (nextCheckAt === null) return 'unscheduled'
+  return nextCheckAt <= nowIso ? 'overdue' : 'current'
+}
+
+export interface ConfirmedAvailability {
+  availabilityStatus: 'available' | 'unavailable'
+  checkedAt: string
+  deliveryMessage: string | null
+}
+
 export interface TrackerTargetRow {
   id: string
   pincode: string
   status: string
+  isConfigured: boolean
+  unconfiguredAt: string | null
   lastCheckedAt: string | null
   nextCheckAt: string | null
   consecutiveFailures: number
-  availabilityState: AvailabilityState
+  checkStatus: string | null
   availabilityStatus: string | null
-  deliveryMessage: string | null
+  availabilityState: AvailabilityState
+  errorCode: string | null
+  errorMessage: string | null
   checkedAt: string | null
-  isLastConfirmedResult: boolean
+  deliveryMessage: string | null
+  lastConfirmedAvailability: ConfirmedAvailability | null
+  freshnessState: FreshnessState
+  /** Denormalized from the parent product -- 'owned' (My Products) or 'other' (Other Products). No richer per-check provenance (e.g. manual vs. scheduled) is persisted anywhere in this schema today. */
+  source: 'owned' | 'other'
 }
 
 export interface TrackerProductRow {
@@ -94,7 +137,6 @@ export interface TrackerProductRow {
 
 export type TrackerView = 'active' | 'archived' | 'removed'
 
-/** 'active' view maps to the lifecycle status 'active' -- callers derive Paused/Failed/Partially-active client-side from `trackerState` on each row, this is only the lifecycle-level filter (DATA_MODEL.md's parent status column has just three values). */
 function lifecycleStatusForView(view: TrackerView): 'active' | 'archived' | 'removed' {
   return view
 }
@@ -107,6 +149,7 @@ export async function fetchTrackerPage(args: {
   limit: number
 }) {
   const admin = createAdminClient()
+  const nowIso = new Date().toISOString()
 
   const { data: products, count, error: productsError } = await admin
     .from('pincode_monitored_products')
@@ -120,61 +163,89 @@ export async function fetchTrackerPage(args: {
   if (productsError) throw new Error(`tracker_products_query_failed: ${productsError.message}`)
 
   const productIds = (products ?? []).map(p => p.id as string)
+  const productSourceById = new Map<string, 'owned' | 'other'>((products ?? []).map(p => [p.id as string, p.product_source as 'owned' | 'other']))
   const targetsByProduct = new Map<string, TrackerTargetRow[]>()
 
   if (productIds.length > 0) {
+    // Correction 2 (PR #55 review round): the tracker's normal list
+    // includes only CONFIGURED targets -- an unconfigured one is not part
+    // of what the seller is currently tracking. Its history is still
+    // preserved in the database (never deleted), just not surfaced by
+    // this default view.
     const { data: targets, error: targetsError } = await admin
       .from('pincode_tracking_targets')
-      .select('id, monitored_product_id, pincode, status, last_checked_at, next_check_at, consecutive_failures')
+      .select('id, monitored_product_id, pincode, status, is_configured, unconfigured_at, last_checked_at, next_check_at, consecutive_failures')
       .in('monitored_product_id', productIds)
+      .eq('is_configured', true)
       .order('pincode', { ascending: true })
 
     if (targetsError) throw new Error(`tracker_targets_query_failed: ${targetsError.message}`)
 
     const targetIds = (targets ?? []).map(t => t.id as string)
-    const latestResultByTarget = new Map<string, { availability_status: string | null; check_status: string | null; delivery_message: string | null; checked_at: string }>()
+    const resultsByTarget = new Map<string, {
+      latest_check_status: string | null
+      latest_availability_status: string | null
+      latest_checked_at: string | null
+      latest_delivery_message: string | null
+      latest_error_code: string | null
+      latest_error_message: string | null
+      confirmed_availability_status: string | null
+      confirmed_checked_at: string | null
+      confirmed_delivery_message: string | null
+    }>()
 
     if (targetIds.length > 0) {
-      const { data: results, error: resultsError } = await admin
-        .from('pincode_availability_results')
-        .select('tracking_target_id, availability_status, check_status, delivery_message, checked_at')
-        .in('tracking_target_id', targetIds)
-        .order('checked_at', { ascending: false })
-
-      if (resultsError) throw new Error(`tracker_results_query_failed: ${resultsError.message}`)
-
-      // Results are ordered newest-first, so the first row seen per
-      // tracking_target_id is the latest -- never overwritten by an older
-      // one (isLastConfirmedResult is always true for the row surfaced
-      // here, by construction).
-      for (const row of results ?? []) {
-        const targetId = row.tracking_target_id as string
-        if (!latestResultByTarget.has(targetId)) {
-          latestResultByTarget.set(targetId, {
-            availability_status: row.availability_status as string | null,
-            check_status: row.check_status as string | null,
-            delivery_message: row.delivery_message as string | null,
-            checked_at: row.checked_at as string,
-          })
-        }
+      // Correction 4: bounded, database-side read -- never "fetch every
+      // historical row, deduplicate client-side."
+      const rows = await getTargetResults(admin, { workspaceId: args.workspaceId, targetIds }) as Array<{
+        tracking_target_id: string
+        latest_check_status: string | null
+        latest_availability_status: string | null
+        latest_checked_at: string | null
+        latest_delivery_message: string | null
+        latest_error_code: string | null
+        latest_error_message: string | null
+        confirmed_availability_status: string | null
+        confirmed_checked_at: string | null
+        confirmed_delivery_message: string | null
+      }>
+      for (const row of rows) {
+        resultsByTarget.set(row.tracking_target_id, row)
       }
     }
 
     for (const t of targets ?? []) {
       const productId = t.monitored_product_id as string
-      const latest = latestResultByTarget.get(t.id as string) ?? null
+      const result = resultsByTarget.get(t.id as string) ?? null
+      const status = t.status as string
+      const lastCheckedAt = (t.last_checked_at as string | null) ?? null
+      const nextCheckAt = (t.next_check_at as string | null) ?? null
+
       const row: TrackerTargetRow = {
         id: t.id as string,
         pincode: t.pincode as string,
-        status: t.status as string,
-        lastCheckedAt: (t.last_checked_at as string | null) ?? null,
-        nextCheckAt: (t.next_check_at as string | null) ?? null,
+        status,
+        isConfigured: t.is_configured as boolean,
+        unconfiguredAt: (t.unconfigured_at as string | null) ?? null,
+        lastCheckedAt,
+        nextCheckAt,
         consecutiveFailures: t.consecutive_failures as number,
-        availabilityState: deriveAvailabilityState(latest?.check_status ?? null, latest?.availability_status ?? null),
-        availabilityStatus: latest?.availability_status ?? null,
-        deliveryMessage: latest?.delivery_message ?? null,
-        checkedAt: latest?.checked_at ?? null,
-        isLastConfirmedResult: latest !== null,
+        checkStatus: result?.latest_check_status ?? null,
+        availabilityStatus: result?.latest_availability_status ?? null,
+        availabilityState: deriveAvailabilityState(result?.latest_check_status ?? null, result?.latest_availability_status ?? null),
+        errorCode: result?.latest_error_code ?? null,
+        errorMessage: result?.latest_error_message ?? null,
+        checkedAt: result?.latest_checked_at ?? null,
+        deliveryMessage: result?.latest_delivery_message ?? null,
+        lastConfirmedAvailability: result?.confirmed_availability_status
+          ? {
+              availabilityStatus: result.confirmed_availability_status as 'available' | 'unavailable',
+              checkedAt: result.confirmed_checked_at as string,
+              deliveryMessage: result.confirmed_delivery_message,
+            }
+          : null,
+        freshnessState: deriveFreshnessState(status, lastCheckedAt, nextCheckAt, nowIso),
+        source: productSourceById.get(productId) ?? 'other',
       }
       if (!targetsByProduct.has(productId)) targetsByProduct.set(productId, [])
       targetsByProduct.get(productId)!.push(row)

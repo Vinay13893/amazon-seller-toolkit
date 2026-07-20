@@ -1,14 +1,19 @@
 /**
  * Asserts each wrapper calls exactly the right Postgres function name with
  * exactly the right parameter keys (matching the real signatures in
- * `063_pincode_p0a_rpcs.sql` verbatim) via a lightweight fake `RpcClient`
- * double -- no live database. SERVER-ROLE SAFETY: also asserts the module
- * never exposes a generic pass-through (`rpc.ts` has exactly four exported
- * call functions, each hardcoded to one function name).
+ * `063_pincode_p0a_rpcs.sql`/`064_pincode_p0b_config_lifecycle_and_rpcs.sql`
+ * verbatim) via a lightweight fake `RpcClient` double -- no live database.
+ * SERVER-ROLE SAFETY: also asserts the module never exposes a generic
+ * pass-through (`rpc.ts` has exactly seven exported call functions, each
+ * hardcoded to one function name).
  */
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { enrollProducts, setTrackingState, removeProducts, queueManualCheck, PincodeRpcTransportError, type RpcClient } from '../rpc'
+import {
+  enrollProducts, setTrackingState, removeProducts, queueManualCheck,
+  replaceProductTargets, replaceWorkspaceDefaultPincodes, getTargetResults,
+  PincodeRpcTransportError, type RpcClient,
+} from '../rpc'
 
 function fakeClient(response: { data: unknown; error: { message: string } | null }): RpcClient & { calls: { fn: string; params: Record<string, unknown> }[] } {
   const calls: { fn: string; params: Record<string, unknown> }[] = []
@@ -71,6 +76,40 @@ describe('queueManualCheck', () => {
       ['p_cooldown_seconds', 'p_manual_pending_limit', 'p_marketplace_id', 'p_target_id', 'p_user_id', 'p_workspace_id'],
     )
     assert.equal(client.calls[0].params.p_user_id, 'u-1')
+  })
+})
+
+describe('replaceProductTargets', () => {
+  test('calls replace_pincode_product_targets with exactly the RPC-named parameters', async () => {
+    const client = fakeClient({ data: { result: 'success', addedCount: 1, reconfiguredCount: 0, unconfiguredCount: 0, targetCount: 1 }, error: null })
+    await replaceProductTargets(client, { workspaceId: 'ws-1', marketplaceId: 'mp-1', monitoredProductId: 'p-1', pincodes: ['110001'], quotaLimit: 50 })
+    assert.equal(client.calls[0].fn, 'replace_pincode_product_targets')
+    assert.deepEqual(
+      Object.keys(client.calls[0].params).sort(),
+      ['p_marketplace_id', 'p_monitored_product_id', 'p_pincodes', 'p_quota_limit', 'p_workspace_id'],
+    )
+    assert.equal(client.calls[0].params.p_monitored_product_id, 'p-1')
+    assert.deepEqual(client.calls[0].params.p_pincodes, ['110001'])
+  })
+})
+
+describe('replaceWorkspaceDefaultPincodes', () => {
+  test('calls replace_workspace_default_pincodes with exactly the RPC-named parameters, pincodes mapped to {pincode, displayOrder}', async () => {
+    const client = fakeClient({ data: { result: 'success', defaults: [] }, error: null })
+    await replaceWorkspaceDefaultPincodes(client, { workspaceId: 'ws-1', marketplaceId: 'mp-1', pincodes: [{ pincode: '110001', displayOrder: 0 }] })
+    assert.equal(client.calls[0].fn, 'replace_workspace_default_pincodes')
+    assert.deepEqual(Object.keys(client.calls[0].params).sort(), ['p_marketplace_id', 'p_pincodes', 'p_workspace_id'])
+    assert.deepEqual(client.calls[0].params.p_pincodes, [{ pincode: '110001', displayOrder: 0 }])
+  })
+})
+
+describe('getTargetResults', () => {
+  test('calls get_pincode_target_results with exactly the RPC-named parameters', async () => {
+    const client = fakeClient({ data: [], error: null })
+    await getTargetResults(client, { workspaceId: 'ws-1', targetIds: ['t-1', 't-2'] })
+    assert.equal(client.calls[0].fn, 'get_pincode_target_results')
+    assert.deepEqual(Object.keys(client.calls[0].params).sort(), ['p_target_ids', 'p_workspace_id'])
+    assert.deepEqual(client.calls[0].params.p_target_ids, ['t-1', 't-2'])
   })
 })
 

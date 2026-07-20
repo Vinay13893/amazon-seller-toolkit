@@ -73,6 +73,38 @@ describe('getPincodeMonitoringConfig', () => {
     assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 250)
   })
 
+  // Correction 5 (PR #55 review round): Number.parseInt('10abc', 10) === 10
+  // -- a partial numeric prefix must NOT be accepted as a valid value.
+  test('falls back to the default when the value has a numeric prefix followed by garbage ("10abc" must not parse as 10)', () => {
+    process.env.PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE = '10abc'
+    assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 50)
+  })
+
+  test('falls back to the default for a decimal value (not a plain positive integer)', () => {
+    process.env.PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE = '10.5'
+    assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 50)
+  })
+
+  test('falls back to the default for a value with leading/trailing whitespace around otherwise-valid digits combined with garbage ("  10 dogs")', () => {
+    process.env.PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE = '  10 dogs'
+    assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 50)
+  })
+
+  test('accepts a value with only surrounding whitespace around valid digits', () => {
+    process.env.PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE = '  75  '
+    assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 75)
+  })
+
+  test('falls back to the default for a leading-zero value (not a canonical positive integer)', () => {
+    process.env.PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE = '007'
+    assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 50)
+  })
+
+  test('falls back to the default for a hex/exponential-looking value that Number() would otherwise coerce', () => {
+    process.env.PINCODE_TRACKING_QUOTA_PER_WORKSPACE_MARKETPLACE = '1e10'
+    assert.equal(getPincodeMonitoringConfig().quotaPerWorkspaceMarketplace, 50)
+  })
+
   test('manual cooldown and outstanding-limit defaults are documented values', () => {
     const config = getPincodeMonitoringConfig()
     assert.equal(config.manualCheckCooldownSeconds, 300)

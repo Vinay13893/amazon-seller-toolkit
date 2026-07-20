@@ -37,11 +37,18 @@ function collectFiles(dir: string, suffix: string): string[] {
 describe('static safety checks', () => {
   test('no P0-B route.ts file is a client component', () => {
     const routeFiles = collectFiles(ROUTES_DIR, 'route.ts')
-    assert.ok(routeFiles.length >= 8, `expected at least 8 route.ts files, found ${routeFiles.length}`)
+    // 8 original P0-B routes + Correction 2's PATCH .../products/[id]/pincodes.
+    assert.ok(routeFiles.length >= 9, `expected at least 9 route.ts files, found ${routeFiles.length}`)
     for (const file of routeFiles) {
       const content = readFileSync(file, 'utf8')
       assert.equal(content.includes("'use client'"), false, `${file} must never be a client component`)
     }
+  })
+
+  test('Correction 2 (PR #55 review round): the "Edit Pincodes" route (PATCH .../products/[id]/pincodes) exists', () => {
+    const routeFiles = collectFiles(ROUTES_DIR, 'route.ts')
+    const hasEditPincodesRoute = routeFiles.some(f => f.replace(/\\/g, '/').includes('/products/[id]/pincodes/route.ts'))
+    assert.ok(hasEditPincodesRoute, 'PATCH .../products/[id]/pincodes route.ts was not found -- this route was missing entirely before Correction 2')
   })
 
   test('no P0-B lib module is a client component', () => {
@@ -71,5 +78,26 @@ describe('static safety checks', () => {
       if (adminIdx === -1) continue // this route doesn't touch the admin client directly (e.g. delegates to a lib handler) -- nothing to check here
       assert.ok(accessIdx !== -1, `${file} imports the admin client but never references resolvePincodeAccess`)
     }
+  })
+
+  test('Correction 3 (PR #55 review round): default-pincode replacement uses exactly one RPC call, never a separate upsert-then-deactivate pair', () => {
+    const content = readFileSync(path.join(LIB_DIR, 'defaults.ts'), 'utf8')
+    assert.ok(content.includes('replaceWorkspaceDefaultPincodes'), 'defaults.ts must call the replace_workspace_default_pincodes RPC wrapper')
+    assert.equal(content.includes(".upsert("), false, 'defaults.ts must not perform its own .upsert() write -- that was the non-atomic two-request bug this correction closes')
+  })
+
+  test('Correction 4 (PR #55 review round): tracker.ts uses the bounded get_pincode_target_results RPC, never an unbounded results query, and the removed isLastConfirmedResult field name is gone', () => {
+    const content = readFileSync(path.join(LIB_DIR, 'tracker.ts'), 'utf8')
+    assert.ok(content.includes('getTargetResults'), 'tracker.ts must call the get_pincode_target_results RPC wrapper')
+    assert.equal(content.includes("from('pincode_availability_results')"), false, 'tracker.ts must not query pincode_availability_results directly -- that was the unbounded-fetch-then-dedupe-in-TypeScript bug this correction closes')
+    assert.equal(content.includes('isLastConfirmedResult'), false, 'the incorrect isLastConfirmedResult field must be fully removed, not just unused')
+    assert.ok(content.includes('lastConfirmedAvailability'), 'tracker.ts must expose the replacement lastConfirmedAvailability fact')
+  })
+
+  test('Correction 6 (PR #55 review round): pause/resume/remove routes no longer accept a cross-product productIds override', () => {
+    const removeContent = readFileSync(path.join(ROUTES_DIR, 'products', '[id]', 'remove', 'route.ts'), 'utf8')
+    assert.equal(removeContent.includes('productIds'), false, 'the remove route must no longer accept a productIds body override -- it acts on exactly the URL product')
+    const handlerContent = readFileSync(path.join(LIB_DIR, 'pause-resume-handler.ts'), 'utf8')
+    assert.ok(handlerContent.includes('resolveScopedTargetIds'), 'the pause/resume handler must route target-ID resolution through resolveScopedTargetIds, the function that enforces every ID belongs to the URL product')
   })
 })

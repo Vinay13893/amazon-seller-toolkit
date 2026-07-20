@@ -1,16 +1,21 @@
 /**
  * Pincode Monitoring P0-B — workspace default-pincode data access.
  *
- * `workspace_default_pincodes` is not one of the six trusted RPCs (DATA_
- * MODEL.md sec2a/sec3a/sec3b only cover enrollment/pause-resume/removal of
- * MONITORED PRODUCTS) -- its own mutation path is "authenticated server
- * route -> role check -> service-role write" directly against the table
- * (DATA_MODEL.md sec6), same as every other server-role write in this
- * codebase. `is_active` is used for soft removal (never a hard DELETE),
- * matching the table's own documented design (DATA_MODEL.md sec1).
+ * Correction 3 (PR #55 review round): `replaceActiveDefaults` previously
+ * issued two separate PostgREST write requests (an insert-or-update-on-
+ * conflict call, then a separate deactivate call) -- not atomic; a crash/
+ * timeout between the two could leave
+ * the active default set inconsistent with what the caller asked for.
+ * Replacement is now exactly one call to `replace_workspace_default_
+ * pincodes` (064 migration), a single-transaction, service-role-only RPC.
+ * `fetchActiveDefaults` remains a plain read (no atomicity concern for a
+ * SELECT) -- `workspace_default_pincodes` is not one of the six original
+ * trusted RPCs' tables, so reads still go direct, only WRITES go through
+ * the new RPC.
  */
 import { createAdminClient } from '@/lib/supabase/admin'
-import { PINCODE_RE } from './validation'
+import { replaceWorkspaceDefaultPincodes, PincodeRpcTransportError, type DefaultPincodeInput } from './rpc'
+import type { ReplaceDefaultsRpcResult } from './responses'
 
 export interface DefaultPincodeRow {
   id: string
@@ -39,64 +44,39 @@ export async function fetchActiveDefaults(workspaceId: string, marketplaceId: st
   }))
 }
 
-export interface ReplaceDefaultsInput {
-  pincode: string
-  displayOrder: number
-}
+export type ReplaceDefaultsResult =
+  | { ok: true; defaults: DefaultPincodeRow[] }
+  | { ok: false; rpcResult: ReplaceDefaultsRpcResult }
 
 /**
- * Replaces the full active default-pincode list for (workspace, marketplace)
- * in one call: upserts every pincode in `pincodes` as active with its given
- * display order, and deactivates (never deletes) any currently-active row
- * whose pincode is not in the new list. Every pincode must already be
- * regex-validated by the caller (the route) -- this function re-asserts the
- * invariant defensively (throws rather than silently upserting a malformed
- * row) but is not the primary validation point.
+ * Atomically replaces the full active default-pincode list for (workspace,
+ * marketplace) via one RPC call. Every pincode must already be regex-
+ * validated by the caller (the route) -- the RPC re-validates defensively
+ * (rejects the whole call, never a partial write) but is not the primary
+ * validation surface for user-facing error messages.
  */
 export async function replaceActiveDefaults(
   workspaceId: string,
   marketplaceId: string,
-  pincodes: ReplaceDefaultsInput[],
-): Promise<DefaultPincodeRow[]> {
+  pincodes: DefaultPincodeInput[],
+): Promise<ReplaceDefaultsResult> {
   const admin = createAdminClient()
 
-  for (const p of pincodes) {
-    if (!PINCODE_RE.test(p.pincode)) {
-      throw new Error(`invalid_pincode_reached_data_access: ${p.pincode}`)
+  let rpcResult: ReplaceDefaultsRpcResult
+  try {
+    rpcResult = await replaceWorkspaceDefaultPincodes(admin, { workspaceId, marketplaceId, pincodes }) as ReplaceDefaultsRpcResult
+  } catch (error) {
+    if (error instanceof PincodeRpcTransportError) {
+      throw new Error(`defaults_replace_failed: ${error.message}`)
+    }
+    throw error
+  }
+
+  if (rpcResult.result === 'success') {
+    return {
+      ok: true,
+      defaults: rpcResult.defaults.map(d => ({ id: d.id, pincode: d.pincode, displayOrder: d.displayOrder, isActive: true })),
     }
   }
-
-  if (pincodes.length > 0) {
-    const { error: upsertError } = await admin
-      .from('workspace_default_pincodes')
-      .upsert(
-        pincodes.map(p => ({
-          workspace_id: workspaceId,
-          marketplace_id: marketplaceId,
-          pincode: p.pincode,
-          display_order: p.displayOrder,
-          is_active: true,
-        })),
-        { onConflict: 'workspace_id,marketplace_id,pincode' },
-      )
-
-    if (upsertError) throw new Error(`defaults_upsert_failed: ${upsertError.message}`)
-  }
-
-  const keepPincodes = pincodes.map(p => p.pincode)
-  let deactivateQuery = admin
-    .from('workspace_default_pincodes')
-    .update({ is_active: false })
-    .eq('workspace_id', workspaceId)
-    .eq('marketplace_id', marketplaceId)
-    .eq('is_active', true)
-
-  if (keepPincodes.length > 0) {
-    deactivateQuery = deactivateQuery.not('pincode', 'in', `(${keepPincodes.join(',')})`)
-  }
-
-  const { error: deactivateError } = await deactivateQuery
-  if (deactivateError) throw new Error(`defaults_deactivate_failed: ${deactivateError.message}`)
-
-  return fetchActiveDefaults(workspaceId, marketplaceId)
+  return { ok: false, rpcResult }
 }
