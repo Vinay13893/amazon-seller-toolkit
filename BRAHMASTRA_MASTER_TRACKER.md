@@ -4633,3 +4633,419 @@ changed. No deployment. Feature remains fully disabled. P0-C and P0-D remain blo
 **Next step (needs the founder):** review PR #55 as it now stands (Round 2's 8 contract-gap corrections plus
 this round's 3 closing fixes), and either approve it for merge or request further changes. P0-C cannot start
 until this PR is approved. This PR does not merge itself, does not apply any migration, and does not deploy.
+## 23. SKU Performance — Daily Sales & Ad Spend Trends: Data Audit (P1-A, 2026-07-22)
+
+**Founder requirement:** a new, separate workstream from Pincode Checker. The team needs one page
+where they can see SKU-wise daily sales and advertising-spend trends, answering: which SKUs are
+growing/declining, which are spending more, is the extra spend producing sales, which SKU has
+spend but no sales, which SKU's TACOS is worsening, what changed yesterday, which products need
+attention today, and is the underlying data fresh and trustworthy. Explicitly a **team operations
+page, not a decorative dashboard**.
+
+**Route / working name:** `/dashboard/sku-performance`, nav label "SKU Performance", subtitle
+"Daily Sales & Ad Spend Trends."
+
+**Branch / worktree:** `feature/sku-daily-sales-spend-audit`, in a brand-new, separate git
+worktree (`/home/user/amazon-seller-toolkit-sku-audit`) — deliberately never touching the
+existing Pincode P0-A/P0-B worktrees or branches (`amazon-seller-toolkit-pincode-p0a`,
+`amazon-seller-toolkit-pincode-p0b`, PRs #54/#55). Built from latest `origin/master`
+(`1e5a044`, PR #54 merged, PR #55 still open/unmerged — this new workstream does not depend on
+or wait for PR #55).
+
+**Customer/team problem:** no existing page joins SKU-level sales and SKU-level ad spend into one
+trend view. `/dashboard/internal` (Stock Actions) and
+`/dashboard/internal/easyhome-diagnostic` (Brahmastra) cover inventory/replenishment and a
+broader Ads/finding-review workflow respectively, but neither is the requested "one page, SKU ×
+day, sales + spend + trend + attention" operational view.
+
+**Audit status: COMPLETE (P1-A only). Result: GO WITH RESTRICTIONS.** Full detail in
+`SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`. Summary of what was verified, by reading actual migrations/
+importers/sync code (not assumed) and running read-only `SELECT`s against the live production
+Supabase project (`okxfwcfxxrtmijmvztdq`):
+
+- This is **not** a generic multi-tenant audit — the entire relevant `internal_*` table family is
+  a single-team internal-ops toolkit (RLS-gated to one test account or the "Internal Tester"
+  plan), and in practice **exactly one of the 3 workspaces** in production
+  (`55a321c9-7729-4662-a494-9f1f1aa86846`, plan `Free`) has any real Ads/sales data at all — same
+  single-workspace reality as the existing Brahmastra tooling.
+- **SKU → Ads-spend mapping is direct** (Amazon's own `spAdvertisedProduct` report carries
+  `advertisedSku`/`advertisedAsin` per row — no multi-hop campaign/ad-group ID join needed) and
+  verified **100% clean on live data**: 112/112 distinct advertised SKUs, all-time, matched
+  exactly to `amazon_listing_items` by SKU text, 0 unmapped, 0 ambiguous.
+- **Structural caveat carried into the spec/plan**: `amazon_listing_items` has a DB constraint
+  that forbids two SKUs from ever sharing one ASIN in that table, so a real FBA/FBM
+  duplicate-listing case cannot currently be observed or proven safe — the RPC design must still
+  implement and test the `unmapped`/`ambiguous` states even though today's data can't exercise
+  them, and must never split spend arbitrarily across SKUs.
+- Sales source: `internal_business_report_sku_sales_traffic` (SP-API Business Report, ASIN/SKU
+  granularity, order-date based) — fresh through **2026-07-21** (yesterday). Spend source:
+  `internal_ads_advertised_product_daily_rows` (Amazon Ads Reporting API v3, DAILY, **1-day click
+  attribution** — not 7d/14d, must be labeled) — also fresh through 2026-07-21.
+- **Data-accuracy risks found:** catalog table (`amazon_listing_items`, product title/image/
+  brand) is **23 days stale**; only ~5.5–7.3 weeks of history exist today, so a 90-day range
+  filter must show a real "data starts {date}" boundary, not a zero-filled chart; fulfillment-type
+  data's only source is **29 days stale** and the purpose-built replacement table has **zero
+  rows** — per the founder's own "only when trustworthy" instruction, the fulfillment filter must
+  ship disabled in V1; Business-Report/Ads timezone (`Asia/Kolkata`) and date-boundary alignment
+  between the two pipelines is a reasonable assumption but was **not independently proven**
+  against a third source.
+- **Organic sales (`Total − Ad-attributed`) is explicitly excluded from V1** per the founder's own
+  instruction — both stated preconditions (attribution-window methodology, date-boundary
+  alignment) are unresolved.
+
+**Implementation stages (locked sequence, per `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`):**
+P1-A (this entry, audit + locked definitions — complete) → P1-B (canonical daily SKU aggregation
+RPCs + read-only API routes, no UI, migration written but not applied to production) → P1-C
+(the `/dashboard/sku-performance` page UI) → P1-D (explainable flags, CSV export, Command Center
+integration). **P1-B is explicitly not started in this task**, per instruction, pending founder
+review of this audit.
+
+**Recommended aggregation model:** a bounded `SECURITY DEFINER` RPC doing live server-side
+aggregation (not a materialized table, not client-side aggregation) — current volume (24,608 Ads
+rows + 4,500 Business Report rows for the one real workspace, both already indexed on
+`(workspace_id, report_date DESC)`) does not yet justify a materialized-table refresh pipeline. A
+concrete promotion trigger (~2–5M rows per workspace, or p95 RPC latency > ~800ms) is documented
+for later, not built now.
+
+**Dependencies:** reuses the existing `getInternalAccessContext()` auth gate (same as
+`/dashboard/internal` and `brahmastra-data-health`) rather than building a second parallel gate.
+Proposes reusing the existing `internal_brahmastra_thresholds` table (migration 054) for the
+TACOS warning/critical bands and minimum-ad-spend-for-action floor in the P1-D explainable flags,
+instead of inventing a second, competing threshold system.
+
+**Blockers:** none structural. Two data-quality items worth resolving before or alongside P1-C
+(not P1-B blockers): refreshing the `amazon_listing_items` catalog sync (23 days stale), and
+independently verifying the two pipelines' date-boundary alignment before trusting the
+"Yesterday" column to day-level precision.
+
+**Verification this round:** read-only only — no `npm test`/`tsc`/`eslint`/`build` run, because no
+application code was written (P1-A is documentation-only, as instructed). Every data claim above
+is backed by either a repository file citation or a live read-only SQL query result, recorded in
+full in `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`.
+
+**No migration applied to production. No production row changed by this audit (all queries were
+read-only `SELECT`s). No application code, API route, or UI changed. No deployment.**
+
+**Next step (needs the founder):** review the three new documents
+(`SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`, `SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md`,
+`SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`) and the "GO WITH RESTRICTIONS" verdict, and either
+approve starting P1-B or request changes to the locked metric definitions/flag formulas first.
+P1-B does not start until that approval is given.
+
+### §23 update 2 (2026-07-22) — PR #56 review correction round: 8 corrections closing definitional/evidence gaps, verdict unchanged (GO WITH RESTRICTIONS), still not merged
+
+**Decision received:** "PR #56 is directionally approved as GO WITH RESTRICTIONS, but the audit
+and locked metric definitions need one focused correction round before merge." Stayed on branch
+`feature/sku-daily-sales-spend-audit`, PR #56. Still P1-A only: no migration, no RPC, no route, no
+UI, no production writes. All corrections closed.
+
+**Correction 1 — spend-weighted mapping coverage vs. SKU-count coverage.** The original audit's
+"112/112 mapped" was a count of distinct SKUs, not a measure of spend, and risked being read as
+"100% of spend is mapped." Data Audit §3a now explicitly names it SKU-count coverage; §3b adds
+the spend-weighted question with a logical derivation (airtight, since row-level mapping state is
+a pure function of which of the 112 already-proven-mapped SKUs a row belongs to) but is explicit
+that the exact ₹ totals per window (all-history/30-day/7-day/yesterday) could not be independently
+re-queried this round — see the DB-access disclosure below. §3c (value-weighted sales catalog
+coverage) is reported as **UNKNOWN**, not estimated, for the same reason — SKU-count coverage
+(98.7%) cannot safely be assumed to equal sales-value coverage.
+
+**Correction 2 — auto (`ads_api_auto`) vs. manual-CSV-upload overlap.** Inspected the actual
+`dedupe_key` construction (not assumed): both the automated JSON-report sync and the manual-CSV
+import routes call the *exact same* parser functions (`sync-ads-reports.ts` converts JSON rows to
+CSV via `jsonRowsToCsv()` before parsing), and both write paths' upsert logic
+(`upsertByDedupeKey()` / the deep-reports import route) select existing rows by `dedupe_key`
+**without filtering by `source`**, then update-by-`id` on a match or insert if not — **proving,
+by code, that the same logical row can never exist twice regardless of source; the later sync
+always overwrites the earlier one.** One real, honestly-stated gap: manual CSV exports' Campaign
+Id column presence was not independently confirmed (no sample file exists in-repo), so if a
+manual export ever omits it while the automated JSON path supplies a real one, the two paths'
+keys could diverge for the same logical row — documented as an explicit risk with a conservative
+P1-B aggregation rule (sum the single deduplicated table once, never re-sum by `source`).
+
+**Correction 3 — source freshness is not SKU activity.** The Product Spec's old per-SKU "Data
+delayed" rule (a SKU with no row for a date = stale) is retired — a SKU can have zero activity on
+a given day for ordinary reasons. New, separated field sets: source-level
+(`salesSourceLatestCompleteDate`/`adsSourceLatestCompleteDate`/`catalogLastSyncedAt` + their
+`*State` companions, reusing `brahmastra-data-health.ts`'s existing status vocabulary) vs. SKU-level
+(`lastSalesActivityDate`/`lastAdSpendActivityDate`/`lastAttributedSaleActivityDate`). The page
+summary no longer collapses to one freshness bit — Sales/Ads/Catalog freshness are shown as three
+separate facts, so a stale catalog sync can never imply yesterday's sales figure is stale.
+
+**Correction 4 — missing row vs. confirmed zero.** Inspected `internal_data_refresh_runs`
+directly: it proves sync completeness at **date-range granularity only** (`date_from`/`date_to`
+per run), not per-day. A five-state coverage model is now locked in the Implementation Plan:
+`BEFORE_HISTORY` / `SOURCE_NOT_COMPLETE` / `CONFIRMED_ZERO` / `REPORTED_VALUE` / `UNKNOWN` — an
+unavailable date is never zero-filled, and a date inside a successfully-completed range with no
+row is rendered as a real, positive `CONFIRMED_ZERO`, not left ambiguously blank. Day-level
+precision beyond range-level is recorded as a possible future coverage-ledger enhancement, not
+built.
+
+**Correction 5 — flag definitions and zero-denominator truth tables.** "Spend without sales"
+renamed to "Ad spend with no attributed sales" (it never claimed total ordered sales were zero;
+the old name implied that). A documented, optional-only "Ad spend with no ordered sales" future
+flag is named but explicitly not added without separate approval. Base sales/spend trend states
+(`growing`/`declining`/`flat`/`new_activity`or`new_spend`/`no_activity`or`no_spend`) are now the
+sole, documented definition of the "SKUs growing/declining" summary cards — the two efficiency
+sub-flags (sales-growing-with-stable-spend / sales-growing-while-spend-falls) are demoted to
+narrower Attention-status detail, not an alternate definition. Full ACOS/TACOS zero-denominator
+truth tables locked (never display infinity; relative TACOS-deterioration only computed when both
+periods have a defined TACOS).
+
+**Correction 6 — flags moved into P1-B, sequence contradiction resolved.** The original sequence
+deferred explainable flags to P1-D while the Product Spec's Attention-status column, Growing/
+Declining filters, and default sort all depended on them from day one — a contradiction. Revised:
+P1-B now owns aggregation **and** flag computation, filtering, and server-side sorting/pagination
+(nothing computed client-side). P1-C is UI-rendering only. P1-D is narrowed to CSV export +
+Command Center integration only.
+
+**Correction 7 — SKU normalization and identity-conflict audit.** Read the actual normalization
+code across all four+ pipelines — found **at least three different formulas** in live use
+(`toLocaleUpperCase` no-trim for Business Report/Cost Master; `.trim().toUpperCase()` ASCII for
+the Ads dedupe-key; `.trim().toUpperCase().replace(/\s+/g,' ')` for a transient Ads-to-cost-master
+lookup), plus the catalog table itself (`amazon_listing_items.sku`, the join target every other
+source is matched against) applies **no normalization at all**. "Ambiguous" is retired from the
+mapping-state vocabulary (it depended on a schema-forbidden condition) and replaced with
+`identity_conflict` — a concrete, reachable state (SKU matches, ASIN doesn't) that a real relist
+could trigger. The listing-sync's real duplicate-ASIN behavior is now an exact, cited code fact
+(`amazon/sync/listings/process/route.ts:203-211`: the upsert's `onConflict` target is the
+SKU-based unique constraint; a second SKU for an existing ASIN collides with the *separate*
+ASIN-based partial unique index instead, raises a genuine Postgres `23505`, which a bare
+`try/catch` silently discards — `console.error` only, row never written, no caller ever sees it)
+— replacing the prior round's unverified "silently rejected" characterization with its exact
+mechanism.
+
+**Correction 8 — timezone and currency contract.** Timezone/date-boundary alignment remains
+explicitly unverified and is now a **named pre-production checkpoint**: the Yesterday column,
+day-over-day deltas, and day-specific flags must stay internal/disabled until a real cross-check
+against the Amazon Ads/Seller Central UI is performed and recorded; P1-B may still be built
+against an explicit `p_as_of` parameter without waiting on it. Currency is no longer treated as a
+hardcoded `'INR'` assumption — the API must return currency from the authorized Ads profile
+context, and must reject (never sum, never silently convert) any aggregation that would span more
+than one currency.
+
+**DB-access disclosure (full honesty, not buried):** the Supabase MCP read-only SQL tool
+(`execute_sql`, `list_tables`) was gated behind a tool-permission approval that remained blocked
+for the entire session, including after an explicit approval was requested and granted mid-session
+— confirmed to be a tool-specific gate (a different tool on the same server, `list_projects`,
+succeeded) rather than a connectivity failure. Consequence: every fresh number this round needed
+that required a genuinely new query (spend-weighted mapping ₹ totals, value-weighted sales
+coverage, the auto/manual overlap date range and row counts, normalization-collision counts) could
+not be obtained. Every one of these is explicitly marked **DERIVED** (with the logical argument
+shown, §Data Audit §3b) or **UNKNOWN — blocked** (§3c, quantitative parts of §3d/§3e), with the
+exact ready-to-run SQL included in the Data Audit doc, rather than estimated or fabricated. This
+does not change the GO WITH RESTRICTIONS verdict (the qualitative/structural findings — 100%
+SKU-count mapping, structurally-proven duplicate prevention, the exact duplicate-ASIN mechanism —
+are all still directly evidenced), but it is recorded as an open P1-A closeout item: re-run the
+four queries the moment DB access is available.
+
+**Verification this round:** read-only/code-reading only — no `npm test`/`tsc`/`eslint`/`build`,
+because no application code was written. `git status` will confirm only the three
+`SKU_DAILY_SALES_SPEND_*.md` docs plus this tracker and `WORK_DONE_SUMMARY.md` changed — zero
+migration/RPC/route/UI files touched.
+
+**No migration applied to production. No production row changed (every query attempted was a
+read-only `SELECT`; several could not run at all due to the tool-permission gate above, which by
+definition also changed nothing). No application code, API route, or UI changed. No deployment.**
+
+**Next step (needs the founder):** review the corrected three documents and confirm the "GO WITH
+RESTRICTIONS" verdict stands, or flag anything in the DERIVED/UNKNOWN-marked sections (§Data Audit
+§3b/§3c/§3d/§3e/§8) that should block P1-B until independently re-verified with live DB access.
+P1-B does not start until that approval is given. Merge order note: PR #55 (Pincode P0-B) and PR
+#56 both touch `BRAHMASTRA_MASTER_TRACKER.md`/`WORK_DONE_SUMMARY.md` — PR #56 should not merge
+before PR #55 resolves; once #55 merges, this branch will be rebased onto the new `master`
+preserving both PRs' doc entries before #56 can merge cleanly.
+
+### §23 update 3 (2026-07-22) — PR #56 evidence closeout: the blocked queries are now directly SQL-verified, verdict unchanged (GO WITH RESTRICTIONS), still not merged
+
+**Decision received:** "PR #56's review amendment is directionally approved. The previously
+blocked read-only production queries have now been run successfully through an independent
+reviewer. Make one final docs-only evidence-closeout commit." Stayed on branch
+`feature/sku-daily-sales-spend-audit`, PR #56. Still P1-A only: no migration, no RPC, no route, no
+UI, no production writes. This session's own Supabase MCP tool remained blocked (see §23 update 2)
+— the numbers below were obtained by an independent reviewer running the exact queries this
+audit's Update 2 round had already prepared and published as ready-to-run SQL, and are recorded
+here in place of the prior DERIVED/UNKNOWN markers.
+
+**Spend-weighted mapping coverage — resolved, 100% mapped spend in every window.** Workspace
+`55a321c9-7729-4662-a494-9f1f1aa86846`, marketplace `A21TJRUUN4KGV`:
+
+| Window | Rows | Total spend | Mapped spend % |
+|---|---|---|---|
+| All history (2026-06-01→2026-07-21) | 24,608 | ₹727,626.91 | 100% |
+| Last 30 complete days | 14,303 | ₹432,127.53 | 100% |
+| Last 7 complete days | 3,288 | ₹103,341.35 | 100% |
+| Latest complete day (2026-07-21) | 467 | ₹15,028.24 | 100% |
+
+Unmapped and identity-conflict spend: ₹0 in every window. This directly confirms — rather than
+merely logically implies, as Update 2's derivation argued — the SKU-count mapping result (§23
+update 2, 112/112).
+
+**Value-weighted sales-catalog coverage — resolved.** Of 232 sales-active SKUs, 229 are
+catalog-mapped by count (98.7%, unchanged); by **value**, mapped ordered sales are ₹61,440,420.18
+of ₹61,464,612.18 total (**99.9606%**), and mapped units are 51,151 of 51,170 (**99.9629%**) — the
+3 missing-catalog SKUs turn out to be lower-volume ones in this account, so value coverage is
+actually slightly *higher* than SKU-count coverage, not lower as could have plausibly been the
+case. SKU-count and value-weighted coverage are reported as two separate, non-interchangeable
+statistics, per the explicit instruction, not blended into one number.
+
+**Auto (`ads_api_auto`) vs. manual-CSV overlap — resolved, zero overlap, zero duplication.**
+`manual_csv_upload` covers 2026-06-01→2026-06-14 (7,143 rows, ₹219,846.32 spend, ₹1,096,705.57
+attributed sales); `ads_api_auto` covers 2026-06-15→2026-07-21 (17,465 rows, ₹507,780.59 spend,
+₹2,314,253.82 attributed sales) — the two ranges are cleanly adjacent with **zero overlapping
+dates, zero duplicate `dedupe_key` values, zero duplicate rows, ₹0 duplicate spend, ₹0 duplicate
+attributed sales**. Row counts and spend both sum exactly to the all-history totals above,
+cross-confirming both results independently. **Current production data has no source-date
+overlap and no duplicate dedupe keys — therefore there is no current double-counting evidence.**
+This is a fact about today's data specifically; the structural proof from §23 update 2 (shared
+parser, source-unfiltered select-then-upsert-by-id) is what makes duplication impossible even if a
+future overlap ever occurs. **The conservative P1-B rule stands regardless of this result: sum the
+canonical table once, never separately sum source partitions together.**
+
+**Still open at the time of this update:** the Data Audit §3e SKU-normalization-collision
+**count** query was not part of this evidence-closeout round — resolved in §23 update 4 below,
+during the PR #55/#56 merge-order rebase. Timezone/date-boundary alignment, catalog-metadata
+staleness (23 days), fulfillment-data staleness (29 days), and the organic-sales exclusion remain
+exactly as documented in §23 update 2 — genuine verification/freshness facts a read-only query
+does not resolve.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.** Every number resolved this round confirmed what the
+Update 2 methodology already expected — no double counting, no material accuracy problem surfaced.
+
+**Verification this round:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code
+written. `git status` confirms only the three `SKU_DAILY_SALES_SPEND_*.md` docs plus this tracker
+and `WORK_DONE_SUMMARY.md` changed.
+
+**No migration applied to production. No production row changed. No application code, API route,
+or UI changed. No deployment.**
+
+### §23 update 4 (2026-07-22) — merge-order closeout: PR #55 merged, PR #56 rebased, normalization evidence resolved
+
+**Decision received:** "Proceed with the merge-order closeout." PR #55 (Pincode P0-B) was
+re-verified immediately before merge — still open, `mergeable_state: clean`, not draft, head
+exactly `f5edbf0400638a7c63f57eb449bb61caecf424da` (matching the approved commit, no newer commit
+since), combined status `success` (Vercel deployment completed), one check run (`Vercel Preview
+Comments`) `success` — then merged via a standard merge commit, producing
+`b3d31f14b6952b9d5d25a7be0d594407a3aca8d5` (36 files changed). Migration 064's file now exists on
+`master` as a result, but **was not applied to the production database** — the Pincode feature
+remains fully disabled by flag, and this task never ran `apply_migration` or any equivalent
+against the live Supabase project at any point across all of P0-A/P0-B. No production row changed.
+
+**PR #56 rebase.** Performed only in the `feature/sku-daily-sales-spend-audit` worktree
+(`/home/user/amazon-seller-toolkit-sku-audit`) — the Pincode worktrees were not touched. Fetched
+`origin/master` (now `b3d31f1`), rebased the branch's 3 commits onto it. `BRAHMASTRA_MASTER_TRACKER
+.md` and `WORK_DONE_SUMMARY.md` conflicted on the first commit, as expected (both PRs append at the
+end of each file) — both conflicts were clean, non-overlapping appends (Pincode §22 content ending
+right where this SKU Performance §23 content begins), resolved by keeping both sides concatenated
+in their original order, dropping only the three conflict-marker lines. The remaining two commits
+(the review correction round, the evidence closeout) applied without any further conflicts. New
+head: `ff0439c1aa01a214becf244c010a7463fa055e16`, based on `b3d31f1`. Verified: every Pincode §22
+update (1 through 11) and this SKU Performance §23 (updates 1 through 3) present in the rebased
+tracker; every Pincode and SKU Performance entry present in the rebased `WORK_DONE_SUMMARY.md`;
+`git diff --stat origin/master...HEAD` shows exactly 5 files changed
+(`BRAHMASTRA_MASTER_TRACKER.md`, `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`,
+`SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`, `SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md`,
+`WORK_DONE_SUMMARY.md`) — no application code, no migration, no RPC, no route, no UI. Pushed with
+`--force-with-lease`.
+
+**Normalization evidence closed out.** The one item §23 update 3 left open — the Data Audit §3e
+SKU-normalization-collision count — was run successfully, read-only, against production by an
+independent reviewer during this same closeout, using the canonical candidate
+`trim(SKU).toUpperCase()`: **zero normalization collisions**, per-source (Ads 112, Sales 232,
+Catalog 462, Cost master 400 — each source's canonical-distinct-SKU count exactly equals its
+raw-distinct-SKU count) and combined across all four sources. Canonicalization recovers **zero**
+additional matches over the exact-string joins already established (Ads→catalog 112/112,
+Sales→catalog 229/229, Cost master→catalog 302/302, all identical whether canonical or exact).
+Locked conclusions: current production data has zero collisions; canonicalization doesn't change
+today's mapping; raw SKU stays the display value; P1-B may use `trim().toUpperCase()` as a
+defensive canonical join key; P1-B must still detect/reject any future canonical collision rather
+than silently merging two distinct raw SKU identities. Full detail in Data Audit §3e/§8.
+
+**Every query this audit ever marked blocked or open is now resolved.** The only genuinely open
+items across the whole P1-A audit are verification/freshness facts, never blocked queries:
+timezone/date-boundary alignment (a named pre-production checkpoint), catalog-metadata staleness
+(23 days), fulfillment-data staleness (29 days), and the organic-sales exclusion.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.**
+
+**No migration applied to production. No production row changed by this task. No application
+code, API route, or UI changed. No deployment. P1-B not started.**
+
+**Next step (needs the founder):** PR #56 is now rebased onto the latest `master` (with PR #55
+merged), evidence-complete, and open for final merge review. **PR #56 has not been merged** — that
+remains a separate, explicit step pending founder review. P1-B does not start until that approval
+is given.
+
+### §23 update 5 (2026-07-22) — final API/coverage contract consistency pass, still not merged
+
+**Decision received:** "PR #56 is very close, but it is not approved to merge yet. Make one final
+docs-only contract correction." Stayed on branch `feature/sku-daily-sales-spend-audit`, PR #56.
+Still P1-A only: no migration, no RPC, no route, no UI, no production writes, no merge. Four
+corrections closing internal-consistency gaps found on review, none requiring new production
+queries.
+
+**Correction 1 — coverage-state model's internal contradiction.** The five-state model locked in
+§23 update 2 had `SOURCE_NOT_COMPLETE` and `UNKNOWN` **both** independently claiming "no covering
+refresh-run row exists" as a qualifying condition — logically impossible for the two to be
+mutually exclusive under one priority order. Fixed with an explicit deterministic decision order
+in `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` §3: (1) `REPORTED_VALUE` — a real row wins
+regardless of refresh-run history; (2) `BEFORE_HISTORY` — before the source's earliest date, never
+used for an in-history gap; (3) `CONFIRMED_ZERO` — requires an **existing, accepted successful**
+refresh run (`status='success'`, `rows_rejected=0`, exact source/dimension match) covering the
+date, no row found; (4) `SOURCE_NOT_COMPLETE` — covering attempts **do exist** but none succeeded;
+(5) `UNKNOWN` — no row **and** no refresh-run evidence at all covers the date. "No covering run"
+now belongs to `UNKNOWN` alone. New supporting code evidence: direct grep confirms the manual-CSV
+Ads import route (`ads-deep-reports/import/route.ts`) writes **zero** `internal_data_refresh_runs`
+rows — only the automated sync script does (10 write sites) — so no manual-CSV-imported date can
+ever reach `CONFIRMED_ZERO`/`SOURCE_NOT_COMPLETE`; an absent row there is `UNKNOWN` unless a future
+upload-coverage ledger proves the complete date/SKU universe. Recorded in Data Audit §3d as well,
+since it is new code-inspection evidence, not just a plan-doc rewording.
+
+**Correction 2 — selected date-range contract for the summary RPC.** The Product Spec said summary
+cards operate over a selected date range, but the Implementation Plan's proposed
+`get_sku_performance_summary` RPC only took `p_as_of`. Fixed: the RPC signature now also takes
+`p_date_from`/`p_date_to` (the selected, complete-day range driving the cards/table), kept
+independent of the separate `p_as_of` anchor (which drives only the fixed Yesterday/trailing-7/
+prior-7/trailing-30/day-over-day comparison windows, never derived from `CURRENT_DATE`). Response
+now explicitly returns `requestedDateFrom`/`requestedDateTo`/`effectiveDateFrom`/
+`effectiveDateTo`/`asOf`/`salesHistoryStartsAt`/`adsHistoryStartsAt`/`wasRangeClamped`/
+`clampReason` — a requested range predating available history is reported as clamped, never
+silently zero-filled.
+
+**Correction 3 — canonical SKU universe.** The Product Spec's Seller SKU column previously read
+"`amazon_listing_items.sku` (fallback: raw SKU if no catalog match)" — implying the catalog table
+drives which SKUs appear at all. Locked instead: the summary RPC's driving SKU universe is a
+`UNION` of canonical identities across `internal_business_report_sku_sales_traffic`,
+`internal_ads_advertised_product_daily_rows`, `amazon_listing_items`, and
+`internal_sku_cost_master` — sales-only and Ads-only SKUs stay visible, a missing catalog row never
+hides real sales/spend, and a SKU with no catalog match renders as "Unknown product." Displayed raw
+SKU (when the same canonical identity appears across sources) follows a fixed precedence: catalog
+→ Business Report → Ads → cost master. Canonical key used only for matching, never for merging
+distinct raw SKUs — a future collision surfaces as `identity_conflict`, never a silent merge.
+
+**Correction 4 — pagination vs. summary counts.** Locked that the companion summary object's
+totals (sales/spend/growing/declining counts, mapping-coverage breakdown) are full-filtered-scope
+aggregates, computed before `p_limit`/`p_offset` is applied — never derived from only the current
+page. Added explicit pagination/count fields to the RPC response: `totalSkuCountBeforeFilters`,
+`totalMatchingSkuCountAfterFilters`, `returnedSkuCount`, `limit`, `offset`, `hasMore`. Filtering and
+sorting happen server-side, entirely before pagination.
+
+**Documents amended:** `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` (§2 RPC shape, §3 coverage-
+state model, §4 performance requirements, §6 P1-A status, §7 blockers), `SKU_DAILY_SALES_SPEND_
+PRODUCT_SPEC.md` (§3 summary cards, §5 main table Seller SKU column, §7 date-range filter),
+`SKU_DAILY_SALES_SPEND_DATA_AUDIT.md` (§3d — new refresh-run code-inspection finding), this tracker
+entry, and `WORK_DONE_SUMMARY.md`.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.** These are internal-consistency corrections to the
+locked contract, not new data findings — nothing here changes the underlying audit numbers.
+
+**Verification this round:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code
+written. `git diff --stat origin/master...HEAD` confirms exactly the five
+`SKU_DAILY_SALES_SPEND_*.md`/tracker/`WORK_DONE_SUMMARY.md` docs changed — no migration, RPC,
+route, or UI file touched.
+
+**No migration applied to production. No production row changed. No application code, API route,
+or UI changed. No deployment. P1-B not started. PR #56 not merged.**
+
+**Next step (needs the founder):** PR #56 remains open for final merge review with this contract
+correction applied. **PR #56 has not been merged** — that remains a separate, explicit step pending
+founder review. P1-B does not start until that approval is given.
