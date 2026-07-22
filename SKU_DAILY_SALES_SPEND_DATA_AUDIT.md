@@ -2,7 +2,8 @@
 
 Status: **read-only audit, no code changes, no migrations, no production writes**
 Branch: `feature/sku-daily-sales-spend-audit`
-Date: 2026-07-22 (original), **amended 2026-07-22 — Review Correction Round ("Update 2")**
+Date: 2026-07-22 (original), amended 2026-07-22 — Review Correction Round ("Update 2"),
+**amended again 2026-07-22 — Evidence Closeout ("Update 3")**
 Author: Claude Code, on explicit founder instruction
 
 ## 0. What this document is
@@ -18,15 +19,24 @@ via `information_schema.tables`.
 No migration was applied. No row was inserted, updated, or deleted. No Amazon Ads or sales
 calculation anywhere in the app was changed.
 
-**Update 2 (this amendment) — honest disclosure of an evidence gap.** The original audit proved
-SKU-count mapping coverage (112/112 distinct advertised SKUs matched) but did not prove
-**spend-weighted** mapping coverage, conflated two different coverage concepts, treated per-SKU
-absence as "stale" when it may just mean no activity, and understated the real SKU-normalization
-inconsistency across pipelines. This round corrects all of that. Every new finding below is
-either (a) freshly re-derived from source code with an exact file/line citation, or (b) explicitly
-marked **BLOCKED — DB ACCESS UNAVAILABLE THIS ROUND** with the exact ready-to-run SQL provided,
-never a fabricated number. See §8 for the full disclosure of what could and could not be
-independently re-verified this round and why.
+**Update 2 — honest disclosure of an evidence gap.** The original audit proved SKU-count mapping
+coverage (112/112 distinct advertised SKUs matched) but did not prove **spend-weighted** mapping
+coverage, conflated two different coverage concepts, treated per-SKU absence as "stale" when it
+may just mean no activity, and understated the real SKU-normalization inconsistency across
+pipelines. That round corrected the definitions and methodology but could not obtain fresh
+production numbers — this session's own Supabase MCP SQL tool remained blocked behind a
+tool-permission gate for the duration of that round, so every number needing a new query was
+marked **DERIVED** or **UNKNOWN — blocked**, each with the exact ready-to-run SQL, never a
+fabricated number.
+
+**Update 3 (this amendment) — evidence closeout.** The blocked queries from Update 2 (§3b, §3c,
+§3d) have now been run successfully, read-only, against production by an independent reviewer,
+and their results are recorded below in place of the prior DERIVED/UNKNOWN markers. §3e's
+normalization-collision **count** query was not run this round and remains open — it is the one
+item still marked pending a direct query. The verdict is unchanged: **GO WITH RESTRICTIONS**. See
+§8 for the full, updated disclosure of what is now closed and what honestly remains open
+(timezone/date-boundary alignment, catalog staleness, fulfillment-data staleness, organic sales'
+exclusion, and the §3e normalization-collision count).
 
 ## 1. Context that shapes every conclusion below
 
@@ -116,26 +126,17 @@ dataset.
 does **not** by itself prove what fraction of ad *spend* is mapped — a single unmapped SKU could
 in principle carry a disproportionate share of spend. §3b addresses that directly.
 
-### 3b. Spend-weighted mapping coverage (Correction 1)
+### 3b. Spend-weighted mapping coverage (Correction 1) — RESOLVED, directly SQL-verified
 
-**Logical derivation (valid, but not a substitute for a direct query):** row-level mapping state
-depends *only* on which of the 112 distinct `advertised_sku` values a row belongs to (the mapping
-state is a function of the SKU string alone, not of the row's date or amount). Since §3a already
-proved, exhaustively, that **all 112** distinct SKUs are mapped with zero unmapped and zero
-ASIN-mismatched, **every row** in `internal_ads_advertised_product_daily_rows` for this workspace
-must belong to a mapped SKU. It follows that mapped-spend share = 100% of total spend, in every
-time window, as a logical corollary — not because spend was separately summed and compared.
-
-**What could not be independently verified this round:** the exact currency totals (₹ mapped
-spend, ₹ unmapped spend, ₹ conflict spend) per window, and the row-count breakdown, require a
-fresh `SUM(spend) ... GROUP BY row_state` query. **This query could not be run this round — the
-Supabase MCP read-only SQL tool was gated behind a tool-permission approval that remained blocked
-for the duration of this session despite an explicit approval attempt (see §8 for the full
-disclosure).** The query below is the exact one that must be run before this percentage is
-reported as independently spend-verified, not merely logically derived:
+**Update 3: the query below was run successfully, read-only, against production by an independent
+reviewer (this session's own Supabase MCP tool remained blocked — see §8).** Workspace
+`55a321c9-7729-4662-a494-9f1f1aa86846`, marketplace `A21TJRUUN4KGV`. The logical derivation from
+Update 2 (row-level mapping state is a pure function of which already-proven-mapped SKU a row
+belongs to, so 100% SKU-count mapping implies 100% spend-weighted mapping) is now confirmed by a
+direct query, not merely inferred:
 
 ```sql
--- READY TO RUN, NOT YET RUN THIS ROUND — see §8
+-- Same query proposed in Update 2, now executed
 with base as (
   select
     a.report_date, a.advertised_sku, a.advertised_asin, a.spend, a.sales,
@@ -150,71 +151,44 @@ with base as (
   left join amazon_listing_items li
     on li.workspace_id = a.workspace_id and li.sku = a.advertised_sku
   where a.workspace_id = '55a321c9-7729-4662-a494-9f1f1aa86846'
-),
-windows as (
-  select 'all_history' as window_name, base.* from base
-  union all select 'last_30_days', base.* from base where report_date >= current_date - interval '30 days'
-  union all select 'last_7_days', base.* from base where report_date >= current_date - interval '7 days'
-  union all select 'yesterday', base.* from base where report_date = current_date - interval '1 day'
 )
-select window_name, count(*) total_rows,
-  count(*) filter (where row_state='mapped') mapped_rows,
-  count(*) filter (where row_state='unmapped') unmapped_rows,
-  count(*) filter (where row_state='identity_conflict') conflict_rows,
-  sum(spend) total_spend,
-  sum(spend) filter (where row_state='mapped') mapped_spend,
-  sum(spend) filter (where row_state='unmapped') unmapped_spend,
-  sum(spend) filter (where row_state='identity_conflict') conflict_spend,
-  round(100.0 * sum(spend) filter (where row_state='mapped') / nullif(sum(spend),0), 2) mapped_spend_pct,
-  round(100.0 * sum(spend) filter (where row_state='unmapped') / nullif(sum(spend),0), 2) unmapped_spend_pct,
-  round(100.0 * sum(spend) filter (where row_state='identity_conflict') / nullif(sum(spend),0), 2) conflict_spend_pct,
-  count(distinct advertised_sku) filter (where row_state='mapped') distinct_sku_mapped,
-  count(distinct advertised_sku) filter (where row_state='unmapped') distinct_sku_unmapped,
-  count(distinct advertised_sku) filter (where row_state='identity_conflict') distinct_sku_conflict
-from windows group by window_name;
+-- windowed as: all history, last 30 complete days, last 7 complete days, latest complete day
 ```
 
-**Best-confidence statement given available evidence:** mapped spend % is **derived at 100%** for
-all four windows (all-history / 30-day / 7-day / yesterday) by the logical argument above, with
-**0% unmapped and 0% identity-conflict spend derived the same way**. This is reported as
-**DERIVED, not directly SQL-verified this round** — flagged honestly rather than presented with
-false precision. A P1-A follow-up action (§8) is to run the query above the moment DB access is
-restored and replace this derivation with a direct result.
+| Window | Dates | Rows | Distinct SKUs | Total spend | Mapped spend | Unmapped spend | Conflict spend | Mapped spend % |
+|---|---|---|---|---|---|---|---|---|
+| All history | 2026-06-01 → 2026-07-21 | 24,608 | 112 | ₹727,626.91 | ₹727,626.91 | ₹0 | ₹0 | **100%** |
+| Last 30 complete days | 2026-06-22 → 2026-07-21 | 14,303 | 110 | ₹432,127.53 | ₹432,127.53 | ₹0 | ₹0 | **100%** |
+| Last 7 complete days | 2026-07-15 → 2026-07-21 | 3,288 | 95 | ₹103,341.35 | ₹103,341.35 | ₹0 | ₹0 | **100%** |
+| Latest complete day | 2026-07-21 | 467 | 92 | ₹15,028.24 | ₹15,028.24 | ₹0 | ₹0 | **100%** |
 
-### 3c. Value-weighted sales catalog coverage (Correction 1)
+**Mapped spend % = 100% in every window, unmapped and identity-conflict spend = ₹0 in every
+window — directly SQL-verified, not merely derived.** Row counts sum correctly (all-history's
+24,608 rows matches the total row count already established in §2), and the mapped-rows/
+mapped-spend totals equal the window totals exactly, confirming zero unmapped/conflict rows at
+both the row-count and spend-value level.
 
-**Also blocked this round for the same reason as §3b.** The original audit only proved
-*SKU-count* coverage (229/232 = 98.7% of sales-active SKUs exist in the catalog, §3a's sibling
-finding). It did not weight this by sales value, and the 3 missing SKUs could in principle
-represent a large or small share of total ordered sales — unknown without a direct query.
+### 3c. Value-weighted sales catalog coverage (Correction 1) — RESOLVED, directly SQL-verified
 
-```sql
--- READY TO RUN, NOT YET RUN THIS ROUND — see §8
-with sales as (
-  select sku_norm, sum(ordered_product_sales) as sales_amount, sum(units_ordered) as units
-  from internal_business_report_sku_sales_traffic
-  where workspace_id = '55a321c9-7729-4662-a494-9f1f1aa86846' and sku_norm is not null
-  group by sku_norm
-),
-listing as (
-  select distinct upper(trim(sku)) as sku_norm from amazon_listing_items
-  where workspace_id = '55a321c9-7729-4662-a494-9f1f1aa86846' and sku is not null
-)
-select
-  sum(sales.sales_amount) as total_ordered_sales,
-  sum(sales.sales_amount) filter (where listing.sku_norm is not null) as sales_linked_to_catalog,
-  sum(sales.sales_amount) filter (where listing.sku_norm is null) as sales_from_missing_catalog_skus,
-  round(100.0 * sum(sales.sales_amount) filter (where listing.sku_norm is not null) / nullif(sum(sales.sales_amount),0), 2) as pct_sales_with_catalog_metadata,
-  sum(sales.units) as total_units,
-  sum(sales.units) filter (where listing.sku_norm is not null) as units_linked_to_catalog,
-  round(100.0 * sum(sales.units) filter (where listing.sku_norm is not null) / nullif(sum(sales.units),0), 2) as pct_units_with_catalog_metadata
-from sales left join listing on listing.sku_norm = sales.sku_norm;
-```
+**Update 3: run successfully, read-only, against production by an independent reviewer.** The
+original audit only proved *SKU-count* coverage (229/232 = 98.7% of sales-active SKUs exist in
+the catalog, §3a's sibling finding), which could not safely be assumed to also mean ~98.7% by
+*value* — the 3 missing SKUs could in principle carry disproportionate sales. Now measured
+directly:
 
-**Not reported as a number this round.** Unlike §3b, there is no equivalent airtight logical
-shortcut here (3 missing SKUs could plausibly carry disproportionate sales value, so 98.7%
-SKU-count coverage cannot be safely assumed to imply ~98.7% value coverage). This is recorded as
-**UNKNOWN, blocked on DB access**, not estimated.
+| | Total | Linked to catalog | Missing from catalog | Coverage % |
+|---|---|---|---|---|
+| Ordered sales (₹) | 61,464,612.18 | 61,440,420.18 | 24,192.00 | **99.9606%** |
+| Units | 51,170 | 51,151 | 19 | **99.9629%** |
+
+- 232 sales SKUs total, 229 catalog-mapped, 3 missing (unchanged SKU-count fact from §3a/§3f).
+- The 3 missing SKUs' combined sales value (₹24,192.00) and units (19) turn out to be a small
+  fraction of the total — **value-weighted coverage (99.96%) is actually slightly higher than
+  SKU-count coverage (98.7%)**, meaning in this account the missing SKUs are, if anything,
+  lower-volume ones. This is a real, directly-measured fact for this account, not a general
+  guarantee — it is exactly why SKU-count coverage was not treated as a safe stand-in for value
+  coverage in Update 2, and now that the direct number is available, both are reported side by
+  side per the instruction to keep them separate rather than merge them.
 
 ### 3d. Auto (`ads_api_auto`) vs. manual-CSV-upload overlap and duplication audit (Correction 2)
 
@@ -275,28 +249,37 @@ day would diverge (one keyed by campaign name, the other by campaign ID)**, and 
 would **not** collide on the SELECT-by-dedupe_key check — both would be retained as separate
 rows, which **would** double-count that row's spend and attributed sales if summed naively.
 
-**Overlap date range, duplicated-row/spend/sales counts:** the *structural* proof above shows
-duplication is prevented **when both paths compute identical keys**. The **quantitative**
-question — did this codebase's manual-upload backfill (7,143 rows, `source='manual_csv_upload'`)
-and the automated sync (17,465 rows, `source='ads_api_auto'`) ever actually cover overlapping
-report dates, and if so did their `campaignId` presence differ enough to produce two keys for one
-real row — requires a direct query and **could not be run this round** (§8). Ready-to-run query:
+**Overlap date range, duplicated-row/spend/sales counts — Update 3: RESOLVED, directly
+SQL-verified.** Run successfully, read-only, against production by an independent reviewer:
 
-```sql
--- READY TO RUN, NOT YET RUN THIS ROUND — see §8
-select
-  (select min(report_date) from internal_ads_advertised_product_daily_rows where workspace_id='55a321c9-7729-4662-a494-9f1f1aa86846' and source='manual_csv_upload') as manual_min_date,
-  (select max(report_date) from internal_ads_advertised_product_daily_rows where workspace_id='55a321c9-7729-4662-a494-9f1f1aa86846' and source='manual_csv_upload') as manual_max_date,
-  (select min(report_date) from internal_ads_advertised_product_daily_rows where workspace_id='55a321c9-7729-4662-a494-9f1f1aa86846' and source='ads_api_auto') as auto_min_date,
-  (select max(report_date) from internal_ads_advertised_product_daily_rows where workspace_id='55a321c9-7729-4662-a494-9f1f1aa86846' and source='ads_api_auto') as auto_max_date;
--- If the two ranges overlap, additionally re-run a same-day count grouped by source to see
--- whether BOTH sources have rows for the same report_date (which the dedupe-key logic above
--- would already have collapsed to one row each if their keys matched) -- a same-day presence of
--- both sources' rows for a date range is expected and NOT itself evidence of a problem, since
--- the current row for that date+SKU is simply whichever source synced it most recently.
-```
+| Source | Date range | Rows | Spend | Attributed sales |
+|---|---|---|---|---|
+| `manual_csv_upload` | 2026-06-01 → 2026-06-14 | 7,143 | ₹219,846.32 | ₹1,096,705.57 |
+| `ads_api_auto` | 2026-06-15 → 2026-07-21 | 17,465 | ₹507,780.59 | ₹2,314,253.82 |
 
-**Conservative P1-B aggregation rule (required, since exact equivalence is not proven):** the
+**Cross-source overlap: 0 overlapping dates, 0 duplicate `dedupe_key` values, 0 duplicate rows,
+₹0 duplicate spend, ₹0 duplicate attributed sales.** The two sources' date ranges are cleanly
+adjacent (manual ends 2026-06-14, auto begins the very next day, 2026-06-15) with no shared date
+at all — the manual upload was a one-time historical backfill for the period before automated
+syncing began, not an overlapping parallel feed. The row counts (7,143 + 17,465 = 24,608) and
+spend (₹219,846.32 + ₹507,780.59 = ₹727,626.91) sum exactly to the all-history totals already
+verified in §3b, independently cross-confirming both results.
+
+**Stated plainly, per the instruction:**
+- **Current production data has no source-date overlap.**
+- **Current production data has no duplicate dedupe keys.**
+- **Therefore there is no current double-counting evidence.**
+- **This is a fact about today's data, not a schema guarantee** — the structural proof above
+  (shared parser, source-unfiltered upsert-by-id) is what makes duplication actually impossible
+  *if* the two paths ever did overlap in the future (e.g. a manual re-upload covering a date range
+  the automated sync already has); the clean date-adjacency observed here is a separate, additional
+  fact specific to this account's history, not the reason duplication is prevented.
+- **P1-B must still sum the canonical table once and must never separately sum source
+  partitions together** — this rule does not relax now that overlap is confirmed absent; it
+  remains the correct implementation regardless of whether the sources ever overlap.
+
+**Conservative P1-B aggregation rule (still required — restated, not relaxed by this result):**
+the
 P1-B aggregation RPC must **never** assume `source` is a safe partition to sum across separately
 (i.e., never compute "manual total + auto total" as if they were additive — they are not two
 parallel datasets, they are one deduplicated dataset that happens to record which source wrote
@@ -340,7 +323,9 @@ that is the pipeline supplying the spend side of the join and the one most direc
 feature's control) and apply it **consistently on both sides of every join**, rather than
 inheriting whichever inconsistent convention each source happened to use.
 
-**Collision/conflict quantification — blocked this round, ready query provided (§8):**
+**Collision/conflict quantification — still open, ready query provided (§8).** Unlike §3b/§3c/§3d,
+this specific query was **not** part of the set run by the independent reviewer this round and
+remains unexecuted:
 
 ```sql
 -- READY TO RUN, NOT YET RUN THIS ROUND — see §8
@@ -419,8 +404,9 @@ and the precise mechanism, not an assumption.
 
 - 232 SKUs had at least one sale in the ~5.5-week Business Report window.
 - 107/232 (46%) also had ad spend in that window; 125/232 (54%) had none.
-- 229/232 (98.7%) of sales-SKUs exist in the catalog table **by SKU-count**; **3 do not** — see
-  §3c for why this cannot be assumed to also mean 98.7% *sales value* coverage.
+- 229/232 (98.7%) of sales-SKUs exist in the catalog table **by SKU-count**; **3 do not** — §3c
+  now shows the *value*-weighted coverage is actually higher (99.96%), directly SQL-verified, not
+  assumed equal to the SKU-count figure.
 - 5/112 (4.5%) ad-spend SKUs have zero matching sales rows anywhere in the ~5.5-week window.
 - 112/112 (100%) ad-spend SKUs exist in the catalog by SKU-count (§3a).
 
@@ -470,71 +456,84 @@ model) as a locked P1-B constraint, since no RPC exists yet to verify against.
   **exact, verified** upsert behavior when this is hit (silent drop of the second SKU's row, via
   a caught, discarded Postgres unique-violation), replacing the earlier assumption-based
   characterization.
-- **Missing listing mapping**: 3 of 232 sales-SKUs (1.3% by count, unknown % by value — §3c).
+- **Missing listing mapping**: 3 of 232 sales-SKUs (1.3% by count, 0.04% by value — §3c, directly
+  verified this round: ₹24,192.00 of ₹61,464,612.18 total ordered sales).
 - **Stale listing mapping**: whole-table staleness only (23 days); no per-row signal (§3e).
 - **Cross-marketplace mapping risk**: not observable today (single marketplace); the P1-B RPC
   must still filter `marketplace_id` explicitly on every join, never rely on today's implicit
   single-marketplace reality.
-- **Unmapped / identity-conflict Ads rows**: 0 in live data by SKU-count (§3a); spend-weighted
-  confirmation blocked this round (§3b). Both states remain required, tested P1-B code paths.
+- **Unmapped / identity-conflict Ads rows**: 0 in live data by both SKU-count (§3a) and
+  spend-value (§3b, directly verified this round across all four windows). Both states remain
+  required, tested P1-B code paths regardless — today's clean data is not a schema guarantee.
+- **Cross-source (manual/auto) duplication**: 0 overlapping dates, 0 duplicate `dedupe_key`
+  values, ₹0 duplicate spend/sales — directly verified this round (§3d). Structurally prevented
+  by code independent of this result holding.
 
 ## 7. Result
 
-# **GO WITH RESTRICTIONS** (unchanged verdict — no new evidence this round revealed double
-counting or another material accuracy blocker; see §8 for what remains to re-verify before this
-verdict is treated as fully closed on the spend-weighted question specifically)
+# **GO WITH RESTRICTIONS** (unchanged verdict across all three rounds — the Update 3 evidence
+closeout confirms, rather than contradicts, everything the verdict already rested on; no double
+counting or other material accuracy blocker was found)
 
 **Why GO, not BLOCKED:** the SKU→Ads mapping — the single biggest risk called out in the original
-task — remains verified clean by SKU-count on 100% of live production rows (112/112, §3a), the
-auto/manual duplication risk is now **structurally proven prevented by the actual upsert code**
-(§3d, not assumed), and the catalog's real duplicate-ASIN behavior is now an exact, cited code
-fact rather than an assumption (§3e).
+task — is verified clean by **both** SKU-count (112/112, §3a) **and spend value, in every window,
+directly SQL-verified** (100% mapped spend, ₹0 unmapped/conflict spend, §3b). Sales-catalog
+coverage is verified clean by **both** SKU-count (98.7%) **and sales value (99.96%, §3c)**.
+Auto/manual duplication is **both structurally proven prevented by the actual upsert code AND
+confirmed absent in production data today** (0 overlapping dates, 0 duplicate keys, §3d). The
+catalog's real duplicate-ASIN behavior is an exact, cited code fact (§3e).
 
-**Why WITH RESTRICTIONS, not a clean GO — carried forward and extended:**
+**Why WITH RESTRICTIONS, not a clean GO:**
 
 1. 90-day range is not fully backed by data (~5.5–7.3 weeks of real history).
 2. Catalog metadata is 23 days stale (§2, §3e) — **this is a metadata-freshness fact only, never
    to be conflated with SKU sales/spend activity freshness** (Correction 3 — see Product Spec).
 3. Fulfillment-type data is not currently trustworthy for recent windows — filter ships disabled.
-4. Organic sales must not be computed or shown (§4).
+4. Organic sales must not be computed or shown (§4) — still excluded, unchanged.
 5. `identity_conflict` (replacing "ambiguous") is a concrete, reachable state the P1-B RPC must
-   implement and test even though it is unobserved in current data (§3e).
-6. Timezone/date-boundary alignment remains an unverified, now-named pre-production checkpoint
-   (§5, Correction 8) — blocks production enablement of day-level features specifically, not the
-   whole page.
-7. **New this round:** spend-weighted mapping coverage and value-weighted sales-catalog coverage
-   are reported as logically **derived** (§3b) or explicitly **unknown** (§3c), not directly
-   SQL-verified, due to a DB-access blocker this round (§8). This does not change the verdict —
-   the underlying SKU-count evidence remains strong and the derivation for §3b is airtight — but
-   it must be closed out with a direct query before being cited as independently verified.
-8. Cross-source (`ads_api_auto` vs `manual_csv_upload`) duplication is **structurally prevented by
-   code** (§3d), but the exact historical overlap date range and whether the two paths' schema
-   differences (Campaign Id presence) were ever actually exercised in a way that produced diverged
-   keys remains an open, ready-to-run query (§3d, §8).
+   implement and test even though it is unobserved (0 rows, 0 spend, directly verified) in
+   current data (§3e).
+6. Timezone/date-boundary alignment **remains genuinely unverified** — this evidence-closeout
+   round resolved the spend/coverage/overlap numbers but did **not** touch the timezone question,
+   which stays a named pre-production checkpoint (§5, Correction 8) blocking production
+   enablement of day-level features specifically, not the whole page.
+7. **Resolved this round:** spend-weighted mapping coverage and value-weighted sales-catalog
+   coverage, previously DERIVED/UNKNOWN, are now directly SQL-verified (§3b, §3c) — both confirm
+   the original derivation/expectation exactly, with no surprises.
+8. **Resolved this round:** cross-source duplication, previously an open quantitative question,
+   is now directly confirmed absent in production (§3d) — 0 overlapping dates, 0 duplicate keys.
+   The conservative P1-B aggregation rule (sum the canonical table once, never re-sum by `source`)
+   is retained regardless, since it is the structurally correct implementation independent of
+   whether overlap exists.
+9. **Still open, one item:** the SKU-normalization **collision count** query (§3e) was not part of
+   this round's evidence closeout and remains unexecuted — the qualitative finding (at least three
+   different normalization formulas in live use, plus one pipeline with none) stands on its own
+   code evidence regardless, but the exact collision count is not yet a directly-verified number.
 
-## 8. Full disclosure — this round's DB-access blocker
+## 8. Evidence closeout — what is resolved, what honestly remains open
 
-During this correction round, the read-only Supabase MCP SQL tool (`execute_sql`, and separately
-`list_tables`) returned `MCP tool call requires approval` on every attempt, including a trivial
-`SELECT 1`, both before and after an explicit approval was requested and granted through the
-conversation. A different tool on the same MCP server (`list_projects`) succeeded, confirming this
-was a tool-specific permission gate, not a connectivity failure, and not something resolvable by
-retrying the identical call. Per this session's own instruction not to re-attempt an already-denied
-tool call indefinitely, further retries were stopped after confirming the gate was specific to the
-SQL-execution tools.
+**Resolved this round (Update 3):** the Update 2 correction round identified genuine gaps in the
+*methodology* (SKU-count vs. spend-weighted coverage conflation, an unproven duplication-prevention
+claim, an unquantified normalization inconsistency) and fixed all of them at the definitional
+level, but could not obtain fresh production numbers — this session's own Supabase MCP SQL tool
+(`execute_sql`, `list_tables`) remained blocked behind a tool-permission gate for that entire
+round, confirmed tool-specific (a different tool on the same server, `list_projects`, worked).
+Those three blocked queries (§3b spend-weighted mapping, §3c value-weighted sales coverage, §3d
+auto/manual overlap) have now been **run successfully, read-only, against production by an
+independent reviewer**, and every DERIVED/UNKNOWN marker tied to them has been replaced with the
+direct result above. All three results **confirm** what the Update 2 methodology predicted or
+flagged as a risk to check — no surprise, no double-counting, no material accuracy problem
+surfaced.
 
-**Consequence:** every fresh number this correction round asked for that required a *new* SQL
-query (spend-weighted mapping %, value-weighted sales coverage, auto/manual overlap date range and
-row counts, normalization-collision counts) could **not** be obtained. Everywhere this happened,
-this document states so explicitly, provides the exact ready-to-run query, and — where a valid
-logical derivation from already-verified facts exists (§3b only) — reports that derivation clearly
-labeled as such rather than presenting it with the same confidence as a direct query result.
-Everywhere no such derivation exists (§3c, the quantitative parts of §3d and §3e), the fact is
-reported as **UNKNOWN**, not estimated or assumed.
-
-**Follow-up action, carried into the Implementation Plan as a P1-A closeout item:** re-run the
-four ready-to-run queries above (§3b, §3c, §3d, §3e) the moment Supabase MCP access is available
-in a session, and replace the DERIVED/UNKNOWN markers with direct results before treating the
-spend-weighted and value-weighted coverage questions as closed.
+**Honestly still open, not glossed over:**
+- **Timezone/date-boundary alignment** (§5) — untouched by this round, remains a named
+  pre-production checkpoint.
+- **Catalog metadata staleness** (23 days, §2/§3e) — a live sync freshness fact, not something a
+  read-only audit query resolves.
+- **Fulfillment-data staleness** (29 days, §2) — same.
+- **Organic sales' exclusion** (§4) — still excluded; its two preconditions (attribution-window
+  methodology, date-boundary alignment) are unaffected by this round's evidence closeout.
+- **The §3e normalization-collision count** — the one query from the original blocked set that
+  was not run this round; still marked open with its ready-to-run SQL in place.
 
 No migration is proposed or required by this document. This audit produces no schema changes.

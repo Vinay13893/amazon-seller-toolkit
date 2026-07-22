@@ -4854,3 +4854,77 @@ P1-B does not start until that approval is given. Merge order note: PR #55 (Pinc
 #56 both touch `BRAHMASTRA_MASTER_TRACKER.md`/`WORK_DONE_SUMMARY.md` — PR #56 should not merge
 before PR #55 resolves; once #55 merges, this branch will be rebased onto the new `master`
 preserving both PRs' doc entries before #56 can merge cleanly.
+
+### §23 update 3 (2026-07-22) — PR #56 evidence closeout: the blocked queries are now directly SQL-verified, verdict unchanged (GO WITH RESTRICTIONS), still not merged
+
+**Decision received:** "PR #56's review amendment is directionally approved. The previously
+blocked read-only production queries have now been run successfully through an independent
+reviewer. Make one final docs-only evidence-closeout commit." Stayed on branch
+`feature/sku-daily-sales-spend-audit`, PR #56. Still P1-A only: no migration, no RPC, no route, no
+UI, no production writes. This session's own Supabase MCP tool remained blocked (see §23 update 2)
+— the numbers below were obtained by an independent reviewer running the exact queries this
+audit's Update 2 round had already prepared and published as ready-to-run SQL, and are recorded
+here in place of the prior DERIVED/UNKNOWN markers.
+
+**Spend-weighted mapping coverage — resolved, 100% mapped spend in every window.** Workspace
+`55a321c9-7729-4662-a494-9f1f1aa86846`, marketplace `A21TJRUUN4KGV`:
+
+| Window | Rows | Total spend | Mapped spend % |
+|---|---|---|---|
+| All history (2026-06-01→2026-07-21) | 24,608 | ₹727,626.91 | 100% |
+| Last 30 complete days | 14,303 | ₹432,127.53 | 100% |
+| Last 7 complete days | 3,288 | ₹103,341.35 | 100% |
+| Latest complete day (2026-07-21) | 467 | ₹15,028.24 | 100% |
+
+Unmapped and identity-conflict spend: ₹0 in every window. This directly confirms — rather than
+merely logically implies, as Update 2's derivation argued — the SKU-count mapping result (§23
+update 2, 112/112).
+
+**Value-weighted sales-catalog coverage — resolved.** Of 232 sales-active SKUs, 229 are
+catalog-mapped by count (98.7%, unchanged); by **value**, mapped ordered sales are ₹61,440,420.18
+of ₹61,464,612.18 total (**99.9606%**), and mapped units are 51,151 of 51,170 (**99.9629%**) — the
+3 missing-catalog SKUs turn out to be lower-volume ones in this account, so value coverage is
+actually slightly *higher* than SKU-count coverage, not lower as could have plausibly been the
+case. SKU-count and value-weighted coverage are reported as two separate, non-interchangeable
+statistics, per the explicit instruction, not blended into one number.
+
+**Auto (`ads_api_auto`) vs. manual-CSV overlap — resolved, zero overlap, zero duplication.**
+`manual_csv_upload` covers 2026-06-01→2026-06-14 (7,143 rows, ₹219,846.32 spend, ₹1,096,705.57
+attributed sales); `ads_api_auto` covers 2026-06-15→2026-07-21 (17,465 rows, ₹507,780.59 spend,
+₹2,314,253.82 attributed sales) — the two ranges are cleanly adjacent with **zero overlapping
+dates, zero duplicate `dedupe_key` values, zero duplicate rows, ₹0 duplicate spend, ₹0 duplicate
+attributed sales**. Row counts and spend both sum exactly to the all-history totals above,
+cross-confirming both results independently. **Current production data has no source-date
+overlap and no duplicate dedupe keys — therefore there is no current double-counting evidence.**
+This is a fact about today's data specifically; the structural proof from §23 update 2 (shared
+parser, source-unfiltered select-then-upsert-by-id) is what makes duplication impossible even if a
+future overlap ever occurs. **The conservative P1-B rule stands regardless of this result: sum the
+canonical table once, never separately sum source partitions together.**
+
+**Still open, not glossed over:** the Data Audit §3e SKU-normalization-collision **count** query
+was not part of this evidence-closeout round and remains unexecuted — the qualitative finding (at
+least three different normalization formulas in live use, one pipeline with none at all) stands on
+independent code evidence regardless. Timezone/date-boundary alignment, catalog-metadata staleness
+(23 days), fulfillment-data staleness (29 days), and the organic-sales exclusion are all
+**unaffected by this round** and remain exactly as documented in §23 update 2 — this evidence
+closeout resolved specific blocked *queries*, not the separate, still-genuinely-open
+*verification* items.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.** Every number resolved this round confirmed what the
+Update 2 methodology already expected — no double counting, no material accuracy problem surfaced.
+
+**Verification this round:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code
+written. `git status` confirms only the three `SKU_DAILY_SALES_SPEND_*.md` docs plus this tracker
+and `WORK_DONE_SUMMARY.md` changed.
+
+**No migration applied to production. No production row changed. No application code, API route,
+or UI changed. No deployment.**
+
+**Merge order (unchanged from update 2):** PR #55 (Pincode P0-B) remains open, not merged, as of
+this update. PR #56 must not merge before PR #55 resolves. Once PR #55 merges, this branch will be
+fetched/rebased onto the new `master`, preserving every Pincode §22 entry, this SKU Performance
+§23 entry (all three updates), and both files' full histories, before PR #56 can merge cleanly.
+
+**Next step (needs the founder):** confirm PR #56 is ready for final merge review given the closed
+evidence gaps, and hold until PR #55 merges and this branch is rebased. P1-B does not start until
+that approval is given.

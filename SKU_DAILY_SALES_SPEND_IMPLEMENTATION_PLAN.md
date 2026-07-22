@@ -5,7 +5,9 @@ Depends on: `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`, `SKU_DAILY_SALES_SPEND_PRODUC
 Amended 2026-07-22 — Review Correction Round ("Update 2"): Corrections 4, 6, 8 applied (coverage-
 state model for missing-row-vs-confirmed-zero; the P1-A/B/C/D sequence revised so P1-B owns
 explainable-flag computation, filtering, and server-side sorting; a currency contract and a named
-timezone-verification checkpoint added).
+timezone-verification checkpoint added). Amended again 2026-07-22 — Evidence Closeout ("Update 3"):
+the spend-weighted mapping and value-weighted sales-coverage numbers referenced here are now
+directly SQL-verified (Data Audit §3b/§3c) rather than derived/blocked.
 
 ## 1. Aggregation model decision
 
@@ -174,12 +176,12 @@ here so the limitation is never silently forgotten.
 
 ## 6. Implementation sequence (revised — Correction 6)
 
-**P1-A — this PR (amended).** Data audit and locked metric definitions, now including the
-spend-weighted mapping methodology, the auto/manual duplication proof, the normalization audit,
-the coverage-state model, and the currency/timezone contract. Documentation only. No migration,
-no RPC, no route, no UI. **Complete as of this amendment**, with one disclosed follow-up: re-run
-the four ready-to-run queries in the Data Audit §3b/§3c/§3d/§3e once DB access is available
-(§Data Audit §8).
+**P1-A — this PR (amended twice).** Data audit and locked metric definitions, now including the
+spend-weighted mapping methodology (directly SQL-verified), the auto/manual duplication proof
+(structural + directly confirmed absent in production data), the normalization audit, the
+coverage-state model, and the currency/timezone contract. Documentation only. No migration, no
+RPC, no route, no UI. **Complete as of this amendment**, with one disclosed follow-up remaining:
+the Data Audit §3e normalization-collision **count** query has not yet been run (§Data Audit §8).
 
 **P1-B — not started.** Canonical daily SKU aggregation RPCs **and** explainable-flag computation,
 filtering, and server-side sorting (§2 above) — moved into this stage per Correction 6, resolving
@@ -214,9 +216,10 @@ per the explicit instruction. Nothing beyond P1-A is implemented in this branch.
   the Amazon Ads/Seller Central UI directly and record the result. P1-B may be built against an
   explicit `p_as_of` parameter without waiting on this; production UI enablement of day-level
   features waits on it.
-- **Spend-weighted mapping coverage and value-weighted sales coverage (Correction 1) are DERIVED/
-  UNKNOWN, not directly SQL-verified, as of this amendment** (Data Audit §3b/§3c/§8) — re-run the
-  provided queries before citing exact percentages as independently verified.
+- **Spend-weighted mapping coverage and value-weighted sales coverage (Correction 1) are now
+  directly SQL-verified** (Data Audit §3b/§3c): 100% mapped spend in every window, 99.96%
+  value-weighted sales-catalog coverage. No further follow-up needed on these two specifically.
+  The §3e SKU-normalization-collision **count** remains the one open, ready-to-run query.
 - **The coverage-state model's day-level precision is bounded by `internal_data_refresh_runs`'
   range granularity (§3 above)** — a coverage ledger is a possible future P1-B+ enhancement, not
   required for V1.

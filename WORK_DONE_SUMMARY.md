@@ -1257,3 +1257,43 @@ mechanism) are all directly evidenced by code, independent of the blocked live-q
 **No migration applied to production. No production row changed. No application code, API route, or UI
 changed. No deployment.** Merge-order note: PR #55 and PR #56 both touch this file and the tracker — PR #56
 will be rebased onto `master` after PR #55 merges, preserving both PRs' entries, before #56 can merge.
+
+## SKU Performance — P1-A evidence closeout: blocked queries now resolved, verdict unchanged (2026-07-22)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 3. Same PR #56, same branch — still P1-A only, no
+migration, no RPC, no route, no UI, no production writes.
+
+**What this closes:** the previous round (§23 update 2) fixed the audit's *methodology* but couldn't get fresh
+production numbers because this session's own Supabase MCP tool stayed blocked. Those three blocked queries —
+spend-weighted mapping coverage, value-weighted sales-catalog coverage, and the auto/manual-CSV overlap — have
+now been run successfully, read-only, against production by an independent reviewer, and every DERIVED/UNKNOWN
+marker tied to them is replaced with the direct result.
+
+- **Spend-weighted mapping: 100% mapped spend in every window** (all-history ₹727,626.91; last 30 days
+  ₹432,127.53; last 7 days ₹103,341.35; latest day ₹15,028.24) — ₹0 unmapped, ₹0 identity-conflict, in every
+  window. Directly confirms the prior round's SKU-count-based logical derivation.
+- **Value-weighted sales-catalog coverage: 99.9606% by ordered-sales value, 99.9629% by units** — higher than
+  the 98.7% SKU-count coverage, since the 3 catalog-missing SKUs turn out to be lower-volume ones. Reported
+  separately from SKU-count coverage, never blended.
+- **Auto/manual overlap: zero.** `manual_csv_upload` (2026-06-01→06-14) and `ads_api_auto` (2026-06-15→07-21)
+  are cleanly adjacent date ranges with zero overlapping dates, zero duplicate dedupe keys, zero duplicate rows,
+  ₹0 duplicate spend/sales — current production data shows no double-counting evidence. The conservative P1-B
+  rule (sum the canonical table once, never re-sum by source) stands regardless, as the structurally correct
+  implementation independent of whether overlap exists.
+
+**Still honestly open, not resolved by this round:** the Data Audit §3e normalization-collision *count* query
+was not part of this closeout and remains unexecuted (the qualitative finding — 3+ different formulas in live
+use — stands on code evidence alone). Timezone/date-boundary alignment, catalog-metadata staleness (23 days),
+fulfillment-data staleness (29 days), and the organic-sales exclusion are all unaffected by this round and
+remain exactly as documented in the prior round — this closeout resolved specific blocked *queries*, not the
+separate, still-open *verification* checkpoints.
+
+**Verdict unchanged: GO WITH RESTRICTIONS** — every number resolved this round confirmed what the prior
+round's methodology already expected; no double counting or other material accuracy problem surfaced.
+
+**Verification:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code written.
+
+**No migration applied to production. No production row changed. No application code, API route, or UI
+changed. No deployment.** Merge-order note (unchanged): PR #55 remains open as of this update — PR #56 must
+not merge before PR #55 resolves; this branch will be rebased onto `master` after PR #55 merges, preserving
+both PRs' full doc histories, before #56 can merge.
