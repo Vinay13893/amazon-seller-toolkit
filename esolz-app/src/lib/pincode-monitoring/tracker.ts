@@ -81,6 +81,17 @@ export type FreshnessState = 'never_checked' | 'checking' | 'current' | 'overdue
  * check at all, which is a fact distinct from "was just checked and is
  * current"). `nowIso` is a parameter, not `new Date()` read internally, so
  * this function stays pure and deterministic for tests.
+ *
+ * Final review round: `nextCheckAt <= nowIso` was a raw ISO-string
+ * comparison, not a chronological one -- it only agrees with epoch order
+ * when both timestamps share the exact same textual form (e.g. both `Z`,
+ * both millisecond-precision). Two valid, equal instants written with
+ * different offsets (`...Z` vs `...+00:00`, or a non-zero offset like
+ * `+05:30`) compare incorrectly as strings. Both timestamps are now parsed
+ * to epoch milliseconds and compared numerically. A malformed/unparseable
+ * timestamp on either side is never treated as "current" -- it falls back
+ * to the conservative `unscheduled` state, the same state used for a
+ * genuinely absent `next_check_at`.
  */
 export function deriveFreshnessState(
   targetStatus: string,
@@ -91,7 +102,12 @@ export function deriveFreshnessState(
   if (targetStatus === 'checking') return 'checking'
   if (lastCheckedAt === null) return 'never_checked'
   if (nextCheckAt === null) return 'unscheduled'
-  return nextCheckAt <= nowIso ? 'overdue' : 'current'
+
+  const nextCheckAtMs = Date.parse(nextCheckAt)
+  const nowMs = Date.parse(nowIso)
+  if (Number.isNaN(nextCheckAtMs) || Number.isNaN(nowMs)) return 'unscheduled'
+
+  return nextCheckAtMs <= nowMs ? 'overdue' : 'current'
 }
 
 export interface ConfirmedAvailability {

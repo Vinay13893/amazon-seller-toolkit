@@ -17,6 +17,28 @@
  * caller can render immediately, so `lookupAsin` returns a typed result
  * variant instead of throwing, and the route (not this module) decides the
  * HTTP status per variant.
+ *
+ * Final review round: the `amazon_connections` query's own `error` was
+ * previously ignored -- a database/infrastructure failure fell through the
+ * `!connection` branch and was reported as `connection_unavailable`
+ * ("connect your Amazon account"), which is a false and unactionable
+ * instruction when the real problem is a query failure. `connection_query_
+ * failed` is now a distinct outcome. Likewise, `decryptToken`/
+ * `refreshAccessToken` are now wrapped so a failure there (corrupted
+ * ciphertext, revoked/expired refresh token, LWA outage) resolves to the
+ * stable `token_refresh_failed` outcome instead of throwing out of this
+ * function uncaught -- no raw Supabase error, decrypted token material, or
+ * Amazon token-endpoint error body ever leaves this module.
+ *
+ * `resolveCatalogLookup` is the pure(-ish) core -- every dependency
+ * (the connection query, decrypt, refresh, and catalog call) is injected as
+ * a function rather than called directly -- for the same reason `other-
+ * product-confirmation.ts` splits `confirmAsinsWithLookup` from
+ * `confirmOtherProductAsins`: it lets `__tests__/catalog-lookup.test.ts`
+ * exercise the full outcome-selection state machine (query failure vs. no
+ * connection vs. token failure vs. each catalog outcome) with fake
+ * dependencies, no real network/database call anywhere. `lookupAsin` is the
+ * thin I/O wrapper that supplies the real ones.
  */
 import { createAdminClient } from '@/lib/supabase/admin'
 import { decryptToken } from '@/lib/amazon/crypto'
@@ -26,7 +48,9 @@ import { getCatalogItemForAsin, type CatalogItemNormalized } from '@/lib/amazon/
 const ENRICHMENT_TIMEOUT_MS = 10_000
 
 export type CatalogLookupResult =
+  | { outcome: 'connection_query_failed' }
   | { outcome: 'connection_unavailable' }
+  | { outcome: 'token_refresh_failed' }
   | { outcome: 'not_found' }
   | { outcome: 'unavailable' }
   | { outcome: 'timeout' }
@@ -46,33 +70,73 @@ export function classifyCatalogLookupError(error: unknown): 'not_found' | 'timeo
   return 'unavailable'
 }
 
-export async function lookupAsin(workspaceId: string, marketplaceId: string, asin: string): Promise<CatalogLookupResult> {
-  const admin = createAdminClient()
+export interface CatalogConnectionRow {
+  status: string
+  refresh_token_encrypted: string | null
+}
 
-  const { data: connection } = await admin
-    .from('amazon_connections')
-    .select('status, refresh_token_encrypted')
-    .eq('workspace_id', workspaceId)
-    .maybeSingle()
+export interface CatalogLookupDeps {
+  queryConnection: () => Promise<{ data: CatalogConnectionRow | null; error: unknown }>
+  decryptToken: (encrypted: string) => string
+  refreshAccessToken: (refreshToken: string) => Promise<{ access_token: string }>
+  getCatalogItem: (args: { accessToken: string; marketplaceId: string; asin: string; signal: AbortSignal }) => Promise<CatalogItemNormalized>
+}
 
+export async function resolveCatalogLookup(deps: CatalogLookupDeps, marketplaceId: string, asin: string): Promise<CatalogLookupResult> {
+  const { data: connection, error: connectionError } = await deps.queryConnection()
+
+  // A query failure is an infrastructure fact, distinct from "no Amazon
+  // connection exists" -- never presented to the seller as "connect your
+  // account" (that instruction would be false and would not fix anything).
+  if (connectionError) {
+    return { outcome: 'connection_query_failed' }
+  }
   if (!connection || connection.status !== 'active' || !connection.refresh_token_encrypted) {
     return { outcome: 'connection_unavailable' }
+  }
+
+  let accessToken: string
+  try {
+    const token = await deps.refreshAccessToken(deps.decryptToken(connection.refresh_token_encrypted))
+    accessToken = token.access_token
+  } catch {
+    // decryptToken/refreshAccessToken failures (corrupted ciphertext,
+    // revoked/expired refresh token, LWA outage) must not escape as an
+    // uncontrolled exception, and must not be reported as the unrelated
+    // catalog-lookup "unavailable" outcome -- the token layer failed
+    // before any catalog call was even attempted.
+    return { outcome: 'token_refresh_failed' }
   }
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), ENRICHMENT_TIMEOUT_MS)
   try {
-    const token = await refreshAccessToken(decryptToken(connection.refresh_token_encrypted as string))
-    const item = await getCatalogItemForAsin({
-      accessToken: token.access_token,
-      marketplaceId,
-      asin,
-      signal: controller.signal,
-    })
+    const item = await deps.getCatalogItem({ accessToken, marketplaceId, asin, signal: controller.signal })
     return { outcome: 'found', item }
   } catch (error) {
     return { outcome: classifyCatalogLookupError(error) }
   } finally {
     clearTimeout(timeout)
   }
+}
+
+export async function lookupAsin(workspaceId: string, marketplaceId: string, asin: string): Promise<CatalogLookupResult> {
+  const admin = createAdminClient()
+  return resolveCatalogLookup(
+    {
+      queryConnection: async () => {
+        const { data, error } = await admin
+          .from('amazon_connections')
+          .select('status, refresh_token_encrypted')
+          .eq('workspace_id', workspaceId)
+          .maybeSingle()
+        return { data: data as CatalogConnectionRow | null, error }
+      },
+      decryptToken,
+      refreshAccessToken,
+      getCatalogItem: getCatalogItemForAsin,
+    },
+    marketplaceId,
+    asin,
+  )
 }

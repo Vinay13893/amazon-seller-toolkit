@@ -189,4 +189,14 @@ describe('mapQueueManualCheckResult', () => {
     const response = mapQueueManualCheckResult({ result: 'invalid_status', reason: 'invalid_cooldown_seconds' })
     assert.equal(response.status, 400)
   })
+
+  test('invalid_status with reason target_unconfigured maps to 409 invalid_status, never 400 invalid_parameters (final review round)', async () => {
+    const response = mapQueueManualCheckResult({ result: 'invalid_status', reason: 'target_unconfigured' })
+    assert.equal(response.status, 409)
+    const body = await bodyOf(response)
+    assert.equal(body.errorCode, 'invalid_status')
+    assert.equal(body.reason, 'target_unconfigured')
+    assert.notEqual(response.status, 400)
+    assert.notEqual(body.errorCode, 'invalid_parameters')
+  })
 })

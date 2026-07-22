@@ -42,8 +42,17 @@ export async function POST(request: NextRequest) {
   const result = await lookupAsin(access.context.workspaceId, access.context.marketplaceId, asin)
 
   switch (result.outcome) {
+    case 'connection_query_failed':
+      // Infrastructure/query failure -- distinct from "no connection
+      // exists" (final review round): never tell the seller to connect an
+      // account they may already have connected.
+      return jsonError(500, 'catalog_connection_query_failed', 'Could not verify the Amazon connection right now — try again.')
     case 'connection_unavailable':
       return jsonError(503, 'catalog_connection_unavailable', 'Amazon connection required before looking up a product.')
+    case 'token_refresh_failed':
+      // Transient, distinct from both connection-fact cases above -- the
+      // connection exists but the token could not be refreshed right now.
+      return jsonError(502, 'catalog_token_refresh_failed', 'Could not refresh the Amazon connection right now — try again.')
     case 'not_found':
       // Honest, confirmed-nonexistent state -- PRODUCT_SPEC.md sec6: "if
       // Amazon cannot confirm the ASIN, do not enroll it as a valid

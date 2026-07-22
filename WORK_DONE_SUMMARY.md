@@ -1104,3 +1104,42 @@ concurrency **6/6**, EXPLAIN ANALYZE, all passed. TS suite: **127/127 passed**. 
 **Feature remains fully disabled. No migration applied to production, no production row modified, no
 Vercel/Supabase environment variable changed, no deployment.** PR #55 still open, not merged. P0-C and P0-D
 remain blocked until this PR is approved.
+
+### PR #55 final correction round: 3 closing fixes to the Round 2 amendment (2026-07-22)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 11. Same PR #55, same branch — no P0-C, no
+scheduler, no migration applied, no production env var changed, no deployment. No SQL touched this round._
+
+**The gap this round closes:** a follow-up review of the Round 2 correction code itself found three
+remaining, narrowly-scoped defects — closing fixes to what Round 2 shipped, not new scope.
+
+1. **`catalog-lookup.ts`'s `amazon_connections` query ignored its own `error`.** The Other Products lookup
+   route's `lookupAsin` (distinct from Round 2's already-correct `confirmOtherProductAsins`) reported a
+   database/infrastructure query failure as `connection_unavailable` ("connect your Amazon account") — false
+   and unactionable. Now a distinct `connection_query_failed` outcome, mapped to `500
+   catalog_connection_query_failed`. Separately, `decryptToken`/`refreshAccessToken` were called outside any
+   try/catch — a failure there would have escaped uncaught. Now wrapped, resolving to a new
+   `token_refresh_failed` outcome (`502 catalog_token_refresh_failed`), distinct from every other outcome.
+   The decision logic was split into a pure `resolveCatalogLookup` core with every dependency injected (the
+   same pure-core/IO-wrapper pattern used throughout this feature), so the full outcome state machine is
+   directly unit-testable. 8 new tests.
+2. **`queue_pincode_manual_check`'s `target_unconfigured` reason mapped to the wrong HTTP status.** It fell
+   through to a generic `400 invalid_parameters` — false, since the request was valid; the target was simply
+   no longer configured, a 409 state conflict. Now maps to `409 invalid_status` with a specific seller-facing
+   message. 1 new direct test.
+3. **`deriveFreshnessState` compared timestamps as raw ISO strings, not chronologically.** Two equal instants
+   with different offsets (`Z` vs `+00:00`, or any non-zero offset) could compare incorrectly, misclassifying
+   `overdue` as `current` or vice versa. Now parses both to epoch milliseconds via `Date.parse` and compares
+   numerically; a malformed timestamp on either side now falls back to `unscheduled`, never `current`. 12 new
+   tests, including two `+05:30`/`-05:30` counterexample pairs chosen specifically to fail under the old
+   string-comparison logic.
+
+**Verified:** TS suite **143/143 passed** (127 → 143, 16 new tests). `npx tsc --noEmit` clean. `npx eslint`
+clean. `npm run build` clean, all 9 routes still registered. P0-A/P0-B SQL suite re-run end-to-end (no SQL
+changed, confirming no regression): sequential (28 groups), concurrency **6/6**, EXPLAIN ANALYZE, all passed.
+`git status`: exactly 7 files changed (`catalog-lookup.ts`, `responses.ts`, `tracker.ts`,
+`lookup-asin/route.ts`, and their 3 test files) — zero migration/UI/cron files touched.
+
+**Feature remains fully disabled. No migration applied to production, no production row modified, no
+Vercel/Supabase environment variable changed, no deployment.** PR #55 still open, not merged. P0-C and P0-D
+remain blocked until this PR is approved.

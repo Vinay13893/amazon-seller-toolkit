@@ -4561,3 +4561,75 @@ three new RPCs, the Other Product server-side confirmation, the atomic defaults/
 access-gate hardening, and the product-scoped-URL fix), and either approve it for merge or request further
 changes. P0-C cannot start until this PR is approved. This PR does not merge itself, does not apply any
 migration, and does not deploy.
+
+### §22 update 11 (2026-07-22) — PR #55 final correction round: 3 closing fixes to the Round 2 amendment, still not merged, migration still not applied anywhere
+
+**Decision received:** a follow-up review pass on the already-amended PR #55 found three remaining,
+narrowly-scoped defects in the Round 2 correction code itself — not new scope, closing fixes to what Round 2
+shipped. Stayed on branch `feature/pincode-p0b-api-data-access`, PR #55. Same constraints as before: do not
+merge, do not start P0-C, do not create the scheduler, do not apply migrations to production, do not change
+production environment variables, do not deploy. No SQL/migration touched this round — all three fixes are
+TypeScript-only.
+
+**Fix 1 — `catalog-lookup.ts`'s `amazon_connections` query ignored its own `error`.** The Other Products
+lookup route's `lookupAsin` (distinct from Round 2's `confirmOtherProductAsins`, which already handled this
+correctly) fetched the workspace's Amazon connection but discarded the query's `error` field entirely — a
+database/infrastructure failure fell through the `!connection` branch and was reported as
+`connection_unavailable` ("connect your Amazon account"), a false and unactionable instruction when the real
+problem was a query failure. Fixed: `connection_query_failed` is now a distinct outcome, mapped by the route
+to `500 catalog_connection_query_failed` (mirroring the exact convention Round 2 already established in
+`other-product-confirmation.ts`). Separately, `decryptToken`/`refreshAccessToken` were previously called
+outside any try/catch in this file — a corrupted-ciphertext or revoked-refresh-token/LWA-outage failure would
+have escaped as an uncontrolled exception out of `lookupAsin`. Now wrapped; resolves to a new
+`token_refresh_failed` outcome, mapped to `502 catalog_token_refresh_failed`, distinct from both connection
+outcomes and from the existing `not_found`/`timeout`/`unavailable` catalog outcomes. No raw Supabase error,
+decrypted token material, or Amazon token-endpoint error body is ever returned to the caller. `lookupAsin`'s
+internal decision logic was split into a pure(-ish) `resolveCatalogLookup(deps, marketplaceId, asin)` core
+with every dependency (`queryConnection`/`decryptToken`/`refreshAccessToken`/`getCatalogItem`) injected — the
+same pure-core/IO-wrapper split already used throughout this feature (`confirmAsinsWithLookup`,
+`decidePincodeAccess`, `resolveScopedTargetIds`) — specifically so the full outcome-selection state machine
+(query failure vs. no connection vs. token failure vs. each catalog outcome) is directly unit-testable with
+fake dependencies, no real network/database call anywhere. 8 new tests in `catalog-lookup.test.ts`.
+
+**Fix 2 — `queue_pincode_manual_check`'s `target_unconfigured` reason fell through to the wrong HTTP status.**
+The 064 migration's new unconfigured-target check (Round 2, Correction 2) returns
+`{result: 'invalid_status', reason: 'target_unconfigured'}`, but `mapQueueManualCheckResult` in
+`responses.ts` had no entry for that reason string in either `NOT_FOUND_REASONS` or `CONFLICT_REASONS`, so it
+fell through to the generic `400 invalid_parameters` branch — false, since the request's parameters were
+valid; the target was simply no longer configured, which is a state conflict (409), the same class of fact
+as the other `CONFLICT_REASONS` entries. Fixed: `target_unconfigured` now maps to `409 invalid_status` with a
+specific seller-facing message ("This pincode is no longer configured for monitoring. Add it back to the
+product's pincode list before requesting a check."), distinct from the generic conflict message used for the
+other reasons in that set. One new direct test in `responses.test.ts` asserting status 409, `errorCode:
+'invalid_status'`, `reason: 'target_unconfigured'`, and explicitly asserting it is NOT 400/`invalid_parameters`.
+
+**Fix 3 — `deriveFreshnessState`'s overdue/current comparison used raw ISO-string comparison, not a
+chronological one.** `tracker.ts` compared `nextCheckAt <= nowIso` as strings. This only agrees with true
+epoch order when both timestamps share the exact same textual form (same offset, same precision) — two valid,
+equal instants written with different offsets (`...Z` vs `...+00:00`, or any non-zero offset like `+05:30`)
+compare incorrectly as strings, and the direction of the error can go either way (a chronologically-future
+instant can sort as lexically "less than" now, misclassified `overdue`, and a chronologically-past instant
+can sort as lexically "greater than" now, misclassified `current`). Fixed: both timestamps are now parsed to
+epoch milliseconds via `Date.parse` and compared numerically. A malformed/unparseable timestamp on either
+side never produces `current` — it falls back to the conservative `unscheduled` state (the same state already
+used for a genuinely absent `next_check_at`), never silently treated as fresh. 12 new tests in
+`tracker.test.ts`: Z-timezone future/past, `+00:00` offset, two `+05:30`/`-05:30` counterexample pairs chosen
+specifically so a naive string comparison would have produced the wrong bucket (proven inline via a sanity
+assertion in each test), malformed `nextCheckAt`, malformed `nowIso`, and a loop over several garbage inputs
+on both sides.
+
+**Verification this round:** TS suite **143/143 passed** (127 -> 143, 16 new tests: 8 + 1 + 7 across the three
+fixes), exit code 0. `npx tsc --noEmit` clean. `npx eslint src/app/api/pincode-monitoring
+src/lib/pincode-monitoring` clean, zero errors/warnings. `npm run build` clean, all 9 pincode-monitoring
+routes still registered as dynamic functions. P0-A/P0-B SQL suite re-run end-to-end (no SQL changed this
+round, confirming no regression): sequential suite passed (28 groups, unchanged), concurrency suite passed
+(**6/6**, unchanged), EXPLAIN ANALYZE passed, exit code 0. `git status` confirms exactly 7 files changed:
+`catalog-lookup.ts`, `responses.ts`, `tracker.ts`, `lookup-asin/route.ts`, and their three corresponding test
+files — zero migration files, zero application/UI/cron files, zero production environment variable changed.
+
+**No migration applied to production. No production row modified. No Vercel/Supabase environment variable
+changed. No deployment. Feature remains fully disabled. P0-C and P0-D remain blocked.**
+
+**Next step (needs the founder):** review PR #55 as it now stands (Round 2's 8 contract-gap corrections plus
+this round's 3 closing fixes), and either approve it for merge or request further changes. P0-C cannot start
+until this PR is approved. This PR does not merge itself, does not apply any migration, and does not deploy.

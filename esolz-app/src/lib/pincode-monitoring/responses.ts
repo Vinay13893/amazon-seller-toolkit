@@ -208,13 +208,20 @@ export type QueueManualCheckRpcResult =
   | { result: 'queued'; manual_request_token: string }
 
 const NOT_FOUND_REASONS = new Set(['not_found_or_wrong_workspace', 'workspace_marketplace_mismatch'])
-const CONFLICT_REASONS = new Set(['product_archived_or_removed', 'paused_requires_resume', 'failed_requires_resume'])
+// `target_unconfigured` (064 migration's `queue_pincode_manual_check` check)
+// belongs here, not in the 400 fallback below: the request's parameters are
+// valid, the target simply is no longer configured for monitoring -- a 409
+// state conflict, the same class of fact as the other conflict reasons.
+const CONFLICT_REASONS = new Set(['product_archived_or_removed', 'paused_requires_resume', 'failed_requires_resume', 'target_unconfigured'])
 
 export function mapQueueManualCheckResult(rpcResult: QueueManualCheckRpcResult) {
   switch (rpcResult.result) {
     case 'invalid_status': {
       if (NOT_FOUND_REASONS.has(rpcResult.reason)) {
         return jsonError(404, 'not_found', 'The requested pincode target was not found in this workspace.', { reason: rpcResult.reason })
+      }
+      if (rpcResult.reason === 'target_unconfigured') {
+        return jsonError(409, 'invalid_status', 'This pincode is no longer configured for monitoring. Add it back to the product\'s pincode list before requesting a check.', { reason: rpcResult.reason })
       }
       if (CONFLICT_REASONS.has(rpcResult.reason)) {
         return jsonError(409, 'invalid_status', 'This target cannot be manually checked in its current state.', { reason: rpcResult.reason })
