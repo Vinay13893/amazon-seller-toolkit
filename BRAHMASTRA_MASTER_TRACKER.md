@@ -4633,3 +4633,101 @@ changed. No deployment. Feature remains fully disabled. P0-C and P0-D remain blo
 **Next step (needs the founder):** review PR #55 as it now stands (Round 2's 8 contract-gap corrections plus
 this round's 3 closing fixes), and either approve it for merge or request further changes. P0-C cannot start
 until this PR is approved. This PR does not merge itself, does not apply any migration, and does not deploy.
+## 23. SKU Performance — Daily Sales & Ad Spend Trends: Data Audit (P1-A, 2026-07-22)
+
+**Founder requirement:** a new, separate workstream from Pincode Checker. The team needs one page
+where they can see SKU-wise daily sales and advertising-spend trends, answering: which SKUs are
+growing/declining, which are spending more, is the extra spend producing sales, which SKU has
+spend but no sales, which SKU's TACOS is worsening, what changed yesterday, which products need
+attention today, and is the underlying data fresh and trustworthy. Explicitly a **team operations
+page, not a decorative dashboard**.
+
+**Route / working name:** `/dashboard/sku-performance`, nav label "SKU Performance", subtitle
+"Daily Sales & Ad Spend Trends."
+
+**Branch / worktree:** `feature/sku-daily-sales-spend-audit`, in a brand-new, separate git
+worktree (`/home/user/amazon-seller-toolkit-sku-audit`) — deliberately never touching the
+existing Pincode P0-A/P0-B worktrees or branches (`amazon-seller-toolkit-pincode-p0a`,
+`amazon-seller-toolkit-pincode-p0b`, PRs #54/#55). Built from latest `origin/master`
+(`1e5a044`, PR #54 merged, PR #55 still open/unmerged — this new workstream does not depend on
+or wait for PR #55).
+
+**Customer/team problem:** no existing page joins SKU-level sales and SKU-level ad spend into one
+trend view. `/dashboard/internal` (Stock Actions) and
+`/dashboard/internal/easyhome-diagnostic` (Brahmastra) cover inventory/replenishment and a
+broader Ads/finding-review workflow respectively, but neither is the requested "one page, SKU ×
+day, sales + spend + trend + attention" operational view.
+
+**Audit status: COMPLETE (P1-A only). Result: GO WITH RESTRICTIONS.** Full detail in
+`SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`. Summary of what was verified, by reading actual migrations/
+importers/sync code (not assumed) and running read-only `SELECT`s against the live production
+Supabase project (`okxfwcfxxrtmijmvztdq`):
+
+- This is **not** a generic multi-tenant audit — the entire relevant `internal_*` table family is
+  a single-team internal-ops toolkit (RLS-gated to one test account or the "Internal Tester"
+  plan), and in practice **exactly one of the 3 workspaces** in production
+  (`55a321c9-7729-4662-a494-9f1f1aa86846`, plan `Free`) has any real Ads/sales data at all — same
+  single-workspace reality as the existing Brahmastra tooling.
+- **SKU → Ads-spend mapping is direct** (Amazon's own `spAdvertisedProduct` report carries
+  `advertisedSku`/`advertisedAsin` per row — no multi-hop campaign/ad-group ID join needed) and
+  verified **100% clean on live data**: 112/112 distinct advertised SKUs, all-time, matched
+  exactly to `amazon_listing_items` by SKU text, 0 unmapped, 0 ambiguous.
+- **Structural caveat carried into the spec/plan**: `amazon_listing_items` has a DB constraint
+  that forbids two SKUs from ever sharing one ASIN in that table, so a real FBA/FBM
+  duplicate-listing case cannot currently be observed or proven safe — the RPC design must still
+  implement and test the `unmapped`/`ambiguous` states even though today's data can't exercise
+  them, and must never split spend arbitrarily across SKUs.
+- Sales source: `internal_business_report_sku_sales_traffic` (SP-API Business Report, ASIN/SKU
+  granularity, order-date based) — fresh through **2026-07-21** (yesterday). Spend source:
+  `internal_ads_advertised_product_daily_rows` (Amazon Ads Reporting API v3, DAILY, **1-day click
+  attribution** — not 7d/14d, must be labeled) — also fresh through 2026-07-21.
+- **Data-accuracy risks found:** catalog table (`amazon_listing_items`, product title/image/
+  brand) is **23 days stale**; only ~5.5–7.3 weeks of history exist today, so a 90-day range
+  filter must show a real "data starts {date}" boundary, not a zero-filled chart; fulfillment-type
+  data's only source is **29 days stale** and the purpose-built replacement table has **zero
+  rows** — per the founder's own "only when trustworthy" instruction, the fulfillment filter must
+  ship disabled in V1; Business-Report/Ads timezone (`Asia/Kolkata`) and date-boundary alignment
+  between the two pipelines is a reasonable assumption but was **not independently proven**
+  against a third source.
+- **Organic sales (`Total − Ad-attributed`) is explicitly excluded from V1** per the founder's own
+  instruction — both stated preconditions (attribution-window methodology, date-boundary
+  alignment) are unresolved.
+
+**Implementation stages (locked sequence, per `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`):**
+P1-A (this entry, audit + locked definitions — complete) → P1-B (canonical daily SKU aggregation
+RPCs + read-only API routes, no UI, migration written but not applied to production) → P1-C
+(the `/dashboard/sku-performance` page UI) → P1-D (explainable flags, CSV export, Command Center
+integration). **P1-B is explicitly not started in this task**, per instruction, pending founder
+review of this audit.
+
+**Recommended aggregation model:** a bounded `SECURITY DEFINER` RPC doing live server-side
+aggregation (not a materialized table, not client-side aggregation) — current volume (24,608 Ads
+rows + 4,500 Business Report rows for the one real workspace, both already indexed on
+`(workspace_id, report_date DESC)`) does not yet justify a materialized-table refresh pipeline. A
+concrete promotion trigger (~2–5M rows per workspace, or p95 RPC latency > ~800ms) is documented
+for later, not built now.
+
+**Dependencies:** reuses the existing `getInternalAccessContext()` auth gate (same as
+`/dashboard/internal` and `brahmastra-data-health`) rather than building a second parallel gate.
+Proposes reusing the existing `internal_brahmastra_thresholds` table (migration 054) for the
+TACOS warning/critical bands and minimum-ad-spend-for-action floor in the P1-D explainable flags,
+instead of inventing a second, competing threshold system.
+
+**Blockers:** none structural. Two data-quality items worth resolving before or alongside P1-C
+(not P1-B blockers): refreshing the `amazon_listing_items` catalog sync (23 days stale), and
+independently verifying the two pipelines' date-boundary alignment before trusting the
+"Yesterday" column to day-level precision.
+
+**Verification this round:** read-only only — no `npm test`/`tsc`/`eslint`/`build` run, because no
+application code was written (P1-A is documentation-only, as instructed). Every data claim above
+is backed by either a repository file citation or a live read-only SQL query result, recorded in
+full in `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`.
+
+**No migration applied to production. No production row changed by this audit (all queries were
+read-only `SELECT`s). No application code, API route, or UI changed. No deployment.**
+
+**Next step (needs the founder):** review the three new documents
+(`SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`, `SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md`,
+`SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`) and the "GO WITH RESTRICTIONS" verdict, and either
+approve starting P1-B or request changes to the locked metric definitions/flag formulas first.
+P1-B does not start until that approval is given.

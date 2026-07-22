@@ -1143,3 +1143,56 @@ changed, confirming no regression): sequential (28 groups), concurrency **6/6**,
 **Feature remains fully disabled. No migration applied to production, no production row modified, no
 Vercel/Supabase environment variable changed, no deployment.** PR #55 still open, not merged. P0-C and P0-D
 remain blocked until this PR is approved.
+## SKU Performance — Daily Sales & Ad Spend Trends: Data Audit, P1-A (2026-07-22)
+
+New, separate workstream from Pincode Checker — different branch (`feature/sku-daily-sales-spend-audit`),
+different clean git worktree, does not touch or depend on the Pincode P0-A/P0-B branches or worktrees. Founder
+requirement: a team-facing `/dashboard/sku-performance` page ("SKU Performance" / "Daily Sales & Ad Spend
+Trends") answering which SKUs are growing/declining, spending more, whether extra spend is producing sales,
+which SKU has spend but no sales, which SKU's TACOS is worsening, what changed yesterday, which products need
+attention today, and whether the underlying data is fresh and trustworthy.
+
+**This entry covers P1-A only — a read-only data audit. No migration, no RPC, no API route, no UI was built.**
+
+Three documents produced: `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`, `SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md`,
+`SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`.
+
+**Key audit findings** (full detail and SQL evidence in the Data Audit doc):
+- Confirmed by reading the actual migrations/importers/sync scripts (nothing assumed): the relevant
+  `internal_*` table family is single-team internal-ops tooling, RLS-gated to one test account or the
+  "Internal Tester" plan. Live production check: exactly 1 of 3 workspaces has any real Ads/sales data.
+- SKU → Ads-spend mapping verified **100% clean on live production data** (112/112 distinct advertised SKUs,
+  all-time, matched by direct SKU-text join to `amazon_listing_items`, 0 unmapped, 0 ambiguous), via a
+  read-only SQL query run against the production Supabase project. A structural caveat is carried into the
+  spec/plan regardless: the catalog table's own DB constraint forbids two SKUs sharing one ASIN, so a real
+  FBA/FBM duplicate-listing case can't be observed today, and the design must still handle it safely (never
+  split spend arbitrarily) rather than assume it away.
+- Sales source (`internal_business_report_sku_sales_traffic`) and spend source
+  (`internal_ads_advertised_product_daily_rows`) both fresh through 2026-07-21 (yesterday). Ads figures use a
+  **1-day click attribution window** (verified directly in the Ads Reporting API client's report-column
+  config) — must be labeled, does not match a 7-day/14-day Console view.
+- Real data-quality risks found and documented: catalog metadata is 23 days stale; only ~5.5–7.3 weeks of
+  history exists (a 90-day filter must show a real data-start boundary, never zero-fill); fulfillment-type
+  data's only source is 29 days stale with its intended replacement table completely empty — per the
+  founder's own instruction, the fulfillment filter ships disabled in V1.
+- **Organic sales is explicitly excluded from V1**, per the founder's explicit instruction, because neither
+  required precondition (attribution-window methodology, date-boundary alignment) is yet validated.
+
+**Result: GO WITH RESTRICTIONS** (not BLOCKED, not a clean GO) — full reasoning in the Data Audit doc §7.
+
+**Recommended aggregation model:** a bounded `SECURITY DEFINER` RPC doing live server-side aggregation (not a
+materialized table, not client-side aggregation), justified by current real volume (24,608 Ads rows + 4,500
+Business Report rows for the one real workspace); a concrete promotion trigger to a materialized daily SKU
+fact table is documented for later, not built now.
+
+**Sequence locked:** P1-A (this entry, complete) → P1-B (aggregation RPCs + read-only routes, no UI, migration
+written but not applied to production) → P1-C (page UI) → P1-D (explainable flags, CSV export, Command Center
+integration). **P1-B is not started in this task**, per explicit instruction.
+
+**Verification:** read-only only — no `npm test`/`tsc`/`eslint`/`build`, because no application code was
+written. Every data claim is backed by either a repository file citation or a live read-only SQL query result
+against the production Supabase project, recorded in the Data Audit doc.
+
+**No migration applied to production. No production row changed (every query was a read-only `SELECT`). No
+application code, API route, or UI changed. No deployment. Pincode PR #55 and its branch/worktree were not
+touched.**
