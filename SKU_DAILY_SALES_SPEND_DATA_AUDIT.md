@@ -3,7 +3,8 @@
 Status: **read-only audit, no code changes, no migrations, no production writes**
 Branch: `feature/sku-daily-sales-spend-audit`
 Date: 2026-07-22 (original), amended 2026-07-22 — Review Correction Round ("Update 2"),
-**amended again 2026-07-22 — Evidence Closeout ("Update 3")**
+**amended again 2026-07-22 — Evidence Closeout ("Update 3"), completed with the normalization
+evidence closed out during the PR #55/#56 merge-order rebase**
 Author: Claude Code, on explicit founder instruction
 
 ## 0. What this document is
@@ -29,14 +30,20 @@ tool-permission gate for the duration of that round, so every number needing a n
 marked **DERIVED** or **UNKNOWN — blocked**, each with the exact ready-to-run SQL, never a
 fabricated number.
 
-**Update 3 (this amendment) — evidence closeout.** The blocked queries from Update 2 (§3b, §3c,
-§3d) have now been run successfully, read-only, against production by an independent reviewer,
-and their results are recorded below in place of the prior DERIVED/UNKNOWN markers. §3e's
-normalization-collision **count** query was not run this round and remains open — it is the one
-item still marked pending a direct query. The verdict is unchanged: **GO WITH RESTRICTIONS**. See
-§8 for the full, updated disclosure of what is now closed and what honestly remains open
-(timezone/date-boundary alignment, catalog staleness, fulfillment-data staleness, organic sales'
-exclusion, and the §3e normalization-collision count).
+**Update 3 — evidence closeout.** The blocked queries from Update 2 (§3b, §3c, §3d) were run
+successfully, read-only, against production by an independent reviewer, and their results were
+recorded in place of the prior DERIVED/UNKNOWN markers. §3e's normalization-collision **count**
+query was not part of that round.
+
+**Final closeout (during the PR #55/#56 merge-order rebase) — the §3e normalization-collision
+count is now also resolved.** Run successfully, read-only, against production: zero normalization
+collisions across all four sources (Ads, Sales, Catalog, Cost master), individually and combined,
+using the canonical candidate `trim(SKU).toUpperCase()`. Canonicalization recovers zero additional
+matches over the exact-string joins already in use. Every blocked query from Update 2 is now
+resolved. The verdict is unchanged: **GO WITH RESTRICTIONS**. See §8 for the full, final
+disclosure of what is closed and what honestly remains genuinely open (timezone/date-boundary
+alignment, catalog staleness, fulfillment-data staleness, organic sales' exclusion — none of
+which a read-only audit query resolves).
 
 ## 1. Context that shapes every conclusion below
 
@@ -323,31 +330,57 @@ that is the pipeline supplying the spend side of the join and the one most direc
 feature's control) and apply it **consistently on both sides of every join**, rather than
 inheriting whichever inconsistent convention each source happened to use.
 
-**Collision/conflict quantification — still open, ready query provided (§8).** Unlike §3b/§3c/§3d,
-this specific query was **not** part of the set run by the independent reviewer this round and
-remains unexecuted:
+**Collision/conflict quantification — RESOLVED, directly SQL-verified.** Run successfully,
+read-only, against production by an independent reviewer, using the canonical candidate
+`trim(SKU).toUpperCase()` on each source's raw SKU column:
 
-```sql
--- READY TO RUN, NOT YET RUN THIS ROUND — see §8
--- 1) Normalization collisions within the catalog table itself
-select upper(trim(sku)) as sku_norm, count(*) as raw_variants, array_agg(distinct sku) as raw_skus
-from amazon_listing_items
-where workspace_id = '55a321c9-7729-4662-a494-9f1f1aa86846'
-group by 1 having count(distinct sku) > 1;
+| Source | Rows | Raw distinct SKUs | Canonical distinct SKUs | Raw SKUs whose text changes under canonicalization | Source-level collisions |
+|---|---|---|---|---|---|
+| Ads (`internal_ads_advertised_product_daily_rows`) | 24,608 | 112 | 112 | 107 | **0** |
+| Sales (`internal_business_report_sku_sales_traffic`) | 4,500 | 232 | 232 | 203 | **0** |
+| Catalog (`amazon_listing_items`) | 462 | 462 | 462 | 404 | **0** |
+| Cost master (`internal_sku_cost_master`) | 400 | 400 | 400 | 367 | **0** |
 
--- 2) Sales-SKU / Ads-SKU sets that normalize together but are not exact-match identical
-with sales_skus as (
-  select distinct sku, upper(trim(sku)) as sku_norm from internal_business_report_sku_sales_traffic
-  where workspace_id='55a321c9-7729-4662-a494-9f1f1aa86846' and sku is not null
-),
-ads_skus as (
-  select distinct advertised_sku as sku, upper(trim(advertised_sku)) as sku_norm from internal_ads_advertised_product_daily_rows
-  where workspace_id='55a321c9-7729-4662-a494-9f1f1aa86846' and advertised_sku is not null
-)
-select s.sku as sales_raw_sku, a.sku as ads_raw_sku, s.sku_norm
-from sales_skus s join ads_skus a on a.sku_norm = s.sku_norm
-where s.sku is distinct from a.sku;
-```
+**Combined across all four sources: canonical keys containing multiple different raw SKUs = 0.**
+Even though most raw SKU values change text under canonicalization (107–404 of each source's
+distinct SKUs have some case/whitespace difference from their canonical form), **no two distinct
+raw SKU strings ever collapse onto the same canonical key, in any single source or across all
+four combined.** This is the reason the Round 1 raw-text exact-string join already achieved 100%
+matching (§3a) — the same logical SKU is stored with an *identical* raw string everywhere it
+appears, even when that raw string itself is non-canonical (mixed case, surrounding whitespace),
+so canonicalizing it doesn't move it relative to any other SKU's identity.
+
+**Mapping effect of canonicalization vs. exact-match (all directly verified):**
+
+| Join | Exact-string matches | Canonical matches | Canonical-only matches (recovered by normalizing) | ASIN conflicts |
+|---|---|---|---|---|
+| Ads → catalog | 112 | 112 | **0** | 0 |
+| Sales → catalog | 229 | 229 | **0** | 0 |
+| Cost master → catalog | 302 | 302 | **0** | — |
+
+Canonicalization recovers **zero** additional matches over exact-string matching in any of these
+three joins, for this account's current data — confirming the Round 1/Update 2 raw-text join was
+not silently missing any real matches that a normalized join would have caught.
+
+**Locked conclusion, per the explicit instruction:**
+- **Current production data has zero normalization collisions**, at the per-source level and
+  combined across all four sources.
+- **Canonicalization does not improve current mapping** — every join above already matches
+  exactly the same set of SKUs with or without normalization.
+- **Raw SKU is preserved for display and evidence** — canonicalization is a join-safety measure,
+  never a display transformation; the seller-facing SKU text shown on the page is always the raw
+  value.
+- **P1-B may use `trim(SKU).toUpperCase()` as a defensive canonical join key** — not because
+  today's data needs it (it doesn't change any result), but because it is a cheap, directly-tested
+  safety margin against a future SKU that does have incidental whitespace/case divergence between
+  sources.
+- **P1-B must detect and reject/quarantine any future canonical collision** — if a future sync
+  ever produces two distinct raw SKUs that canonicalize to the same key, the aggregation must
+  flag this explicitly (e.g. as a new `normalization_collision` mapping state) rather than
+  silently picking one or blending their figures.
+- **Never merge two different raw SKU identities silently** — canonicalization is a join key
+  only; it must never cause two SKUs a seller considers different inventory units to be reported
+  as one row.
 
 **Mapping/identity states — revised per the explicit instruction to drop "ambiguous" unless it
 has a concrete, reachable definition:**
@@ -505,35 +538,35 @@ catalog's real duplicate-ASIN behavior is an exact, cited code fact (§3e).
    The conservative P1-B aggregation rule (sum the canonical table once, never re-sum by `source`)
    is retained regardless, since it is the structurally correct implementation independent of
    whether overlap exists.
-9. **Still open, one item:** the SKU-normalization **collision count** query (§3e) was not part of
-   this round's evidence closeout and remains unexecuted — the qualitative finding (at least three
-   different normalization formulas in live use, plus one pipeline with none) stands on its own
-   code evidence regardless, but the exact collision count is not yet a directly-verified number.
+9. **Resolved during the PR #55/#56 merge-order rebase closeout:** the SKU-normalization
+   **collision count** query (§3e) — the one item Update 3 left open — has now been run
+   successfully, read-only, against production: **zero normalization collisions** across all four
+   sources, individually and combined, and canonicalization recovers zero additional matches over
+   the exact-string joins already in place. Every blocked/open query from this audit's review
+   round is now resolved.
 
 ## 8. Evidence closeout — what is resolved, what honestly remains open
 
-**Resolved this round (Update 3):** the Update 2 correction round identified genuine gaps in the
-*methodology* (SKU-count vs. spend-weighted coverage conflation, an unproven duplication-prevention
-claim, an unquantified normalization inconsistency) and fixed all of them at the definitional
-level, but could not obtain fresh production numbers — this session's own Supabase MCP SQL tool
-(`execute_sql`, `list_tables`) remained blocked behind a tool-permission gate for that entire
-round, confirmed tool-specific (a different tool on the same server, `list_projects`, worked).
-Those three blocked queries (§3b spend-weighted mapping, §3c value-weighted sales coverage, §3d
-auto/manual overlap) have now been **run successfully, read-only, against production by an
-independent reviewer**, and every DERIVED/UNKNOWN marker tied to them has been replaced with the
-direct result above. All three results **confirm** what the Update 2 methodology predicted or
-flagged as a risk to check — no surprise, no double-counting, no material accuracy problem
-surfaced.
+**Resolved (Update 3 + final closeout):** the Update 2 correction round identified genuine gaps in
+the *methodology* (SKU-count vs. spend-weighted coverage conflation, an unproven
+duplication-prevention claim, an unquantified normalization inconsistency) and fixed all of them
+at the definitional level, but could not obtain fresh production numbers — this session's own
+Supabase MCP SQL tool (`execute_sql`, `list_tables`) remained blocked behind a tool-permission gate
+for that entire round, confirmed tool-specific (a different tool on the same server,
+`list_projects`, worked). All four originally-blocked queries — §3b spend-weighted mapping, §3c
+value-weighted sales coverage, §3d auto/manual overlap, and §3e's normalization-collision count —
+have now been **run successfully, read-only, against production by an independent reviewer**, and
+every DERIVED/UNKNOWN marker tied to them has been replaced with the direct result. All four
+results **confirm** what the Update 2 methodology predicted or flagged as a risk to check — no
+surprise, no double-counting, no normalization collision, no material accuracy problem surfaced.
 
-**Honestly still open, not glossed over:**
-- **Timezone/date-boundary alignment** (§5) — untouched by this round, remains a named
-  pre-production checkpoint.
-- **Catalog metadata staleness** (23 days, §2/§3e) — a live sync freshness fact, not something a
-  read-only audit query resolves.
+**Honestly still open, not glossed over — these are freshness/verification facts, not blocked
+queries, and a read-only audit query does not resolve them:**
+- **Timezone/date-boundary alignment** (§5) — remains a named pre-production checkpoint, requiring
+  a real cross-check against the Amazon Ads/Seller Central UI, not a database query.
+- **Catalog metadata staleness** (23 days, §2/§3e) — a live sync freshness fact.
 - **Fulfillment-data staleness** (29 days, §2) — same.
 - **Organic sales' exclusion** (§4) — still excluded; its two preconditions (attribution-window
-  methodology, date-boundary alignment) are unaffected by this round's evidence closeout.
-- **The §3e normalization-collision count** — the one query from the original blocked set that
-  was not run this round; still marked open with its ready-to-run SQL in place.
+  methodology, date-boundary alignment) are unaffected by any of this audit's evidence closeouts.
 
 No migration is proposed or required by this document. This audit produces no schema changes.

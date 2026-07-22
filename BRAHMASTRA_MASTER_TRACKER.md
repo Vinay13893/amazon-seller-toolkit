@@ -4901,14 +4901,12 @@ parser, source-unfiltered select-then-upsert-by-id) is what makes duplication im
 future overlap ever occurs. **The conservative P1-B rule stands regardless of this result: sum the
 canonical table once, never separately sum source partitions together.**
 
-**Still open, not glossed over:** the Data Audit §3e SKU-normalization-collision **count** query
-was not part of this evidence-closeout round and remains unexecuted — the qualitative finding (at
-least three different normalization formulas in live use, one pipeline with none at all) stands on
-independent code evidence regardless. Timezone/date-boundary alignment, catalog-metadata staleness
-(23 days), fulfillment-data staleness (29 days), and the organic-sales exclusion are all
-**unaffected by this round** and remain exactly as documented in §23 update 2 — this evidence
-closeout resolved specific blocked *queries*, not the separate, still-genuinely-open
-*verification* items.
+**Still open at the time of this update:** the Data Audit §3e SKU-normalization-collision
+**count** query was not part of this evidence-closeout round — resolved in §23 update 4 below,
+during the PR #55/#56 merge-order rebase. Timezone/date-boundary alignment, catalog-metadata
+staleness (23 days), fulfillment-data staleness (29 days), and the organic-sales exclusion remain
+exactly as documented in §23 update 2 — genuine verification/freshness facts a read-only query
+does not resolve.
 
 **Verdict unchanged: GO WITH RESTRICTIONS.** Every number resolved this round confirmed what the
 Update 2 methodology already expected — no double counting, no material accuracy problem surfaced.
@@ -4920,11 +4918,59 @@ and `WORK_DONE_SUMMARY.md` changed.
 **No migration applied to production. No production row changed. No application code, API route,
 or UI changed. No deployment.**
 
-**Merge order (unchanged from update 2):** PR #55 (Pincode P0-B) remains open, not merged, as of
-this update. PR #56 must not merge before PR #55 resolves. Once PR #55 merges, this branch will be
-fetched/rebased onto the new `master`, preserving every Pincode §22 entry, this SKU Performance
-§23 entry (all three updates), and both files' full histories, before PR #56 can merge cleanly.
+### §23 update 4 (2026-07-22) — merge-order closeout: PR #55 merged, PR #56 rebased, normalization evidence resolved
 
-**Next step (needs the founder):** confirm PR #56 is ready for final merge review given the closed
-evidence gaps, and hold until PR #55 merges and this branch is rebased. P1-B does not start until
-that approval is given.
+**Decision received:** "Proceed with the merge-order closeout." PR #55 (Pincode P0-B) was
+re-verified immediately before merge — still open, `mergeable_state: clean`, not draft, head
+exactly `f5edbf0400638a7c63f57eb449bb61caecf424da` (matching the approved commit, no newer commit
+since), combined status `success` (Vercel deployment completed), one check run (`Vercel Preview
+Comments`) `success` — then merged via a standard merge commit, producing
+`b3d31f14b6952b9d5d25a7be0d594407a3aca8d5` (36 files changed). Migration 064's file now exists on
+`master` as a result, but **was not applied to the production database** — the Pincode feature
+remains fully disabled by flag, and this task never ran `apply_migration` or any equivalent
+against the live Supabase project at any point across all of P0-A/P0-B. No production row changed.
+
+**PR #56 rebase.** Performed only in the `feature/sku-daily-sales-spend-audit` worktree
+(`/home/user/amazon-seller-toolkit-sku-audit`) — the Pincode worktrees were not touched. Fetched
+`origin/master` (now `b3d31f1`), rebased the branch's 3 commits onto it. `BRAHMASTRA_MASTER_TRACKER
+.md` and `WORK_DONE_SUMMARY.md` conflicted on the first commit, as expected (both PRs append at the
+end of each file) — both conflicts were clean, non-overlapping appends (Pincode §22 content ending
+right where this SKU Performance §23 content begins), resolved by keeping both sides concatenated
+in their original order, dropping only the three conflict-marker lines. The remaining two commits
+(the review correction round, the evidence closeout) applied without any further conflicts. New
+head: `ff0439c1aa01a214becf244c010a7463fa055e16`, based on `b3d31f1`. Verified: every Pincode §22
+update (1 through 11) and this SKU Performance §23 (updates 1 through 3) present in the rebased
+tracker; every Pincode and SKU Performance entry present in the rebased `WORK_DONE_SUMMARY.md`;
+`git diff --stat origin/master...HEAD` shows exactly 5 files changed
+(`BRAHMASTRA_MASTER_TRACKER.md`, `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`,
+`SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`, `SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md`,
+`WORK_DONE_SUMMARY.md`) — no application code, no migration, no RPC, no route, no UI. Pushed with
+`--force-with-lease`.
+
+**Normalization evidence closed out.** The one item §23 update 3 left open — the Data Audit §3e
+SKU-normalization-collision count — was run successfully, read-only, against production by an
+independent reviewer during this same closeout, using the canonical candidate
+`trim(SKU).toUpperCase()`: **zero normalization collisions**, per-source (Ads 112, Sales 232,
+Catalog 462, Cost master 400 — each source's canonical-distinct-SKU count exactly equals its
+raw-distinct-SKU count) and combined across all four sources. Canonicalization recovers **zero**
+additional matches over the exact-string joins already established (Ads→catalog 112/112,
+Sales→catalog 229/229, Cost master→catalog 302/302, all identical whether canonical or exact).
+Locked conclusions: current production data has zero collisions; canonicalization doesn't change
+today's mapping; raw SKU stays the display value; P1-B may use `trim().toUpperCase()` as a
+defensive canonical join key; P1-B must still detect/reject any future canonical collision rather
+than silently merging two distinct raw SKU identities. Full detail in Data Audit §3e/§8.
+
+**Every query this audit ever marked blocked or open is now resolved.** The only genuinely open
+items across the whole P1-A audit are verification/freshness facts, never blocked queries:
+timezone/date-boundary alignment (a named pre-production checkpoint), catalog-metadata staleness
+(23 days), fulfillment-data staleness (29 days), and the organic-sales exclusion.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.**
+
+**No migration applied to production. No production row changed by this task. No application
+code, API route, or UI changed. No deployment. P1-B not started.**
+
+**Next step (needs the founder):** PR #56 is now rebased onto the latest `master` (with PR #55
+merged), evidence-complete, and open for final merge review. **PR #56 has not been merged** — that
+remains a separate, explicit step pending founder review. P1-B does not start until that approval
+is given.

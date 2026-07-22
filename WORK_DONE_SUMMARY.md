@@ -1281,12 +1281,11 @@ marker tied to them is replaced with the direct result.
   rule (sum the canonical table once, never re-sum by source) stands regardless, as the structurally correct
   implementation independent of whether overlap exists.
 
-**Still honestly open, not resolved by this round:** the Data Audit §3e normalization-collision *count* query
-was not part of this closeout and remains unexecuted (the qualitative finding — 3+ different formulas in live
-use — stands on code evidence alone). Timezone/date-boundary alignment, catalog-metadata staleness (23 days),
-fulfillment-data staleness (29 days), and the organic-sales exclusion are all unaffected by this round and
-remain exactly as documented in the prior round — this closeout resolved specific blocked *queries*, not the
-separate, still-open *verification* checkpoints.
+**Still open at the time of this round:** the Data Audit §3e normalization-collision *count* query was not
+part of this closeout — resolved below, during the PR #55/#56 merge-order closeout. Timezone/date-boundary
+alignment, catalog-metadata staleness (23 days), fulfillment-data staleness (29 days), and the organic-sales
+exclusion remain exactly as documented in the prior round — genuine verification/freshness facts, not blocked
+queries.
 
 **Verdict unchanged: GO WITH RESTRICTIONS** — every number resolved this round confirmed what the prior
 round's methodology already expected; no double counting or other material accuracy problem surfaced.
@@ -1294,6 +1293,33 @@ round's methodology already expected; no double counting or other material accur
 **Verification:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code written.
 
 **No migration applied to production. No production row changed. No application code, API route, or UI
-changed. No deployment.** Merge-order note (unchanged): PR #55 remains open as of this update — PR #56 must
-not merge before PR #55 resolves; this branch will be rebased onto `master` after PR #55 merges, preserving
-both PRs' full doc histories, before #56 can merge.
+changed. No deployment.**
+
+## SKU Performance — merge-order closeout: PR #55 merged, PR #56 rebased, normalization evidence resolved (2026-07-22)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 4.
+
+**PR #55 merged.** Re-verified immediately before merge (still open, mergeable, not draft, head matched the
+approved `f5edbf040...` exactly, Vercel check green, no newer commit), then merged as
+`b3d31f14b6952b9d5d25a7be0d594407a3aca8d5` (36 files). Migration 064's file now exists on `master` but was
+**not applied to the production database** — Pincode remains fully disabled by flag; no production row
+changed.
+
+**PR #56 rebased** onto the new `master`, in the SKU worktree only (Pincode worktrees untouched). Two clean,
+non-overlapping conflicts in `BRAHMASTRA_MASTER_TRACKER.md`/`WORK_DONE_SUMMARY.md` (both PRs append at file
+end) resolved by keeping both sides in order. New head `ff0439c1aa01a214becf244c010a7463fa055e16`. Verified:
+all 11 Pincode §22 updates and this SKU Performance §23 (updates 1-3) present in the tracker; both
+workstreams' full history present in this file; `git diff --stat origin/master...HEAD` shows exactly 5 docs
+changed, zero application code. Pushed with `--force-with-lease`.
+
+**Normalization evidence closed out** — the one item left open: zero normalization collisions across all four
+sources (Ads, Sales, Catalog, Cost master), individually and combined, using `trim(SKU).toUpperCase()`;
+canonicalization recovers zero additional matches over the exact-string joins already in place. Every query
+this audit ever marked blocked or open is now resolved — only genuine verification/freshness facts (timezone
+alignment, catalog/fulfillment staleness, organic-sales exclusion) remain open, by design, not by omission.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.**
+
+**No migration applied to production. No production row changed by this task. No application code, API
+route, or UI changed. No deployment. P1-B not started.** PR #56 is rebased, evidence-complete, and open for
+final merge review — **not merged**, pending separate founder approval.
