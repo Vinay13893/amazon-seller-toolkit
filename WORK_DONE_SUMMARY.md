@@ -998,3 +998,148 @@ the new claim-vs-product-removal test), `EXPLAIN ANALYZE` check passed, scratch 
 `esolz-app/supabase/tests/pincode-p0a/{run-tests.sh,concurrency.sh,README.md}` changed — zero migration,
 application, API, UI, or cron files touched. No migration applied to production, no production row modified,
 no deployment.
+
+### PR #54 merged (2026-07-19); PR #55 opened — P0-B API/data-access layer
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 9. PR #54 merged as `1e5a044` after pre-merge
+verification (open, mergeable, head matched the approved commit exactly, exactly 11 files, zero application/
+API/UI/cron files). New worktree, branch `feature/pincode-p0b-api-data-access`, off `origin/master`
+post-merge. **P0-B only: no page UI, no cron/scheduler, no feature-flag broadening, no migration applied to
+production.**_
+
+**Eight new routes** under `esolz-app/src/app/api/pincode-monitoring/`, matching `IMPLEMENTATION_PLAN.md`
+§9's P0-B list: `POST lookup-asin` (Other Products ASIN preview, reusing `getCatalogItemForAsin` verbatim,
+never enrolling an unconfirmed ASIN), `POST products` (bulk-or-single enrollment via
+`enroll_pincode_monitored_products`, one atomic RPC call), `PATCH products/[id]/pause`/`.../resume` (via
+`set_pincode_tracking_state`), `PATCH products/[id]/remove` (via `remove_pincode_monitored_products`, soft
+removal only, no DELETE route anywhere), `POST check-now` (via `queue_pincode_manual_check`, `202` only when
+genuinely queued), `GET`/`PUT default-pincodes` (direct service-role CRUD — not an RPC, `workspace_default_
+pincodes`' only mutation path per `DATA_MODEL.md` §6), `GET tracker` (paginated product+pincode rows, three
+lifecycle views, five-state availability vocabulary). **My Products listing is not a new route** — confirmed
+`GET /api/asins/listings` already satisfies `PRODUCT_SPEC.md` §11's explicit "reuses, existing, unchanged"
+requirement; zero lines of it touched.
+
+**New `lib/pincode-monitoring/` data-access layer** (`config.ts`, `access.ts`, `rpc.ts`, `responses.ts`,
+`tracker.ts`, `defaults.ts`, `catalog-lookup.ts`, `validation.ts`, `pause-resume-handler.ts`) — a deliberate
+deviation from this codebase's existing "inline everything in route.ts" convention, called out explicitly:
+eight routes share the same four RPCs and the same access gate, and duplicating that logic eight times was
+judged the real risk. `rpc.ts` hardcodes exactly the four P0-B-reachable RPCs, no generic passthrough.
+`access.ts`'s core decision function is pure (session → per-workspace membership → feature-flag/allowlist →
+role), separated from its I/O wrapper specifically so it unit-tests without a live database. Two new,
+previously-unlocked env vars introduced (`PINCODE_MONITORING_ENABLED`, `PINCODE_MONITORING_ALLOWED_
+WORKSPACE_IDS`), both defaulting closed (disabled / empty allowlist) — confirmed no prior workspace-ID
+allowlist mechanism exists anywhere in this codebase before this PR.
+
+**Tests: 87 unit tests across 8 files, zero new npm dependencies.** This codebase had no test tooling
+whatsoever before this PR (no jest/vitest anywhere) — used Node's built-in `node:test` via `tsx` (already a
+devDependency) instead of adding one. Honest scope note: these are pure-function and mocked-Supabase-client
+unit tests (access-decision logic, RPC-result-to-HTTP mapping, five-state/product-state derivation, RPC
+parameter-name correctness via a fake client double, a source-scan confirming no route is a client component
+and every route reaches the access gate) — not a live-database integration test, since no PostgREST/GoTrue
+stack is available in this environment (the P0-A scratch-DB runner is deliberately raw Postgres only). The
+six RPCs' real correctness remains what the unchanged P0-A SQL suite verifies.
+
+**Verified:** P0-A SQL suite re-run unmodified from the new worktree — sequential passed (~20 groups),
+concurrency **6/6**, EXPLAIN ANALYZE passed. New P0-B suite: **87/87 passed**. `npx tsc --noEmit` clean.
+`npx eslint` clean on every changed file. `npm run build` clean, all 8 routes registered as dynamic functions.
+`git status`: only `esolz-app/package.json` (one new `"test"` script, no dependency change) plus the new
+`app/api/pincode-monitoring/` and `lib/pincode-monitoring/` directories — zero migration, UI, or cron files.
+
+**Feature remains fully disabled** (`PINCODE_MONITORING_ENABLED` unset anywhere real). No migration applied
+to production, no production row modified, no Vercel/Supabase environment variable changed, no deployment.
+PR #55 opened, not merged. P0-C (UI) and P0-D (scheduler) remain blocked until this PR is approved.
+
+### PR #55 correctness amendment: 8 corrections closing real P0 contract gaps (2026-07-20)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 10. Same PR #55, same branch — no P0-C, no
+scheduler, no migration applied, no production env var changed, no deployment._
+
+**The gap this round closes:** implementation review found the P0-B round above was structurally sound but
+had real contract gaps, not style nits. Six were about correctness/security (blind Other Product enrollment,
+a missing route, non-atomic writes, an unbounded read, a thin access gate, cross-product URL abuse); two were
+hardening (request bounds, error hygiene).
+
+1. **Other Product enrollment now requires server-side SP-API confirmation, closing a bypass.** The enroll
+   route previously trusted a client-supplied `productSource: 'other'` ASIN outright — the RPC has no SP-API
+   access and can't verify anything, so a direct call (skipping the UI's prior lookup) could enroll a blind,
+   unconfirmed ASIN. New `other-product-confirmation.ts` resolves every distinct Other Product ASIN through
+   the Catalog Items helper (one connection/token load per request, bounded concurrency), rejects the whole
+   bulk request on any failure, and only ever writes Amazon-confirmed metadata for those products.
+2. **The locked "Edit Pincodes" route (`PATCH .../products/[id]/pincodes`) was missing entirely — now
+   implemented**, backed by a new target-configuration lifecycle (`is_configured`/`unconfigured_at`, a new
+   migration 064) orthogonal to the existing operational status enum, and a new atomic RPC
+   (`replace_pincode_product_targets`) that adds/reconfigures/unconfigures targets on their SAME IDs, never
+   interrupts an in-flight check, and re-checks quota. Four existing RPCs (`claim_due_pincode_targets`,
+   `queue_pincode_manual_check`, `set_pincode_tracking_state`, `finalize_pincode_check`) amended in place to
+   respect the new lifecycle.
+3. **Default-pincode replacement is now atomic** — one new RPC (`replace_workspace_default_pincodes`)
+   replaces the prior two-request upsert-then-deactivate sequence with a single transaction.
+4. **The tracker read is now bounded** — a new RPC (`get_pincode_target_results`) replaces an unbounded
+   "fetch every history row, dedupe in TypeScript" query with a database-side, index-assisted read returning
+   `latestAttempt` and `lastConfirmedAvailability` as two explicit, never-conflated facts. The previous
+   `isLastConfirmedResult` field (which conflated "a row exists" with "it confirmed availability") is
+   removed. A documented freshness model replaces the implicit "NULL next_check_at is fresh" assumption.
+5. **The access gate now validates workspace-UUID shape, real marketplace entitlement (`amazon_connections`,
+   the one-row-per-workspace canonical source), and an explicit role allowlist** — an unrecognized role is
+   now rejected outright rather than silently treated as viewer-or-writable. A strict-integer-parsing bug
+   (`'10abc'` previously parsed as `10`) in config env-var reading is also fixed.
+6. **Product-scoped pause/resume/remove URLs can no longer mutate other products' targets** — the prior
+   round's `targetIds`/`productIds` body overrides could reference IDs outside the URL's own product; removed
+   for `remove`, and narrowed to "may only subset the URL product's own targets" for pause/resume.
+7. **Request/response contract hardening**: hard bounds on every array/string input mirroring each RPC's own
+   ceilings, an offset ceiling on the tracker query, and a shared `internalError()` helper so no route ever
+   leaks a raw Postgres/PostgREST error message to a customer.
+
+**Tests:** SQL suite grew by 8 numbered groups (TEST 21-28, covering the new lifecycle/RPCs at both
+correctness and >1,000-row volume). TS suite grew from 87 to **127** tests, including two newly-extracted
+pure cores specifically to make security-critical logic testable without a live database or network call:
+`confirmAsinsWithLookup` (Other Product whole-batch-rejection + bounded concurrency) and
+`resolveScopedTargetIds` (the product-scoped-URL security property itself).
+
+**Verified:** P0-A/P0-B SQL suite re-run end-to-end, unmodified except the additions — sequential (28 groups),
+concurrency **6/6**, EXPLAIN ANALYZE, all passed. TS suite: **127/127 passed**. `npx tsc --noEmit` clean.
+`npx eslint` clean. `npm run build` clean, all 9 routes registered. `git status`: only the new migration file,
+`sequential.sql`'s additions, and `esolz-app/src/{app/api,lib}/pincode-monitoring/**` changed.
+
+**Feature remains fully disabled. No migration applied to production, no production row modified, no
+Vercel/Supabase environment variable changed, no deployment.** PR #55 still open, not merged. P0-C and P0-D
+remain blocked until this PR is approved.
+
+### PR #55 final correction round: 3 closing fixes to the Round 2 amendment (2026-07-22)
+
+_Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §22 update 11. Same PR #55, same branch — no P0-C, no
+scheduler, no migration applied, no production env var changed, no deployment. No SQL touched this round._
+
+**The gap this round closes:** a follow-up review of the Round 2 correction code itself found three
+remaining, narrowly-scoped defects — closing fixes to what Round 2 shipped, not new scope.
+
+1. **`catalog-lookup.ts`'s `amazon_connections` query ignored its own `error`.** The Other Products lookup
+   route's `lookupAsin` (distinct from Round 2's already-correct `confirmOtherProductAsins`) reported a
+   database/infrastructure query failure as `connection_unavailable` ("connect your Amazon account") — false
+   and unactionable. Now a distinct `connection_query_failed` outcome, mapped to `500
+   catalog_connection_query_failed`. Separately, `decryptToken`/`refreshAccessToken` were called outside any
+   try/catch — a failure there would have escaped uncaught. Now wrapped, resolving to a new
+   `token_refresh_failed` outcome (`502 catalog_token_refresh_failed`), distinct from every other outcome.
+   The decision logic was split into a pure `resolveCatalogLookup` core with every dependency injected (the
+   same pure-core/IO-wrapper pattern used throughout this feature), so the full outcome state machine is
+   directly unit-testable. 8 new tests.
+2. **`queue_pincode_manual_check`'s `target_unconfigured` reason mapped to the wrong HTTP status.** It fell
+   through to a generic `400 invalid_parameters` — false, since the request was valid; the target was simply
+   no longer configured, a 409 state conflict. Now maps to `409 invalid_status` with a specific seller-facing
+   message. 1 new direct test.
+3. **`deriveFreshnessState` compared timestamps as raw ISO strings, not chronologically.** Two equal instants
+   with different offsets (`Z` vs `+00:00`, or any non-zero offset) could compare incorrectly, misclassifying
+   `overdue` as `current` or vice versa. Now parses both to epoch milliseconds via `Date.parse` and compares
+   numerically; a malformed timestamp on either side now falls back to `unscheduled`, never `current`. 12 new
+   tests, including two `+05:30`/`-05:30` counterexample pairs chosen specifically to fail under the old
+   string-comparison logic.
+
+**Verified:** TS suite **143/143 passed** (127 → 143, 16 new tests). `npx tsc --noEmit` clean. `npx eslint`
+clean. `npm run build` clean, all 9 routes still registered. P0-A/P0-B SQL suite re-run end-to-end (no SQL
+changed, confirming no regression): sequential (28 groups), concurrency **6/6**, EXPLAIN ANALYZE, all passed.
+`git status`: exactly 7 files changed (`catalog-lookup.ts`, `responses.ts`, `tracker.ts`,
+`lookup-asin/route.ts`, and their 3 test files) — zero migration/UI/cron files touched.
+
+**Feature remains fully disabled. No migration applied to production, no production row modified, no
+Vercel/Supabase environment variable changed, no deployment.** PR #55 still open, not merged. P0-C and P0-D
+remain blocked until this PR is approved.
