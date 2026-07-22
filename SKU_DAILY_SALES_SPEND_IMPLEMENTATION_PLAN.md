@@ -7,7 +7,12 @@ state model for missing-row-vs-confirmed-zero; the P1-A/B/C/D sequence revised s
 explainable-flag computation, filtering, and server-side sorting; a currency contract and a named
 timezone-verification checkpoint added). Amended again 2026-07-22 — Evidence Closeout ("Update 3"):
 the spend-weighted mapping and value-weighted sales-coverage numbers referenced here are now
-directly SQL-verified (Data Audit §3b/§3c) rather than derived/blocked.
+directly SQL-verified (Data Audit §3b/§3c) rather than derived/blocked. Amended again 2026-07-22 —
+final API/coverage contract consistency pass ("Update 5"): the coverage-state model's internal
+contradiction (`SOURCE_NOT_COMPLETE` and `UNKNOWN` both claiming "no covering run") is resolved
+with an explicit five-state decision order (§3); the summary RPC's date-range contract, canonical
+cross-source SKU universe, and pagination/summary-count separation are corrected to match the
+Product Spec (§2). Docs-only — no migration, RPC, route, or UI exists yet to change.
 
 ## 1. Aggregation model decision
 
@@ -50,32 +55,90 @@ small hardcoded TypeScript wrapper — never a generic `.rpc(name, params)` pass
 sorting, not just raw aggregation.** They must return everything the Product Spec's summary
 cards, table, filters, and Attention status need — the UI (P1-C) never recomputes a flag.
 
-`get_sku_performance_summary(p_workspace_id uuid, p_marketplace_id text, p_as_of date, p_limit
-integer, p_offset integer, p_sku_filter text, p_asin_filter text, p_category_filter text,
-p_brand_filter text, p_growing_only boolean, p_declining_only boolean, p_spend_spike_only
-boolean, p_no_attributed_sales_only boolean, p_high_tacos_only boolean, p_unmapped_only boolean,
-p_identity_conflict_only boolean, p_sort text)` → one row per SKU, already filtered by every
-passed filter, already sorted per `p_sort` (default: Attention-status severity, then 7-day sales
-desc), already paginated by `p_limit`/`p_offset`. Per row: sales/units/spend/attributed-sales/
-ACOS/TACOS for yesterday, trailing-7-day, trailing-30-day, and prior-7-day; the base sales-trend
-and spend-trend states (Product Spec §6.2/§6.3); every Attention-status flag (§6.4) as a computed
-boolean/enum, not left for the client to derive; mapping state (§Data Audit §3e); the three
-per-SKU activity dates (§Product Spec §4); and the workspace's currency code (Correction 8, never
-hardcoded by the caller).
+**Revised again per Update 5 Correction 2 (selected date-range contract) — the summary RPC must
+accept an explicit date range, not only `p_as_of`:**
+
+`get_sku_performance_summary(p_workspace_id uuid, p_marketplace_id text, p_date_from date,
+p_date_to date, p_as_of date, p_limit integer, p_offset integer, p_sku_filter text, p_asin_filter
+text, p_category_filter text, p_brand_filter text, p_growing_only boolean, p_declining_only
+boolean, p_spend_spike_only boolean, p_no_attributed_sales_only boolean, p_high_tacos_only
+boolean, p_unmapped_only boolean, p_identity_conflict_only boolean, p_sort text)` → one row per
+SKU, already filtered by every passed filter, already sorted per `p_sort` (default: Attention-
+status severity, then 7-day sales desc), already paginated by `p_limit`/`p_offset`. Per row:
+sales/units/spend/attributed-sales/ACOS/TACOS for yesterday, trailing-7-day, trailing-30-day, and
+prior-7-day; the base sales-trend and spend-trend states (Product Spec §6.2/§6.3); every
+Attention-status flag (§6.4) as a computed boolean/enum, not left for the client to derive;
+mapping state (§Data Audit §3e); the three per-SKU activity dates (§Product Spec §4); and the
+workspace's currency code (Correction 8, never hardcoded by the caller).
+
+`p_date_from`/`p_date_to` are the **selected, complete-day range** the summary cards and
+selected-range sales/spend metrics operate over (Product Spec §3) — hard bounded, the RPC must
+reject `p_date_from > p_date_to`, and must never silently accept a `p_date_to` in the future
+relative to the workspace's marketplace-local today. `p_as_of` is a **separate** parameter: the
+anchor date for the fixed comparison windows (Yesterday, trailing-7-days, prior-7-days, trailing-
+30-days, day-over-day delta) — explicit, marketplace-timezone-aware, and never silently derived
+from the database's `CURRENT_DATE` (Correction 8, carried forward). The two stay independent: a
+caller can change the selected range for the cards/table without changing which day "Yesterday"
+or the trailing/day-over-day windows are computed against.
+
+The response must return, alongside the per-row/summary data: `requestedDateFrom`,
+`requestedDateTo` (echoing the caller's input verbatim), `effectiveDateFrom`, `effectiveDateTo`
+(the range actually used, after clamping to real source-history boundaries), `asOf`,
+`salesHistoryStartsAt`, `adsHistoryStartsAt` (the real `MIN(report_date)` per source, so the
+caller can tell whether/where the requested range was clamped), `wasRangeClamped` (boolean), and
+`clampReason` (populated only when `wasRangeClamped` is true — e.g.
+`requested_start_before_ads_history`). The RPC never silently zero-fills the portion of a
+requested range that predates available history — it reports the clamp instead.
+
+**Revised again per Update 5 Correction 3 (canonical SKU universe) — the driving SKU universe for
+this RPC is a union across sources, not `amazon_listing_items` alone:** the set of SKUs the
+summary RPC aggregates over must begin from a `UNION` of canonical SKU identities present in the
+requested scope across `internal_business_report_sku_sales_traffic`,
+`internal_ads_advertised_product_daily_rows`, `amazon_listing_items`, and
+`internal_sku_cost_master` (the last one where category/cost metadata is relevant to a requested
+filter) — never only from `amazon_listing_items`. Required behavior: a sales-only SKU (present in
+Business Report data, absent from the catalog) remains visible; an Ads-only SKU remains visible; a
+catalog-only SKU (tracked in `amazon_listing_items`, zero activity in the window) may remain
+visible; a SKU with no catalog match renders as "Unknown product" rather than being dropped; a
+missing catalog row never causes real sales/spend to disappear from the summary. The raw SKU
+string is retained for display; a canonical join key (candidate: `trim(sku).toUpperCase()`, per
+Data Audit §3e — verified zero normalization collisions in production) is used **only for
+matching** across sources, never for merging distinct raw SKUs into one displayed identity. Any
+future canonical-key collision across genuinely distinct raw SKUs is surfaced as
+`identity_conflict` (§Product Spec mapping-state vocabulary) — never silently merged. When the
+same canonical identity appears across multiple sources, the **displayed raw SKU** is chosen by a
+fixed precedence: (1) the catalog (`amazon_listing_items`) raw SKU, (2) the Business Report raw
+SKU, (3) the Ads raw SKU, (4) the cost-master raw SKU — first source present, in that order. The
+row also returns which sources the canonical identity was actually found in (mapping/source-
+presence evidence), so the UI can explain why a SKU has no catalog match or why a displayed value
+came from a lower-precedence source.
 
 A companion, workspace-scoped (not per-SKU) summary object — either a second RPC or a second
 result set from the same call — must return: the three summary-card totals (sales/spend/
-attributed-sales/ACOS/TACOS over the range), the SKUs-growing/declining counts (§Product Spec
-§6.2's documented rule, not the narrower efficiency sub-flags), **the spend-weighted mapping
-coverage breakdown** (mapped/unmapped/identity_conflict spend and %, per Data Audit §3b — the RPC
-must compute this directly from a `SUM(spend) ... GROUP BY row_state` query, never approximate it
-from a SKU-count ratio), and the three source-level freshness facts (`salesSourceLatestCompleteDate`
+attributed-sales/ACOS/TACOS over the **selected `p_date_from`/`p_date_to` range**, not just
+`p_as_of`), the SKUs-growing/declining counts (§Product Spec §6.2's documented rule, not the
+narrower efficiency sub-flags), **the spend-weighted mapping coverage breakdown** (mapped/
+unmapped/identity_conflict spend and %, per Data Audit §3b — the RPC must compute this directly
+from a `SUM(spend) ... GROUP BY row_state` query, never approximate it from a SKU-count ratio),
+and the three source-level freshness facts (`salesSourceLatestCompleteDate`
 / `adsSourceLatestCompleteDate` / `catalogLastSyncedAt` plus their `*State` companions, §Product
 Spec §4).
 
+**Revised again per Update 5 Correction 4 (pagination vs. summary counts) — every card/count in
+the companion summary object above must be computed over the full filtered SKU scope (the
+canonical union above, after every passed filter, before `p_limit`/`p_offset` is applied), never
+over only the current page of returned rows.** Total sales, total spend, the growing/declining
+counts, and the mapping-coverage breakdown are all full-scope aggregates. Separately, the response
+must return explicit counts describing the page itself: `totalSkuCountBeforeFilters` (size of the
+canonical union in the requested scope, no filters applied), `totalMatchingSkuCountAfterFilters`
+(size after every passed filter, before pagination), `returnedSkuCount` (rows actually returned
+this call, ≤ `p_limit`), `limit`, `offset`, and `hasMore` (`offset + returnedSkuCount <
+totalMatchingSkuCountAfterFilters`). Filtering and sorting happen server-side, entirely before
+pagination is applied — never paginate first and filter the page afterward.
+
 `get_sku_performance_daily(p_workspace_id uuid, p_marketplace_id text, p_sku text, p_date_from
 date, p_date_to date)` → the row-drill-down daily series, one row per day, each day classified
-per the coverage-state model (§Correction 4 below) — never a flat zero standing in for missing
+per the coverage-state model (§3 below) — never a flat zero standing in for missing
 data. Bounded date range (hard ceiling, e.g. 400 days max, mirroring `get_pincode_target_results`).
 
 **Aggregation rule carried from Data Audit §3d (Correction 2):** both RPCs sum `spend`/`sales`
@@ -89,17 +152,29 @@ route handlers via the admin client. Never a generic RPC-name passthrough.
 
 ## 3. Correction 4 — missing row vs. confirmed zero: the coverage-state model
 
+**Amended by Update 5 Correction 1 (2026-07-22): the five-state model below previously had an
+internal contradiction — both `SOURCE_NOT_COMPLETE` and `UNKNOWN` independently claimed "no
+covering refresh-run row exists" as a qualifying condition, which cannot both be true for the same
+date/source under a single top-to-bottom priority order. Resolved below with an explicit
+deterministic decision order; "no covering run at all" now belongs to `UNKNOWN` alone.**
+
 **Inspected:** `internal_data_refresh_runs` (migration 046/050), the Business Report and Ads
 sync/importer code, and standard Amazon Reporting API behavior for zero-activity dimension rows.
+Also inspected for this amendment: `esolz-app/src/app/api/internal/ads-deep-reports/import/
+route.ts` (the manual-CSV Ads import route) — confirmed by direct code search to contain **zero**
+references to `internal_data_refresh_runs`; only the automated sync script
+(`esolz-app/scripts/sync-ads-reports.ts`, 10 write sites) logs refresh-run rows at all. Manual-
+CSV-imported Ads dates therefore have **no refresh-run row of any kind**, successful or otherwise
+— this is load-bearing for the manual-CSV rule below.
 
 **What `internal_data_refresh_runs` actually proves, precisely:** each row covers a **date
 *range*** (`date_from`, `date_to`), not a single date, and records one `status` for that whole
-range (`running`/`success`/`partial_success`/`failed`/`skipped`). **This table cannot prove
-day-level completeness** — a `status='success'` run covering `2026-07-01..2026-07-21` asserts the
-whole range synced without error; it does not independently confirm that Amazon's own report
-generation had zero silent gaps for any single day inside that range. `partial_success` and
-`rows_rejected` exist precisely because a run can be *incomplete* while still not being a hard
-`failed` — a signal this model must respect.
+range (`running`/`success`/`partial_success`/`failed`/`skipped`), plus `rows_rejected`. **This
+table cannot prove day-level completeness** — a `status='success', rows_rejected=0` run covering
+`2026-07-01..2026-07-21` asserts the whole range synced without error; it does not independently
+confirm that Amazon's own report generation had zero silent gaps for any single day inside that
+range. `partial_success` and `rows_rejected` exist precisely because a run can be *incomplete*
+while still not being a hard `failed` — a signal this model must respect.
 
 **What Amazon's report semantics are trusted to prove (an assumption about an external system,
 not independently tested in this audit — stated as such):** both the Business Report ("Sales and
@@ -110,23 +185,63 @@ families, not something this codebase's own code enforces or could enforce. No c
 (e.g., picking a specific SKU and day known to have zero sales and confirming no row exists) was
 run in this audit to independently verify it for this exact account.
 
-**The five-state model:**
+**The five-state model — evaluated in this exact order, first match wins:**
 
-| State | Definition | Provable today from existing tables? |
-|---|---|---|
-| `BEFORE_HISTORY` | The requested date predates that source's earliest available date for this workspace (Data Audit §2: Ads from 2026-06-01, Business Report from 2026-06-15) | **Yes** — a simple `MIN(report_date)` bound |
-| `SOURCE_NOT_COMPLETE` | The source's `internal_data_refresh_runs` row covering that date range is not `status='success'` (i.e. `failed`/`partial_success`/`running`/`skipped`, or no run recorded at all) | **Yes, at range granularity only** — cannot pinpoint which single day within a failed/partial range actually has the gap |
-| `CONFIRMED_ZERO` | The covering run is `status='success'`, the date falls inside `[date_from, date_to]` of that run, AND no row exists for that SKU/date | **Provable only to the extent the range-level success signal is trusted to mean every day inside it is individually complete** — a genuine but bounded assumption, not a per-day guarantee |
-| `REPORTED_VALUE` | A real row exists for that SKU/date | **Yes** — direct fact |
-| `UNKNOWN` | None of the above can be established (e.g. no refresh-run row covers that date at all, for a source that has never logged runs for dates that old) | **Yes** — the honest fallback |
+1. **`REPORTED_VALUE`** — a real source row exists for the exact (workspace, marketplace, source,
+   SKU, report date). Wins **regardless of refresh-run history** — a row that was actually
+   imported is a fact, whatever the sync bookkeeping says about the run that produced it.
+2. **`BEFORE_HISTORY`** — the date predates the earliest available history boundary for that
+   source/scope (Data Audit §2: Ads from 2026-06-01, Business Report from 2026-06-15), proved by a
+   simple `MIN(report_date)` bound. An in-history date with a missing row is **never** classified
+   as `BEFORE_HISTORY`, no matter how sparse that source's data is around it.
+3. **`CONFIRMED_ZERO`** — no SKU row exists, but at least one **fully successful, accepted**
+   refresh run covers the date for the **exact source scope**: for Ads,
+   `internal_data_refresh_runs` rows matching `workspace_id`, `marketplace_id`, `profile_id`
+   (where applicable), `source = 'ads_advertised_product'`, the date inside `[date_from,
+   date_to]`, `status = 'success'`, and `rows_rejected = 0` (or an equivalent accepted-complete
+   condition); for Business Reports, the equivalent match on `workspace_id`, `marketplace_id`,
+   `source = 'business_report_sp_api'`, the date inside `[date_from, date_to]`, `status =
+   'success'`, `rows_rejected = 0`. A later failed retry over the same range does **not** erase a
+   date's `CONFIRMED_ZERO` standing from an earlier successful run — previously imported successful
+   data is not retroactively invalidated by a subsequent failure. Note, however, that current
+   *source-health* status (e.g. `brahmastra-data-health.ts`'s `stale`/`failed`) may separately show
+   the most recent sync attempt failed — **coverage evidence for a specific past date and current
+   pipeline health are different facts**, and this model only asserts the former.
+4. **`SOURCE_NOT_COMPLETE`** — one or more refresh-run rows cover the date for the exact source
+   scope, but **none of them is an accepted successful run**: covering attempts exist, but every
+   one is `failed`-only, `partial_success`-only, `skipped`-only, `running`-only, or a `status =
+   'success'` run with `rows_rejected > 0` where completeness cannot otherwise be established. The
+   distinguishing feature from `UNKNOWN` is that covering attempts **do exist** — the pipeline
+   tried and did not fully succeed, as opposed to never having run at all.
+5. **`UNKNOWN`** — no source row exists for the SKU/date, **and no refresh-run row of any kind
+   covers that date** for the exact source scope. This is the **only** state that means "no
+   covering run" — `SOURCE_NOT_COMPLETE` never applies here, because `SOURCE_NOT_COMPLETE`
+   requires covering attempts to exist.
+
+**Manual-CSV-specific rule (historical Ads backfill dates):** the manual-CSV Ads import route
+never writes `internal_data_refresh_runs` rows (confirmed above), so no manual-CSV-imported date
+can ever reach `CONFIRMED_ZERO` or `SOURCE_NOT_COMPLETE` — both require a refresh-run row that
+manual CSV imports structurally never create. For these dates: a real row is `REPORTED_VALUE`; an
+absent SKU/date is `UNKNOWN`, **unless** an explicit upload-coverage ledger (not built today)
+proves the complete date/SKU universe the CSV was meant to cover. It is never valid to infer
+`CONFIRMED_ZERO` merely because the CSV contains other rows for that same date — the presence of
+some rows for a date says nothing about whether the upload was a complete extract for every SKU
+active that day.
 
 **Locked rule:** an unavailable date (`BEFORE_HISTORY`) is **never** zero-filled — rendered as a
-labeled gap. A date inside a **successfully completed** range with no row **is** rendered as
-`CONFIRMED_ZERO` (an honest, positive zero, not left ambiguously blank) — the explicit instruction
-was not to "leave a successfully completed zero-activity date as misleadingly unknown when report
-semantics safely prove zero," and `CONFIRMED_ZERO` is how that is satisfied. Anything that cannot
-clear the bar for `SOURCE_NOT_COMPLETE`'s success check or the `BEFORE_HISTORY` bound is `UNKNOWN`
-— rendered distinctly from both a real zero and a real value, never coerced to either.
+labeled gap. A date with an accepted successful covering run and no row **is** rendered as
+`CONFIRMED_ZERO` (an honest, positive zero, not left ambiguously blank). A date with covering
+attempts that never fully succeeded is `SOURCE_NOT_COMPLETE`, rendered distinctly from a confirmed
+zero. A date with no covering evidence at all is `UNKNOWN`, rendered distinctly from both a real
+zero and a real value. None of the five states is ever coerced into another to simplify the UI.
+
+**Live-production note:** the real workspace's `internal_data_refresh_runs` data currently
+contains **both** successful and failed refresh attempts over overlapping date ranges for the same
+source (a failed retry does not remove the row logged by an earlier successful run). P1-B's
+`CONFIRMED_ZERO`/`SOURCE_NOT_COMPLETE` queries must therefore evaluate **existence of at least one
+accepted successful covering run** as a question distinct from **the latest source-health
+status** — checking only "is the source currently healthy" would misclassify dates that synced
+successfully before a later, unrelated failure.
 
 **P1-B prerequisite recorded, since day-level completeness is not provable today:** the
 `get_sku_performance_daily` RPC's day classification is only as precise as
@@ -141,8 +256,8 @@ here so the limitation is never silently forgotten.
 
 | Requirement | How met |
 |---|---|
-| 500 SKUs | Hard `p_limit` ceiling (proposed default 100, max 500) and `p_offset`, applied **after** server-side filtering/sorting (Correction 6) — pagination is meaningful. |
-| 90-day ranges | Window sums bounded by `report_date >=` computed from `p_as_of`, hitting the existing `(workspace_id, report_date DESC)` indexes. The daily drill-down RPC is capped and single-SKU. |
+| 500 SKUs | Hard `p_limit` ceiling (proposed default 100, max 500) and `p_offset`, applied **after** server-side filtering/sorting (Correction 6) — pagination is meaningful. `totalSkuCountBeforeFilters`/`totalMatchingSkuCountAfterFilters`/`returnedSkuCount`/`hasMore` (Update 5 Correction 4) let the caller distinguish page size from true scope size without an extra count query. |
+| 90-day ranges | The selected-range cards/table are bounded by the explicit `p_date_from`/`p_date_to` (Update 5 Correction 2), hard-bounded and clamped to real source history rather than accepted unbounded. The fixed comparison windows (Yesterday/trailing-7/prior-7/trailing-30) are bounded by `report_date >=` computed from the separate `p_as_of` anchor, hitting the existing `(workspace_id, report_date DESC)` indexes. The daily drill-down RPC is capped and single-SKU. |
 | Multiple workspaces | Every query `workspace_id`-scoped; no cross-workspace aggregation in one call. |
 | Multiple marketplaces | `marketplace_id` a required, explicit filter parameter on both RPCs — never inferred. |
 | No N+1 | The summary RPC returns every column + flag the table/cards need in one call. Row drill-down issues exactly one additional call. |
@@ -180,8 +295,14 @@ here so the limitation is never silently forgotten.
 spend-weighted mapping methodology (directly SQL-verified), the auto/manual duplication proof
 (structural + directly confirmed absent in production data), the normalization audit, the
 coverage-state model, and the currency/timezone contract. Documentation only. No migration, no
-RPC, no route, no UI. **Complete as of this amendment**, with one disclosed follow-up remaining:
-the Data Audit §3e normalization-collision **count** query has not yet been run (§Data Audit §8).
+RPC, no route, no UI. **Complete as of this amendment (Update 5).** The Data Audit §3e SKU-
+normalization-collision count query (flagged as an open follow-up through Update 3) was run and
+closed in Update 4 — zero normalization collisions found across all four sources, individually and
+combined. This amendment (Update 5) closes a separate, later-discovered gap: the coverage-state
+model's internal contradiction (§3), the summary RPC's missing date-range contract (§2 Correction
+2), the catalog-only SKU universe (§2 Correction 3), and the pagination-vs-summary-count
+conflation (§2 Correction 4) are all corrected here. No further P1-A follow-up is currently known
+outstanding.
 
 **P1-B — not started.** Canonical daily SKU aggregation RPCs **and** explainable-flag computation,
 filtering, and server-side sorting (§2 above) — moved into this stage per Correction 6, resolving
@@ -219,7 +340,14 @@ per the explicit instruction. Nothing beyond P1-A is implemented in this branch.
 - **Spend-weighted mapping coverage and value-weighted sales coverage (Correction 1) are now
   directly SQL-verified** (Data Audit §3b/§3c): 100% mapped spend in every window, 99.96%
   value-weighted sales-catalog coverage. No further follow-up needed on these two specifically.
-  The §3e SKU-normalization-collision **count** remains the one open, ready-to-run query.
+  The §3e SKU-normalization-collision **count** was run and closed in Update 4: zero collisions
+  found across all four sources (Business Report, Ads, catalog, cost master), individually and
+  combined, using the canonical candidate `trim(sku).toUpperCase()` — canonicalization recovers no
+  additional matches over exact-string joins. No further follow-up remains on this item.
 - **The coverage-state model's day-level precision is bounded by `internal_data_refresh_runs`'
   range granularity (§3 above)** — a coverage ledger is a possible future P1-B+ enhancement, not
   required for V1.
+- **The summary RPC's date-range contract, canonical cross-source SKU universe, and
+  pagination-vs-summary-count separation (Update 5 Corrections 2–4) are now specified in §2
+  above** — this was a docs-only contract correction; no RPC/route/UI exists yet to build against
+  it, so there is nothing further to reconcile in code as of this amendment.

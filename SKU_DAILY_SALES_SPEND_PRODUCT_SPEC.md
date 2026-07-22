@@ -6,7 +6,13 @@ source/freshness/coverage from that document, nothing here invents a new data so
 Amended 2026-07-22 — Review Correction Round ("Update 2"): Corrections 3, 5, 6 applied (source
 freshness vs. SKU activity separated; flag truth tables and zero-denominator behavior locked;
 flags/filtering/sorting moved into P1-B, this document now specifies what P1-C *renders*, not
-what it *computes*).
+what it *computes*). Amended again 2026-07-22 — final API/coverage contract consistency pass
+("Update 5"): §3's selected-date-range language is now aligned with the Implementation Plan's
+`p_date_from`/`p_date_to` RPC contract (§3 no longer implies an RPC that only takes `p_as_of`);
+§5's Seller SKU column now reflects the canonical cross-source SKU universe and raw-SKU display
+precedence, not a catalog-only row set with a sales/ads fallback; §7's date-range filter now
+cites the explicit clamp-evidence response fields. Docs-only — no migration, RPC, route, or UI
+exists yet to change.
 
 Route: `/dashboard/sku-performance`
 Navigation label: **SKU Performance**
@@ -73,14 +79,20 @@ full sequence rationale.
 ## 3. Top summary cards
 
 All computed workspace+marketplace scoped, for the selected date range (default: last 7 days
-complete, i.e. **excluding** today).
+complete, i.e. **excluding** today). **This selected range is the RPC's explicit
+`p_date_from`/`p_date_to` parameters** (Implementation Plan §2, Update 5 Correction 2) — a
+separate contract from `p_as_of`, which anchors only the fixed Yesterday/trailing-7/prior-7/
+trailing-30 comparison columns in §5, not these cards. If the requested range is clamped to actual
+source history, the page shows the RPC's `effectiveDateFrom`/`effectiveDateTo` and a clamp notice
+built from `wasRangeClamped`/`clampReason` (§7) — it never silently substitutes a different range
+without saying so.
 
 | Card | Formula | Note |
 |---|---|---|
-| Total ordered sales | Σ `ordered_product_sales` over range | |
-| Units ordered | Σ `units_ordered` over range | |
-| Ad spend | Σ `spend` over range | |
-| Ad-attributed sales | Σ `sales` over range | labeled "(1-day click)" |
+| Total ordered sales | Σ `ordered_product_sales` over the selected `p_date_from`/`p_date_to` range | |
+| Units ordered | Σ `units_ordered` over the selected range | |
+| Ad spend | Σ `spend` over the selected range | |
+| Ad-attributed sales | Σ `sales` over the selected range | labeled "(1-day click)" |
 | ACOS | Ad spend ÷ Ad-attributed sales | see §6.5 for the zero-denominator rule; never "∞" |
 | TACOS | Ad spend ÷ Total ordered sales | see §6.5 |
 | SKUs growing | count of SKUs whose base sales-trend state (§6.2) is `growing` or `new_activity` | **Correction 5: this is the complete, documented definition — not limited to the two efficiency sub-flags** (sales-growing-with-stable-spend / sales-growing-while-spend-falls), which are separate, narrower Attention-status flags shown per row |
@@ -89,6 +101,12 @@ complete, i.e. **excluding** today).
 | **Sales data through** | `salesSourceLatestCompleteDate` (§4) | |
 | **Ads data through** | `adsSourceLatestCompleteDate` (§4) | |
 | **Catalog metadata as of** | `catalogLastSyncedAt` (§4) | **Correction 3: shown as its own, separate line — a stale catalog sync must never imply yesterday's sales/spend figures are stale.** These three freshness facts are never collapsed into one summary bit. |
+
+**Update 5 Correction 4 — every card above is a full-filtered-scope aggregate, never a
+paginated-page aggregate.** These totals, the growing/declining counts, and the mapping-coverage
+breakdown are computed by the RPC over the entire canonical SKU universe in scope after filters
+are applied (Implementation Plan §2) — they do not change as the user pages through the table, and
+they are never derived by the UI summing only the rows on the currently displayed page.
 
 ## 4. Freshness and activity fields (Correction 3 — locked field names)
 
@@ -121,14 +139,18 @@ had no sales is shown via `lastSalesActivityDate` (an older date, a true fact), 
 
 ## 5. Main table columns
 
-One row per SKU (never per ASIN).
+One row per SKU (never per ASIN). **Update 5 Correction 3 — the row universe is the canonical
+union across sources, not `amazon_listing_items` alone** (Implementation Plan §2): a SKU with
+sales or ad spend but no catalog match still gets a row; a catalog-tracked SKU with no activity in
+the selected range may still get a row. A missing catalog match never hides real sales/spend — it
+only means the catalog-sourced columns below (image, title, ASIN) render as "Unknown product."
 
 | Column | Source |
 |---|---|
-| Product image | `amazon_listing_items.image_url` |
-| Product title | `amazon_listing_items.item_name` |
-| Seller SKU | `amazon_listing_items.sku` (fallback: the raw SKU string as seen in sales/ads rows if no catalog match — see Mapping state) |
-| ASIN | `amazon_listing_items.asin` |
+| Product image | `amazon_listing_items.image_url`, blank ("Unknown product" placeholder) if no catalog row matches |
+| Product title | `amazon_listing_items.item_name`, "Unknown product" if no catalog row matches |
+| Seller SKU | The canonical SKU's **displayed raw SKU**, chosen by fixed precedence — (1) catalog (`amazon_listing_items.sku`), (2) Business Report raw SKU, (3) Ads raw SKU, (4) cost-master raw SKU — first source present, in that order (Implementation Plan §2, Update 5 Correction 3). The canonical join key is used only to match the same identity across sources; it is never itself displayed, and two genuinely distinct raw SKUs are never silently merged into one row (a future collision surfaces as `identity_conflict`, not a merge). |
+| ASIN | `amazon_listing_items.asin`, blank if no catalog row matches |
 | Yesterday sales / units / spend / ad-attributed sales / ACOS / TACOS | single-day values for the most recent complete day, using the coverage-state model in the Implementation Plan §Correction 4 to distinguish a confirmed zero from missing/unknown data |
 | 7-day sales / spend / ACOS / TACOS | trailing 7 complete days |
 | 30-day sales / spend / ACOS / TACOS | trailing 30 complete days (or since data start, whichever is shorter — labeled) |
@@ -228,7 +250,7 @@ classified (`BEFORE_HISTORY` / `SOURCE_NOT_COMPLETE` / `CONFIRMED_ZERO` / `REPOR
 |---|---|---|
 | Workspace | `workspace_id` | effectively fixed to the one real workspace today |
 | Marketplace | `marketplace_id` | effectively fixed to `A21TJRUUN4KGV` today |
-| Date range | `report_date` bounds | must clamp to actual data availability and say so |
+| Date range | `report_date` bounds (`p_date_from`/`p_date_to`) | must clamp to actual data availability and say so — the page shows the clamp using the RPC's `requestedDateFrom`/`requestedDateTo` vs. `effectiveDateFrom`/`effectiveDateTo`/`wasRangeClamped`/`clampReason` (Implementation Plan §2, Update 5 Correction 2); a requested range predating history is never silently zero-filled |
 | SKU | `amazon_listing_items.sku` / raw sales-row SKU text | supports partial match |
 | ASIN | `amazon_listing_items.asin` | exact or partial |
 | Product/category | `internal_sku_cost_master.category` | labeled "Category" |

@@ -1323,3 +1323,52 @@ alignment, catalog/fulfillment staleness, organic-sales exclusion) remain open, 
 **No migration applied to production. No production row changed by this task. No application code, API
 route, or UI changed. No deployment. P1-B not started.** PR #56 is rebased, evidence-complete, and open for
 final merge review — **not merged**, pending separate founder approval.
+
+## SKU Performance — P1-A Update 5: final API/coverage contract consistency pass (2026-07-22)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 5.
+
+**Decision received:** "PR #56 is very close, but it is not approved to merge yet. Make one final docs-only
+contract correction." Still P1-A only: no migration, no RPC, no route, no UI, no production writes, no merge.
+
+**Correction 1 — coverage-state model contradiction fixed.** `SOURCE_NOT_COMPLETE` and `UNKNOWN` previously
+both claimed "no covering refresh-run row" — impossible under one priority order. New deterministic order in
+`SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` §3: `REPORTED_VALUE` (real row wins regardless of refresh-run
+history) → `BEFORE_HISTORY` → `CONFIRMED_ZERO` (requires an existing accepted successful refresh run, exact
+dimension match, `rows_rejected=0`) → `SOURCE_NOT_COMPLETE` (covering attempts exist, none succeeded) →
+`UNKNOWN` (no row and no covering evidence at all — the only state meaning "no covering run"). New supporting
+evidence: grep confirms the manual-CSV Ads import route writes zero `internal_data_refresh_runs` rows (only
+the automated sync script does, 10 sites), so manual-CSV dates can only ever be `REPORTED_VALUE` or `UNKNOWN`
+— recorded in Data Audit §3d too.
+
+**Correction 2 — selected date-range RPC contract.** The summary RPC gained explicit `p_date_from`/`p_date_to`
+(the selected range driving cards/table), kept independent of the separate `p_as_of` anchor (fixed comparison
+windows only, never `CURRENT_DATE`-derived). Response now returns `requestedDateFrom`/`requestedDateTo`/
+`effectiveDateFrom`/`effectiveDateTo`/`asOf`/`salesHistoryStartsAt`/`adsHistoryStartsAt`/`wasRangeClamped`/
+`clampReason` — a requested range predating history is reported as clamped, never silently zero-filled.
+
+**Correction 3 — canonical SKU universe.** The driving SKU set is now a `UNION` across
+`internal_business_report_sku_sales_traffic`, `internal_ads_advertised_product_daily_rows`,
+`amazon_listing_items`, and `internal_sku_cost_master` — not `amazon_listing_items` alone. Sales-only/Ads-only
+SKUs stay visible; no catalog match renders as "Unknown product," never dropped. Displayed raw SKU follows a
+fixed precedence (catalog → Business Report → Ads → cost master); canonical key used only for matching, a
+future collision surfaces as `identity_conflict`, never a silent merge. Product Spec §5's Seller SKU column
+rewritten to match.
+
+**Correction 4 — pagination vs. summary counts separated.** Summary-card totals (sales/spend/growing/
+declining/mapping-coverage) are now explicitly full-filtered-scope aggregates, computed before
+`p_limit`/`p_offset`, never from only the current page. New response fields:
+`totalSkuCountBeforeFilters`/`totalMatchingSkuCountAfterFilters`/`returnedSkuCount`/`limit`/`offset`/
+`hasMore`.
+
+**Documents amended:** `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` (§2/§3/§4/§6/§7),
+`SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md` (§3/§5/§7), `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md` (§3d new
+code-inspection finding), `BRAHMASTRA_MASTER_TRACKER.md` §23 update 5, and this file.
+
+**Verdict unchanged: GO WITH RESTRICTIONS** — these are internal-consistency corrections to the locked
+contract, not new data findings.
+
+**Verification this round:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code written.
+
+**No migration applied to production. No production row changed. No application code, API route, or UI
+changed. No deployment. P1-B not started. PR #56 not merged**, pending separate founder approval.

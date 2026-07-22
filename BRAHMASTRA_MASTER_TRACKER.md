@@ -4974,3 +4974,78 @@ code, API route, or UI changed. No deployment. P1-B not started.**
 merged), evidence-complete, and open for final merge review. **PR #56 has not been merged** — that
 remains a separate, explicit step pending founder review. P1-B does not start until that approval
 is given.
+
+### §23 update 5 (2026-07-22) — final API/coverage contract consistency pass, still not merged
+
+**Decision received:** "PR #56 is very close, but it is not approved to merge yet. Make one final
+docs-only contract correction." Stayed on branch `feature/sku-daily-sales-spend-audit`, PR #56.
+Still P1-A only: no migration, no RPC, no route, no UI, no production writes, no merge. Four
+corrections closing internal-consistency gaps found on review, none requiring new production
+queries.
+
+**Correction 1 — coverage-state model's internal contradiction.** The five-state model locked in
+§23 update 2 had `SOURCE_NOT_COMPLETE` and `UNKNOWN` **both** independently claiming "no covering
+refresh-run row exists" as a qualifying condition — logically impossible for the two to be
+mutually exclusive under one priority order. Fixed with an explicit deterministic decision order
+in `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` §3: (1) `REPORTED_VALUE` — a real row wins
+regardless of refresh-run history; (2) `BEFORE_HISTORY` — before the source's earliest date, never
+used for an in-history gap; (3) `CONFIRMED_ZERO` — requires an **existing, accepted successful**
+refresh run (`status='success'`, `rows_rejected=0`, exact source/dimension match) covering the
+date, no row found; (4) `SOURCE_NOT_COMPLETE` — covering attempts **do exist** but none succeeded;
+(5) `UNKNOWN` — no row **and** no refresh-run evidence at all covers the date. "No covering run"
+now belongs to `UNKNOWN` alone. New supporting code evidence: direct grep confirms the manual-CSV
+Ads import route (`ads-deep-reports/import/route.ts`) writes **zero** `internal_data_refresh_runs`
+rows — only the automated sync script does (10 write sites) — so no manual-CSV-imported date can
+ever reach `CONFIRMED_ZERO`/`SOURCE_NOT_COMPLETE`; an absent row there is `UNKNOWN` unless a future
+upload-coverage ledger proves the complete date/SKU universe. Recorded in Data Audit §3d as well,
+since it is new code-inspection evidence, not just a plan-doc rewording.
+
+**Correction 2 — selected date-range contract for the summary RPC.** The Product Spec said summary
+cards operate over a selected date range, but the Implementation Plan's proposed
+`get_sku_performance_summary` RPC only took `p_as_of`. Fixed: the RPC signature now also takes
+`p_date_from`/`p_date_to` (the selected, complete-day range driving the cards/table), kept
+independent of the separate `p_as_of` anchor (which drives only the fixed Yesterday/trailing-7/
+prior-7/trailing-30/day-over-day comparison windows, never derived from `CURRENT_DATE`). Response
+now explicitly returns `requestedDateFrom`/`requestedDateTo`/`effectiveDateFrom`/
+`effectiveDateTo`/`asOf`/`salesHistoryStartsAt`/`adsHistoryStartsAt`/`wasRangeClamped`/
+`clampReason` — a requested range predating available history is reported as clamped, never
+silently zero-filled.
+
+**Correction 3 — canonical SKU universe.** The Product Spec's Seller SKU column previously read
+"`amazon_listing_items.sku` (fallback: raw SKU if no catalog match)" — implying the catalog table
+drives which SKUs appear at all. Locked instead: the summary RPC's driving SKU universe is a
+`UNION` of canonical identities across `internal_business_report_sku_sales_traffic`,
+`internal_ads_advertised_product_daily_rows`, `amazon_listing_items`, and
+`internal_sku_cost_master` — sales-only and Ads-only SKUs stay visible, a missing catalog row never
+hides real sales/spend, and a SKU with no catalog match renders as "Unknown product." Displayed raw
+SKU (when the same canonical identity appears across sources) follows a fixed precedence: catalog
+→ Business Report → Ads → cost master. Canonical key used only for matching, never for merging
+distinct raw SKUs — a future collision surfaces as `identity_conflict`, never a silent merge.
+
+**Correction 4 — pagination vs. summary counts.** Locked that the companion summary object's
+totals (sales/spend/growing/declining counts, mapping-coverage breakdown) are full-filtered-scope
+aggregates, computed before `p_limit`/`p_offset` is applied — never derived from only the current
+page. Added explicit pagination/count fields to the RPC response: `totalSkuCountBeforeFilters`,
+`totalMatchingSkuCountAfterFilters`, `returnedSkuCount`, `limit`, `offset`, `hasMore`. Filtering and
+sorting happen server-side, entirely before pagination.
+
+**Documents amended:** `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` (§2 RPC shape, §3 coverage-
+state model, §4 performance requirements, §6 P1-A status, §7 blockers), `SKU_DAILY_SALES_SPEND_
+PRODUCT_SPEC.md` (§3 summary cards, §5 main table Seller SKU column, §7 date-range filter),
+`SKU_DAILY_SALES_SPEND_DATA_AUDIT.md` (§3d — new refresh-run code-inspection finding), this tracker
+entry, and `WORK_DONE_SUMMARY.md`.
+
+**Verdict unchanged: GO WITH RESTRICTIONS.** These are internal-consistency corrections to the
+locked contract, not new data findings — nothing here changes the underlying audit numbers.
+
+**Verification this round:** docs-only — no `npm test`/`tsc`/`eslint`/`build`, no application code
+written. `git diff --stat origin/master...HEAD` confirms exactly the five
+`SKU_DAILY_SALES_SPEND_*.md`/tracker/`WORK_DONE_SUMMARY.md` docs changed — no migration, RPC,
+route, or UI file touched.
+
+**No migration applied to production. No production row changed. No application code, API route,
+or UI changed. No deployment. P1-B not started. PR #56 not merged.**
+
+**Next step (needs the founder):** PR #56 remains open for final merge review with this contract
+correction applied. **PR #56 has not been merged** — that remains a separate, explicit step pending
+founder review. P1-B does not start until that approval is given.

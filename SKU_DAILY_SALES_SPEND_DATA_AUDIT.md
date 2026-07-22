@@ -4,7 +4,10 @@ Status: **read-only audit, no code changes, no migrations, no production writes*
 Branch: `feature/sku-daily-sales-spend-audit`
 Date: 2026-07-22 (original), amended 2026-07-22 — Review Correction Round ("Update 2"),
 **amended again 2026-07-22 — Evidence Closeout ("Update 3"), completed with the normalization
-evidence closed out during the PR #55/#56 merge-order rebase**
+evidence closed out during the PR #55/#56 merge-order rebase, amended again 2026-07-22 — final
+API/coverage contract consistency pass ("Update 5"): §3d records a new code-inspection finding
+(the manual-CSV import route never writes `internal_data_refresh_runs` rows) that directly
+supports the Implementation Plan §3 coverage-state model correction**
 Author: Claude Code, on explicit founder instruction
 
 ## 0. What this document is
@@ -298,6 +301,18 @@ were separate feeds needing addition. This is already the physically correct beh
 source` — the risk this correction protects against is a *future* implementation mistake (e.g.
 someone building two separate cards for "manual spend" and "auto spend" and adding them), not a
 defect in the straightforward sum.
+
+**New finding (Update 5) — the manual-CSV import route never writes `internal_data_refresh_runs`
+rows at all.** Confirmed by direct code search: `grep -n "internal_data_refresh_runs"
+esolz-app/src/app/api/internal/ads-deep-reports/import/route.ts` returns **zero** matches. Only
+the automated sync script (`esolz-app/scripts/sync-ads-reports.ts`) writes refresh-run rows (10
+write sites: lines 327, 334, 343, 364, 395, 405, 420, 427, 526, 544). This means every one of the
+7,143 `manual_csv_upload` rows (2026-06-01 → 2026-06-14, above) was imported without ever creating
+a corresponding `internal_data_refresh_runs` row for that date range. Consequence for the
+Implementation Plan §3 coverage-state model: no date in that manual-backfill window can ever reach
+`CONFIRMED_ZERO` or `SOURCE_NOT_COMPLETE`, since both require a refresh-run row that this import
+path structurally never produces — an absent SKU/date in that window is `UNKNOWN` unless a
+separate upload-coverage ledger (not built today) proves the CSV's complete date/SKU universe.
 
 ### 3e. SKU normalization and identity-conflict audit (Correction 7)
 
