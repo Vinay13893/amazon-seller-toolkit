@@ -3,6 +3,10 @@
 Status: **spec only — no UI, no API route, no migration built in this pass**
 Depends on: `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md` (read first — every field below cites its
 source/freshness/coverage from that document, nothing here invents a new data source)
+Amended 2026-07-22 — Review Correction Round ("Update 2"): Corrections 3, 5, 6 applied (source
+freshness vs. SKU activity separated; flag truth tables and zero-denominator behavior locked;
+flags/filtering/sorting moved into P1-B, this document now specifies what P1-C *renders*, not
+what it *computes*).
 
 Route: `/dashboard/sku-performance`
 Navigation label: **SKU Performance**
@@ -11,19 +15,26 @@ Audience: the internal ops team already using `/dashboard/internal` and
 `/dashboard/internal/easyhome-diagnostic` — same `getInternalAccessContext()` gate, same single
 workspace in practice today.
 
+**Where computation happens (Correction 6):** every value, flag, filter match, and sort order
+described below is computed **server-side, in P1-B's RPCs** — the summary-card numbers, the
+per-SKU flags, the Attention status, and the default sort. P1-C (the page UI, described here)
+only **renders** what P1-B returns; it never recomputes a flag or re-sorts a page of data in the
+browser from raw rows. See `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md` §Correction 6 for the
+full sequence rationale.
+
 ## 1. Founder questions → locked answer mechanism
 
 | Question | Answered by |
 |---|---|
-| Which SKUs are growing? | 7-day sales vs. prior-7-day sales, sorted; "Sales growing with stable spend" / "Sales growing while spend falls" flags |
-| Which SKUs are declining? | "Sales drop" flag |
-| Which SKUs are spending more? | "Spend spike" flag, 7-day spend vs. prior-7-day spend |
+| Which SKUs are growing? | Base sales-trend state = `growing` or `new_activity` (§6.2) — the full SKUs Growing definition, not only the efficiency sub-flags |
+| Which SKUs are declining? | Base sales-trend state = `declining` (§6.2) |
+| Which SKUs are spending more? | Base spend-trend state = `growing` or `new_spend` (§6.2), "Spend spike" flag for the sharper case |
 | Is the additional spend producing sales? | Ad-attributed sales and TACOS shown alongside spend for the same window, never spend alone |
-| Which SKU has spend but no sales? | "Spend without sales" flag |
-| Which SKU's TACOS is worsening? | "TACOS deterioration" flag |
+| Which SKU has spend but no sales? | "Ad spend with no attributed sales" flag (renamed, §6.3 — explicitly does not claim total ordered sales are zero) |
+| Which SKU's TACOS is worsening? | "TACOS deterioration" flag, only computed when both periods have a defined TACOS (§6.5) |
 | What changed yesterday? | Dedicated "Yesterday" column set + a day-over-day delta, separate from the 7/30-day trend columns |
-| Which products require attention today? | "Attention status" column, computed from the flags in §6, sorted first by default |
-| Is the underlying data fresh and trustworthy? | "Data freshness" summary card + per-row "Data freshness" column + per-row "Mapping state" column |
+| Which products require attention today? | "Attention status" column, computed server-side from the flags in §6, sorted first by default |
+| Is the underlying data fresh and trustworthy? | Three separate source-level facts (Sales/Ads/Catalog, §3) **and** separate per-SKU activity facts (§4) — never collapsed into one bit (Correction 3) |
 
 ## 2. Safe metrics vs. unsafe metrics (locked, from the Data Audit)
 
@@ -32,35 +43,37 @@ workspace in practice today.
   "Ordered sales (order date)."
 - Ad spend, ad-attributed sales (per `internal_ads_advertised_product_daily_rows`) — labeled
   "Ad-attributed sales (1-day click)."
-- ACOS = ad spend ÷ ad-attributed sales, computed at query time, never read from the report's own
-  per-row `acos` column (that column is Amazon's own per-ad-row figure, not a SKU-level blend).
-- TACOS = ad spend ÷ total ordered sales, computed at query time, same window.
-- Mapping state (mapped/unmapped/ambiguous/stale/not applicable), per SKU.
-- Data freshness, per source, per SKU (never a single blended "fresh/stale" bit for the whole
-  page — different sources can be fresh/stale independently, exactly as
-  `buildBrahmastraDataHealth` already does for the rest of the app).
+- ACOS = ad spend ÷ ad-attributed sales, computed at query time — see §6.5 for zero-denominator
+  behavior, never a stored per-row `acos` column.
+- TACOS = ad spend ÷ total ordered sales, computed at query time — see §6.5.
+- Mapping state: `mapped` / `unmapped` / `identity_conflict` / `stale_metadata` / `not_applicable`
+  per SKU (Data Audit §3e — "ambiguous" is retired; `identity_conflict` is its concrete
+  replacement).
+- **Source-level freshness** (Sales data through &lt;date&gt;, Ads data through &lt;date&gt;,
+  Catalog metadata as of &lt;timestamp&gt;) shown as three separate facts, never blended.
+- **Per-SKU activity dates** (last sale, last ad spend, last attributed sale) — these describe
+  *when the SKU last did something*, never *whether the data pipeline is stale* (Correction 3;
+  see §4 for the exact field names).
 - Product/category, labeled by source (`internal_sku_cost_master.category`, 87% coverage) —
   never silently blended with Amazon's own `product_type`.
 
 **Unsafe, excluded from V1, must not be added without a separate, explicit approval:**
-- **Organic sales** (`Total sales − Ad-attributed sales`) — blocked per the Data Audit §4/§5:
-  attribution-window and date-boundary alignment are not yet validated.
-- **Fulfillment type as a live/recent filter** — its only source is 29 days stale and the
-  intended replacement table has zero rows (Data Audit §2). May be shown **only** on data older
-  than the settlement staleness cutoff, with a visible "may not reflect recent SKUs" caption, and
-  must never silently apply to a "Yesterday" or "7-day" view.
+- **Organic sales** (`Total sales − Ad-attributed sales`) — blocked per the Data Audit §4/§5.
+- **Fulfillment type as a live/recent filter** — 29-day-stale source, empty replacement table.
 - **Any 90-day figure for a SKU with less than 90 days of underlying history** — must render as
-  "data starts {date}," never a zero-filled or truncated-looking chart that implies "no
-  activity."
-- **Currency conversion** — there is exactly one currency (INR) in the audited data; no
-  conversion logic is built, and none should be added silently if a second-currency workspace
-  appears later.
+  "data starts {date}," never a zero-filled chart.
+- **Currency conversion / a hardcoded currency assumption** — currency must be read from the
+  authorized Ads profile/account context at request time (Correction 8). If a requested
+  aggregation would span more than one currency, the API must reject the aggregation outright —
+  never sum mixed currencies, never silently convert.
+- **A per-SKU "Data delayed" flag derived from that SKU merely having no row for a date** —
+  retired per Correction 3 (§6.6). A SKU can legitimately have zero sales/spend on a given day;
+  absence of a row is not evidence of staleness.
 
 ## 3. Top summary cards
 
 All computed workspace+marketplace scoped, for the selected date range (default: last 7 days
-complete, i.e. **excluding** today, since today's data does not exist yet in either source
-table).
+complete, i.e. **excluding** today).
 
 | Card | Formula | Note |
 |---|---|---|
@@ -68,104 +81,193 @@ table).
 | Units ordered | Σ `units_ordered` over range | |
 | Ad spend | Σ `spend` over range | |
 | Ad-attributed sales | Σ `sales` over range | labeled "(1-day click)" |
-| ACOS | Ad spend ÷ Ad-attributed sales | blank (not "0%") if attributed sales = 0 |
-| TACOS | Ad spend ÷ Total ordered sales | blank if total sales = 0 |
-| SKUs growing | count of SKUs with the "Sales growing" flag (§6) | |
-| SKUs declining | count of SKUs with the "Sales drop" flag (§6) | |
-| Mapping coverage | mapped SKUs ÷ (mapped + unmapped + ambiguous) SKUs with any spend in range, as % | never divides by SKUs with zero spend — an unadvertised SKU isn't a mapping failure |
-| Data freshness | worst (most stale) of: Business Report latest date, Ads latest date, Catalog `last_synced_at` — shown as the actual date/timestamp, not just a color | matches the existing `SourceHealthStatus` vocabulary (`healthy`/`stale`/…) from `brahmastra-data-health.ts` for visual consistency |
+| ACOS | Ad spend ÷ Ad-attributed sales | see §6.5 for the zero-denominator rule; never "∞" |
+| TACOS | Ad spend ÷ Total ordered sales | see §6.5 |
+| SKUs growing | count of SKUs whose base sales-trend state (§6.2) is `growing` or `new_activity` | **Correction 5: this is the complete, documented definition — not limited to the two efficiency sub-flags** (sales-growing-with-stable-spend / sales-growing-while-spend-falls), which are separate, narrower Attention-status flags shown per row |
+| SKUs declining | count of SKUs whose base sales-trend state is `declining` | |
+| Mapping coverage | mapped SKUs ÷ (mapped + unmapped + identity_conflict) SKUs with any spend in range, as % | never divides by SKUs with zero spend |
+| **Sales data through** | `salesSourceLatestCompleteDate` (§4) | |
+| **Ads data through** | `adsSourceLatestCompleteDate` (§4) | |
+| **Catalog metadata as of** | `catalogLastSyncedAt` (§4) | **Correction 3: shown as its own, separate line — a stale catalog sync must never imply yesterday's sales/spend figures are stale.** These three freshness facts are never collapsed into one summary bit. |
 
-## 4. Main table columns
+## 4. Freshness and activity fields (Correction 3 — locked field names)
 
-One row per SKU (never per ASIN — a SKU is the seller's own inventory unit and the thing the
-team actually acts on; an ASIN with two SKUs, were it ever to occur, gets two rows, one per SKU,
-each showing its own attributable slice — never a blended ASIN-level row that would obscure
-which SKU is actually driving the number).
+**Source-level (one set per page load, describes the sync pipelines themselves):**
+
+| Field | Meaning |
+|---|---|
+| `salesSourceLatestCompleteDate` | Latest date the Business Report SKU sync has confirmed complete data through |
+| `adsSourceLatestCompleteDate` | Latest date the Ads Reporting sync has confirmed complete data through |
+| `catalogLastSyncedAt` | Timestamp of the last successful `amazon_listing_items` sync run |
+| `salesSourceState` | One of the source-health states already established by `brahmastra-data-health.ts` (`healthy`/`stale`/`failed`/`auth_required`/`rate_limited`/`not_configured`) — reused, not reinvented |
+| `adsSourceState` | Same vocabulary, Ads pipeline |
+| `catalogSourceState` | Same vocabulary, catalog pipeline |
+
+**SKU-level (one set per row, describes that SKU's own history — never a proxy for source
+health):**
+
+| Field | Meaning |
+|---|---|
+| `lastSalesActivityDate` | The most recent date this SKU has a real sales row — a SKU idle for 10 days shows that date, not an error |
+| `lastAdSpendActivityDate` | The most recent date this SKU has a real spend row |
+| `lastAttributedSaleActivityDate` | The most recent date this SKU has a row with `sales > 0` |
+
+**Any column previously named "freshness" that actually represented per-SKU activity is
+renamed** to one of the three `*ActivityDate` fields above — "freshness" is now reserved
+exclusively for the six source-level fields. A SKU with no sales yesterday because it genuinely
+had no sales is shown via `lastSalesActivityDate` (an older date, a true fact), never as a
+"stale" or "delayed" chip — that chip only ever reflects `salesSourceState`/`adsSourceState`
+(§6.6).
+
+## 5. Main table columns
+
+One row per SKU (never per ASIN).
 
 | Column | Source |
 |---|---|
 | Product image | `amazon_listing_items.image_url` |
 | Product title | `amazon_listing_items.item_name` |
-| Seller SKU | `amazon_listing_items.sku` (fallback: the SKU string as seen in sales/ads rows if no catalog match — see Mapping state) |
+| Seller SKU | `amazon_listing_items.sku` (fallback: the raw SKU string as seen in sales/ads rows if no catalog match — see Mapping state) |
 | ASIN | `amazon_listing_items.asin` |
-| Yesterday sales / units / spend / ad-attributed sales / ACOS / TACOS | single-day values for the most recent complete day |
+| Yesterday sales / units / spend / ad-attributed sales / ACOS / TACOS | single-day values for the most recent complete day, using the coverage-state model in the Implementation Plan §Correction 4 to distinguish a confirmed zero from missing/unknown data |
 | 7-day sales / spend / ACOS / TACOS | trailing 7 complete days |
 | 30-day sales / spend / ACOS / TACOS | trailing 30 complete days (or since data start, whichever is shorter — labeled) |
-| Sales trend | 7-day sales vs. prior-7-day sales, as a simple up/down/flat indicator with % delta |
-| Spend trend | 7-day spend vs. prior-7-day spend, same shape |
-| Data freshness | per-SKU: latest date this SKU has a sales row, latest date it has a spend row (a SKU can be fresh in one source and stale in the other — show both, never collapse to one bit) |
-| Mapping state | mapped / unmapped / ambiguous / stale / not applicable (§ Data Audit §3) |
-| Attention status | 0+ flag chips from §6, or "OK" |
+| Sales trend | base state per §6.2: `growing` / `declining` / `flat` / `new_activity` / `no_activity`, with the underlying % delta shown when defined |
+| Spend trend | base state per §6.2: `growing` / `declining` / `flat` / `new_spend` / `no_spend` |
+| `lastSalesActivityDate` / `lastAdSpendActivityDate` / `lastAttributedSaleActivityDate` | §4 — per-SKU activity, never a proxy for source staleness |
+| Mapping state | `mapped` / `unmapped` / `identity_conflict` / `stale_metadata` / `not_applicable` (Data Audit §3e) |
+| Attention status | 0+ flag chips from §6, or "OK" — computed server-side (P1-B), rendered here |
 
-## 5. Filters
+## 6. Explainable V1 flags and base trend rules — locked, with truth tables (Correction 5)
+
+No AI, no opaque scoring. Every rule below is a plain, visible threshold comparison, computed
+server-side in P1-B (Correction 6). Thresholds reuse `internal_brahmastra_thresholds` (migration
+054) where a conceptually matching one already exists.
+
+### 6.1 Denominator/floor conventions
+
+`FLOOR_SALES = ₹1,000` (7-day window), `FLOOR_SPEND = ₹200` (7-day window) — proposed, new,
+consistent with the original round. Used to gate "new activity"/"new spend" classification and
+the percentage-comparison flags below, so a SKU going from ₹1 to ₹5 in sales is never reported as
+a dramatic swing.
+
+### 6.2 Base sales trend (spend-independent — this is what "SKUs growing/declining" means)
+
+| Prior 7-day sales | Current 7-day sales | State |
+|---|---|---|
+| `= 0` | `= 0` | `no_activity` |
+| `= 0` | `> FLOOR_SALES` | `new_activity` |
+| `= 0` | `> 0` but `≤ FLOOR_SALES` | `no_activity` (too small to call "new," avoids noise) |
+| `> 0` | any | `growing` if current `> 1.2 ×` prior; `declining` if current `< 0.7 ×` prior; else `flat` |
+
+**"SKUs growing" (§3 card) = count where state is `growing` OR `new_activity`. "SKUs declining" =
+count where state is `declining`.** This is the complete, sole definition — the two efficiency
+sub-flags in §6.4 are additional, narrower Attention-status detail, not an alternate definition of
+the summary card.
+
+### 6.3 Base spend trend (same shape, independent of sales)
+
+| Prior 7-day spend | Current 7-day spend | State |
+|---|---|---|
+| `= 0` | `= 0` | `no_spend` |
+| `= 0` | `≥ FLOOR_SPEND` | `new_spend` |
+| `= 0` | `> 0` but `< FLOOR_SPEND` | `no_spend` |
+| `> 0` | any | `growing` if current `> 1.5 ×` prior; `declining` if current `< 0.7 ×` prior; else `flat` |
+
+(Spend uses a 1.5× growth threshold, not sales' 1.2×, matching the original "Spend spike"
+severity — spend swings are expected to be noisier than sales swings for this account.)
+
+### 6.4 Attention-status flags
+
+| # | Flag | Formula | Threshold | Source |
+|---|---|---|---|---|
+| 1 | Sales drop | Base sales trend = `declining` | `FLOOR_SALES` on prior period | §6.2 |
+| 2 | Spend spike | Base spend trend = `growing` (i.e. current `> 1.5×` prior) | `FLOOR_SPEND` on prior period | §6.3 |
+| 3 | **Ad spend with no attributed sales** (renamed from "Spend without sales" — Correction 5) | `7-day spend ≥ min_ad_spend_for_action AND 7-day ad-attributed sales = 0` | reuse `internal_brahmastra_thresholds.min_ad_spend_for_action` (₹100 default) | Does **not** imply total ordered sales are zero — a SKU can sell organically while this flag is set. A separate, **optional, future-only** flag, "Ad spend with no ordered sales" (comparing to *total* sales, not attributed), is documented here but **not added to V1 without separate founder approval.** |
+| 4 | TACOS deterioration | Both prior-period and current-period TACOS are defined (§6.5) AND `current TACOS > prior TACOS × 1.3` | floor: `7-day sales ≥ FLOOR_SALES` | Absolute severity bands (independent of this relative flag) reuse `internal_brahmastra_thresholds.warning_tacos_pct` (15%) / `.critical_tacos_pct` (25%) |
+| 5 | Sales growing with stable spend | Base sales trend = `growing` AND base spend trend = `flat` | — | Efficiency sub-flag, not the Growing-card definition (§6.2) |
+| 6 | Sales growing while spend falls | Base sales trend = `growing` AND base spend trend = `declining` | — | Efficiency sub-flag |
+| 7 | Data delayed | **Source-level only** (Correction 3): `salesSourceState != 'healthy'` OR `adsSourceState != 'healthy'` for the page's own workspace | reuses `evaluateSyncedSource`'s existing staleness pattern | **Never** derived from a single SKU lacking a row for a date — see §6.6 |
+| 8 | Mapping incomplete | Mapping state `!= mapped` | — | — |
+
+### 6.5 ACOS / TACOS zero-denominator truth table (never display infinity)
+
+| Spend | Ad-attributed sales | ACOS |
+|---|---|---|
+| `= 0` | `= 0` | `not_applicable` (blank — no ad activity at all) |
+| `> 0` | `= 0` | `undefined` (blank, paired with the "Ad spend with no attributed sales" flag, §6.4#3) |
+| `> 0` | `> 0` | `spend ÷ attributed sales`, a normal ratio |
+
+| Spend | Total ordered sales | TACOS |
+|---|---|---|
+| `= 0` | `= 0` | `not_applicable` |
+| `> 0` | `= 0` | `undefined / high-risk state` — shown as a distinct indicator ("spend with zero total sales"), never as a numeric percentage or "∞" |
+| any | `> 0` | `spend ÷ ordered sales`, a normal ratio (well-defined even when spend = 0, giving TACOS = 0%) |
+
+The **relative TACOS-deterioration flag** (§6.4#4) is computed **only** when both the prior and
+current period have a *defined* TACOS (i.e., both periods had ordered sales `> 0`) — if either
+period's TACOS is `undefined` or `not_applicable`, the deterioration comparison itself is not
+computed (shown as "N/A" for that specific comparison), even though the **absolute** high-TACOS
+band (warning/critical) can still apply independently to whichever period does have a defined
+value.
+
+### 6.6 Data delayed vs. per-SKU absence (Correction 3, restated as a locked rule)
+
+**The flag "Data delayed" is a source-level fact about `salesSourceState`/`adsSourceState`
+(§4), never a per-SKU fact derived from "this SKU has no row for yesterday."** A SKU can have
+zero sales and zero spend on any given day for entirely ordinary reasons (seasonality, out of
+stock, not currently advertised) — that is not evidence the pipeline is behind. The previous
+version of this document defined "Data delayed" per-SKU from row absence; that rule is retired.
+See the Implementation Plan's Correction 4 coverage-state model for how a per-SKU/per-day cell is
+classified (`BEFORE_HISTORY` / `SOURCE_NOT_COMPLETE` / `CONFIRMED_ZERO` / `REPORTED_VALUE` /
+`UNKNOWN`) without ever conflating "no row" with "pipeline stale."
+
+## 7. Filters
 
 | Filter | Backing field | Note |
 |---|---|---|
-| Workspace | `workspace_id` | effectively fixed to the one real workspace today, but implemented generically |
+| Workspace | `workspace_id` | effectively fixed to the one real workspace today |
 | Marketplace | `marketplace_id` | effectively fixed to `A21TJRUUN4KGV` today |
-| Date range | `report_date` bounds | must clamp to actual data availability and say so (§2) |
+| Date range | `report_date` bounds | must clamp to actual data availability and say so |
 | SKU | `amazon_listing_items.sku` / raw sales-row SKU text | supports partial match |
 | ASIN | `amazon_listing_items.asin` | exact or partial |
 | Product/category | `internal_sku_cost_master.category` | labeled "Category" |
-| Brand | `amazon_listing_items.brand` | 89% coverage — SKUs with no brand shown under an explicit "No brand on file" bucket, never dropped silently |
-| Fulfillment | `internal_payment_transactions.fulfillment` | **disabled/hidden in V1** per §2 "unsafe" list, until the source is fresh; the filter control should exist in the UI shell but render disabled with a tooltip explaining why, not be silently absent (so the team knows it's coming, not forgotten) |
-| Growing | Sales growing flag | |
-| Declining | Sales drop flag | |
-| Spend without sales | that flag | |
-| High TACOS | TACOS deterioration flag | |
-| Unmapped | Mapping state = unmapped | |
-| Ambiguous mapping | Mapping state = ambiguous | |
+| Brand | `amazon_listing_items.brand` | 89% coverage — SKUs with no brand shown under an explicit "No brand on file" bucket |
+| Fulfillment | `internal_payment_transactions.fulfillment` | **disabled/hidden in V1**, per §2 |
+| Growing | base sales trend = `growing` or `new_activity` (§6.2) | |
+| Declining | base sales trend = `declining` (§6.2) | |
+| Spend spike | §6.4#2 | |
+| Ad spend with no attributed sales | §6.4#3 | renamed from "spend without sales" |
+| High/deteriorating TACOS | §6.4#4, plus the absolute band independently | |
+| Unmapped | Mapping state = `unmapped` | |
+| Identity conflict | Mapping state = `identity_conflict` (renamed from "Ambiguous mapping") | |
 
-## 6. Explainable V1 flags — locked formulas
+All filtering and the resulting sort order are applied **server-side in the P1-B RPC**
+(Correction 6) — the route accepts these as bounded query parameters and returns an
+already-filtered, already-sorted, already-paginated page; the UI never filters or sorts a larger
+client-side dataset.
 
-No AI, no opaque scoring, per the explicit instruction. Every flag below is a plain
-threshold comparison the team can recompute by hand from the table's own visible columns.
-Thresholds are **proposed to reuse the existing, already-configurable
-`internal_brahmastra_thresholds` table** (migration 054) where a conceptually matching
-threshold already exists there, rather than inventing a second, competing threshold system —
-new thresholds are proposed only where no existing column fits.
-
-| # | Flag | Formula | Threshold | Source of threshold |
-|---|---|---|---|---|
-| 1 | Sales drop | `7-day sales < 0.7 × prior-7-day sales` | floor: `prior-7-day sales ≥ ₹1,000` (avoids flagging near-zero SKUs on noise) | new, proposed |
-| 2 | Spend spike | `7-day spend > 1.5 × prior-7-day spend` | floor: `prior-7-day spend ≥ ₹200` | new, proposed |
-| 3 | Spend without sales | `7-day spend > 0 AND 7-day ad-attributed sales = 0` | floor: `7-day spend ≥ min_ad_spend_for_action` | **reuse** `internal_brahmastra_thresholds.min_ad_spend_for_action` (default ₹100) |
-| 4 | TACOS deterioration | `7-day TACOS > prior-7-day TACOS × 1.3` | floor: `7-day sales ≥ ₹1,000` (avoid ratio noise on tiny denominators); absolute severity band reuses existing warning/critical split | **reuse** `internal_brahmastra_thresholds.warning_tacos_pct` (15%) / `.critical_tacos_pct` (25%) as the absolute-level bands shown alongside the relative-deterioration flag |
-| 5 | Sales growing with stable spend | `7-day sales > 1.2 × prior-7-day sales` AND `7-day spend` within ±15% of prior-7-day spend | new, proposed | new, proposed |
-| 6 | Sales growing while spend falls | `7-day sales > 1.2 × prior-7-day sales` AND `7-day spend < 0.85 × prior-7-day spend` | new, proposed | new, proposed |
-| 7 | Data delayed | per-SKU: `latest sales row date < "yesterday"` OR `latest spend row date < "yesterday"` for a SKU that has ever had activity in the last 30 days | matches `evaluateSyncedSource`'s existing day-count staleness pattern | reuse the *pattern*, not a specific numeric column |
-| 8 | Mapping incomplete | `mapping state != mapped` | — | — |
-
-All eight thresholds must be visible in the UI (e.g. a "How this is calculated" info affordance
-next to the Attention status column), not just in this document — "keep formulas simple and
-visible" is a UI requirement, not only a spec requirement.
-
-"Sales growing" (§3 card, §5 filter) = flag 5 OR flag 6. "Sales declining" = flag 1.
-
-## 7. Row drill-down
+## 8. Row drill-down
 
 Per-SKU detail view, opened from a table row:
 
-- Daily total sales chart — `internal_business_report_sku_sales_traffic.ordered_product_sales`
-  by day, over the selected range, with an explicit "no data before {start date}" boundary
-  marker rather than a flat zero line.
-- Daily units chart — same source, `units_ordered`.
-- Daily ad spend chart — `internal_ads_advertised_product_daily_rows.spend` by day.
-- Daily ad-attributed sales chart — same table, `.sales`, labeled 1-day click.
-- Daily ACOS — computed per day from the two charts above, blank (not 0) on days with zero
-  attributed sales.
-- Daily TACOS — computed per day.
-- Daily data-freshness status — which days are backed by real synced rows vs. which are inside
-  the selected range but before either source's earliest available date.
+- Daily total sales chart, daily units chart, daily ad spend chart, daily ad-attributed sales
+  chart, daily ACOS, daily TACOS — each day cell classified using the Implementation Plan's
+  coverage-state model (`BEFORE_HISTORY` / `SOURCE_NOT_COMPLETE` / `CONFIRMED_ZERO` /
+  `REPORTED_VALUE` / `UNKNOWN`), never a flat zero line standing in for "no data available."
+- Daily source-state overlay — which days fall inside a `salesSourceState`/`adsSourceState`
+  healthy window vs. not, distinct from which days the SKU itself had confirmed-zero activity.
 - Mapping evidence — the literal `advertised_sku`/`advertised_asin` values seen in the Ads rows
   for this SKU, and the catalog row (or explicit "no catalog row found") they were matched
-  against, so a team member can manually verify a flagged mapping in seconds.
+  against.
 
-## 8. Explicitly out of scope for V1
+## 9. Explicitly out of scope for V1
 
-- No AI/opaque scoring (explicit instruction).
+- No AI/opaque scoring.
 - No organic-sales calculation (§2).
-- No live fulfillment filter (§2, §5).
+- No live fulfillment filter (§2).
+- No "Ad spend with no ordered sales" flag (§6.4#3) without separate founder approval.
 - No CSV export (deferred to P1-D per the locked implementation sequence).
 - No Command Center integration (P1-D).
 - No write path of any kind — this is a read-only reporting page.
+- No client-side filtering/sorting/flag computation (Correction 6 — all of it is P1-B's job).

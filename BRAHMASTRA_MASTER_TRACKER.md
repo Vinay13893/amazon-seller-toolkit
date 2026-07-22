@@ -4731,3 +4731,126 @@ read-only `SELECT`s). No application code, API route, or UI changed. No deployme
 `SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md`) and the "GO WITH RESTRICTIONS" verdict, and either
 approve starting P1-B or request changes to the locked metric definitions/flag formulas first.
 P1-B does not start until that approval is given.
+
+### §23 update 2 (2026-07-22) — PR #56 review correction round: 8 corrections closing definitional/evidence gaps, verdict unchanged (GO WITH RESTRICTIONS), still not merged
+
+**Decision received:** "PR #56 is directionally approved as GO WITH RESTRICTIONS, but the audit
+and locked metric definitions need one focused correction round before merge." Stayed on branch
+`feature/sku-daily-sales-spend-audit`, PR #56. Still P1-A only: no migration, no RPC, no route, no
+UI, no production writes. All corrections closed.
+
+**Correction 1 — spend-weighted mapping coverage vs. SKU-count coverage.** The original audit's
+"112/112 mapped" was a count of distinct SKUs, not a measure of spend, and risked being read as
+"100% of spend is mapped." Data Audit §3a now explicitly names it SKU-count coverage; §3b adds
+the spend-weighted question with a logical derivation (airtight, since row-level mapping state is
+a pure function of which of the 112 already-proven-mapped SKUs a row belongs to) but is explicit
+that the exact ₹ totals per window (all-history/30-day/7-day/yesterday) could not be independently
+re-queried this round — see the DB-access disclosure below. §3c (value-weighted sales catalog
+coverage) is reported as **UNKNOWN**, not estimated, for the same reason — SKU-count coverage
+(98.7%) cannot safely be assumed to equal sales-value coverage.
+
+**Correction 2 — auto (`ads_api_auto`) vs. manual-CSV-upload overlap.** Inspected the actual
+`dedupe_key` construction (not assumed): both the automated JSON-report sync and the manual-CSV
+import routes call the *exact same* parser functions (`sync-ads-reports.ts` converts JSON rows to
+CSV via `jsonRowsToCsv()` before parsing), and both write paths' upsert logic
+(`upsertByDedupeKey()` / the deep-reports import route) select existing rows by `dedupe_key`
+**without filtering by `source`**, then update-by-`id` on a match or insert if not — **proving,
+by code, that the same logical row can never exist twice regardless of source; the later sync
+always overwrites the earlier one.** One real, honestly-stated gap: manual CSV exports' Campaign
+Id column presence was not independently confirmed (no sample file exists in-repo), so if a
+manual export ever omits it while the automated JSON path supplies a real one, the two paths'
+keys could diverge for the same logical row — documented as an explicit risk with a conservative
+P1-B aggregation rule (sum the single deduplicated table once, never re-sum by `source`).
+
+**Correction 3 — source freshness is not SKU activity.** The Product Spec's old per-SKU "Data
+delayed" rule (a SKU with no row for a date = stale) is retired — a SKU can have zero activity on
+a given day for ordinary reasons. New, separated field sets: source-level
+(`salesSourceLatestCompleteDate`/`adsSourceLatestCompleteDate`/`catalogLastSyncedAt` + their
+`*State` companions, reusing `brahmastra-data-health.ts`'s existing status vocabulary) vs. SKU-level
+(`lastSalesActivityDate`/`lastAdSpendActivityDate`/`lastAttributedSaleActivityDate`). The page
+summary no longer collapses to one freshness bit — Sales/Ads/Catalog freshness are shown as three
+separate facts, so a stale catalog sync can never imply yesterday's sales figure is stale.
+
+**Correction 4 — missing row vs. confirmed zero.** Inspected `internal_data_refresh_runs`
+directly: it proves sync completeness at **date-range granularity only** (`date_from`/`date_to`
+per run), not per-day. A five-state coverage model is now locked in the Implementation Plan:
+`BEFORE_HISTORY` / `SOURCE_NOT_COMPLETE` / `CONFIRMED_ZERO` / `REPORTED_VALUE` / `UNKNOWN` — an
+unavailable date is never zero-filled, and a date inside a successfully-completed range with no
+row is rendered as a real, positive `CONFIRMED_ZERO`, not left ambiguously blank. Day-level
+precision beyond range-level is recorded as a possible future coverage-ledger enhancement, not
+built.
+
+**Correction 5 — flag definitions and zero-denominator truth tables.** "Spend without sales"
+renamed to "Ad spend with no attributed sales" (it never claimed total ordered sales were zero;
+the old name implied that). A documented, optional-only "Ad spend with no ordered sales" future
+flag is named but explicitly not added without separate approval. Base sales/spend trend states
+(`growing`/`declining`/`flat`/`new_activity`or`new_spend`/`no_activity`or`no_spend`) are now the
+sole, documented definition of the "SKUs growing/declining" summary cards — the two efficiency
+sub-flags (sales-growing-with-stable-spend / sales-growing-while-spend-falls) are demoted to
+narrower Attention-status detail, not an alternate definition. Full ACOS/TACOS zero-denominator
+truth tables locked (never display infinity; relative TACOS-deterioration only computed when both
+periods have a defined TACOS).
+
+**Correction 6 — flags moved into P1-B, sequence contradiction resolved.** The original sequence
+deferred explainable flags to P1-D while the Product Spec's Attention-status column, Growing/
+Declining filters, and default sort all depended on them from day one — a contradiction. Revised:
+P1-B now owns aggregation **and** flag computation, filtering, and server-side sorting/pagination
+(nothing computed client-side). P1-C is UI-rendering only. P1-D is narrowed to CSV export +
+Command Center integration only.
+
+**Correction 7 — SKU normalization and identity-conflict audit.** Read the actual normalization
+code across all four+ pipelines — found **at least three different formulas** in live use
+(`toLocaleUpperCase` no-trim for Business Report/Cost Master; `.trim().toUpperCase()` ASCII for
+the Ads dedupe-key; `.trim().toUpperCase().replace(/\s+/g,' ')` for a transient Ads-to-cost-master
+lookup), plus the catalog table itself (`amazon_listing_items.sku`, the join target every other
+source is matched against) applies **no normalization at all**. "Ambiguous" is retired from the
+mapping-state vocabulary (it depended on a schema-forbidden condition) and replaced with
+`identity_conflict` — a concrete, reachable state (SKU matches, ASIN doesn't) that a real relist
+could trigger. The listing-sync's real duplicate-ASIN behavior is now an exact, cited code fact
+(`amazon/sync/listings/process/route.ts:203-211`: the upsert's `onConflict` target is the
+SKU-based unique constraint; a second SKU for an existing ASIN collides with the *separate*
+ASIN-based partial unique index instead, raises a genuine Postgres `23505`, which a bare
+`try/catch` silently discards — `console.error` only, row never written, no caller ever sees it)
+— replacing the prior round's unverified "silently rejected" characterization with its exact
+mechanism.
+
+**Correction 8 — timezone and currency contract.** Timezone/date-boundary alignment remains
+explicitly unverified and is now a **named pre-production checkpoint**: the Yesterday column,
+day-over-day deltas, and day-specific flags must stay internal/disabled until a real cross-check
+against the Amazon Ads/Seller Central UI is performed and recorded; P1-B may still be built
+against an explicit `p_as_of` parameter without waiting on it. Currency is no longer treated as a
+hardcoded `'INR'` assumption — the API must return currency from the authorized Ads profile
+context, and must reject (never sum, never silently convert) any aggregation that would span more
+than one currency.
+
+**DB-access disclosure (full honesty, not buried):** the Supabase MCP read-only SQL tool
+(`execute_sql`, `list_tables`) was gated behind a tool-permission approval that remained blocked
+for the entire session, including after an explicit approval was requested and granted mid-session
+— confirmed to be a tool-specific gate (a different tool on the same server, `list_projects`,
+succeeded) rather than a connectivity failure. Consequence: every fresh number this round needed
+that required a genuinely new query (spend-weighted mapping ₹ totals, value-weighted sales
+coverage, the auto/manual overlap date range and row counts, normalization-collision counts) could
+not be obtained. Every one of these is explicitly marked **DERIVED** (with the logical argument
+shown, §Data Audit §3b) or **UNKNOWN — blocked** (§3c, quantitative parts of §3d/§3e), with the
+exact ready-to-run SQL included in the Data Audit doc, rather than estimated or fabricated. This
+does not change the GO WITH RESTRICTIONS verdict (the qualitative/structural findings — 100%
+SKU-count mapping, structurally-proven duplicate prevention, the exact duplicate-ASIN mechanism —
+are all still directly evidenced), but it is recorded as an open P1-A closeout item: re-run the
+four queries the moment DB access is available.
+
+**Verification this round:** read-only/code-reading only — no `npm test`/`tsc`/`eslint`/`build`,
+because no application code was written. `git status` will confirm only the three
+`SKU_DAILY_SALES_SPEND_*.md` docs plus this tracker and `WORK_DONE_SUMMARY.md` changed — zero
+migration/RPC/route/UI files touched.
+
+**No migration applied to production. No production row changed (every query attempted was a
+read-only `SELECT`; several could not run at all due to the tool-permission gate above, which by
+definition also changed nothing). No application code, API route, or UI changed. No deployment.**
+
+**Next step (needs the founder):** review the corrected three documents and confirm the "GO WITH
+RESTRICTIONS" verdict stands, or flag anything in the DERIVED/UNKNOWN-marked sections (§Data Audit
+§3b/§3c/§3d/§3e/§8) that should block P1-B until independently re-verified with live DB access.
+P1-B does not start until that approval is given. Merge order note: PR #55 (Pincode P0-B) and PR
+#56 both touch `BRAHMASTRA_MASTER_TRACKER.md`/`WORK_DONE_SUMMARY.md` — PR #56 should not merge
+before PR #55 resolves; once #55 merges, this branch will be rebased onto the new `master`
+preserving both PRs' doc entries before #56 can merge cleanly.

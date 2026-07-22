@@ -1196,3 +1196,64 @@ against the production Supabase project, recorded in the Data Audit doc.
 **No migration applied to production. No production row changed (every query was a read-only `SELECT`). No
 application code, API route, or UI changed. No deployment. Pincode PR #55 and its branch/worktree were not
 touched.**
+
+## SKU Performance — P1-A review correction round: 8 corrections, verdict unchanged (2026-07-22)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 2. Same PR #56, same branch — still P1-A only, no
+migration, no RPC, no route, no UI, no production writes.
+
+**The gap this round closes:** PR #56 was directionally approved as GO WITH RESTRICTIONS, but review found the
+audit conflated SKU-count coverage with spend coverage, didn't prove auto/manual-CSV duplication was actually
+prevented, treated per-SKU inactivity as pipeline staleness, hadn't defined missing-row-vs-zero semantics, left
+flag formulas under-specified at zero-denominators, deferred flags to a stage the UI already depended on them
+in, used "ambiguous" for a schema-unreachable state, and hadn't verified SKU normalization consistency.
+
+1. **Spend-weighted vs. SKU-count mapping coverage separated.** "112/112 mapped" is now explicitly labeled a
+   SKU-count statistic. Spend-weighted mapped % is logically derived at 100% (airtight, since mapping state is
+   a pure function of already-proven-mapped SKUs) but the exact ₹ totals per window, and value-weighted sales
+   catalog coverage, are marked DERIVED/UNKNOWN rather than fabricated, due to a DB-access blocker this round
+   (see below) — with the exact ready-to-run SQL included.
+2. **Auto/manual-CSV duplication structurally proven prevented, by code, not assumed.** Both write paths share
+   the exact same `dedupe_key`-building parser and the exact same select-by-dedupe_key-then-upsert-by-id logic
+   (unfiltered by `source`) — a logical row can never exist twice; the later sync always overwrites the
+   earlier. One honestly-flagged gap: manual CSV Campaign-Id presence wasn't independently confirmed, so a
+   conservative P1-B aggregation rule (sum the single deduplicated table once, never re-sum by source) is
+   locked in regardless.
+3. **Source freshness separated from per-SKU activity.** Retired the per-SKU "no row = stale" rule. New field
+   sets: source-level (`salesSourceLatestCompleteDate`/`adsSourceLatestCompleteDate`/`catalogLastSyncedAt` +
+   states) vs. SKU-level (`lastSalesActivityDate`/`lastAdSpendActivityDate`/`lastAttributedSaleActivityDate`).
+   Page summary shows Sales/Ads/Catalog freshness as three separate facts, never collapsed to one bit.
+4. **Missing-row vs. confirmed-zero coverage model locked**, after inspecting `internal_data_refresh_runs`
+   (proves range-level completeness only, not per-day): `BEFORE_HISTORY` / `SOURCE_NOT_COMPLETE` /
+   `CONFIRMED_ZERO` / `REPORTED_VALUE` / `UNKNOWN`. Unavailable dates are never zero-filled; a date inside a
+   successfully-completed range with no row is a real, positive `CONFIRMED_ZERO`.
+5. **Flags renamed and given zero-denominator truth tables.** "Spend without sales" → "Ad spend with no
+   attributed sales" (never implied total sales were zero). "SKUs growing/declining" is now fully defined by a
+   documented base sales-trend rule, not just the two efficiency sub-flags. ACOS/TACOS zero-denominator
+   behavior fully tabled — never displays infinity.
+6. **Sequence contradiction resolved** — flags/filtering/server-side sorting moved from P1-D into P1-B (the UI
+   already depended on them from day one; deferring them to P1-D was inconsistent). P1-C is now UI-rendering
+   only; P1-D narrowed to CSV export + Command Center integration only.
+7. **SKU normalization audited across all pipelines** — found at least three different normalization formulas
+   in live use plus one pipeline (the catalog table itself) with no normalization at all. "Ambiguous" retired
+   (schema-unreachable) in favor of `identity_conflict` (concrete, reachable via a real relist). The catalog
+   sync's real duplicate-ASIN behavior is now an exact cited code fact (a caught, discarded Postgres unique-
+   violation in `amazon/sync/listings/process/route.ts`), not an assumption.
+8. **Timezone and currency contracts locked.** Timezone/date-boundary alignment is now a named pre-production
+   checkpoint gating Yesterday/day-level UI features specifically (not the whole page). Currency must come from
+   the authorized Ads profile context, never hardcoded; mixed-currency aggregations must be rejected, never
+   summed or silently converted.
+
+**DB-access disclosure:** the Supabase MCP SQL tool was gated behind a tool-permission approval that stayed
+blocked all session (confirmed tool-specific — a different tool on the same server worked fine), even after an
+explicit approval was requested and granted mid-session. Every number that needed a genuinely fresh query is
+marked DERIVED (with its logical argument shown) or UNKNOWN — blocked, with the exact SQL ready to run, never
+estimated or fabricated. Recorded as an open P1-A closeout item.
+
+**Verdict unchanged: GO WITH RESTRICTIONS** — no new evidence this round revealed double counting or another
+material accuracy blocker; the qualitative/structural findings (mapping, duplication prevention, duplicate-ASIN
+mechanism) are all directly evidenced by code, independent of the blocked live-query items.
+
+**No migration applied to production. No production row changed. No application code, API route, or UI
+changed. No deployment.** Merge-order note: PR #55 and PR #56 both touch this file and the tracker — PR #56
+will be rebased onto `master` after PR #55 merges, preserving both PRs' entries, before #56 can merge.
