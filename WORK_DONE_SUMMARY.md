@@ -1484,3 +1484,33 @@ all clean. P1-C1 JSON fixture regenerated with the new evidence shape.
 
 **No migration applied to production. No production row changed. Not merged** — pending founder review
 of the corrected PR #57.
+
+## SKU Performance — PR #57 merged; P1-C1 UI vertical slice opened as a new PR (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 9. PR #57 merged into master (merge commit
+`92594ff`, ordinary merge, migration 065 still not applied to production). A fresh worktree/branch
+(`feature/sku-performance-p1c1-ui`) then built the first internally-usable UI at
+`/dashboard/sku-performance` — nav entry, page shell, date-range control, 8 summary cards, a 5-part
+freshness strip, a 12-column SKU table, search, sort, server pagination, 7 filters, loading/empty/error/
+unknown-data states, and an identity-conflict evidence panel.
+
+Rendering logic (labels, tones, formatting, query-string building, pagination math, view-state
+derivation) was extracted into plain `.ts` modules (`format.ts`, `query.ts`) with zero React, so it
+could be unit-tested with `node:test` despite this repo having no DOM/component testing harness — 76
+new tests, including tests that exercise the real committed `p1c1-sample-responses.json` fixture. The
+page itself calls the real `/api/sku-performance/summary` route with no fixture fallback in the shipped
+code; the fixture is dev/test-only.
+
+Truth rules enforced in code: never render null/unknown as ₹0, never invent a currency when
+`currencyCode` is null, ratio `state` always drives the label (percentage only shown for
+`state === 'normal'`), non-complete coverage states surface a named warning, and identity-conflict rows
+(whose combined metrics are always null) render an explicit "Identity conflict" cell with an Explain
+button instead of a fabricated zero.
+
+**Tests:** 307/307 pass (76 new). `tsc` 0 errors. `eslint` 0 errors on every changed file except one
+pre-existing, codebase-wide `react-hooks/set-state-in-effect` pattern already present unmodified in 4
+other pages. `npm run build` succeeded. Live browser verification was not possible in this environment
+(no Supabase credentials configured) — stated explicitly rather than claimed.
+
+**No migration applied to production. No production row changed. New PR opened, not merged, not
+intentionally deployed to production.**
