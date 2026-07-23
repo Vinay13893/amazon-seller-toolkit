@@ -5295,3 +5295,61 @@ file. `npm run build` succeeded, same two routes, no new UI. The P1-C1 JSON fixt
 
 **No migration applied to production. No production row changed. Not merged** — pending founder review
 of the corrected PR #57.
+
+### §23 update 9 (2026-07-23) — PR #57 merged; P1-C1 UI kickoff: first usable `/dashboard/sku-performance` vertical slice, opened as a new PR
+
+PR #57 (head `4909991`) was approved and merged into master (merge commit `92594ff`, ordinary merge —
+not squashed, keeping the P1-B correction-round audit trail). Migration 065 remains **not applied** to
+production; this merge only landed the migration file, RPCs-as-SQL-text, TypeScript data-access layer,
+and the two read-only API routes into version control.
+
+Immediately after the merge, a fresh worktree/branch (`feature/sku-performance-p1c1-ui`, off the new
+`origin/master`) started P1-C1: the first internally-usable UI vertical slice at
+`/dashboard/sku-performance` ("SKU Performance" / "Daily Sales & Ad Spend Trends"), covering all 15
+scoped items — nav entry, page shell, date-range control, 8 summary cards, a 5-part data-health/
+freshness strip, a 12-column SKU table, SKU/ASIN search, sort control, server pagination, 7 basic
+filters, loading/empty/error/unknown-data states, and an identity-conflict evidence panel (reasons,
+catalog ASIN, advertised ASINs, four raw-SKU arrays).
+
+**Architecture decision — no DOM test harness.** This repo's `npm test` only picks up `.test.ts` (not
+`.test.tsx`) and has no jsdom/@testing-library dependency, so true component-render tests aren't
+possible without adding a new dependency. Instead, every rendering-decision (label/tone/formatting,
+query-string building, pagination math, view-state derivation) was extracted into plain `.ts` modules
+(`format.ts`, `query.ts`) with zero React, unit-tested directly with `node:test` — including tests that
+load and exercise the real, committed `p1c1-sample-responses.json` fixture end-to-end. This satisfies
+"component tests for ratio/coverage/conflict rendering" and "API-response fixture tests" within the
+project's existing no-new-deps testing convention, without adding one.
+
+**Architecture decision — real API, no runtime fixture toggle.** The page calls the real
+`/api/sku-performance/summary` route exactly as it's contracted (same query params, same response
+shape) — there is no fixture-serving code path in the shipped page. The committed fixture is exercised
+only by `format.test.ts`/`query.test.ts`. This means the page's live Error state will be the one that
+actually renders in any preview deploy today, since migration 065 is not applied to production and the
+RPC does not yet exist there — an honest, truthful failure mode rather than a fabricated success path.
+
+**Truth-rule enforcement, concretely:** `formatMoney` never renders a null value as ₹0 and never invents
+a currency symbol when `currencyCode` is null (falls back to an explicit "currency not confirmed"
+suffix); `formatRatio` renders the ratio's `state` as an explicit word (`Undefined`,
+`Undefined — high risk`, `No ad activity`, `Unknown`) and only ever shows a percentage for
+`state === 'normal'`; a `WindowCoverageState` other than `complete`/`before_history` surfaces a named
+warning naming the affected source; a row with `mappingState === 'identity_conflict'` (whose
+`selectedRange` is always `null`) renders "Identity conflict — no combined metrics available" across the
+whole metrics span instead of a fabricated zero, with an Explain button opening the evidence sheet.
+
+**Marketplace:** hardcoded `A21TJRUUN4KGV` in the query builder, matching the existing
+`pincode-checker/page.tsx` convention (no dynamic marketplace-resolution hook exists anywhere in this
+codebase).
+
+**Tests:** 49 new tests in `format.test.ts`, 27 new in `query.test.ts` (76 new; 307 total, all pass).
+`npx tsc --noEmit` 0 errors. `npx eslint` on every changed file: 0 errors except one pre-existing,
+codebase-wide pattern (`react-hooks/set-state-in-effect` on the `useEffect(() => { void loadRows() })`
+fetch-on-mount idiom) that is already present, unmodified, in `brand-analytics/search-terms/page.tsx`,
+`buybox/page.tsx`, `alerts/page.tsx`, and `reports/page.tsx` — not a regression introduced here.
+`npm run build` succeeded (`/dashboard/sku-performance` builds as a static route); the one build warning
+is pre-existing and unrelated (an NFT-tracing note on `stock-actions/cost-master/import/route.ts`, a
+file this work never touched). Live browser verification was **not possible** in this environment — no
+Supabase credentials are configured here, so `next dev` cannot pass the dashboard's auth middleware;
+this is stated explicitly rather than claimed.
+
+**No migration applied to production. No production row changed. New PR opened, not merged, not
+intentionally deployed to production.**
