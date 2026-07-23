@@ -30,7 +30,13 @@ export interface WindowMetrics {
   tacos: Ratio
 }
 
+/** The two possible reasons a canonical SKU is identity_conflict — a row/day can carry either or both. */
+export type IdentityConflictReason = 'raw_sku_collision' | 'advertised_asin_catalog_asin_mismatch'
+
 export interface IdentityConflictEvidence {
+  reasons: IdentityConflictReason[]
+  catalogAsin: string | null
+  advertisedAsins: string[]
   catalogRawSkus: string[]
   salesRawSkus: string[]
   adsRawSkus: string[]

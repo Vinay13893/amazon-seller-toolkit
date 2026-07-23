@@ -92,6 +92,31 @@
 --     its own compilation cost for a query this shape runs once per call.
 --     Disabling it per-function (not server-wide) cut the same call to
 --     ~0.95s with no plan-shape or index change.
+-- 12. (Follow-up, 2026-07-23) Two small corrections on top of the round
+--     above, same PR:
+--     a. identityConflictEvidence (both RPCs) now carries `reasons` (an
+--        array containing `raw_sku_collision` and/or
+--        `advertised_asin_catalog_asin_mismatch`), `catalogAsin`, and
+--        `advertisedAsins`, not just the four raw-SKU arrays -- the ASIN-
+--        mismatch case (Catalog and Ads agree on the raw SKU string but
+--        disagree on ASIN) previously produced evidence that never named
+--        the ASINs actually in conflict. get_sku_performance_daily's
+--        upfront short-circuit previously only fired for a raw-SKU
+--        collision; it now fires for an ASIN mismatch too, using the exact
+--        same precedence as get_sku_performance_summary's mapping_state
+--        (an ads-absent SKU is never identity_conflict in either RPC), so
+--        the two RPCs can never disagree about a given SKU's conflict
+--        status. The ASIN-mismatch boolean in both RPCs is now guarded on
+--        an actual catalog ASIN being present (`cg.asin`/`v_catalog_asin
+--        IS NOT NULL`) -- without that guard, a catalog-absent SKU with
+--        any advertised ASIN would have spuriously read as a "mismatch"
+--        (`x IS DISTINCT FROM NULL` is true for any non-null x).
+--     b. The 400-day range ceiling in both RPCs previously checked
+--        `(p_date_to - p_date_from) > MAX_RANGE_DAYS`, which is a day
+--        DIFFERENCE, not an inclusive calendar-date count -- it permitted
+--        401 inclusive dates through. Both RPCs (and both TypeScript
+--        routes) now check the inclusive count (`+ 1`), so exactly 400
+--        inclusive dates is the accepted ceiling and 401 is rejected.
 
 -- ============================================================
 -- 0. Supporting indexes
@@ -326,7 +351,13 @@ BEGIN
   IF p_date_from > p_date_to THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'date_from_after_date_to');
   END IF;
-  IF (p_date_to - p_date_from) > MAX_RANGE_DAYS THEN
+  -- Inclusive day-count ceiling: p_date_to - p_date_from is the day
+  -- DIFFERENCE, not the number of calendar dates in range (both endpoints
+  -- are inclusive) -- +1 to count actual inclusive days, so MAX_RANGE_DAYS
+  -- really means "at most this many calendar dates," not "this many plus
+  -- one." Exactly MAX_RANGE_DAYS inclusive dates is accepted; one more is
+  -- rejected.
+  IF (p_date_to - p_date_from + 1) > MAX_RANGE_DAYS THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'range_too_large');
   END IF;
   IF p_as_of IS NULL THEN
@@ -733,9 +764,17 @@ BEGIN
       ) > 1 AS has_cross_source_collision,
       cg.raw_skus AS catalog_raw_skus, sg.raw_skus AS sales_raw_skus,
       ag.raw_skus AS ads_raw_skus, cmg.raw_skus AS cost_master_raw_skus,
+      COALESCE(ag.advertised_asins, ARRAY[]::text[]) AS advertised_asins,
       (ag.canonical_sku IS NULL) AS is_ads_absent,
       (cg.canonical_sku IS NULL) AS is_catalog_absent,
-      EXISTS (SELECT 1 FROM unnest(ag.advertised_asins) x WHERE x IS NOT NULL AND x IS DISTINCT FROM cg.asin) AS has_asin_mismatch
+      -- Follow-up correction: guard on cg.asin IS NOT NULL -- without it, a
+      -- catalog-absent SKU (cg.asin NULL) would spuriously read as a
+      -- "mismatch" the moment any advertised ASIN exists, since `x IS
+      -- DISTINCT FROM NULL` is true for every non-null x. A real mismatch
+      -- requires an actual catalog ASIN to disagree with.
+      (cg.asin IS NOT NULL AND EXISTS (
+        SELECT 1 FROM unnest(ag.advertised_asins) x WHERE x IS NOT NULL AND x IS DISTINCT FROM cg.asin
+      )) AS has_asin_mismatch
     FROM sku_coverage c
     LEFT JOIN catalog_grouped cg ON cg.canonical_sku = c.canonical_sku
     LEFT JOIN sales_grouped sg ON sg.canonical_sku = c.canonical_sku
@@ -750,7 +789,19 @@ BEGIN
         WHEN r.is_catalog_absent THEN 'unmapped'
         WHEN r.has_asin_mismatch THEN 'identity_conflict'
         ELSE 'mapped'
-      END AS mapping_state
+      END AS mapping_state,
+      -- Follow-up correction: the unified conflict-reasons array behind
+      -- identityConflictEvidence.reasons. Only meaningful when the CASE
+      -- above actually lands on identity_conflict (gated in the final
+      -- SELECT), but safe to compute unconditionally here -- both booleans
+      -- are already false whenever their branch couldn't have fired
+      -- (has_asin_mismatch is false for a catalog-absent SKU per the
+      -- cg.asin IS NOT NULL guard above, and has_cross_source_collision is
+      -- independent of catalog/ads presence by construction).
+      array_remove(ARRAY[
+        CASE WHEN r.has_cross_source_collision THEN 'raw_sku_collision' END,
+        CASE WHEN r.has_asin_mismatch THEN 'advertised_asin_catalog_asin_mismatch' END
+      ], NULL) AS conflict_reasons
     FROM sku_rows r
   ),
   sku_ratios AS (
@@ -958,6 +1009,9 @@ BEGIN
         'category', p.category,
         'mappingState', p.mapping_state,
         'identityConflictEvidence', CASE WHEN p.mapping_state = 'identity_conflict' THEN jsonb_build_object(
+          'reasons', to_jsonb(p.conflict_reasons),
+          'catalogAsin', p.catalog_asin,
+          'advertisedAsins', to_jsonb(COALESCE(p.advertised_asins, ARRAY[]::text[])),
           'catalogRawSkus', to_jsonb(COALESCE(p.catalog_raw_skus, ARRAY[]::text[])),
           'salesRawSkus', to_jsonb(COALESCE(p.sales_raw_skus, ARRAY[]::text[])),
           'adsRawSkus', to_jsonb(COALESCE(p.ads_raw_skus, ARRAY[]::text[])),
@@ -1123,7 +1177,13 @@ DECLARE
   v_sales_raw_skus   text[];
   v_ads_raw_skus     text[];
   v_cost_raw_skus    text[];
-  v_has_collision boolean;
+  v_catalog_asin      text;
+  v_advertised_asins  text[];
+  v_is_ads_absent            boolean;
+  v_has_raw_sku_collision    boolean;
+  v_has_asin_mismatch        boolean;
+  v_is_identity_conflict     boolean;
+  v_conflict_reasons         text[];
 
   v_result jsonb;
 BEGIN
@@ -1142,7 +1202,13 @@ BEGIN
   IF p_date_from > p_date_to THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'date_from_after_date_to');
   END IF;
-  IF (p_date_to - p_date_from) > MAX_RANGE_DAYS THEN
+  -- Inclusive day-count ceiling: p_date_to - p_date_from is the day
+  -- DIFFERENCE, not the number of calendar dates in range (both endpoints
+  -- are inclusive) -- +1 to count actual inclusive days, so MAX_RANGE_DAYS
+  -- really means "at most this many calendar dates," not "this many plus
+  -- one." Exactly MAX_RANGE_DAYS inclusive dates is accepted; one more is
+  -- rejected.
+  IF (p_date_to - p_date_from + 1) > MAX_RANGE_DAYS THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'range_too_large');
   END IF;
 
@@ -1166,8 +1232,12 @@ BEGIN
   WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id;
   v_ads_profile_ids := COALESCE(v_ads_profile_ids, ARRAY[]::text[]);
 
-  -- Fix 4: collision check upfront, across all four sources, before any
-  -- day-by-day work -- an identity_conflict SKU never gets a combined series.
+  -- Collision/mismatch check upfront, across all four sources, before any
+  -- day-by-day work -- an identity_conflict SKU never gets a combined
+  -- series. Follow-up correction: this now mirrors get_sku_performance_
+  -- summary's mapping_state decision EXACTLY (same two conflict reasons,
+  -- same precedence), so the two RPCs never disagree about whether a given
+  -- canonical SKU is identity_conflict.
   SELECT array_agg(DISTINCT li.sku) INTO v_catalog_raw_skus
   FROM public.amazon_listing_items li
   WHERE li.workspace_id = p_workspace_id AND li.marketplace_id = p_marketplace_id
@@ -1187,17 +1257,55 @@ BEGIN
   FROM public.internal_sku_cost_master c
   WHERE c.workspace_id = p_workspace_id AND upper(btrim(c.sku)) = v_canonical_sku;
 
-  SELECT count(DISTINCT x) > 1 INTO v_has_collision
+  -- Catalog ASIN (single value -- amazon_listing_items is unique per
+  -- workspace/sku/marketplace) and the distinct set of advertised ASINs,
+  -- for the ASIN-mismatch reason.
+  SELECT li.asin INTO v_catalog_asin
+  FROM public.amazon_listing_items li
+  WHERE li.workspace_id = p_workspace_id AND li.marketplace_id = p_marketplace_id
+    AND upper(btrim(li.sku)) = v_canonical_sku
+  LIMIT 1;
+
+  SELECT array_agg(DISTINCT a.advertised_asin) INTO v_advertised_asins
+  FROM public.internal_ads_advertised_product_daily_rows a
+  WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids)
+    AND upper(btrim(a.advertised_sku)) = v_canonical_sku;
+
+  v_is_ads_absent := (v_ads_raw_skus IS NULL);
+
+  SELECT count(DISTINCT x) > 1 INTO v_has_raw_sku_collision
   FROM unnest(
     COALESCE(v_catalog_raw_skus, ARRAY[]::text[]) || COALESCE(v_sales_raw_skus, ARRAY[]::text[]) ||
     COALESCE(v_ads_raw_skus, ARRAY[]::text[]) || COALESCE(v_cost_raw_skus, ARRAY[]::text[])
   ) AS x;
 
-  IF v_has_collision THEN
+  -- Guard on v_catalog_asin IS NOT NULL -- without it, a catalog-absent SKU
+  -- would spuriously read as a "mismatch" the moment any advertised ASIN
+  -- exists, since `x IS DISTINCT FROM NULL` is true for every non-null x.
+  SELECT (v_catalog_asin IS NOT NULL) AND EXISTS (
+    SELECT 1 FROM unnest(COALESCE(v_advertised_asins, ARRAY[]::text[])) x
+    WHERE x IS NOT NULL AND x IS DISTINCT FROM v_catalog_asin
+  ) INTO v_has_asin_mismatch;
+
+  -- Mirrors the summary RPC's precedence exactly: an ads-absent SKU is
+  -- never identity_conflict there (it is not_applicable instead, checked
+  -- before the collision/mismatch branches), so an ads-absent SKU must
+  -- never short-circuit here either, even if it happens to have a raw-SKU
+  -- collision purely among Catalog/Sales/Cost Master.
+  v_is_identity_conflict := (NOT v_is_ads_absent) AND (v_has_raw_sku_collision OR v_has_asin_mismatch);
+
+  IF v_is_identity_conflict THEN
+    v_conflict_reasons := array_remove(ARRAY[
+      CASE WHEN v_has_raw_sku_collision THEN 'raw_sku_collision' END,
+      CASE WHEN v_has_asin_mismatch THEN 'advertised_asin_catalog_asin_mismatch' END
+    ], NULL);
     RETURN jsonb_build_object(
       'result', 'identity_conflict',
       'canonicalSku', v_canonical_sku,
       'evidence', jsonb_build_object(
+        'reasons', to_jsonb(v_conflict_reasons),
+        'catalogAsin', v_catalog_asin,
+        'advertisedAsins', to_jsonb(COALESCE(v_advertised_asins, ARRAY[]::text[])),
         'catalogRawSkus', to_jsonb(COALESCE(v_catalog_raw_skus, ARRAY[]::text[])),
         'salesRawSkus', to_jsonb(COALESCE(v_sales_raw_skus, ARRAY[]::text[])),
         'adsRawSkus', to_jsonb(COALESCE(v_ads_raw_skus, ARRAY[]::text[])),

@@ -17,7 +17,7 @@ import { NextRequest } from 'next/server'
 import { getInternalAccessContext } from '@/lib/internal-access'
 import { fetchSkuPerformanceDaily } from '@/lib/sku-performance/daily'
 import { jsonError, jsonOk, internalError, mapInvalidParameters } from '@/lib/sku-performance/responses'
-import { isValidMarketplaceId, isValidDateString, isValidSkuString, MAX_DAILY_RANGE_DAYS } from '@/lib/sku-performance/validation'
+import { isValidMarketplaceId, isValidDateString, isValidSkuString, MAX_DAILY_RANGE_DAYS, isRangeWithinInclusiveDays } from '@/lib/sku-performance/validation'
 import { SkuPerformanceRpcTransportError } from '@/lib/sku-performance/rpc'
 
 export const runtime = 'nodejs'
@@ -42,9 +42,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   if (dateFrom > dateTo) {
     return jsonError(400, 'invalid_parameters', 'dateFrom must not be after dateTo.')
   }
-  const rangeDays = (new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / (24 * 60 * 60 * 1000)
-  if (rangeDays > MAX_DAILY_RANGE_DAYS) {
-    return jsonError(400, 'invalid_parameters', `Date range must not exceed ${MAX_DAILY_RANGE_DAYS} days.`)
+  if (!isRangeWithinInclusiveDays(dateFrom, dateTo, MAX_DAILY_RANGE_DAYS)) {
+    return jsonError(400, 'invalid_parameters', `Date range must not exceed ${MAX_DAILY_RANGE_DAYS} inclusive days.`)
   }
 
   const access = await getInternalAccessContext()

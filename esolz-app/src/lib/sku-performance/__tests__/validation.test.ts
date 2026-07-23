@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import {
   isValidMarketplaceId, isValidDateString, isValidSort, isValidFilterString, isValidSkuString,
   parseStrictInt, validateLimit, validateOffset, optionalFilter, validateBooleanFlag,
-  DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET,
+  inclusiveDayCount, isRangeWithinInclusiveDays,
+  DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET, MAX_SUMMARY_RANGE_DAYS, MAX_DAILY_RANGE_DAYS,
 } from '../validation'
 
 describe('isValidMarketplaceId', () => {
@@ -191,5 +192,37 @@ describe('validateBooleanFlag', () => {
   })
   test('rejects an empty string instead of treating it as false', () => {
     assert.deepEqual(validateBooleanFlag(''), { ok: false })
+  })
+})
+
+// Follow-up correction: dateTo - dateFrom is a day DIFFERENCE, not an
+// inclusive calendar-date count -- both endpoints are inclusive, so the
+// actual number of dates in range is one more than the difference. These
+// tests exercise the exact 400/401 boundary that this API-level validation
+// is responsible for (the SQL RPCs enforce the same ceiling independently).
+describe('inclusiveDayCount', () => {
+  test('same day counts as exactly 1 inclusive day', () => {
+    assert.equal(inclusiveDayCount('2026-07-20', '2026-07-20'), 1)
+  })
+  test('adjacent days count as exactly 2 inclusive days', () => {
+    assert.equal(inclusiveDayCount('2026-07-19', '2026-07-20'), 2)
+  })
+  test('exactly 400 inclusive calendar dates', () => {
+    // 2026-07-20 minus 399 days = the date 400 inclusive days ending on 2026-07-20 starts on.
+    assert.equal(inclusiveDayCount('2025-06-16', '2026-07-20'), 400)
+  })
+})
+
+describe('isRangeWithinInclusiveDays (API-level range ceiling)', () => {
+  test('exactly MAX_SUMMARY_RANGE_DAYS (400) inclusive dates is accepted', () => {
+    assert.equal(isRangeWithinInclusiveDays('2025-06-16', '2026-07-20', MAX_SUMMARY_RANGE_DAYS), true)
+  })
+  test('401 inclusive dates (one more than the 400 ceiling) is rejected', () => {
+    assert.equal(isRangeWithinInclusiveDays('2025-06-15', '2026-07-20', MAX_SUMMARY_RANGE_DAYS), false)
+  })
+  test('summary and daily ceilings behave identically at the same boundary (both are 400)', () => {
+    assert.equal(MAX_SUMMARY_RANGE_DAYS, MAX_DAILY_RANGE_DAYS)
+    assert.equal(isRangeWithinInclusiveDays('2025-06-16', '2026-07-20', MAX_DAILY_RANGE_DAYS), true)
+    assert.equal(isRangeWithinInclusiveDays('2025-06-15', '2026-07-20', MAX_DAILY_RANGE_DAYS), false)
   })
 })

@@ -5258,3 +5258,40 @@ succeeded, same two routes as before, no new UI.
 
 **No migration applied to production. No production row changed. Not merged** — pending founder review
 of the corrected PR #57.
+
+### §23 update 8 (2026-07-23) — PR #57 follow-up: ASIN-mismatch identity conflicts unified with raw-SKU collisions, exact 400-inclusive-day ceiling, still not merged
+
+One small follow-up commit on top of update 7, same branch/PR, migration edited in place again (still
+never applied outside a local scratch DB).
+
+**ASIN-mismatch identity conflict.** `identityConflictEvidence` (both RPCs) now carries `reasons`
+(`raw_sku_collision` and/or `advertised_asin_catalog_asin_mismatch`), `catalogAsin`, and
+`advertisedAsins`, not just the four raw-SKU arrays — an ASIN-mismatch conflict (Catalog and Ads agree
+on the raw SKU string but disagree on ASIN) previously produced evidence that never named the ASINs
+actually in conflict. `get_sku_performance_daily`'s upfront short-circuit previously only fired for a
+raw-SKU collision; a SKU with only an ASIN mismatch (e.g. `SKU-CONFLICT-ASIN`) silently got a normal
+per-day `success` series from the daily endpoint despite the summary endpoint correctly flagging it
+`identity_conflict`. The daily RPC now uses the exact same two-reason decision as the summary RPC's
+`mapping_state` (same precedence — an ads-absent SKU is never `identity_conflict` in either RPC), so
+the two RPCs can never disagree about a given canonical SKU's conflict status. Also fixed a latent
+false-positive: the ASIN-mismatch boolean is now guarded on an actual catalog ASIN being present
+(`cg.asin IS NOT NULL` / `v_catalog_asin IS NOT NULL`) — without that guard, a catalog-absent SKU with
+any advertised ASIN would have spuriously read as a "mismatch" (`x IS DISTINCT FROM NULL` is true for
+any non-null x).
+
+**Exact 400 inclusive days.** Both RPCs' range ceiling checked `(dateTo - dateFrom) > 400`, a day
+DIFFERENCE, not an inclusive calendar-date count — it silently accepted 401 inclusive dates. Both RPCs
+and both TypeScript routes now check the inclusive count (`+ 1`); exactly 400 inclusive dates is
+accepted, 401 is rejected. The inclusive-day math is now a shared, directly-tested helper
+(`isRangeWithinInclusiveDays` in `validation.ts`) rather than inlined per route.
+
+**Tests:** SQL — new/extended assertions (TEST 4b/4c/4d/4e/4f, TEST 16j, TEST 19c) covering both
+conflict reasons independently, summary/daily conflict-status consistency across a raw-SKU-collision
+SKU, an ASIN-mismatch SKU, and a normal mapped SKU, and the exact 400-vs-401 inclusive boundary on both
+RPCs — **all pass**. TypeScript — 231/231 pass (6 new tests for `inclusiveDayCount`/
+`isRangeWithinInclusiveDays`). `npx tsc --noEmit` 0 errors. `npx eslint` 0 errors on every changed
+file. `npm run build` succeeded, same two routes, no new UI. The P1-C1 JSON fixture
+(`p1c1-sample-responses.json`) was regenerated to reflect the new evidence shape.
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.

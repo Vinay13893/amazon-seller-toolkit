@@ -81,7 +81,17 @@ INSERT INTO public.amazon_listing_items (workspace_id, connection_id, sku, asin,
   -- and 'DUP-1') that canonicalize to the SAME key (upper('Dup-1') =
   -- upper('DUP-1') = 'DUP-1'). Both rows are individually legal (the
   -- UNIQUE(workspace_id, sku, marketplace_id) constraint does not block
-  -- them since the raw sku text genuinely differs).
+  -- them since the raw sku text genuinely differs); they intentionally use
+  -- DIFFERENT ASINs, as amazon_listing_items has a UNIQUE(workspace_id,
+  -- asin, marketplace_id) constraint (an ASIN can only appear once per
+  -- workspace+marketplace), so they cannot share one. catalog_grouped
+  -- picks ONE of the two raw skus' ASIN via array_agg(... ORDER BY
+  -- raw_sku)[1], and which one sorts first is locale-collation-dependent
+  -- -- to keep this fixture a raw_sku_collision case ONLY (deterministic
+  -- regardless of that ordering), the Ads row below uses a NULL
+  -- advertised_asin, which the mismatch check always ignores (`x IS NOT
+  -- NULL` in its EXISTS clause), so no advertised_asin_catalog_asin_
+  -- mismatch reason can ever appear here.
   ('a0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'Dup-1', 'ASINDUP001', 'M1', 'Dup Item A', 'BrandX', NULL, '2026-07-15T00:00:00Z'),
   ('a0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', 'DUP-1', 'ASINDUP002', 'M1', 'Dup Item B', 'BrandX', NULL, '2026-07-15T00:00:00Z');
 
@@ -168,7 +178,10 @@ INSERT INTO public.internal_ads_advertised_product_daily_rows
   -- Fix 4 cross-source collision: catalog canonical is DUP-1 (from 'Dup-1'/'DUP-1'
   -- above); this Ads row uses a THIRD raw string 'dup-1' (also canonicalizes
   -- to DUP-1), proving the check spans sources, not just within one.
-  ('a0000000-0000-0000-0000-000000000001', 'f0000000-0000-0000-0000-000000000001', 'P1', '2026-07-16', 'Campaign Dup', 'CMP-DUP', 'AG1', 'dup-1', 'ASINDUP001', 15, 5, 'ads_api_auto', 'DK-DUP', '{}');
+  -- advertised_asin is deliberately NULL (see the catalog fixture's comment
+  -- above) so this stays a raw_sku_collision-only case regardless of which
+  -- catalog row's ASIN collation happens to pick as "the" catalog ASIN.
+  ('a0000000-0000-0000-0000-000000000001', 'f0000000-0000-0000-0000-000000000001', 'P1', '2026-07-16', 'Campaign Dup', 'CMP-DUP', 'AG1', 'dup-1', NULL, 15, 5, 'ads_api_auto', 'DK-DUP', '{}');
 
 INSERT INTO public.internal_business_report_sku_sales_traffic
   (workspace_id, marketplace_id, report_date, sku, sku_norm, child_asin, ordered_product_sales, units_ordered) VALUES
@@ -335,6 +348,19 @@ BEGIN
   IF (v_row->'flags'->>'spendSpike')::boolean IS NOT FALSE THEN RAISE EXCEPTION 'TEST 4b FAILED (Fix 4): identity_conflict row must not raise non-mapping flags, got %', v_row->'flags'; END IF;
   IF (v_row->'flags'->>'mappingIncomplete')::boolean IS NOT TRUE THEN RAISE EXCEPTION 'TEST 4b FAILED: identity_conflict must still set mappingIncomplete, got %', v_row->'flags'; END IF;
   IF v_row->'identityConflictEvidence' IS NULL THEN RAISE EXCEPTION 'TEST 4b FAILED (Fix 4): identity_conflict row must carry identityConflictEvidence'; END IF;
+  -- Follow-up correction: SKU-CONFLICT-ASIN is an ASIN-mismatch case, not a
+  -- raw-SKU collision -- reasons must contain exactly
+  -- advertised_asin_catalog_asin_mismatch, and the evidence must name the
+  -- actual conflicting ASINs, not just leave them implicit.
+  IF v_row->'identityConflictEvidence'->'reasons' <> '["advertised_asin_catalog_asin_mismatch"]'::jsonb THEN
+    RAISE EXCEPTION 'TEST 4b FAILED (follow-up): expected reasons=[advertised_asin_catalog_asin_mismatch] only, got %', v_row->'identityConflictEvidence'->'reasons';
+  END IF;
+  IF v_row->'identityConflictEvidence'->>'catalogAsin' <> 'ASINCONF-CATALOG' THEN
+    RAISE EXCEPTION 'TEST 4b FAILED (follow-up): expected catalogAsin=ASINCONF-CATALOG, got %', v_row->'identityConflictEvidence';
+  END IF;
+  IF v_row->'identityConflictEvidence'->'advertisedAsins' <> '["ASINCONF-ADS"]'::jsonb THEN
+    RAISE EXCEPTION 'TEST 4b FAILED (follow-up): expected advertisedAsins=[ASINCONF-ADS], got %', v_row->'identityConflictEvidence';
+  END IF;
 END $$;
 
 -- ================================================================
@@ -357,10 +383,18 @@ BEGIN
   IF jsonb_array_length(v_row->'identityConflictEvidence'->'adsRawSkus') <> 1 THEN
     RAISE EXCEPTION 'TEST 4c FAILED: expected 1 ads raw SKU (dup-1) in evidence, got %', v_row->'identityConflictEvidence';
   END IF;
+  -- Follow-up correction: DUP-1 is a raw-SKU-collision case ONLY (both
+  -- catalog rows share the same ASIN as the Ads row, by fixture design --
+  -- see the fixture comment above) -- reasons must contain exactly
+  -- raw_sku_collision, never advertised_asin_catalog_asin_mismatch.
+  IF v_row->'identityConflictEvidence'->'reasons' <> '["raw_sku_collision"]'::jsonb THEN
+    RAISE EXCEPTION 'TEST 4c FAILED (follow-up): expected reasons=[raw_sku_collision] only, got %', v_row->'identityConflictEvidence'->'reasons';
+  END IF;
 END $$;
 
 -- ================================================================
--- TEST 4d: Fix 4 -- daily RPC identity_conflict short-circuit, no combined series
+-- TEST 4d: Fix 4 -- daily RPC identity_conflict short-circuit for a
+-- raw-SKU collision, no combined series
 -- ================================================================
 DO $$
 DECLARE v_result jsonb;
@@ -369,6 +403,71 @@ BEGIN
   IF v_result->>'result' <> 'identity_conflict' THEN RAISE EXCEPTION 'TEST 4d FAILED: expected identity_conflict result, got %', v_result; END IF;
   IF v_result ? 'days' THEN RAISE EXCEPTION 'TEST 4d FAILED (Fix 4): identity_conflict daily response must not include a combined days series, got %', v_result; END IF;
   IF v_result->'evidence' IS NULL THEN RAISE EXCEPTION 'TEST 4d FAILED: identity_conflict daily response must include evidence'; END IF;
+  IF v_result->'evidence'->'reasons' <> '["raw_sku_collision"]'::jsonb THEN
+    RAISE EXCEPTION 'TEST 4d FAILED (follow-up): expected evidence.reasons=[raw_sku_collision], got %', v_result->'evidence'->'reasons';
+  END IF;
+END $$;
+
+-- ================================================================
+-- TEST 4e: follow-up correction -- daily RPC identity_conflict
+-- short-circuit for an ASIN mismatch (previously the daily RPC only
+-- short-circuited for a raw-SKU collision; SKU-CONFLICT-ASIN would have
+-- silently returned a per-day 'success' series despite the ASIN mismatch).
+-- ================================================================
+DO $$
+DECLARE v_result jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', 'SKU-CONFLICT-ASIN', '2026-07-01', '2026-07-20');
+  IF v_result->>'result' <> 'identity_conflict' THEN
+    RAISE EXCEPTION 'TEST 4e FAILED (follow-up): expected identity_conflict for an ASIN-mismatch SKU, got %', v_result;
+  END IF;
+  IF v_result ? 'days' THEN RAISE EXCEPTION 'TEST 4e FAILED (follow-up): identity_conflict daily response must not include a combined days series, got %', v_result; END IF;
+  IF v_result->'evidence'->'reasons' <> '["advertised_asin_catalog_asin_mismatch"]'::jsonb THEN
+    RAISE EXCEPTION 'TEST 4e FAILED (follow-up): expected evidence.reasons=[advertised_asin_catalog_asin_mismatch], got %', v_result->'evidence'->'reasons';
+  END IF;
+  IF v_result->'evidence'->>'catalogAsin' <> 'ASINCONF-CATALOG' THEN
+    RAISE EXCEPTION 'TEST 4e FAILED (follow-up): expected evidence.catalogAsin=ASINCONF-CATALOG, got %', v_result->'evidence';
+  END IF;
+  IF v_result->'evidence'->'advertisedAsins' <> '["ASINCONF-ADS"]'::jsonb THEN
+    RAISE EXCEPTION 'TEST 4e FAILED (follow-up): expected evidence.advertisedAsins=[ASINCONF-ADS], got %', v_result->'evidence';
+  END IF;
+END $$;
+
+-- ================================================================
+-- TEST 4f: follow-up correction -- summary and daily must return a
+-- CONSISTENT conflict status for the same canonical SKU, in both
+-- directions (conflict SKUs agree, and a normal SKU is never flagged by
+-- one RPC but not the other).
+-- ================================================================
+DO $$
+DECLARE v_summary jsonb; v_daily jsonb; v_row jsonb;
+BEGIN
+  v_summary := public.get_sku_performance_summary(
+    'a0000000-0000-0000-0000-000000000001', 'M1', '2026-07-01', '2026-07-20', '2026-07-20',
+    500, 0, NULL, NULL, NULL, NULL, false, false, false, false, false, false, false, 'sku_asc'
+  );
+
+  -- DUP-1: both RPCs must agree it is identity_conflict.
+  SELECT r INTO v_row FROM jsonb_array_elements(v_summary->'rows') r WHERE r->>'sku' IN ('Dup-1', 'DUP-1', 'dup-1');
+  v_daily := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', 'DUP-1', '2026-07-01', '2026-07-20');
+  IF NOT (v_row->>'mappingState' = 'identity_conflict' AND v_daily->>'result' = 'identity_conflict') THEN
+    RAISE EXCEPTION 'TEST 4f FAILED: DUP-1 summary/daily disagree -- summary=%, daily=%', v_row->>'mappingState', v_daily->>'result';
+  END IF;
+
+  -- SKU-CONFLICT-ASIN: both RPCs must agree it is identity_conflict.
+  SELECT r INTO v_row FROM jsonb_array_elements(v_summary->'rows') r WHERE r->>'sku' = 'SKU-CONFLICT-ASIN';
+  v_daily := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', 'SKU-CONFLICT-ASIN', '2026-07-01', '2026-07-20');
+  IF NOT (v_row->>'mappingState' = 'identity_conflict' AND v_daily->>'result' = 'identity_conflict') THEN
+    RAISE EXCEPTION 'TEST 4f FAILED: SKU-CONFLICT-ASIN summary/daily disagree -- summary=%, daily=%', v_row->>'mappingState', v_daily->>'result';
+  END IF;
+
+  -- SKU-MAPPED: a normal, non-conflicted SKU must agree on BOTH sides too
+  -- (never identity_conflict in either RPC).
+  SELECT r INTO v_row FROM jsonb_array_elements(v_summary->'rows') r WHERE r->>'sku' = 'SKU-MAPPED';
+  v_daily := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', 'SKU-MAPPED', '2026-07-01', '2026-07-20');
+  IF NOT (v_row->>'mappingState' = 'mapped' AND v_daily->>'result' = 'success' AND (v_daily ? 'days')) THEN
+    RAISE EXCEPTION 'TEST 4f FAILED: SKU-MAPPED unexpectedly flagged as a conflict somewhere -- summary=%, daily=%', v_row->>'mappingState', v_daily->>'result';
+  END IF;
 END $$;
 
 -- ================================================================
@@ -721,6 +820,30 @@ BEGIN
 END $$;
 
 -- ================================================================
+-- TEST 16j: follow-up correction -- EXACT 400 inclusive days accepted,
+-- 401 inclusive days rejected (dateTo - dateFrom is a day DIFFERENCE, not
+-- an inclusive calendar-date count -- both endpoints are inclusive, so the
+-- correct ceiling check is dateTo - dateFrom + 1 > 400, not dateTo -
+-- dateFrom > 400, which would have let 401 inclusive dates through).
+-- ================================================================
+DO $$
+DECLARE v_result jsonb; v_date_to date := '2026-07-20'; v_date_from_400 date; v_date_from_401 date;
+BEGIN
+  v_date_from_400 := v_date_to - 399; -- v_date_to - v_date_from_400 + 1 = 400 inclusive days
+  v_date_from_401 := v_date_to - 400; -- v_date_to - v_date_from_401 + 1 = 401 inclusive days
+
+  v_result := public.get_sku_performance_summary('a0000000-0000-0000-0000-000000000001', 'M1', v_date_from_400, v_date_to, v_date_to, 100, 0, NULL, NULL, NULL, NULL, false, false, false, false, false, false, false, 'sku_asc');
+  IF v_result->>'result' = 'invalid_parameters' AND v_result->>'reason' = 'range_too_large' THEN
+    RAISE EXCEPTION 'TEST 16j FAILED (follow-up): exactly 400 inclusive days must be ACCEPTED, got %', v_result;
+  END IF;
+
+  v_result := public.get_sku_performance_summary('a0000000-0000-0000-0000-000000000001', 'M1', v_date_from_401, v_date_to, v_date_to, 100, 0, NULL, NULL, NULL, NULL, false, false, false, false, false, false, false, 'sku_asc');
+  IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'range_too_large' THEN
+    RAISE EXCEPTION 'TEST 16j FAILED (follow-up): 401 inclusive days must be REJECTED as range_too_large, got %', v_result;
+  END IF;
+END $$;
+
+-- ================================================================
 -- TEST 17: get_sku_performance_daily -- coverage-state model, all five states
 -- ================================================================
 DO $$
@@ -777,6 +900,28 @@ BEGIN
 
   v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', '', '2026-07-01', '2026-07-10');
   IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'invalid_sku' THEN RAISE EXCEPTION 'TEST 19b FAILED: empty sku not rejected, got %', v_result; END IF;
+END $$;
+
+-- ================================================================
+-- TEST 19c: follow-up correction -- EXACT 400 inclusive days accepted,
+-- 401 inclusive days rejected, same inclusive-day-count fix as TEST 16j,
+-- applied to the daily RPC.
+-- ================================================================
+DO $$
+DECLARE v_result jsonb; v_date_to date := '2026-07-20'; v_date_from_400 date; v_date_from_401 date;
+BEGIN
+  v_date_from_400 := v_date_to - 399; -- v_date_to - v_date_from_400 + 1 = 400 inclusive days
+  v_date_from_401 := v_date_to - 400; -- v_date_to - v_date_from_401 + 1 = 401 inclusive days
+
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', 'SKU-MAPPED', v_date_from_400, v_date_to);
+  IF v_result->>'result' = 'invalid_parameters' AND v_result->>'reason' = 'range_too_large' THEN
+    RAISE EXCEPTION 'TEST 19c FAILED (follow-up): exactly 400 inclusive days must be ACCEPTED, got %', v_result;
+  END IF;
+
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M1', 'SKU-MAPPED', v_date_from_401, v_date_to);
+  IF v_result->>'result' <> 'invalid_parameters' OR v_result->>'reason' <> 'range_too_large' THEN
+    RAISE EXCEPTION 'TEST 19c FAILED (follow-up): 401 inclusive days must be REJECTED as range_too_large, got %', v_result;
+  END IF;
 END $$;
 
 -- ================================================================

@@ -1459,3 +1459,28 @@ succeeded (same 2 routes, no new UI).
 
 **No migration applied to production. No production row changed. Not merged** — pending founder review
 of the corrected PR #57.
+
+## SKU Performance — PR #57 follow-up: ASIN-mismatch conflicts + exact 400-day ceiling (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 8. One small follow-up commit on the same
+branch/PR as the six-fix correction round, migration edited in place again.
+
+**ASIN-mismatch identity conflict:** `identityConflictEvidence` now carries `reasons` (an array of
+`raw_sku_collision`/`advertised_asin_catalog_asin_mismatch`), `catalogAsin`, and `advertisedAsins` in
+both RPCs. The daily RPC previously only short-circuited to `identity_conflict` for a raw-SKU
+collision — a SKU with only an ASIN mismatch (Catalog and Ads agree on the SKU string, disagree on
+ASIN) silently returned a normal per-day series instead. It now uses the exact same two-reason
+decision as the summary RPC, so the two endpoints can never disagree about a SKU's conflict status.
+Also fixed a latent false-positive where a catalog-absent SKU with any advertised ASIN could spuriously
+read as a "mismatch."
+
+**Exact 400 inclusive days:** the range ceiling in both RPCs and both routes checked a day
+*difference* (`dateTo - dateFrom > 400`), which silently accepted 401 inclusive calendar dates. Fixed
+to check the inclusive count (`+ 1`) everywhere — exactly 400 accepted, 401 rejected.
+
+**Tests:** SQL suite extended with fixtures/assertions for both conflict reasons, summary/daily
+consistency, and the exact 400/401 boundary — all pass. TypeScript 231/231 pass, `tsc`/`eslint`/build
+all clean. P1-C1 JSON fixture regenerated with the new evidence shape.
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.

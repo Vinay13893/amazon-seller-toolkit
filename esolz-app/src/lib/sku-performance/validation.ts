@@ -106,3 +106,19 @@ export function validateBooleanFlag(raw: string | null): BooleanFlagValidation {
   if (raw === 'false' || raw === '0') return { ok: true, value: false }
   return { ok: false }
 }
+
+/**
+ * Follow-up correction: the number of INCLUSIVE calendar dates spanned by
+ * [dateFrom, dateTo] — both endpoints count as a full day. A plain
+ * `dateTo - dateFrom` millisecond subtraction gives the day DIFFERENCE, one
+ * fewer than the actual number of calendar dates in range, which let a
+ * MAX_*_RANGE_DAYS=400 ceiling silently accept 401 inclusive dates.
+ */
+export function inclusiveDayCount(dateFrom: string, dateTo: string): number {
+  return (new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / (24 * 60 * 60 * 1000) + 1
+}
+
+/** True when [dateFrom, dateTo] spans at most maxInclusiveDays calendar dates (both endpoints inclusive). */
+export function isRangeWithinInclusiveDays(dateFrom: string, dateTo: string, maxInclusiveDays: number): boolean {
+  return inclusiveDayCount(dateFrom, dateTo) <= maxInclusiveDays
+}

@@ -25,6 +25,7 @@ import { jsonError, jsonOk, internalError, mapInvalidParameters } from '@/lib/sk
 import {
   isValidMarketplaceId, isValidDateString, isValidSort, isValidFilterString,
   validateLimit, validateOffset, optionalFilter, validateBooleanFlag, MAX_SUMMARY_RANGE_DAYS,
+  isRangeWithinInclusiveDays,
 } from '@/lib/sku-performance/validation'
 import { SkuPerformanceRpcTransportError } from '@/lib/sku-performance/rpc'
 
@@ -46,9 +47,8 @@ export async function GET(request: NextRequest) {
   if (dateFrom > dateTo) {
     return jsonError(400, 'invalid_parameters', 'dateFrom must not be after dateTo.')
   }
-  const rangeDays = (new Date(dateTo).getTime() - new Date(dateFrom).getTime()) / (24 * 60 * 60 * 1000)
-  if (rangeDays > MAX_SUMMARY_RANGE_DAYS) {
-    return jsonError(400, 'invalid_parameters', `Date range must not exceed ${MAX_SUMMARY_RANGE_DAYS} days.`)
+  if (!isRangeWithinInclusiveDays(dateFrom, dateTo, MAX_SUMMARY_RANGE_DAYS)) {
+    return jsonError(400, 'invalid_parameters', `Date range must not exceed ${MAX_SUMMARY_RANGE_DAYS} inclusive days.`)
   }
 
   const asOf = params.get('asOf')
