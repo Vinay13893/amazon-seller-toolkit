@@ -1,20 +1,25 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Loader2, Lock, PackageSearch, Search, ServerCrash } from 'lucide-react'
+import {
+  AlertCircle, ChevronDown, ChevronRight, Loader2, Lock, PackageSearch, Search, ServerCrash,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { SkuPerformanceRow, SkuPerformanceSummaryResult } from '@/lib/sku-performance/types'
+import type { SkuPerformanceDailyResult, SkuPerformanceRow, SkuPerformanceSummaryResult } from '@/lib/sku-performance/types'
 import {
-  buildSummaryQueryString, clampRangeToMaxDays, defaultDateRange, derivePageViewState, filterRowsByTitle,
+  buildDailyQueryString, buildSummaryQueryString, clampRangeToMaxDays, defaultDateRange,
+  deriveChartViewState, derivePageViewState, filterRowsByTitle,
 } from './query'
 import {
   dataStatus, formatCount, formatMoney, formatRatio, salesTrendLabel, spendTrendLabel, toneBadgeClassName,
 } from './format'
 import { FreshnessStrip } from './freshness-strip'
+import { DailyChart } from './daily-chart'
+import { IdentityConflictNotice } from './identity-conflict-notice'
 
 interface ApiErrorBody {
   error?: string
@@ -29,6 +34,7 @@ interface FetchState<T> {
 }
 
 const INITIAL_SUMMARY_STATE: FetchState<SkuPerformanceSummaryResult> = { loading: true, status: null, error: null, result: null }
+const INITIAL_DAILY_STATE: FetchState<SkuPerformanceDailyResult> = { loading: false, status: null, error: null, result: null }
 
 export default function SkuDailyTrendsPage() {
   const [{ dateFrom: defaultFrom, dateTo: defaultTo }] = useState(() => defaultDateRange())
@@ -36,6 +42,8 @@ export default function SkuDailyTrendsPage() {
   const [dateTo, setDateTo] = useState(defaultTo)
   const [search, setSearch] = useState('')
   const [summary, setSummary] = useState(INITIAL_SUMMARY_STATE)
+  const [selectedSku, setSelectedSku] = useState<string | null>(null)
+  const [daily, setDaily] = useState(INITIAL_DAILY_STATE)
 
   const summaryQueryString = useMemo(() => buildSummaryQueryString({ dateFrom, dateTo }), [dateFrom, dateTo])
 
@@ -65,12 +73,54 @@ export default function SkuDailyTrendsPage() {
     void loadSummary()
   }, [loadSummary])
 
+  const loadDaily = useCallback(async (sku: string) => {
+    setDaily({ loading: true, status: null, error: null, result: null })
+    try {
+      const qs = buildDailyQueryString({ dateFrom, dateTo })
+      const res = await fetch(`/api/sku-performance/${encodeURIComponent(sku)}/daily?${qs}`, { headers: { Accept: 'application/json' } })
+      if (!res.ok) {
+        let message = `Daily trend API failed (status ${res.status}).`
+        try {
+          const body = await res.json() as ApiErrorBody
+          message = body.reason || body.error || message
+        } catch {
+          // Keep the generic status-based message if the body isn't JSON.
+        }
+        setDaily({ loading: false, status: res.status, error: message, result: null })
+        return
+      }
+      const body = await res.json() as SkuPerformanceDailyResult
+      setDaily({ loading: false, status: res.status, error: null, result: body })
+    } catch {
+      setDaily({ loading: false, status: null, error: 'Network error while loading the daily trend.', result: null })
+    }
+  }, [dateFrom, dateTo])
+
+  function toggleRow(row: SkuPerformanceRow) {
+    if (selectedSku === row.sku) {
+      setSelectedSku(null)
+      setDaily(INITIAL_DAILY_STATE)
+      return
+    }
+    setSelectedSku(row.sku)
+    // An identity-conflict row's evidence is already in hand from the
+    // summary response -- no need to round-trip the daily RPC just to have
+    // it echo the same identity_conflict short-circuit back.
+    if (row.mappingState !== 'identity_conflict') {
+      void loadDaily(row.sku)
+    } else {
+      setDaily(INITIAL_DAILY_STATE)
+    }
+  }
+
   function updateRange(patch: Partial<{ dateFrom: string; dateTo: string }>) {
     let nextFrom = patch.dateFrom ?? dateFrom
     const nextTo = patch.dateTo ?? dateTo
     nextFrom = clampRangeToMaxDays(nextFrom, nextTo)
     setDateFrom(nextFrom)
     setDateTo(nextTo)
+    setSelectedSku(null)
+    setDaily(INITIAL_DAILY_STATE)
   }
 
   const view = derivePageViewState(summary)
@@ -153,7 +203,13 @@ export default function SkuDailyTrendsPage() {
           )}
 
           {(view.kind === 'ready' || view.kind === 'no_comparable_data') && visibleRows.length > 0 && (
-            <SkuTable rows={visibleRows} currencyCode={view.result.currencyCode} />
+            <SkuTable
+              rows={visibleRows}
+              currencyCode={view.result.currencyCode}
+              selectedSku={selectedSku}
+              onToggleRow={toggleRow}
+              daily={daily}
+            />
           )}
         </CardContent>
       </Card>
@@ -172,12 +228,19 @@ function StateBlock({ icon, title, detail, onRetry }: { icon: React.ReactNode; t
   )
 }
 
-function SkuTable({ rows, currencyCode }: { rows: SkuPerformanceRow[]; currencyCode: string | null }) {
+function SkuTable({ rows, currencyCode, selectedSku, onToggleRow, daily }: {
+  rows: SkuPerformanceRow[]
+  currencyCode: string | null
+  selectedSku: string | null
+  onToggleRow: (row: SkuPerformanceRow) => void
+  daily: FetchState<SkuPerformanceDailyResult>
+}) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1160px] text-left">
+      <table className="w-full min-w-[1180px] text-left">
         <thead>
           <tr className="border-b border-border bg-muted/30">
+            <th className="w-8 px-2 py-3" />
             <th className="px-4 py-3 text-xs font-medium text-muted-foreground">Product</th>
             <th className="px-4 py-3 text-xs font-medium text-muted-foreground">SKU</th>
             <th className="px-4 py-3 text-xs font-medium text-muted-foreground">ASIN</th>
@@ -193,50 +256,116 @@ function SkuTable({ rows, currencyCode }: { rows: SkuPerformanceRow[]; currencyC
           </tr>
         </thead>
         <tbody>
-          {rows.map(row => <SkuRow key={row.sku} row={row} currencyCode={currencyCode} />)}
+          {rows.map(row => (
+            <SkuRowGroup
+              key={row.sku}
+              row={row}
+              currencyCode={currencyCode}
+              expanded={selectedSku === row.sku}
+              onToggle={() => onToggleRow(row)}
+              daily={selectedSku === row.sku ? daily : null}
+            />
+          ))}
         </tbody>
       </table>
     </div>
   )
 }
 
-function SkuRow({ row, currencyCode }: { row: SkuPerformanceRow; currencyCode: string | null }) {
+function SkuRowGroup({ row, currencyCode, expanded, onToggle, daily }: {
+  row: SkuPerformanceRow
+  currencyCode: string | null
+  expanded: boolean
+  onToggle: () => void
+  daily: FetchState<SkuPerformanceDailyResult> | null
+}) {
   const window = row.selectedRange
   const status = dataStatus(row)
 
   return (
-    <tr className="border-b border-border last:border-0 hover:bg-muted/20">
-      <td className="max-w-[220px] px-4 py-3 align-top">
-        <p className="line-clamp-2 text-sm font-medium text-foreground">{row.productTitle ?? 'Unknown'}</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">{row.brand ?? 'Unknown brand'}</p>
-      </td>
-      <td className="px-4 py-3 align-top font-mono text-xs text-foreground">{row.sku}</td>
-      <td className="px-4 py-3 align-top font-mono text-xs text-foreground">{row.asin ?? 'Unknown'}</td>
+    <>
+      <tr className="cursor-pointer border-b border-border last:border-0 hover:bg-muted/20" onClick={onToggle}>
+        <td className="px-2 py-3 align-top text-muted-foreground">
+          {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        </td>
+        <td className="max-w-[220px] px-4 py-3 align-top">
+          <p className="line-clamp-2 text-sm font-medium text-foreground">{row.productTitle ?? 'Unknown'}</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">{row.brand ?? 'Unknown brand'}</p>
+        </td>
+        <td className="px-4 py-3 align-top font-mono text-xs text-foreground">{row.sku}</td>
+        <td className="px-4 py-3 align-top font-mono text-xs text-foreground">{row.asin ?? 'Unknown'}</td>
 
-      {window ? (
-        <>
-          <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.sales, currencyCode)}</td>
-          <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatCount(window.units)}</td>
-          <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.spend, currencyCode)}</td>
-          <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.attributedSales, currencyCode)}</td>
-          <RatioCell tone={formatRatio(window.acos).tone} text={formatRatio(window.acos).text} />
-          <RatioCell tone={formatRatio(window.tacos).tone} text={formatRatio(window.tacos).text} />
-        </>
-      ) : (
-        <td colSpan={6} className="px-4 py-3 text-center align-top text-xs text-muted-foreground">No combined metrics — identity conflict</td>
+        {window ? (
+          <>
+            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.sales, currencyCode)}</td>
+            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatCount(window.units)}</td>
+            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.spend, currencyCode)}</td>
+            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.attributedSales, currencyCode)}</td>
+            <RatioCell tone={formatRatio(window.acos).tone} text={formatRatio(window.acos).text} />
+            <RatioCell tone={formatRatio(window.tacos).tone} text={formatRatio(window.tacos).text} />
+          </>
+        ) : (
+          <td colSpan={6} className="px-4 py-3 text-center align-top text-xs text-muted-foreground">No combined metrics — identity conflict</td>
+        )}
+
+        <td className="px-4 py-3 align-top text-sm text-foreground">{salesTrendLabel(row.salesTrend)}</td>
+        <td className="px-4 py-3 align-top text-sm text-foreground">{spendTrendLabel(row.spendTrend)}</td>
+        <td className="px-4 py-3 align-top">
+          <Badge variant="outline" className={toneBadgeClassName(status.tone)}>{status.label}</Badge>
+          {status.detail && <p className="mt-1 text-[11px] text-muted-foreground">{status.detail}</p>}
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-border bg-muted/10">
+          <td colSpan={12} className="px-6 py-4">
+            <ExpandedDaily row={row} currencyCode={currencyCode} daily={daily} />
+          </td>
+        </tr>
       )}
-
-      <td className="px-4 py-3 align-top text-sm text-foreground">{salesTrendLabel(row.salesTrend)}</td>
-      <td className="px-4 py-3 align-top text-sm text-foreground">{spendTrendLabel(row.spendTrend)}</td>
-      <td className="px-4 py-3 align-top">
-        <Badge variant="outline" className={toneBadgeClassName(status.tone)}>{status.label}</Badge>
-        {status.detail && <p className="mt-1 text-[11px] text-muted-foreground">{status.detail}</p>}
-      </td>
-    </tr>
+    </>
   )
 }
 
 function RatioCell({ text, tone }: { text: string; tone: 'neutral' | 'positive' | 'warning' | 'danger' | 'muted' }) {
   const toneClass = tone === 'danger' ? 'text-red-700 dark:text-red-400' : tone === 'warning' ? 'text-amber-700 dark:text-amber-400' : tone === 'muted' ? 'text-muted-foreground' : 'text-foreground'
   return <td className="px-4 py-3 text-right align-top text-sm"><span className={toneClass}>{text}</span></td>
+}
+
+function ExpandedDaily({ row, currencyCode, daily }: {
+  row: SkuPerformanceRow
+  currencyCode: string | null
+  daily: FetchState<SkuPerformanceDailyResult> | null
+}) {
+  if (row.mappingState === 'identity_conflict') {
+    return row.identityConflictEvidence
+      ? <IdentityConflictNotice evidence={row.identityConflictEvidence} />
+      : <p className="text-xs text-muted-foreground">Identity conflict — evidence unavailable.</p>
+  }
+
+  const state = deriveChartViewState({
+    loading: daily?.loading ?? true,
+    status: daily?.status ?? null,
+    error: daily?.error ?? null,
+    result: daily?.result ?? null,
+  })
+
+  if (state.kind === 'loading') {
+    return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading daily trend…</div>
+  }
+  if (state.kind === 'unauthorized') {
+    return <p className="text-sm text-muted-foreground">Not authorized to load this SKU&apos;s daily trend.</p>
+  }
+  if (state.kind === 'unavailable') {
+    return <p className="text-sm text-muted-foreground">Daily trend is not available right now.</p>
+  }
+  if (state.kind === 'error') {
+    return <p className="text-sm text-destructive">{state.message}</p>
+  }
+  if (state.kind === 'identity_conflict') {
+    return <IdentityConflictNotice evidence={state.result.evidence} />
+  }
+  if (state.kind === 'no_comparable_data') {
+    return <p className="text-sm text-muted-foreground">No comparable sales or spend data for this SKU in this date range.</p>
+  }
+  return <DailyChart days={state.days} currencyCode={currencyCode} />
 }
