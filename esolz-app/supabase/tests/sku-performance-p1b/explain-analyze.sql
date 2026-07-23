@@ -100,12 +100,35 @@ ANALYZE public.internal_business_report_sku_sales_traffic;
 ANALYZE public.internal_ads_advertised_product_daily_rows;
 ANALYZE public.amazon_listing_items;
 
--- ---------------- Phase A: end-to-end RPC timing ----------------
+-- ---------------- Phase A: end-to-end RPC timing (3 warm runs) ----------------
+-- P1-B correction round, performance-check requirement: report three warm
+-- timings, not just one. All three run against the same already-populated,
+-- already-ANALYZEd tables (the seed above), so buffer/plan caches are warm
+-- for every one of them -- this is deliberately NOT a cold first call.
+--
+-- Finding (recorded, not re-derived on every run): profiling this call with
+-- auto_explain during the correction round found JIT compilation --
+-- Optimization + Emission phases, ~200 expression functions -- accounted
+-- for ~11s of a ~12.4s call, while actual plan execution finished in
+-- ~1.1s. Both get_sku_performance_summary and get_sku_performance_daily now
+-- set `jit = off` in migration 065 (see that file's implementation-decision
+-- #11) specifically because this call's plan-tree cost estimate crosses
+-- Postgres's JIT thresholds without ever running long enough per call to
+-- repay JIT's own compilation cost. That single change, not an index or
+-- query-shape change, is what took this benchmark from ~12.4s to under 1s.
 \timing on
 SELECT (public.get_sku_performance_summary(
   'b0000000-0000-0000-0000-000000000001', 'M1', '2026-06-01', '2026-06-30', '2026-06-30',
   500, 0, NULL, NULL, NULL, NULL, false, false, false, false, false, false, false, 'attention_desc'
-)->'pagination') AS pagination_result;
+)->'pagination') AS warm_run_1;
+SELECT (public.get_sku_performance_summary(
+  'b0000000-0000-0000-0000-000000000001', 'M1', '2026-06-01', '2026-06-30', '2026-06-30',
+  500, 0, NULL, NULL, NULL, NULL, false, false, false, false, false, false, false, 'attention_desc'
+)->'pagination') AS warm_run_2;
+SELECT (public.get_sku_performance_summary(
+  'b0000000-0000-0000-0000-000000000001', 'M1', '2026-06-01', '2026-06-30', '2026-06-30',
+  500, 0, NULL, NULL, NULL, NULL, false, false, false, false, false, false, false, 'attention_desc'
+)->'pagination') AS warm_run_3;
 \timing off
 
 -- ---------------- Phase B: underlying scan-shape index checks ----------------

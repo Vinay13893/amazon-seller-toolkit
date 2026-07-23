@@ -1,0 +1,543 @@
+{
+  "_meta": {
+    "note": "getDailyResponseIdentityConflict uses SKU DUP-1 (a genuine cross-source raw-SKU collision, Fix 4) -- note that an ASIN-mismatch-only conflict (e.g. SKU-SORT-BANANA, see getSummaryResponse.rows[0]) does NOT short-circuit the daily endpoint the same way; only a raw-SKU collision does. That is existing, in-scope behavior, not a gap introduced by this fixture.",
+    "purpose": "Realistic sample RPC responses for P1-C1 (UI) to build against, captured directly from the corrected get_sku_performance_summary/get_sku_performance_daily RPCs against the P1-B correction round's local scratch-DB test fixtures (supabase/tests/sku-performance-p1b/sequential.sql). Not hand-written -- every field/state combination below is a real value the RPCs actually returned.",
+    "capturedAt": "2026-07-23",
+    "capturedFrom": "esolz-app/supabase/tests/sku-performance-p1b/sequential.sql fixtures, workspace a0000000-0000-0000-0000-000000000001, marketplace M1"
+  },
+  "getSummaryResponse": {
+    "rows": [
+      {
+        "sku": "SKU-SORT-BANANA",
+        "asin": "ASINSORTBN",
+        "brand": "BrandZ",
+        "flags": {
+          "salesDrop": false,
+          "spendSpike": false,
+          "mappingIncomplete": true,
+          "noAttributedSales": false,
+          "tacosDeterioration": false,
+          "salesGrowingSpendFalls": false,
+          "salesGrowingStableSpend": false
+        },
+        "category": null,
+        "imageUrl": "http://img/13.png",
+        "tacosBand": null,
+        "yesterday": null,
+        "salesTrend": null,
+        "spendTrend": null,
+        "mappingState": "identity_conflict",
+        "productTitle": "Sort Banana",
+        "priorSevenDay": null,
+        "selectedRange": null,
+        "trailingSevenDay": null,
+        "trailingThirtyDay": null,
+        "lastSalesActivityDate": "2026-07-16",
+        "lastAdSpendActivityDate": "2026-07-16",
+        "identityConflictEvidence": {
+          "adsRawSkus": [
+            "SKU-SORT-BANANA"
+          ],
+          "salesRawSkus": [
+            "SKU-SORT-BANANA"
+          ],
+          "catalogRawSkus": [
+            "SKU-SORT-BANANA"
+          ],
+          "costMasterRawSkus": []
+        },
+        "lastAttributedSaleActivityDate": "2026-07-16"
+      },
+      {
+        "sku": "SKU-SORT-APPLE",
+        "asin": "ASINSORTAP",
+        "brand": "BrandZ",
+        "flags": {
+          "salesDrop": false,
+          "spendSpike": false,
+          "mappingIncomplete": false,
+          "noAttributedSales": false,
+          "tacosDeterioration": false,
+          "salesGrowingSpendFalls": false,
+          "salesGrowingStableSpend": false
+        },
+        "category": null,
+        "imageUrl": "http://img/10.png",
+        "tacosBand": "critical",
+        "yesterday": {
+          "acos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "sales": 0,
+          "spend": 0,
+          "tacos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "units": 0,
+          "attributedSales": 0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "salesTrend": "no_activity",
+        "spendTrend": "no_spend",
+        "mappingState": "mapped",
+        "productTitle": "Sort Apple",
+        "priorSevenDay": {
+          "acos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "sales": 0,
+          "spend": 0,
+          "tacos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "attributedSales": 0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "selectedRange": {
+          "acos": {
+            "state": "normal",
+            "value": 2.0
+          },
+          "sales": 300,
+          "spend": 100.0,
+          "tacos": {
+            "state": "normal",
+            "value": 0.3333333333333333
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "trailingSevenDay": {
+          "acos": {
+            "state": "normal",
+            "value": 2.0
+          },
+          "sales": 300,
+          "spend": 100.0,
+          "tacos": {
+            "state": "normal",
+            "value": 0.3333333333333333
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "trailingThirtyDay": {
+          "acos": {
+            "state": "normal",
+            "value": 2.0
+          },
+          "sales": 300,
+          "spend": 100.0,
+          "tacos": {
+            "state": "normal",
+            "value": 0.3333333333333333
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "lastSalesActivityDate": "2026-07-16",
+        "lastAdSpendActivityDate": "2026-07-16",
+        "identityConflictEvidence": null,
+        "lastAttributedSaleActivityDate": "2026-07-16"
+      },
+      {
+        "sku": "SKU-SORT-ZEBRA",
+        "asin": "ASINSORTZB",
+        "brand": "BrandZ",
+        "flags": {
+          "salesDrop": false,
+          "spendSpike": false,
+          "mappingIncomplete": false,
+          "noAttributedSales": false,
+          "tacosDeterioration": false,
+          "salesGrowingSpendFalls": false,
+          "salesGrowingStableSpend": false
+        },
+        "category": null,
+        "imageUrl": "http://img/12.png",
+        "tacosBand": "critical",
+        "yesterday": {
+          "acos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "sales": 0,
+          "spend": 0,
+          "tacos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "units": 0,
+          "attributedSales": 0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "salesTrend": "no_activity",
+        "spendTrend": "new_spend",
+        "mappingState": "mapped",
+        "productTitle": "Sort Zebra",
+        "priorSevenDay": {
+          "acos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "sales": 0,
+          "spend": 0,
+          "tacos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "attributedSales": 0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "selectedRange": {
+          "acos": {
+            "state": "normal",
+            "value": 4.0
+          },
+          "sales": 200,
+          "spend": 200.0,
+          "tacos": {
+            "state": "normal",
+            "value": 1.0
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "trailingSevenDay": {
+          "acos": {
+            "state": "normal",
+            "value": 4.0
+          },
+          "sales": 200,
+          "spend": 200.0,
+          "tacos": {
+            "state": "normal",
+            "value": 1.0
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "trailingThirtyDay": {
+          "acos": {
+            "state": "normal",
+            "value": 4.0
+          },
+          "sales": 200,
+          "spend": 200.0,
+          "tacos": {
+            "state": "normal",
+            "value": 1.0
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "lastSalesActivityDate": "2026-07-16",
+        "lastAdSpendActivityDate": "2026-07-16",
+        "identityConflictEvidence": null,
+        "lastAttributedSaleActivityDate": "2026-07-16"
+      },
+      {
+        "sku": "SKU-SORT-MANGO",
+        "asin": "ASINSORTMG",
+        "brand": "BrandZ",
+        "flags": {
+          "salesDrop": false,
+          "spendSpike": false,
+          "mappingIncomplete": false,
+          "noAttributedSales": false,
+          "tacosDeterioration": false,
+          "salesGrowingSpendFalls": false,
+          "salesGrowingStableSpend": false
+        },
+        "category": null,
+        "imageUrl": "http://img/11.png",
+        "tacosBand": "critical",
+        "yesterday": {
+          "acos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "sales": 0,
+          "spend": 0,
+          "tacos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "units": 0,
+          "attributedSales": 0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "salesTrend": "no_activity",
+        "spendTrend": "new_spend",
+        "mappingState": "mapped",
+        "productTitle": "Sort Mango",
+        "priorSevenDay": {
+          "acos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "sales": 0,
+          "spend": 0,
+          "tacos": {
+            "state": "not_applicable",
+            "value": null
+          },
+          "attributedSales": 0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "selectedRange": {
+          "acos": {
+            "state": "normal",
+            "value": 6.0
+          },
+          "sales": 100,
+          "spend": 300.0,
+          "tacos": {
+            "state": "normal",
+            "value": 3.0
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "trailingSevenDay": {
+          "acos": {
+            "state": "normal",
+            "value": 6.0
+          },
+          "sales": 100,
+          "spend": 300.0,
+          "tacos": {
+            "state": "normal",
+            "value": 3.0
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "trailingThirtyDay": {
+          "acos": {
+            "state": "normal",
+            "value": 6.0
+          },
+          "sales": 100,
+          "spend": 300.0,
+          "tacos": {
+            "state": "normal",
+            "value": 3.0
+          },
+          "units": 1,
+          "attributedSales": 50.0,
+          "adsCoverageState": "complete",
+          "salesCoverageState": "complete"
+        },
+        "lastSalesActivityDate": "2026-07-16",
+        "lastAdSpendActivityDate": "2026-07-16",
+        "identityConflictEvidence": null,
+        "lastAttributedSaleActivityDate": "2026-07-16"
+      }
+    ],
+    "result": "success",
+    "summary": {
+      "acos": {
+        "state": "normal",
+        "value": 4.0
+      },
+      "tacos": {
+        "state": "normal",
+        "value": 1.0
+      },
+      "totalUnits": 3,
+      "skusGrowing": 0,
+      "adsLastRunAt": "2026-07-21T00:00:00+00:00",
+      "totalAdSpend": 600.0,
+      "skusDeclining": 0,
+      "salesLastRunAt": "2026-07-21T00:00:00+00:00",
+      "mappingCoverage": {
+        "bySpend": {
+          "mappedSpend": 600.0,
+          "unmappedSpend": 0,
+          "mappedSpendPct": 0.967741935483871,
+          "identityConflictSpend": 20.0
+        },
+        "bySkuCount": {
+          "mapped": 3,
+          "unmapped": 0,
+          "mappedPct": 0.75,
+          "identityConflict": 1
+        }
+      },
+      "adsLastRunStatus": "success",
+      "adsLatestDataDate": "2026-07-16",
+      "totalOrderedSales": 600,
+      "salesLastRunStatus": "success",
+      "catalogLastSyncedAt": "2026-07-15T00:00:00+00:00",
+      "salesLatestDataDate": "2026-07-18",
+      "totalAttributedSales": 150.0,
+      "adsLastRunRowsRejected": 0,
+      "salesLastRunRowsRejected": 0,
+      "adsLatestAcceptedCompleteDate": "2026-07-20",
+      "salesLatestAcceptedCompleteDate": "2026-07-20"
+    },
+    "dateRange": {
+      "asOf": "2026-07-20",
+      "clampReasons": [],
+      "requestedDateTo": "2026-07-20",
+      "wasRangeClamped": false,
+      "requestedDateFrom": "2026-07-14",
+      "adsHistoryStartsAt": "2026-06-01",
+      "adsEffectiveDateFrom": "2026-07-14",
+      "salesHistoryStartsAt": "2026-06-10",
+      "commonEffectiveDateTo": "2026-07-20",
+      "salesEffectiveDateFrom": "2026-07-14",
+      "commonEffectiveDateFrom": "2026-07-14"
+    },
+    "pagination": {
+      "limit": 10,
+      "offset": 0,
+      "hasMore": false,
+      "returnedSkuCount": 4,
+      "totalSkuCountBeforeFilters": 16,
+      "totalMatchingSkuCountAfterFilters": 4
+    },
+    "currencyCode": "INR"
+  },
+  "getDailyResponseSuccess": {
+    "sku": {
+      "catalogSku": "SKU-SORT-APPLE",
+      "catalogAsin": "ASINSORTAP",
+      "canonicalSku": "SKU-SORT-APPLE",
+      "productTitle": "Sort Apple",
+      "foundInCatalog": true,
+      "advertisedSkuEvidence": [
+        {
+          "advertisedSku": "SKU-SORT-APPLE",
+          "advertisedAsin": "ASINSORTAP"
+        }
+      ]
+    },
+    "days": [
+      {
+        "acos": {
+          "state": "not_applicable",
+          "value": null
+        },
+        "date": "2026-07-15",
+        "sales": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        },
+        "spend": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        },
+        "tacos": {
+          "state": "not_applicable",
+          "value": null
+        },
+        "units": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        },
+        "attributedSales": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        }
+      },
+      {
+        "acos": {
+          "state": "normal",
+          "value": 2.0
+        },
+        "date": "2026-07-16",
+        "sales": {
+          "value": 300,
+          "coverageState": "REPORTED_VALUE"
+        },
+        "spend": {
+          "value": 100.0,
+          "coverageState": "REPORTED_VALUE"
+        },
+        "tacos": {
+          "state": "normal",
+          "value": 0.3333333333333333
+        },
+        "units": {
+          "value": 1,
+          "coverageState": "REPORTED_VALUE"
+        },
+        "attributedSales": {
+          "value": 50.0,
+          "coverageState": "REPORTED_VALUE"
+        }
+      },
+      {
+        "acos": {
+          "state": "not_applicable",
+          "value": null
+        },
+        "date": "2026-07-17",
+        "sales": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        },
+        "spend": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        },
+        "tacos": {
+          "state": "not_applicable",
+          "value": null
+        },
+        "units": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        },
+        "attributedSales": {
+          "value": 0,
+          "coverageState": "CONFIRMED_ZERO"
+        }
+      }
+    ],
+    "result": "success"
+  },
+  "getDailyResponseIdentityConflict": {
+    "result": "identity_conflict",
+    "evidence": {
+      "adsRawSkus": [
+        "dup-1"
+      ],
+      "salesRawSkus": [],
+      "catalogRawSkus": [
+        "DUP-1",
+        "Dup-1"
+      ],
+      "costMasterRawSkus": []
+    },
+    "canonicalSku": "DUP-1"
+  }
+}

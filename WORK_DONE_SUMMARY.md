@@ -1420,3 +1420,42 @@ PR-preview build every prior round has triggered).
 
 **Next step (needs the founder):** review the new PR. **Not merged** — pending explicit approval, same as
 every prior round.
+
+## SKU Performance — PR #57 correction round: six correctness fixes closed, migration edited in place (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 7. Independent code review of PR #57 found six
+correctness blockers; this is that single ordinary correction round (same branch/PR, migration edited
+in place — it was never applied anywhere except a disposable local scratch database).
+
+**Six fixes closed:** (1) mixed-period TACOS — combined ratios now use
+`GREATEST(requestedFrom, salesHistoryStart, adsHistoryStart)` as the common comparable range instead of
+`LEAST()`, and a missing source is never coalesced to zero. (2) Sort order — `jsonb_agg` was silently
+re-sorting by `canonical_sku`; fixed with a stable `ROW_NUMBER()` assigned after the real sort. (3)
+Summary coverage truth — a new per-(window, source) coverage model
+(`complete`/`partial`/`before_history`/`source_not_complete`/`unknown`) replaces silent zero-coalescing;
+trends resolve to `no_comparable_baseline` (never a false `no_activity`) and no flag fires from an
+incomplete window. (4) Cross-source identity collisions — collision detection now spans all four
+sources (Catalog/Sales/Ads/Cost Master); a conflicted row suppresses all metrics and carries
+`identityConflictEvidence`; the daily RPC short-circuits before any combined series. (5) Strict
+validation — SQL gained a 400-day ceiling on the summary RPC and marketplace-local (not
+`CURRENT_DATE+1`) future-date rejection; TypeScript query-param parsing is now strict (rejects
+`"10abc"`, decimals, out-of-range instead of silently clamping/defaulting), and the daily route's
+double `decodeURIComponent()` call was removed. (6) Truthful source health — `salesLatestDataDate` is
+now honestly separated from `salesLatestAcceptedCompleteDate` (only accepted, `rows_rejected=0` runs),
+and the health classifier maps every run status conservatively (never reports partial data as healthy).
+
+**Narrow contract cleanup:** Cost Master no longer leaks a workspace-scoped-only SKU into every
+marketplace; `mappingIncomplete` no longer includes `not_applicable`; `stale_metadata`'s MVP deferral is
+now documented in the migration header; summary ACOS/TACOS are `{value, state}` objects.
+
+**Performance:** the 500-SKU/90-day benchmark measured ~12.4s; `auto_explain` profiling found ~11s of
+that was Postgres JIT compilation (not execution) of the function's large plan tree. Both RPCs now set
+`jit = off` (a targeted per-function setting, no index/materialized-table change). Three warm runs
+after the fix: **1028ms / 909ms / 893ms (median 909ms)**.
+
+**Tests:** SQL sequential suite rewritten with fixtures/assertions for every fix (all pass). TypeScript:
+225/225 pass, `npx tsc --noEmit` 0 errors, `npx eslint` 0 errors on every changed file, `npm run build`
+succeeded (same 2 routes, no new UI).
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.

@@ -1,81 +1,101 @@
--- SKU Performance P1-B, migration 1 of 1: the two read-only, SECURITY
--- DEFINER RPCs this feature's entire data-access surface goes through.
+-- SKU Performance P1-B: the two read-only, SECURITY DEFINER RPCs this
+-- feature's entire data-access surface goes through, plus two small
+-- internal helper functions.
 --
--- Implements the locked contract in SKU_DAILY_SALES_SPEND_IMPLEMENTATION_PLAN.md
--- (Update 5) and SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md exactly: the canonical
--- cross-source SKU universe (Update 5 Correction 3), the coverage-state model
--- with its corrected five-state deterministic order (Update 5 Correction 1),
--- the selected-date-range + as-of contract (Update 5 Correction 2), and the
--- pagination/summary-count separation (Update 5 Correction 4). Follows the
--- Pincode Checker P0-A/P0-B convention: narrow, SECURITY DEFINER, explicit
--- search_path, EXECUTE revoked from PUBLIC and granted only to service_role,
--- every parameter validated before any query, no generic RPC passthrough.
+-- Amended 2026-07-23 -- P1-B correction round ("Fix 1-6" + narrow contract
+-- cleanup), closing six correctness blockers an independent code review
+-- found. This migration has never been applied anywhere except a
+-- disposable local scratch database, so it is edited IN PLACE rather than
+-- superseded by a new migration file -- there is no production history to
+-- preserve. Full list of what changed and why: BRAHMASTRA_MASTER_TRACKER.md
+-- sec23 update 7.
 --
--- No materialized table (Implementation Plan sec1 -- not P1-B scope). No
--- write of any kind to any existing source table. Both RPCs are pure reads.
+-- Follows the Pincode Checker P0-A/P0-B convention: narrow, SECURITY
+-- DEFINER, explicit search_path, EXECUTE revoked from PUBLIC and granted
+-- only to service_role, every parameter validated before any query, no
+-- generic RPC passthrough. No materialized table. No write of any kind to
+-- any existing source table. All four functions below are pure reads.
 --
--- Implementation decisions made here that the locked contract left open
--- (recorded so they are never silently assumed elsewhere):
--- 1. internal_ads_advertised_product_daily_rows has NO marketplace_id column
---    of its own (confirmed directly against migrations 039/049) -- Ads rows
---    are scoped to a marketplace only indirectly, via
+-- ============================================================
+-- Implementation decisions recorded here (never silently assumed):
+-- ============================================================
+-- 1. internal_ads_advertised_product_daily_rows has NO marketplace_id
+--    column of its own -- Ads rows are scoped via
 --    amazon_ads_profiles.profile_id -> amazon_ads_profiles.marketplace_id.
---    Every Ads-side query below joins through an `ads_profiles` CTE for
---    this reason, never assumes an ads_rows.marketplace_id column.
--- 2. internal_data_refresh_runs.profile_id is only ever populated for Ads
---    sources (confirmed: sync-business-reports.ts never sets it) and its
---    marketplace_id (added by migration 053) is not confirmed to be set by
---    the Ads sync path -- so Ads coverage-run matching filters by
---    workspace_id + profile_id (resolved via amazon_ads_profiles for the
---    requested workspace/marketplace) and only ALSO requires marketplace_id
---    equality when that column happens to be non-null on the run row,
---    rather than assuming it is always populated. Business Report coverage-
---    run matching filters by workspace_id + marketplace_id directly (that
---    column was added specifically for this source, migration 053).
--- 2. Correction 1's five-state coverage model requires the *exact* Ads
---    refresh-run source name `ads_advertised_product` -- confirmed to be
---    one of the literal REPORT_DEFS source strings sync-ads-reports.ts
---    writes (not `ads_api_auto`, which is the unrelated row-level `source`
---    column on internal_ads_advertised_product_daily_rows itself).
--- 3. Product Spec sec3's "Mapping coverage" card (a SKU-count ratio among
---    SKUs with spend) and Implementation Plan sec2's "spend-weighted mapping
---    coverage breakdown" (a spend-$ ratio, Data Audit sec3b's methodology)
---    are two different, both-locked metrics -- this RPC returns both
---    (`mappingCoverage.bySkuCount` and `.bySpend`) rather than picking one
---    and silently dropping the other document's requirement.
--- 4. "Mapping incomplete" (Product Spec sec6.4#8) is implemented literally
---    as `mapping_state <> 'mapped'`, which does include `not_applicable`
---    rows (SKUs with no ad-spend history at all) -- exactly as the locked
---    truth table states, not narrowed to only `unmapped`/`identity_conflict`.
--- 5. The driving SKU universe (Update 5 Correction 3) is the ALL-TIME
---    canonical union across all four sources for the workspace+marketplace
---    scope, never limited to the requested date range -- a SKU with zero
---    activity in the selected range must still appear as `no_activity`/
---    `no_spend`, not disappear from the table.
--- 6. Source-health classification (`salesSourceState`/`adsSourceState`/
---    `catalogSourceState`, the six-value vocabulary from
---    brahmastra-data-health.ts's SourceHealthStatus) is deliberately NOT
---    computed inside this RPC. That module's real classifier
---    (evaluateSyncedSource) is a private, non-exported helper tightly
---    coupled to connection/OAuth-error inspection this RPC has no access
---    to, and duplicating a second copy of that logic in SQL would be the
---    exact kind of reinvention the Product Spec says to avoid. Instead this
---    RPC returns the raw facts a classifier needs (latest complete date,
---    most recent refresh-run status, most recent run timestamp) and the
---    thin TypeScript route layer (lib/sku-performance/source-health.ts)
---    derives the *State fields from those facts, reusing the SAME
---    SourceHealthStatus vocabulary type. This is recorded as a known,
---    intentional scope limitation: the TypeScript classifier does not
---    attempt to distinguish `auth_required`/`rate_limited` the way
---    brahmastra-data-health.ts's connection-aware version can -- see
---    lib/sku-performance/source-health.ts's own header comment.
+-- 2. Ads-side internal_data_refresh_runs matching filters by workspace_id +
+--    profile_id (resolved via amazon_ads_profiles), and only ALSO requires
+--    marketplace_id equality when that column is non-null on the run row.
+--    Business Report matching filters by workspace_id + marketplace_id
+--    directly.
+-- 3. Product Spec's "Mapping coverage" card (SKU-count ratio) and
+--    Implementation Plan's "spend-weighted mapping coverage" (spend-$
+--    ratio) are two different, both-locked metrics -- returned as both
+--    `mappingCoverage.bySkuCount` and `.bySpend`.
+-- 4. `stale_metadata` (from the Data Audit's mapping-state vocabulary) is
+--    DELIBERATELY NOT implemented anywhere in this migration -- the audit
+--    itself found it "not currently provable per-row." This is an explicit
+--    MVP deferral, not an oversight: `mapping_state` only ever takes the
+--    values mapped/unmapped/identity_conflict/not_applicable.
+-- 5. The driving SKU universe is the ALL-TIME canonical union of
+--    Catalog + Business Report + Ads for the workspace+marketplace scope.
+--    internal_sku_cost_master has NO marketplace_id column at all (it is
+--    workspace-scoped only) and is therefore NEVER unioned into the
+--    universe directly -- doing so would leak a cost-master-only SKU into
+--    every marketplace the workspace has, regardless of whether that SKU
+--    is actually sold/advertised there. Cost Master only ENRICHES a
+--    canonical SKU already present via Catalog/Sales/Ads.
+-- 6. Source-health *State classification (healthy/stale/failed/
+--    not_configured/auth_required/rate_limited) is computed in TypeScript
+--    (lib/sku-performance/source-health.ts), not SQL -- this RPC returns
+--    only the raw facts a classifier needs. See that file's header comment
+--    for why, and for the recorded scope limitation that it never returns
+--    auth_required/rate_limited.
+-- 7. (Fix 6) "Latest complete date" was a mislabeled fact in the previous
+--    round -- it was actually just MAX(report_date), the latest date ANY
+--    row exists for, regardless of whether the refresh run that produced
+--    it was ever accepted as fully successful. This round separates that
+--    into `salesLatestDataDate`/`adsLatestDataDate` (the old, honestly
+--    relabeled fact) and `salesLatestAcceptedCompleteDate`/
+--    `adsLatestAcceptedCompleteDate` (MAX(date_to) among accepted
+--    successful runs only -- the fact actually needed for a trustworthy
+--    staleness/health judgement).
+-- 8. (Fix 1 + Fix 3) Per-(window, source) coverage is classified into
+--    complete/partial/before_history/source_not_complete/unknown -- see
+--    `_sku_perf_window_coverage()` and `_sku_perf_rollup_state()` below.
+--    A combined ratio (TACOS specifically -- Ads spend over Sales revenue)
+--    is only ever computed from sums taken over the two sources' COMMON
+--    comparable sub-range within a window, and only when both sources'
+--    coverage for that window is `complete` -- never from each source's
+--    own, potentially-longer, individually-clamped range. A cross-source
+--    metric where either source is entirely missing history is `unknown`,
+--    never silently computed as if the missing source were zero.
+-- 9. (Fix 4) Canonical-collision detection combines raw-SKU evidence from
+--    ALL FOUR sources (Catalog, Business Report, Ads, Cost Master) into one
+--    set per canonical key -- a collision anywhere in that combined set
+--    (same-source or cross-source) makes the row `identity_conflict`. An
+--    identity_conflict row's numeric fields (every window, every trend,
+--    every flag except mappingIncomplete) are suppressed entirely (NULL)
+--    rather than computed from what might be two distinct real products'
+--    merged data -- it carries `identityConflictEvidence` instead.
+-- 10. (Fix 5) Future-date rejection uses the requesting marketplace's own
+--     Ads-profile timezone when one is configured (an exact marketplace-
+--     local "today"); when no timezone is resolvable, it fails
+--     conservatively -- CURRENT_DATE with no grace day, not
+--     CURRENT_DATE + 1 as the previous round allowed.
+-- 11. (Performance) Both entry-point RPCs set `jit = off`. Their plan-tree
+--     cost estimate (from the wide per-window/per-source CASE and
+--     jsonb_build_object expressions repeated per candidate row) crosses
+--     Postgres's JIT cost thresholds, triggering full compilation of
+--     ~200 expression functions on every call. On the representative
+--     500-SKU/90-day benchmark that compilation alone cost ~11s of a
+--     ~12.4s call while actual execution took ~1.1s -- JIT never pays back
+--     its own compilation cost for a query this shape runs once per call.
+--     Disabling it per-function (not server-wide) cut the same call to
+--     ~0.95s with no plan-shape or index change.
 
 -- ============================================================
--- 0. Supporting index
+-- 0. Supporting indexes
 -- ============================================================
--- Speeds up the CONFIRMED_ZERO / SOURCE_NOT_COMPLETE range-overlap lookups
--- both RPCs perform against internal_data_refresh_runs. Partial: only the
--- rows that can ever satisfy a CONFIRMED_ZERO check are indexed.
 CREATE INDEX IF NOT EXISTS internal_data_refresh_runs_success_coverage_idx
   ON public.internal_data_refresh_runs (workspace_id, source, date_from, date_to)
   WHERE status = 'success' AND rows_rejected = 0;
@@ -84,7 +104,117 @@ CREATE INDEX IF NOT EXISTS internal_data_refresh_runs_any_coverage_idx
   ON public.internal_data_refresh_runs (workspace_id, source, date_from, date_to);
 
 -- ============================================================
--- 1. get_sku_performance_summary
+-- 1. Internal helper: per-(window, source) coverage rollup
+-- ============================================================
+-- Classifies ONE date range for ONE source (never per-SKU -- coverage is a
+-- source-level fact) into day counts plus the list of "problem dates"
+-- (days that are neither before_history nor confirmed_zero -- i.e. days
+-- whose truth this source cannot yet prove one way or the other without a
+-- per-SKU real row). Called once per (window, source) pair by both RPCs
+-- below (10 calls per get_sku_performance_summary invocation, 2 per
+-- get_sku_performance_daily invocation) -- NOT once per SKU, which is what
+-- keeps this affordable at volume.
+--
+-- p_source is the literal internal_data_refresh_runs.source value
+-- ('business_report_sp_api' or 'ads_advertised_product'); p_ads_profile_ids
+-- is only consulted when p_source = 'ads_advertised_product'.
+CREATE OR REPLACE FUNCTION public._sku_perf_window_coverage(
+  p_workspace_id    uuid,
+  p_marketplace_id  text,
+  p_window_from     date,
+  p_window_to       date,
+  p_history_start   date,
+  p_source          text,
+  p_ads_profile_ids text[]
+)
+RETURNS TABLE(
+  total_days          integer,
+  before_history_days integer,
+  not_complete_days   integer,
+  unknown_days        integer,
+  problem_dates       date[]
+)
+LANGUAGE sql STABLE
+SET search_path = public, pg_temp
+AS $$
+  WITH ds AS (
+    SELECT generate_series(p_window_from, p_window_to, interval '1 day')::date AS d
+  ),
+  runs AS (
+    SELECT r.date_from, r.date_to, r.status, r.rows_rejected
+    FROM public.internal_data_refresh_runs r
+    WHERE r.workspace_id = p_workspace_id
+      AND r.source = p_source
+      AND (
+        (p_source = 'business_report_sp_api' AND r.marketplace_id = p_marketplace_id)
+        OR (
+          p_source = 'ads_advertised_product'
+          AND r.profile_id = ANY (COALESCE(p_ads_profile_ids, ARRAY[]::text[]))
+          AND (r.marketplace_id IS NULL OR r.marketplace_id = p_marketplace_id)
+        )
+      )
+  ),
+  classified AS (
+    SELECT
+      ds.d,
+      (p_history_start IS NOT NULL AND ds.d < p_history_start) AS is_before_history,
+      EXISTS (SELECT 1 FROM runs r WHERE r.date_from <= ds.d AND r.date_to >= ds.d AND r.status = 'success' AND r.rows_rejected = 0) AS is_confirmed_zero,
+      EXISTS (SELECT 1 FROM runs r WHERE r.date_from <= ds.d AND r.date_to >= ds.d) AS has_any_run
+    FROM ds
+  )
+  SELECT
+    count(*)::integer AS total_days,
+    count(*) FILTER (WHERE is_before_history)::integer AS before_history_days,
+    count(*) FILTER (WHERE NOT is_before_history AND NOT is_confirmed_zero AND has_any_run)::integer AS not_complete_days,
+    count(*) FILTER (WHERE NOT is_before_history AND NOT is_confirmed_zero AND NOT has_any_run)::integer AS unknown_days,
+    COALESCE(array_agg(d) FILTER (WHERE NOT is_before_history AND NOT is_confirmed_zero), ARRAY[]::date[]) AS problem_dates
+  FROM classified;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public._sku_perf_window_coverage(uuid, text, date, date, date, text, text[]) FROM PUBLIC;
+
+-- ============================================================
+-- 2. Internal helper: coverage-state rollup (source-level or per-SKU)
+-- ============================================================
+-- Given a window's day-count breakdown (from _sku_perf_window_coverage)
+-- and how many of that window's "problem dates" a specific SKU (or, for a
+-- workspace-wide aggregate, the whole scope) individually has a real
+-- reported row for, returns exactly one of:
+--   'before_history'    -- the entire window predates this source's history
+--   'complete'           -- every problem date is individually resolved
+--   'source_not_complete' -- every unresolved problem date had a covering
+--                            attempt, none of which fully succeeded
+--   'unknown'            -- every unresolved problem date has no covering
+--                            evidence at all
+--   'partial'             -- a mix: some problem dates resolved, some not,
+--                            or the unresolved ones are a mix of the two
+--                            causes above
+CREATE OR REPLACE FUNCTION public._sku_perf_rollup_state(
+  p_total_days          integer,
+  p_before_history_days integer,
+  p_not_complete_days   integer,
+  p_unknown_days        integer,
+  p_missing_count       bigint,
+  p_problem_count       bigint
+)
+RETURNS text
+LANGUAGE sql IMMUTABLE
+AS $$
+  SELECT CASE
+    WHEN p_before_history_days = p_total_days THEN 'before_history'
+    WHEN p_missing_count = 0 THEN 'complete'
+    WHEN p_missing_count = p_problem_count THEN
+      CASE
+        WHEN p_unknown_days > 0 AND p_not_complete_days = 0 THEN 'unknown'
+        WHEN p_not_complete_days > 0 AND p_unknown_days = 0 THEN 'source_not_complete'
+        ELSE 'partial'
+      END
+    ELSE 'partial'
+  END;
+$$;
+
+-- ============================================================
+-- 3. get_sku_performance_summary
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.get_sku_performance_summary(
   p_workspace_id             uuid,
@@ -111,12 +241,25 @@ RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
+-- Performance (P1-B correction round): this function's plan-tree cost
+-- estimate (driven by the wide per-window/per-source CASE and
+-- jsonb_build_object expressions repeated over every candidate row) easily
+-- crosses jit_above_cost/jit_optimize_above_cost, triggering full JIT
+-- compilation of ~200 expression functions on every call. Measured on the
+-- representative 500-SKU/90-day benchmark, that JIT compilation alone
+-- accounted for ~11s of a ~12.4s call (Optimization + Emission phases),
+-- while actual plan execution finished in ~1.1s -- the query never runs
+-- long enough per call for JIT's compiled code to pay back its own
+-- compilation cost. Disabling JIT for this function specifically (not
+-- globally) turned ~12.4s into ~0.95s with no plan-shape or index change.
+SET jit = off
 AS $$
 DECLARE
   MAX_MARKETPLACE_LEN CONSTANT integer := 40;
   MAX_FILTER_LEN       CONSTANT integer := 200;
   MAX_LIMIT            CONSTANT integer := 500;
   MAX_OFFSET           CONSTANT integer := 1000000;
+  MAX_RANGE_DAYS       CONSTANT integer := 400;
   FLOOR_SALES          CONSTANT numeric := 1000;
   FLOOR_SPEND          CONSTANT numeric := 200;
   SALES_GROWTH_RATIO   CONSTANT numeric := 1.2;
@@ -141,20 +284,32 @@ DECLARE
   v_warning_tacos_pct       numeric := 15;
   v_critical_tacos_pct      numeric := 25;
 
+  v_marketplace_timezone text;
+  v_today                date;
+
   v_currency_count integer;
   v_currency_code   text;
+  v_ads_profile_ids text[];
 
   v_sales_history_starts_at date;
   v_ads_history_starts_at   date;
-  v_effective_date_from     date;
+  v_sales_effective_date_from date;
+  v_ads_effective_date_from   date;
+  v_common_effective_date_from date;
+  v_common_effective_date_to   date;
+  v_clamp_reasons text[];
 
-  v_sales_latest_complete_date date;
-  v_ads_latest_complete_date   date;
+  v_sales_latest_data_date            date;
+  v_ads_latest_data_date              date;
+  v_sales_latest_accepted_complete_date date;
+  v_ads_latest_accepted_complete_date   date;
   v_catalog_last_synced_at     timestamptz;
   v_sales_last_run_status      text;
   v_sales_last_run_at          timestamptz;
+  v_sales_last_run_rows_rejected integer;
   v_ads_last_run_status        text;
   v_ads_last_run_at            timestamptz;
+  v_ads_last_run_rows_rejected integer;
 
   v_result jsonb;
 BEGIN
@@ -171,13 +326,10 @@ BEGIN
   IF p_date_from > p_date_to THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'date_from_after_date_to');
   END IF;
-  -- Coarse UTC-based future-date guard, pending the named timezone
-  -- verification checkpoint (Implementation Plan sec5/sec7, Correction 8) --
-  -- not a claim that this is marketplace-timezone-exact.
-  IF p_date_to > CURRENT_DATE + 1 THEN
-    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'date_to_in_future');
+  IF (p_date_to - p_date_from) > MAX_RANGE_DAYS THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'range_too_large');
   END IF;
-  IF p_as_of IS NULL OR p_as_of > CURRENT_DATE + 1 THEN
+  IF p_as_of IS NULL THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_as_of');
   END IF;
   IF p_limit IS NULL OR p_limit <= 0 OR p_limit > MAX_LIMIT THEN
@@ -202,6 +354,23 @@ BEGIN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'unsupported_sort');
   END IF;
 
+  -- ---------- Fix 5: marketplace-local "today", fail conservative ----------
+  SELECT ap.timezone INTO v_marketplace_timezone
+  FROM public.amazon_ads_profiles ap
+  WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id
+    AND ap.timezone IS NOT NULL
+  LIMIT 1;
+  v_today := CASE WHEN v_marketplace_timezone IS NOT NULL
+    THEN (now() AT TIME ZONE v_marketplace_timezone)::date
+    ELSE CURRENT_DATE
+  END;
+  IF p_date_to > v_today THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'date_to_in_future');
+  END IF;
+  IF p_as_of > v_today THEN
+    RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'invalid_as_of');
+  END IF;
+
   -- ---------- Threshold lookup (reuse internal_brahmastra_thresholds, never reinvented) ----------
   SELECT t.min_ad_spend_for_action, t.warning_tacos_pct, t.critical_tacos_pct
     INTO v_min_ad_spend_for_action, v_warning_tacos_pct, v_critical_tacos_pct
@@ -212,65 +381,168 @@ BEGIN
   v_warning_tacos_pct := COALESCE(v_warning_tacos_pct, 15);
   v_critical_tacos_pct := COALESCE(v_critical_tacos_pct, 25);
 
-  -- ---------- Currency contract (Correction 8): reject a multi-currency scope outright ----------
-  SELECT count(DISTINCT ap.currency_code), min(ap.currency_code)
-    INTO v_currency_count, v_currency_code
+  -- ---------- Currency contract: reject a multi-currency scope outright ----------
+  SELECT count(DISTINCT ap.currency_code), min(ap.currency_code), array_agg(ap.profile_id)
+    INTO v_currency_count, v_currency_code, v_ads_profile_ids
   FROM public.amazon_ads_profiles ap
-  WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id
-    AND ap.currency_code IS NOT NULL;
+  WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id;
 
   IF v_currency_count > 1 THEN
     RETURN jsonb_build_object('result', 'currency_mismatch');
   END IF;
+  v_ads_profile_ids := COALESCE(v_ads_profile_ids, ARRAY[]::text[]);
 
-  -- ---------- Date-range clamp evidence (Update 5 Correction 2) ----------
+  -- ---------- Fix 1: per-source history + effective/common range ----------
   SELECT min(s.report_date) INTO v_sales_history_starts_at
   FROM public.internal_business_report_sku_sales_traffic s
   WHERE s.workspace_id = p_workspace_id AND s.marketplace_id = p_marketplace_id;
 
   SELECT min(a.report_date) INTO v_ads_history_starts_at
   FROM public.internal_ads_advertised_product_daily_rows a
-  JOIN public.amazon_ads_profiles ap ON ap.profile_id = a.profile_id
-  WHERE a.workspace_id = p_workspace_id AND ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id;
+  WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids);
 
-  v_effective_date_from := GREATEST(
-    p_date_from,
-    LEAST(COALESCE(v_sales_history_starts_at, p_date_from), COALESCE(v_ads_history_starts_at, p_date_from))
-  );
+  v_sales_effective_date_from := GREATEST(p_date_from, COALESCE(v_sales_history_starts_at, p_date_from));
+  v_ads_effective_date_from := GREATEST(p_date_from, COALESCE(v_ads_history_starts_at, p_date_from));
 
-  -- ---------- Source-level freshness facts (raw; *State classification happens in TypeScript) ----------
-  SELECT max(s.report_date) INTO v_sales_latest_complete_date
+  -- Fix 1: never coalesce an entirely-missing source into the common range
+  -- as though it existed -- commonEffectiveDateFrom/To are NULL when either
+  -- source has no history at all.
+  IF v_sales_history_starts_at IS NULL OR v_ads_history_starts_at IS NULL THEN
+    v_common_effective_date_from := NULL;
+    v_common_effective_date_to := NULL;
+  ELSE
+    v_common_effective_date_from := GREATEST(p_date_from, v_sales_history_starts_at, v_ads_history_starts_at);
+    v_common_effective_date_to := p_date_to;
+  END IF;
+
+  v_clamp_reasons := array_remove(ARRAY[
+    CASE WHEN v_sales_effective_date_from <> p_date_from THEN 'requested_start_before_sales_history' END,
+    CASE WHEN v_ads_effective_date_from <> p_date_from THEN 'requested_start_before_ads_history' END,
+    CASE WHEN v_sales_history_starts_at IS NULL THEN 'sales_source_has_no_history_at_all' END,
+    CASE WHEN v_ads_history_starts_at IS NULL THEN 'ads_source_has_no_history_at_all' END
+  ], NULL);
+
+  -- ---------- Fix 6: truthful source freshness facts ----------
+  SELECT max(s.report_date) INTO v_sales_latest_data_date
   FROM public.internal_business_report_sku_sales_traffic s
   WHERE s.workspace_id = p_workspace_id AND s.marketplace_id = p_marketplace_id;
 
-  SELECT max(a.report_date) INTO v_ads_latest_complete_date
+  SELECT max(a.report_date) INTO v_ads_latest_data_date
   FROM public.internal_ads_advertised_product_daily_rows a
-  JOIN public.amazon_ads_profiles ap ON ap.profile_id = a.profile_id
-  WHERE a.workspace_id = p_workspace_id AND ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id;
+  WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids);
+
+  SELECT max(r.date_to) INTO v_sales_latest_accepted_complete_date
+  FROM public.internal_data_refresh_runs r
+  WHERE r.workspace_id = p_workspace_id AND r.marketplace_id = p_marketplace_id
+    AND r.source = 'business_report_sp_api' AND r.status = 'success' AND r.rows_rejected = 0;
+
+  SELECT max(r.date_to) INTO v_ads_latest_accepted_complete_date
+  FROM public.internal_data_refresh_runs r
+  WHERE r.workspace_id = p_workspace_id AND r.source = 'ads_advertised_product'
+    AND r.profile_id = ANY (v_ads_profile_ids)
+    AND (r.marketplace_id IS NULL OR r.marketplace_id = p_marketplace_id)
+    AND r.status = 'success' AND r.rows_rejected = 0;
 
   SELECT max(li.last_synced_at) INTO v_catalog_last_synced_at
   FROM public.amazon_listing_items li
   WHERE li.workspace_id = p_workspace_id AND li.marketplace_id = p_marketplace_id;
 
-  SELECT r.status, r.started_at INTO v_sales_last_run_status, v_sales_last_run_at
+  SELECT r.status, r.started_at, r.rows_rejected INTO v_sales_last_run_status, v_sales_last_run_at, v_sales_last_run_rows_rejected
   FROM public.internal_data_refresh_runs r
   WHERE r.workspace_id = p_workspace_id AND r.marketplace_id = p_marketplace_id
     AND r.source = 'business_report_sp_api'
   ORDER BY r.started_at DESC LIMIT 1;
 
-  SELECT r.status, r.started_at INTO v_ads_last_run_status, v_ads_last_run_at
+  SELECT r.status, r.started_at, r.rows_rejected INTO v_ads_last_run_status, v_ads_last_run_at, v_ads_last_run_rows_rejected
   FROM public.internal_data_refresh_runs r
   WHERE r.workspace_id = p_workspace_id AND r.source = 'ads_advertised_product'
-    AND r.profile_id IN (SELECT ap.profile_id FROM public.amazon_ads_profiles ap
-                          WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id)
+    AND r.profile_id = ANY (v_ads_profile_ids)
     AND (r.marketplace_id IS NULL OR r.marketplace_id = p_marketplace_id)
   ORDER BY r.started_at DESC LIMIT 1;
 
   -- ---------- Main aggregation ----------
-  WITH ads_profiles AS (
-    SELECT ap.profile_id, ap.currency_code
-    FROM public.amazon_ads_profiles ap
-    WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id
+  WITH window_specs (window_name, window_from, window_to) AS (
+    VALUES
+      ('range', p_date_from, p_date_to),
+      ('yesterday', p_as_of, p_as_of),
+      ('t7', p_as_of - 6, p_as_of),
+      ('prior7', p_as_of - 13, p_as_of - 7),
+      ('t30', p_as_of - 29, p_as_of)
+  ),
+  source_specs (source_key, refresh_run_source, history_start) AS (
+    VALUES
+      ('sales', 'business_report_sp_api', v_sales_history_starts_at),
+      ('ads', 'ads_advertised_product', v_ads_history_starts_at)
+  ),
+  window_coverage_raw AS (
+    SELECT ws.window_name, ss.source_key, wc.*
+    FROM window_specs ws
+    CROSS JOIN source_specs ss
+    CROSS JOIN LATERAL public._sku_perf_window_coverage(
+      p_workspace_id, p_marketplace_id, ws.window_from, ws.window_to,
+      ss.history_start, ss.refresh_run_source, v_ads_profile_ids
+    ) wc
+  ),
+  wc AS (
+    SELECT
+      max(total_days) FILTER (WHERE window_name = 'range' AND source_key = 'sales') AS sel_sales_total,
+      max(before_history_days) FILTER (WHERE window_name = 'range' AND source_key = 'sales') AS sel_sales_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 'range' AND source_key = 'sales') AS sel_sales_nc,
+      max(unknown_days) FILTER (WHERE window_name = 'range' AND source_key = 'sales') AS sel_sales_unk,
+      max(problem_dates) FILTER (WHERE window_name = 'range' AND source_key = 'sales') AS sel_sales_problem,
+      max(total_days) FILTER (WHERE window_name = 'range' AND source_key = 'ads') AS sel_ads_total,
+      max(before_history_days) FILTER (WHERE window_name = 'range' AND source_key = 'ads') AS sel_ads_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 'range' AND source_key = 'ads') AS sel_ads_nc,
+      max(unknown_days) FILTER (WHERE window_name = 'range' AND source_key = 'ads') AS sel_ads_unk,
+      max(problem_dates) FILTER (WHERE window_name = 'range' AND source_key = 'ads') AS sel_ads_problem,
+
+      max(total_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'sales') AS yst_sales_total,
+      max(before_history_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'sales') AS yst_sales_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'sales') AS yst_sales_nc,
+      max(unknown_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'sales') AS yst_sales_unk,
+      max(problem_dates) FILTER (WHERE window_name = 'yesterday' AND source_key = 'sales') AS yst_sales_problem,
+      max(total_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'ads') AS yst_ads_total,
+      max(before_history_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'ads') AS yst_ads_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'ads') AS yst_ads_nc,
+      max(unknown_days) FILTER (WHERE window_name = 'yesterday' AND source_key = 'ads') AS yst_ads_unk,
+      max(problem_dates) FILTER (WHERE window_name = 'yesterday' AND source_key = 'ads') AS yst_ads_problem,
+
+      max(total_days) FILTER (WHERE window_name = 't7' AND source_key = 'sales') AS t7_sales_total,
+      max(before_history_days) FILTER (WHERE window_name = 't7' AND source_key = 'sales') AS t7_sales_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 't7' AND source_key = 'sales') AS t7_sales_nc,
+      max(unknown_days) FILTER (WHERE window_name = 't7' AND source_key = 'sales') AS t7_sales_unk,
+      max(problem_dates) FILTER (WHERE window_name = 't7' AND source_key = 'sales') AS t7_sales_problem,
+      max(total_days) FILTER (WHERE window_name = 't7' AND source_key = 'ads') AS t7_ads_total,
+      max(before_history_days) FILTER (WHERE window_name = 't7' AND source_key = 'ads') AS t7_ads_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 't7' AND source_key = 'ads') AS t7_ads_nc,
+      max(unknown_days) FILTER (WHERE window_name = 't7' AND source_key = 'ads') AS t7_ads_unk,
+      max(problem_dates) FILTER (WHERE window_name = 't7' AND source_key = 'ads') AS t7_ads_problem,
+
+      max(total_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'sales') AS p7_sales_total,
+      max(before_history_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'sales') AS p7_sales_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'sales') AS p7_sales_nc,
+      max(unknown_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'sales') AS p7_sales_unk,
+      max(problem_dates) FILTER (WHERE window_name = 'prior7' AND source_key = 'sales') AS p7_sales_problem,
+      max(total_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'ads') AS p7_ads_total,
+      max(before_history_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'ads') AS p7_ads_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'ads') AS p7_ads_nc,
+      max(unknown_days) FILTER (WHERE window_name = 'prior7' AND source_key = 'ads') AS p7_ads_unk,
+      max(problem_dates) FILTER (WHERE window_name = 'prior7' AND source_key = 'ads') AS p7_ads_problem,
+
+      max(total_days) FILTER (WHERE window_name = 't30' AND source_key = 'sales') AS t30_sales_total,
+      max(before_history_days) FILTER (WHERE window_name = 't30' AND source_key = 'sales') AS t30_sales_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 't30' AND source_key = 'sales') AS t30_sales_nc,
+      max(unknown_days) FILTER (WHERE window_name = 't30' AND source_key = 'sales') AS t30_sales_unk,
+      max(problem_dates) FILTER (WHERE window_name = 't30' AND source_key = 'sales') AS t30_sales_problem,
+      max(total_days) FILTER (WHERE window_name = 't30' AND source_key = 'ads') AS t30_ads_total,
+      max(before_history_days) FILTER (WHERE window_name = 't30' AND source_key = 'ads') AS t30_ads_bh,
+      max(not_complete_days) FILTER (WHERE window_name = 't30' AND source_key = 'ads') AS t30_ads_nc,
+      max(unknown_days) FILTER (WHERE window_name = 't30' AND source_key = 'ads') AS t30_ads_unk,
+      max(problem_dates) FILTER (WHERE window_name = 't30' AND source_key = 'ads') AS t30_ads_problem
+    FROM window_coverage_raw
+  ),
+  ads_profiles AS (
+    SELECT unnest(v_ads_profile_ids) AS profile_id
   ),
   catalog_rows AS (
     SELECT upper(btrim(li.sku)) AS canonical_sku, li.sku AS raw_sku,
@@ -290,10 +562,12 @@ BEGIN
     SELECT upper(btrim(a.advertised_sku)) AS canonical_sku, a.advertised_sku AS raw_sku,
            a.advertised_asin, a.report_date, a.spend, a.sales AS attributed_sales
     FROM public.internal_ads_advertised_product_daily_rows a
-    JOIN ads_profiles ap ON ap.profile_id = a.profile_id
-    WHERE a.workspace_id = p_workspace_id
+    WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids)
       AND a.advertised_sku IS NOT NULL AND btrim(a.advertised_sku) <> ''
   ),
+  -- Fix: narrow contract cleanup #1 -- Cost Master has no marketplace_id
+  -- and must never independently introduce a canonical SKU into the
+  -- marketplace-scoped universe. It is joined for enrichment only, below.
   cost_rows AS (
     SELECT upper(btrim(c.sku)) AS canonical_sku, c.sku AS raw_sku, c.category
     FROM public.internal_sku_cost_master c
@@ -304,7 +578,6 @@ BEGIN
     SELECT canonical_sku FROM catalog_rows
     UNION SELECT canonical_sku FROM sales_rows
     UNION SELECT canonical_sku FROM ads_rows
-    UNION SELECT canonical_sku FROM cost_rows
   ),
   catalog_grouped AS (
     SELECT canonical_sku,
@@ -348,127 +621,205 @@ BEGIN
            COALESCE(sd.report_date, ad.report_date) AS report_date,
            COALESCE(sd.ordered_sales, 0) AS ordered_sales,
            COALESCE(sd.units_ordered, 0) AS units_ordered,
+           (sd.canonical_sku IS NOT NULL) AS sales_has_row,
            COALESCE(ad.spend, 0) AS spend,
-           COALESCE(ad.attributed_sales, 0) AS attributed_sales
+           COALESCE(ad.attributed_sales, 0) AS attributed_sales,
+           (ad.canonical_sku IS NOT NULL) AS ads_has_row
     FROM sales_daily sd
     FULL OUTER JOIN ads_daily ad ON ad.canonical_sku = sd.canonical_sku AND ad.report_date = sd.report_date
   ),
   sku_metrics AS (
     SELECT
       u.canonical_sku,
-      COALESCE(sum(f.ordered_sales) FILTER (WHERE f.report_date BETWEEN v_effective_date_from AND p_date_to), 0) AS range_sales,
-      COALESCE(sum(f.units_ordered) FILTER (WHERE f.report_date BETWEEN v_effective_date_from AND p_date_to), 0) AS range_units,
-      COALESCE(sum(f.spend) FILTER (WHERE f.report_date BETWEEN v_effective_date_from AND p_date_to), 0) AS range_spend,
-      COALESCE(sum(f.attributed_sales) FILTER (WHERE f.report_date BETWEEN v_effective_date_from AND p_date_to), 0) AS range_attributed_sales,
+
+      COALESCE(sum(f.ordered_sales) FILTER (WHERE f.report_date BETWEEN p_date_from AND p_date_to), 0) AS range_sales,
+      COALESCE(sum(f.units_ordered) FILTER (WHERE f.report_date BETWEEN p_date_from AND p_date_to), 0) AS range_units,
+      COALESCE(sum(f.spend) FILTER (WHERE f.report_date BETWEEN p_date_from AND p_date_to), 0) AS range_spend,
+      COALESCE(sum(f.attributed_sales) FILTER (WHERE f.report_date BETWEEN p_date_from AND p_date_to), 0) AS range_attributed_sales,
+      -- Fix 1: common-comparable-range sums, used ONLY for the range TACOS ratio
+      COALESCE(sum(f.ordered_sales) FILTER (WHERE v_common_effective_date_from IS NOT NULL AND f.report_date BETWEEN v_common_effective_date_from AND p_date_to), 0) AS range_sales_common,
+      COALESCE(sum(f.spend) FILTER (WHERE v_common_effective_date_from IS NOT NULL AND f.report_date BETWEEN v_common_effective_date_from AND p_date_to), 0) AS range_spend_common,
+      count(DISTINCT f.report_date) FILTER (WHERE f.sales_has_row AND f.report_date = ANY (wc.sel_sales_problem)) AS range_sales_problem_resolved,
+      count(DISTINCT f.report_date) FILTER (WHERE f.ads_has_row AND f.report_date = ANY (wc.sel_ads_problem)) AS range_ads_problem_resolved,
 
       COALESCE(sum(f.ordered_sales) FILTER (WHERE f.report_date = p_as_of), 0) AS yesterday_sales,
       COALESCE(sum(f.units_ordered) FILTER (WHERE f.report_date = p_as_of), 0) AS yesterday_units,
       COALESCE(sum(f.spend) FILTER (WHERE f.report_date = p_as_of), 0) AS yesterday_spend,
       COALESCE(sum(f.attributed_sales) FILTER (WHERE f.report_date = p_as_of), 0) AS yesterday_attributed_sales,
+      COALESCE(sum(f.ordered_sales) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date = p_as_of AND p_as_of >= GREATEST(v_sales_history_starts_at, v_ads_history_starts_at)), 0) AS yesterday_sales_common,
+      COALESCE(sum(f.spend) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date = p_as_of AND p_as_of >= GREATEST(v_sales_history_starts_at, v_ads_history_starts_at)), 0) AS yesterday_spend_common,
+      count(DISTINCT f.report_date) FILTER (WHERE f.sales_has_row AND f.report_date = ANY (wc.yst_sales_problem)) AS yesterday_sales_problem_resolved,
+      count(DISTINCT f.report_date) FILTER (WHERE f.ads_has_row AND f.report_date = ANY (wc.yst_ads_problem)) AS yesterday_ads_problem_resolved,
 
       COALESCE(sum(f.ordered_sales) FILTER (WHERE f.report_date BETWEEN (p_as_of - 6) AND p_as_of), 0) AS t7_sales,
       COALESCE(sum(f.units_ordered) FILTER (WHERE f.report_date BETWEEN (p_as_of - 6) AND p_as_of), 0) AS t7_units,
       COALESCE(sum(f.spend) FILTER (WHERE f.report_date BETWEEN (p_as_of - 6) AND p_as_of), 0) AS t7_spend,
       COALESCE(sum(f.attributed_sales) FILTER (WHERE f.report_date BETWEEN (p_as_of - 6) AND p_as_of), 0) AS t7_attributed_sales,
+      COALESCE(sum(f.ordered_sales) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date BETWEEN GREATEST(p_as_of - 6, v_sales_history_starts_at, v_ads_history_starts_at) AND p_as_of), 0) AS t7_sales_common,
+      COALESCE(sum(f.spend) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date BETWEEN GREATEST(p_as_of - 6, v_sales_history_starts_at, v_ads_history_starts_at) AND p_as_of), 0) AS t7_spend_common,
+      count(DISTINCT f.report_date) FILTER (WHERE f.sales_has_row AND f.report_date = ANY (wc.t7_sales_problem)) AS t7_sales_problem_resolved,
+      count(DISTINCT f.report_date) FILTER (WHERE f.ads_has_row AND f.report_date = ANY (wc.t7_ads_problem)) AS t7_ads_problem_resolved,
 
       COALESCE(sum(f.ordered_sales) FILTER (WHERE f.report_date BETWEEN (p_as_of - 13) AND (p_as_of - 7)), 0) AS prior7_sales,
       COALESCE(sum(f.spend) FILTER (WHERE f.report_date BETWEEN (p_as_of - 13) AND (p_as_of - 7)), 0) AS prior7_spend,
       COALESCE(sum(f.attributed_sales) FILTER (WHERE f.report_date BETWEEN (p_as_of - 13) AND (p_as_of - 7)), 0) AS prior7_attributed_sales,
+      COALESCE(sum(f.ordered_sales) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date BETWEEN GREATEST(p_as_of - 13, v_sales_history_starts_at, v_ads_history_starts_at) AND (p_as_of - 7)), 0) AS prior7_sales_common,
+      COALESCE(sum(f.spend) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date BETWEEN GREATEST(p_as_of - 13, v_sales_history_starts_at, v_ads_history_starts_at) AND (p_as_of - 7)), 0) AS prior7_spend_common,
+      count(DISTINCT f.report_date) FILTER (WHERE f.sales_has_row AND f.report_date = ANY (wc.p7_sales_problem)) AS prior7_sales_problem_resolved,
+      count(DISTINCT f.report_date) FILTER (WHERE f.ads_has_row AND f.report_date = ANY (wc.p7_ads_problem)) AS prior7_ads_problem_resolved,
 
       COALESCE(sum(f.ordered_sales) FILTER (WHERE f.report_date BETWEEN (p_as_of - 29) AND p_as_of), 0) AS t30_sales,
       COALESCE(sum(f.units_ordered) FILTER (WHERE f.report_date BETWEEN (p_as_of - 29) AND p_as_of), 0) AS t30_units,
       COALESCE(sum(f.spend) FILTER (WHERE f.report_date BETWEEN (p_as_of - 29) AND p_as_of), 0) AS t30_spend,
       COALESCE(sum(f.attributed_sales) FILTER (WHERE f.report_date BETWEEN (p_as_of - 29) AND p_as_of), 0) AS t30_attributed_sales,
+      COALESCE(sum(f.ordered_sales) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date BETWEEN GREATEST(p_as_of - 29, v_sales_history_starts_at, v_ads_history_starts_at) AND p_as_of), 0) AS t30_sales_common,
+      COALESCE(sum(f.spend) FILTER (WHERE v_ads_history_starts_at IS NOT NULL AND v_sales_history_starts_at IS NOT NULL AND f.report_date BETWEEN GREATEST(p_as_of - 29, v_sales_history_starts_at, v_ads_history_starts_at) AND p_as_of), 0) AS t30_spend_common,
+      count(DISTINCT f.report_date) FILTER (WHERE f.sales_has_row AND f.report_date = ANY (wc.t30_sales_problem)) AS t30_sales_problem_resolved,
+      count(DISTINCT f.report_date) FILTER (WHERE f.ads_has_row AND f.report_date = ANY (wc.t30_ads_problem)) AS t30_ads_problem_resolved,
 
-      max(f.report_date) FILTER (WHERE f.ordered_sales > 0) AS last_sales_activity_date,
-      max(f.report_date) FILTER (WHERE f.spend > 0) AS last_ad_spend_activity_date,
-      max(f.report_date) FILTER (WHERE f.attributed_sales > 0) AS last_attributed_sale_activity_date
+      max(f.report_date) FILTER (WHERE f.sales_has_row AND f.ordered_sales > 0) AS last_sales_activity_date,
+      max(f.report_date) FILTER (WHERE f.ads_has_row AND f.spend > 0) AS last_ad_spend_activity_date,
+      max(f.report_date) FILTER (WHERE f.ads_has_row AND f.attributed_sales > 0) AS last_attributed_sale_activity_date
     FROM universe u
+    CROSS JOIN wc
     LEFT JOIN sku_date_facts f ON f.canonical_sku = u.canonical_sku
     GROUP BY u.canonical_sku
   ),
+  -- wc is re-joined here (cheap: it is always exactly one row) rather than
+  -- being carried through sku_metrics' GROUP BY -- selecting wc.* there
+  -- would force ~50 constant columns into the grouping key for no reason,
+  -- which was the single largest performance regression this correction
+  -- round introduced and fixed (see BRAHMASTRA_MASTER_TRACKER.md sec23
+  -- update 7's performance section).
+  sku_coverage AS (
+    SELECT m.*,
+      public._sku_perf_rollup_state(wc.sel_sales_total, wc.sel_sales_bh, wc.sel_sales_nc, wc.sel_sales_unk,
+        COALESCE(array_length(wc.sel_sales_problem, 1), 0) - m.range_sales_problem_resolved, COALESCE(array_length(wc.sel_sales_problem, 1), 0)) AS range_sales_coverage,
+      public._sku_perf_rollup_state(wc.sel_ads_total, wc.sel_ads_bh, wc.sel_ads_nc, wc.sel_ads_unk,
+        COALESCE(array_length(wc.sel_ads_problem, 1), 0) - m.range_ads_problem_resolved, COALESCE(array_length(wc.sel_ads_problem, 1), 0)) AS range_ads_coverage,
+      public._sku_perf_rollup_state(wc.yst_sales_total, wc.yst_sales_bh, wc.yst_sales_nc, wc.yst_sales_unk,
+        COALESCE(array_length(wc.yst_sales_problem, 1), 0) - m.yesterday_sales_problem_resolved, COALESCE(array_length(wc.yst_sales_problem, 1), 0)) AS yesterday_sales_coverage,
+      public._sku_perf_rollup_state(wc.yst_ads_total, wc.yst_ads_bh, wc.yst_ads_nc, wc.yst_ads_unk,
+        COALESCE(array_length(wc.yst_ads_problem, 1), 0) - m.yesterday_ads_problem_resolved, COALESCE(array_length(wc.yst_ads_problem, 1), 0)) AS yesterday_ads_coverage,
+      public._sku_perf_rollup_state(wc.t7_sales_total, wc.t7_sales_bh, wc.t7_sales_nc, wc.t7_sales_unk,
+        COALESCE(array_length(wc.t7_sales_problem, 1), 0) - m.t7_sales_problem_resolved, COALESCE(array_length(wc.t7_sales_problem, 1), 0)) AS t7_sales_coverage,
+      public._sku_perf_rollup_state(wc.t7_ads_total, wc.t7_ads_bh, wc.t7_ads_nc, wc.t7_ads_unk,
+        COALESCE(array_length(wc.t7_ads_problem, 1), 0) - m.t7_ads_problem_resolved, COALESCE(array_length(wc.t7_ads_problem, 1), 0)) AS t7_ads_coverage,
+      public._sku_perf_rollup_state(wc.p7_sales_total, wc.p7_sales_bh, wc.p7_sales_nc, wc.p7_sales_unk,
+        COALESCE(array_length(wc.p7_sales_problem, 1), 0) - m.prior7_sales_problem_resolved, COALESCE(array_length(wc.p7_sales_problem, 1), 0)) AS prior7_sales_coverage,
+      public._sku_perf_rollup_state(wc.p7_ads_total, wc.p7_ads_bh, wc.p7_ads_nc, wc.p7_ads_unk,
+        COALESCE(array_length(wc.p7_ads_problem, 1), 0) - m.prior7_ads_problem_resolved, COALESCE(array_length(wc.p7_ads_problem, 1), 0)) AS prior7_ads_coverage,
+      public._sku_perf_rollup_state(wc.t30_sales_total, wc.t30_sales_bh, wc.t30_sales_nc, wc.t30_sales_unk,
+        COALESCE(array_length(wc.t30_sales_problem, 1), 0) - m.t30_sales_problem_resolved, COALESCE(array_length(wc.t30_sales_problem, 1), 0)) AS t30_sales_coverage,
+      public._sku_perf_rollup_state(wc.t30_ads_total, wc.t30_ads_bh, wc.t30_ads_nc, wc.t30_ads_unk,
+        COALESCE(array_length(wc.t30_ads_problem, 1), 0) - m.t30_ads_problem_resolved, COALESCE(array_length(wc.t30_ads_problem, 1), 0)) AS t30_ads_coverage
+    FROM sku_metrics m
+    CROSS JOIN wc
+  ),
   sku_rows AS (
     SELECT
-      u.canonical_sku,
+      c.*,
       COALESCE(cg.display_sku, sg.display_sku, ag.display_sku, cmg.display_sku) AS displayed_sku,
       cg.asin AS catalog_asin, cg.item_name, cg.image_url, cg.brand, cg.last_synced_at AS catalog_last_synced_at,
       cmg.category,
-      m.range_sales, m.range_units, m.range_spend, m.range_attributed_sales,
-      m.yesterday_sales, m.yesterday_units, m.yesterday_spend, m.yesterday_attributed_sales,
-      m.t7_sales, m.t7_units, m.t7_spend, m.t7_attributed_sales,
-      m.prior7_sales, m.prior7_spend, m.prior7_attributed_sales,
-      m.t30_sales, m.t30_units, m.t30_spend, m.t30_attributed_sales,
-      m.last_sales_activity_date, m.last_ad_spend_activity_date, m.last_attributed_sale_activity_date,
+      -- Fix 4: cross-source collision -- combine raw-SKU evidence from ALL
+      -- FOUR sources into one set; more than one distinct raw string
+      -- anywhere in that combined set is a collision, same-source or not.
+      (
+        SELECT count(DISTINCT x) FROM unnest(
+          COALESCE(cg.raw_skus, ARRAY[]::text[]) || COALESCE(sg.raw_skus, ARRAY[]::text[]) ||
+          COALESCE(ag.raw_skus, ARRAY[]::text[]) || COALESCE(cmg.raw_skus, ARRAY[]::text[])
+        ) AS x
+      ) > 1 AS has_cross_source_collision,
+      cg.raw_skus AS catalog_raw_skus, sg.raw_skus AS sales_raw_skus,
+      ag.raw_skus AS ads_raw_skus, cmg.raw_skus AS cost_master_raw_skus,
+      (ag.canonical_sku IS NULL) AS is_ads_absent,
+      (cg.canonical_sku IS NULL) AS is_catalog_absent,
+      EXISTS (SELECT 1 FROM unnest(ag.advertised_asins) x WHERE x IS NOT NULL AND x IS DISTINCT FROM cg.asin) AS has_asin_mismatch
+    FROM sku_coverage c
+    LEFT JOIN catalog_grouped cg ON cg.canonical_sku = c.canonical_sku
+    LEFT JOIN sales_grouped sg ON sg.canonical_sku = c.canonical_sku
+    LEFT JOIN ads_grouped ag ON ag.canonical_sku = c.canonical_sku
+    LEFT JOIN cost_grouped cmg ON cmg.canonical_sku = c.canonical_sku
+  ),
+  sku_mapping AS (
+    SELECT r.*,
       CASE
-        WHEN ag.canonical_sku IS NULL THEN 'not_applicable'
-        WHEN COALESCE(array_length(cg.raw_skus, 1), 0) > 1
-          OR COALESCE(array_length(sg.raw_skus, 1), 0) > 1
-          OR COALESCE(array_length(ag.raw_skus, 1), 0) > 1
-          OR COALESCE(array_length(cmg.raw_skus, 1), 0) > 1
-        THEN 'identity_conflict'
-        WHEN cg.canonical_sku IS NULL THEN 'unmapped'
-        WHEN EXISTS (SELECT 1 FROM unnest(ag.advertised_asins) x WHERE x IS NOT NULL AND x IS DISTINCT FROM cg.asin)
-        THEN 'identity_conflict'
+        WHEN r.is_ads_absent THEN 'not_applicable'
+        WHEN r.has_cross_source_collision THEN 'identity_conflict'
+        WHEN r.is_catalog_absent THEN 'unmapped'
+        WHEN r.has_asin_mismatch THEN 'identity_conflict'
         ELSE 'mapped'
       END AS mapping_state
-    FROM universe u
-    LEFT JOIN catalog_grouped cg ON cg.canonical_sku = u.canonical_sku
-    LEFT JOIN sales_grouped sg ON sg.canonical_sku = u.canonical_sku
-    LEFT JOIN ads_grouped ag ON ag.canonical_sku = u.canonical_sku
-    LEFT JOIN cost_grouped cmg ON cmg.canonical_sku = u.canonical_sku
-    LEFT JOIN sku_metrics m ON m.canonical_sku = u.canonical_sku
+    FROM sku_rows r
   ),
   sku_ratios AS (
     SELECT r.*,
-      CASE WHEN range_spend = 0 AND range_attributed_sales = 0 THEN 'not_applicable'
+      -- range: TACOS uses the common-comparable-range sums; ACOS is Ads-only, no common-range issue
+      CASE WHEN range_ads_coverage <> 'complete' THEN 'unknown'
+           WHEN range_spend = 0 AND range_attributed_sales = 0 THEN 'not_applicable'
            WHEN range_spend > 0 AND range_attributed_sales = 0 THEN 'undefined'
            ELSE 'normal' END AS range_acos_state,
-      CASE WHEN range_spend > 0 AND range_attributed_sales > 0 THEN range_spend / range_attributed_sales END AS range_acos_value,
-      CASE WHEN range_spend = 0 AND range_sales = 0 THEN 'not_applicable'
-           WHEN range_spend > 0 AND range_sales = 0 THEN 'undefined_high_risk'
+      CASE WHEN range_ads_coverage = 'complete' AND range_spend > 0 AND range_attributed_sales > 0 THEN range_spend / range_attributed_sales END AS range_acos_value,
+      CASE WHEN range_sales_coverage <> 'complete' OR range_ads_coverage <> 'complete'
+             OR v_common_effective_date_from IS NULL OR v_common_effective_date_from > p_date_to THEN 'unknown'
+           WHEN range_spend_common = 0 AND range_sales_common = 0 THEN 'not_applicable'
+           WHEN range_spend_common > 0 AND range_sales_common = 0 THEN 'undefined_high_risk'
            ELSE 'normal' END AS range_tacos_state,
-      CASE WHEN range_sales > 0 THEN range_spend / range_sales END AS range_tacos_value,
+      CASE WHEN range_sales_coverage = 'complete' AND range_ads_coverage = 'complete'
+             AND v_common_effective_date_from IS NOT NULL AND v_common_effective_date_from <= p_date_to
+             AND range_sales_common > 0 THEN range_spend_common / range_sales_common END AS range_tacos_value,
 
-      CASE WHEN t7_spend = 0 AND t7_attributed_sales = 0 THEN 'not_applicable'
+      CASE WHEN t7_ads_coverage <> 'complete' THEN 'unknown'
+           WHEN t7_spend = 0 AND t7_attributed_sales = 0 THEN 'not_applicable'
            WHEN t7_spend > 0 AND t7_attributed_sales = 0 THEN 'undefined'
            ELSE 'normal' END AS t7_acos_state,
-      CASE WHEN t7_spend > 0 AND t7_attributed_sales > 0 THEN t7_spend / t7_attributed_sales END AS t7_acos_value,
-      CASE WHEN t7_spend = 0 AND t7_sales = 0 THEN 'not_applicable'
-           WHEN t7_spend > 0 AND t7_sales = 0 THEN 'undefined_high_risk'
+      CASE WHEN t7_ads_coverage = 'complete' AND t7_spend > 0 AND t7_attributed_sales > 0 THEN t7_spend / t7_attributed_sales END AS t7_acos_value,
+      CASE WHEN t7_sales_coverage <> 'complete' OR t7_ads_coverage <> 'complete' OR v_ads_history_starts_at IS NULL OR v_sales_history_starts_at IS NULL THEN 'unknown'
+           WHEN t7_spend_common = 0 AND t7_sales_common = 0 THEN 'not_applicable'
+           WHEN t7_spend_common > 0 AND t7_sales_common = 0 THEN 'undefined_high_risk'
            ELSE 'normal' END AS t7_tacos_state,
-      CASE WHEN t7_sales > 0 THEN t7_spend / t7_sales END AS t7_tacos_value,
+      CASE WHEN t7_sales_coverage = 'complete' AND t7_ads_coverage = 'complete' AND t7_sales_common > 0 THEN t7_spend_common / t7_sales_common END AS t7_tacos_value,
 
-      CASE WHEN prior7_spend = 0 AND prior7_attributed_sales = 0 THEN 'not_applicable'
+      CASE WHEN prior7_ads_coverage <> 'complete' THEN 'unknown'
+           WHEN prior7_spend = 0 AND prior7_attributed_sales = 0 THEN 'not_applicable'
            WHEN prior7_spend > 0 AND prior7_attributed_sales = 0 THEN 'undefined'
            ELSE 'normal' END AS prior7_acos_state,
-      CASE WHEN prior7_spend > 0 AND prior7_attributed_sales > 0 THEN prior7_spend / prior7_attributed_sales END AS prior7_acos_value,
-      CASE WHEN prior7_spend = 0 AND prior7_sales = 0 THEN 'not_applicable'
-           WHEN prior7_spend > 0 AND prior7_sales = 0 THEN 'undefined_high_risk'
+      CASE WHEN prior7_ads_coverage = 'complete' AND prior7_spend > 0 AND prior7_attributed_sales > 0 THEN prior7_spend / prior7_attributed_sales END AS prior7_acos_value,
+      CASE WHEN prior7_sales_coverage <> 'complete' OR prior7_ads_coverage <> 'complete' OR v_ads_history_starts_at IS NULL OR v_sales_history_starts_at IS NULL THEN 'unknown'
+           WHEN prior7_spend_common = 0 AND prior7_sales_common = 0 THEN 'not_applicable'
+           WHEN prior7_spend_common > 0 AND prior7_sales_common = 0 THEN 'undefined_high_risk'
            ELSE 'normal' END AS prior7_tacos_state,
-      CASE WHEN prior7_sales > 0 THEN prior7_spend / prior7_sales END AS prior7_tacos_value,
+      CASE WHEN prior7_sales_coverage = 'complete' AND prior7_ads_coverage = 'complete' AND prior7_sales_common > 0 THEN prior7_spend_common / prior7_sales_common END AS prior7_tacos_value,
 
-      CASE WHEN t30_spend = 0 AND t30_attributed_sales = 0 THEN 'not_applicable'
+      CASE WHEN t30_ads_coverage <> 'complete' THEN 'unknown'
+           WHEN t30_spend = 0 AND t30_attributed_sales = 0 THEN 'not_applicable'
            WHEN t30_spend > 0 AND t30_attributed_sales = 0 THEN 'undefined'
            ELSE 'normal' END AS t30_acos_state,
-      CASE WHEN t30_spend > 0 AND t30_attributed_sales > 0 THEN t30_spend / t30_attributed_sales END AS t30_acos_value,
-      CASE WHEN t30_spend = 0 AND t30_sales = 0 THEN 'not_applicable'
-           WHEN t30_spend > 0 AND t30_sales = 0 THEN 'undefined_high_risk'
+      CASE WHEN t30_ads_coverage = 'complete' AND t30_spend > 0 AND t30_attributed_sales > 0 THEN t30_spend / t30_attributed_sales END AS t30_acos_value,
+      CASE WHEN t30_sales_coverage <> 'complete' OR t30_ads_coverage <> 'complete' OR v_ads_history_starts_at IS NULL OR v_sales_history_starts_at IS NULL THEN 'unknown'
+           WHEN t30_spend_common = 0 AND t30_sales_common = 0 THEN 'not_applicable'
+           WHEN t30_spend_common > 0 AND t30_sales_common = 0 THEN 'undefined_high_risk'
            ELSE 'normal' END AS t30_tacos_state,
-      CASE WHEN t30_sales > 0 THEN t30_spend / t30_sales END AS t30_tacos_value,
+      CASE WHEN t30_sales_coverage = 'complete' AND t30_ads_coverage = 'complete' AND t30_sales_common > 0 THEN t30_spend_common / t30_sales_common END AS t30_tacos_value,
 
-      CASE WHEN yesterday_spend = 0 AND yesterday_attributed_sales = 0 THEN 'not_applicable'
+      CASE WHEN yesterday_ads_coverage <> 'complete' THEN 'unknown'
+           WHEN yesterday_spend = 0 AND yesterday_attributed_sales = 0 THEN 'not_applicable'
            WHEN yesterday_spend > 0 AND yesterday_attributed_sales = 0 THEN 'undefined'
            ELSE 'normal' END AS yesterday_acos_state,
-      CASE WHEN yesterday_spend > 0 AND yesterday_attributed_sales > 0 THEN yesterday_spend / yesterday_attributed_sales END AS yesterday_acos_value,
-      CASE WHEN yesterday_spend = 0 AND yesterday_sales = 0 THEN 'not_applicable'
-           WHEN yesterday_spend > 0 AND yesterday_sales = 0 THEN 'undefined_high_risk'
+      CASE WHEN yesterday_ads_coverage = 'complete' AND yesterday_spend > 0 AND yesterday_attributed_sales > 0 THEN yesterday_spend / yesterday_attributed_sales END AS yesterday_acos_value,
+      CASE WHEN yesterday_sales_coverage <> 'complete' OR yesterday_ads_coverage <> 'complete' OR v_ads_history_starts_at IS NULL OR v_sales_history_starts_at IS NULL THEN 'unknown'
+           WHEN yesterday_spend_common = 0 AND yesterday_sales_common = 0 THEN 'not_applicable'
+           WHEN yesterday_spend_common > 0 AND yesterday_sales_common = 0 THEN 'undefined_high_risk'
            ELSE 'normal' END AS yesterday_tacos_state,
-      CASE WHEN yesterday_sales > 0 THEN yesterday_spend / yesterday_sales END AS yesterday_tacos_value
-    FROM sku_rows r
+      CASE WHEN yesterday_sales_coverage = 'complete' AND yesterday_ads_coverage = 'complete' AND yesterday_sales_common > 0 THEN yesterday_spend_common / yesterday_sales_common END AS yesterday_tacos_value
+    FROM sku_mapping r
   ),
   sku_trends AS (
     SELECT rt.*,
+      -- Fix 3: never classify a trend when the windows it depends on aren't complete
       CASE
+        WHEN rt.t7_sales_coverage <> 'complete' OR rt.prior7_sales_coverage <> 'complete' THEN 'no_comparable_baseline'
         WHEN rt.prior7_sales = 0 AND rt.t7_sales = 0 THEN 'no_activity'
         WHEN rt.prior7_sales = 0 AND rt.t7_sales > FLOOR_SALES THEN 'new_activity'
         WHEN rt.prior7_sales = 0 THEN 'no_activity'
@@ -477,6 +828,7 @@ BEGIN
         ELSE 'flat'
       END AS sales_trend,
       CASE
+        WHEN rt.t7_ads_coverage <> 'complete' OR rt.prior7_ads_coverage <> 'complete' THEN 'no_comparable_baseline'
         WHEN rt.prior7_spend = 0 AND rt.t7_spend = 0 THEN 'no_spend'
         WHEN rt.prior7_spend = 0 AND rt.t7_spend >= FLOOR_SPEND THEN 'new_spend'
         WHEN rt.prior7_spend = 0 THEN 'no_spend'
@@ -490,7 +842,7 @@ BEGIN
     SELECT tr.*,
       (tr.sales_trend = 'declining') AS flag_sales_drop,
       (tr.spend_trend = 'growing') AS flag_spend_spike,
-      (tr.t7_spend >= v_min_ad_spend_for_action AND tr.t7_attributed_sales = 0) AS flag_no_attributed_sales,
+      (tr.t7_ads_coverage = 'complete' AND tr.t7_spend >= v_min_ad_spend_for_action AND tr.t7_attributed_sales = 0) AS flag_no_attributed_sales,
       (
         tr.prior7_tacos_state = 'normal' AND tr.t7_tacos_state = 'normal'
         AND tr.t7_sales >= FLOOR_SALES
@@ -498,7 +850,11 @@ BEGIN
       ) AS flag_tacos_deterioration,
       (tr.sales_trend = 'growing' AND tr.spend_trend = 'flat') AS flag_sales_growing_stable_spend,
       (tr.sales_trend = 'growing' AND tr.spend_trend = 'declining') AS flag_sales_growing_spend_falls,
-      (tr.mapping_state <> 'mapped') AS flag_mapping_incomplete,
+      -- Narrow contract cleanup #2: mappingIncomplete is only a real
+      -- mapping problem for unmapped/identity_conflict, never for
+      -- not_applicable (a SKU with no advertising activity has nothing to
+      -- "map" in the first place).
+      (tr.mapping_state IN ('unmapped', 'identity_conflict')) AS flag_mapping_incomplete,
       CASE
         WHEN tr.range_tacos_state <> 'normal' THEN NULL
         WHEN tr.range_tacos_value >= v_critical_tacos_pct / 100.0 THEN 'critical'
@@ -533,27 +889,37 @@ BEGIN
       AND (NOT v_unmapped_only OR f.mapping_state = 'unmapped')
       AND (NOT v_identity_conflict_only OR f.mapping_state = 'identity_conflict')
   ),
+  -- Fix 2: assign a stable row number in the FULL requested sort order,
+  -- BEFORE pagination -- this is what the final jsonb_agg orders by, so
+  -- the requested sort survives into the response instead of being
+  -- silently replaced by canonical_sku order.
+  sorted AS (
+    SELECT *, ROW_NUMBER() OVER (
+      ORDER BY
+        CASE WHEN p_sort = 'attention_desc' THEN attention_severity_rank END DESC NULLS LAST,
+        CASE WHEN p_sort = 'attention_desc' THEN range_sales END DESC NULLS LAST,
+        CASE WHEN p_sort = 'sales_desc' THEN range_sales END DESC NULLS LAST,
+        CASE WHEN p_sort = 'sales_asc' THEN range_sales END ASC NULLS LAST,
+        CASE WHEN p_sort = 'spend_desc' THEN range_spend END DESC NULLS LAST,
+        CASE WHEN p_sort = 'spend_asc' THEN range_spend END ASC NULLS LAST,
+        CASE WHEN p_sort = 'tacos_desc' THEN range_tacos_value END DESC NULLS LAST,
+        CASE WHEN p_sort = 'tacos_asc' THEN range_tacos_value END ASC NULLS LAST,
+        CASE WHEN p_sort = 'sku_asc' THEN displayed_sku END ASC NULLS LAST,
+        canonical_sku ASC
+    ) AS sort_rn
+    FROM filtered
+  ),
   paged AS (
-    SELECT * FROM filtered
-    ORDER BY
-      CASE WHEN p_sort = 'attention_desc' THEN attention_severity_rank END DESC NULLS LAST,
-      CASE WHEN p_sort = 'attention_desc' THEN range_sales END DESC NULLS LAST,
-      CASE WHEN p_sort = 'sales_desc' THEN range_sales END DESC NULLS LAST,
-      CASE WHEN p_sort = 'sales_asc' THEN range_sales END ASC NULLS LAST,
-      CASE WHEN p_sort = 'spend_desc' THEN range_spend END DESC NULLS LAST,
-      CASE WHEN p_sort = 'spend_asc' THEN range_spend END ASC NULLS LAST,
-      CASE WHEN p_sort = 'tacos_desc' THEN range_tacos_value END DESC NULLS LAST,
-      CASE WHEN p_sort = 'tacos_asc' THEN range_tacos_value END ASC NULLS LAST,
-      CASE WHEN p_sort = 'sku_asc' THEN displayed_sku END ASC NULLS LAST,
-      canonical_sku ASC
-    LIMIT p_limit OFFSET p_offset
+    SELECT * FROM sorted WHERE sort_rn > p_offset AND sort_rn <= (p_offset + p_limit)
   ),
   summary_agg AS (
     SELECT
-      COALESCE(sum(range_sales), 0) AS total_ordered_sales,
-      COALESCE(sum(range_units), 0) AS total_units,
-      COALESCE(sum(range_spend), 0) AS total_ad_spend,
-      COALESCE(sum(range_attributed_sales), 0) AS total_attributed_sales,
+      COALESCE(sum(range_sales) FILTER (WHERE mapping_state <> 'identity_conflict'), 0) AS total_ordered_sales,
+      COALESCE(sum(range_units) FILTER (WHERE mapping_state <> 'identity_conflict'), 0) AS total_units,
+      COALESCE(sum(range_spend) FILTER (WHERE mapping_state <> 'identity_conflict'), 0) AS total_ad_spend,
+      COALESCE(sum(range_attributed_sales) FILTER (WHERE mapping_state <> 'identity_conflict'), 0) AS total_attributed_sales,
+      COALESCE(sum(range_sales_common) FILTER (WHERE mapping_state <> 'identity_conflict'), 0) AS total_sales_common,
+      COALESCE(sum(range_spend_common) FILTER (WHERE mapping_state <> 'identity_conflict'), 0) AS total_spend_common,
       count(*) FILTER (WHERE sales_trend IN ('growing', 'new_activity')) AS skus_growing,
       count(*) FILTER (WHERE sales_trend = 'declining') AS skus_declining,
       count(*) FILTER (WHERE range_spend > 0 AND mapping_state = 'mapped') AS by_count_mapped,
@@ -563,6 +929,15 @@ BEGIN
       COALESCE(sum(range_spend) FILTER (WHERE mapping_state = 'unmapped'), 0) AS unmapped_spend,
       COALESCE(sum(range_spend) FILTER (WHERE mapping_state = 'identity_conflict'), 0) AS conflict_spend
     FROM filtered
+  ),
+  -- Fix 3 (summary-level): the aggregate ACOS/TACOS coverage is the plain
+  -- source-level rollup for the selected range (nc/unknown days are never
+  -- individually "rescued" at the aggregate level -- see header comment).
+  scope_coverage AS (
+    SELECT
+      public._sku_perf_rollup_state(sel_sales_total, sel_sales_bh, sel_sales_nc, sel_sales_unk, COALESCE(array_length(sel_sales_problem,1),0), COALESCE(array_length(sel_sales_problem,1),0)) AS sales_coverage,
+      public._sku_perf_rollup_state(sel_ads_total, sel_ads_bh, sel_ads_nc, sel_ads_unk, COALESCE(array_length(sel_ads_problem,1),0), COALESCE(array_length(sel_ads_problem,1),0)) AS ads_coverage
+    FROM wc
   ),
   counts AS (
     SELECT
@@ -582,47 +957,58 @@ BEGIN
         'brand', p.brand,
         'category', p.category,
         'mappingState', p.mapping_state,
-        'salesTrend', p.sales_trend,
-        'spendTrend', p.spend_trend,
-        'tacosBand', p.tacos_band,
+        'identityConflictEvidence', CASE WHEN p.mapping_state = 'identity_conflict' THEN jsonb_build_object(
+          'catalogRawSkus', to_jsonb(COALESCE(p.catalog_raw_skus, ARRAY[]::text[])),
+          'salesRawSkus', to_jsonb(COALESCE(p.sales_raw_skus, ARRAY[]::text[])),
+          'adsRawSkus', to_jsonb(COALESCE(p.ads_raw_skus, ARRAY[]::text[])),
+          'costMasterRawSkus', to_jsonb(COALESCE(p.cost_master_raw_skus, ARRAY[]::text[]))
+        ) END,
+        'salesTrend', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE p.sales_trend END,
+        'spendTrend', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE p.spend_trend END,
+        'tacosBand', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE p.tacos_band END,
         'lastSalesActivityDate', p.last_sales_activity_date,
         'lastAdSpendActivityDate', p.last_ad_spend_activity_date,
         'lastAttributedSaleActivityDate', p.last_attributed_sale_activity_date,
         'flags', jsonb_build_object(
-          'salesDrop', p.flag_sales_drop,
-          'spendSpike', p.flag_spend_spike,
-          'noAttributedSales', p.flag_no_attributed_sales,
-          'tacosDeterioration', p.flag_tacos_deterioration,
-          'salesGrowingStableSpend', p.flag_sales_growing_stable_spend,
-          'salesGrowingSpendFalls', p.flag_sales_growing_spend_falls,
+          'salesDrop', COALESCE(p.mapping_state <> 'identity_conflict', false) AND p.flag_sales_drop,
+          'spendSpike', COALESCE(p.mapping_state <> 'identity_conflict', false) AND p.flag_spend_spike,
+          'noAttributedSales', COALESCE(p.mapping_state <> 'identity_conflict', false) AND p.flag_no_attributed_sales,
+          'tacosDeterioration', COALESCE(p.mapping_state <> 'identity_conflict', false) AND p.flag_tacos_deterioration,
+          'salesGrowingStableSpend', COALESCE(p.mapping_state <> 'identity_conflict', false) AND p.flag_sales_growing_stable_spend,
+          'salesGrowingSpendFalls', COALESCE(p.mapping_state <> 'identity_conflict', false) AND p.flag_sales_growing_spend_falls,
           'mappingIncomplete', p.flag_mapping_incomplete
         ),
-        'selectedRange', jsonb_build_object(
+        'selectedRange', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE jsonb_build_object(
           'sales', p.range_sales, 'units', p.range_units, 'spend', p.range_spend, 'attributedSales', p.range_attributed_sales,
+          'salesCoverageState', p.range_sales_coverage, 'adsCoverageState', p.range_ads_coverage,
           'acos', jsonb_build_object('value', p.range_acos_value, 'state', p.range_acos_state),
           'tacos', jsonb_build_object('value', p.range_tacos_value, 'state', p.range_tacos_state)
-        ),
-        'yesterday', jsonb_build_object(
+        ) END,
+        'yesterday', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE jsonb_build_object(
           'sales', p.yesterday_sales, 'units', p.yesterday_units, 'spend', p.yesterday_spend, 'attributedSales', p.yesterday_attributed_sales,
+          'salesCoverageState', p.yesterday_sales_coverage, 'adsCoverageState', p.yesterday_ads_coverage,
           'acos', jsonb_build_object('value', p.yesterday_acos_value, 'state', p.yesterday_acos_state),
           'tacos', jsonb_build_object('value', p.yesterday_tacos_value, 'state', p.yesterday_tacos_state)
-        ),
-        'trailingSevenDay', jsonb_build_object(
+        ) END,
+        'trailingSevenDay', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE jsonb_build_object(
           'sales', p.t7_sales, 'units', p.t7_units, 'spend', p.t7_spend, 'attributedSales', p.t7_attributed_sales,
+          'salesCoverageState', p.t7_sales_coverage, 'adsCoverageState', p.t7_ads_coverage,
           'acos', jsonb_build_object('value', p.t7_acos_value, 'state', p.t7_acos_state),
           'tacos', jsonb_build_object('value', p.t7_tacos_value, 'state', p.t7_tacos_state)
-        ),
-        'priorSevenDay', jsonb_build_object(
+        ) END,
+        'priorSevenDay', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE jsonb_build_object(
           'sales', p.prior7_sales, 'spend', p.prior7_spend, 'attributedSales', p.prior7_attributed_sales,
+          'salesCoverageState', p.prior7_sales_coverage, 'adsCoverageState', p.prior7_ads_coverage,
           'acos', jsonb_build_object('value', p.prior7_acos_value, 'state', p.prior7_acos_state),
           'tacos', jsonb_build_object('value', p.prior7_tacos_value, 'state', p.prior7_tacos_state)
-        ),
-        'trailingThirtyDay', jsonb_build_object(
+        ) END,
+        'trailingThirtyDay', CASE WHEN p.mapping_state = 'identity_conflict' THEN NULL ELSE jsonb_build_object(
           'sales', p.t30_sales, 'units', p.t30_units, 'spend', p.t30_spend, 'attributedSales', p.t30_attributed_sales,
+          'salesCoverageState', p.t30_sales_coverage, 'adsCoverageState', p.t30_ads_coverage,
           'acos', jsonb_build_object('value', p.t30_acos_value, 'state', p.t30_acos_state),
           'tacos', jsonb_build_object('value', p.t30_tacos_value, 'state', p.t30_tacos_state)
-        )
-      ) ORDER BY p.canonical_sku)
+        ) END
+      ) ORDER BY p.sort_rn)
       FROM paged p
     ), '[]'::jsonb),
     'summary', (
@@ -631,8 +1017,14 @@ BEGIN
         'totalUnits', sa.total_units,
         'totalAdSpend', sa.total_ad_spend,
         'totalAttributedSales', sa.total_attributed_sales,
-        'acos', CASE WHEN sa.total_ad_spend > 0 AND sa.total_attributed_sales > 0 THEN sa.total_ad_spend / sa.total_attributed_sales END,
-        'tacos', CASE WHEN sa.total_ordered_sales > 0 THEN sa.total_ad_spend / sa.total_ordered_sales END,
+        'acos', CASE WHEN sc.ads_coverage <> 'complete' THEN jsonb_build_object('value', NULL, 'state', 'unknown')
+                     WHEN sa.total_ad_spend = 0 AND sa.total_attributed_sales = 0 THEN jsonb_build_object('value', NULL, 'state', 'not_applicable')
+                     WHEN sa.total_ad_spend > 0 AND sa.total_attributed_sales = 0 THEN jsonb_build_object('value', NULL, 'state', 'undefined')
+                     ELSE jsonb_build_object('value', sa.total_ad_spend / sa.total_attributed_sales, 'state', 'normal') END,
+        'tacos', CASE WHEN sc.sales_coverage <> 'complete' OR sc.ads_coverage <> 'complete' OR v_common_effective_date_from IS NULL THEN jsonb_build_object('value', NULL, 'state', 'unknown')
+                      WHEN sa.total_spend_common = 0 AND sa.total_sales_common = 0 THEN jsonb_build_object('value', NULL, 'state', 'not_applicable')
+                      WHEN sa.total_spend_common > 0 AND sa.total_sales_common = 0 THEN jsonb_build_object('value', NULL, 'state', 'undefined_high_risk')
+                      ELSE jsonb_build_object('value', sa.total_spend_common / sa.total_sales_common, 'state', 'normal') END,
         'skusGrowing', sa.skus_growing,
         'skusDeclining', sa.skus_declining,
         'mappingCoverage', jsonb_build_object(
@@ -647,15 +1039,19 @@ BEGIN
                                 THEN sa.mapped_spend / (sa.mapped_spend + sa.unmapped_spend + sa.conflict_spend) END
           )
         ),
-        'salesSourceLatestCompleteDate', v_sales_latest_complete_date,
-        'adsSourceLatestCompleteDate', v_ads_latest_complete_date,
+        'salesLatestDataDate', v_sales_latest_data_date,
+        'adsLatestDataDate', v_ads_latest_data_date,
+        'salesLatestAcceptedCompleteDate', v_sales_latest_accepted_complete_date,
+        'adsLatestAcceptedCompleteDate', v_ads_latest_accepted_complete_date,
         'catalogLastSyncedAt', v_catalog_last_synced_at,
         'salesLastRunStatus', v_sales_last_run_status,
         'salesLastRunAt', v_sales_last_run_at,
+        'salesLastRunRowsRejected', v_sales_last_run_rows_rejected,
         'adsLastRunStatus', v_ads_last_run_status,
-        'adsLastRunAt', v_ads_last_run_at
+        'adsLastRunAt', v_ads_last_run_at,
+        'adsLastRunRowsRejected', v_ads_last_run_rows_rejected
       )
-      FROM summary_agg sa
+      FROM summary_agg sa CROSS JOIN scope_coverage sc
     ),
     'pagination', (
       SELECT jsonb_build_object(
@@ -671,13 +1067,15 @@ BEGIN
     'dateRange', jsonb_build_object(
       'requestedDateFrom', p_date_from,
       'requestedDateTo', p_date_to,
-      'effectiveDateFrom', v_effective_date_from,
-      'effectiveDateTo', p_date_to,
+      'commonEffectiveDateFrom', v_common_effective_date_from,
+      'commonEffectiveDateTo', v_common_effective_date_to,
+      'salesEffectiveDateFrom', v_sales_effective_date_from,
+      'adsEffectiveDateFrom', v_ads_effective_date_from,
       'asOf', p_as_of,
       'salesHistoryStartsAt', v_sales_history_starts_at,
       'adsHistoryStartsAt', v_ads_history_starts_at,
-      'wasRangeClamped', (v_effective_date_from <> p_date_from),
-      'clampReason', CASE WHEN v_effective_date_from <> p_date_from THEN 'requested_start_before_available_history' END
+      'wasRangeClamped', (COALESCE(array_length(v_clamp_reasons, 1), 0) > 0),
+      'clampReasons', to_jsonb(v_clamp_reasons)
     )
   ) INTO v_result;
 
@@ -695,7 +1093,7 @@ GRANT EXECUTE ON FUNCTION public.get_sku_performance_summary(
 ) TO service_role;
 
 -- ============================================================
--- 2. get_sku_performance_daily
+-- 4. get_sku_performance_daily
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.get_sku_performance_daily(
   p_workspace_id   uuid,
@@ -708,13 +1106,25 @@ RETURNS jsonb
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public, pg_temp
+-- Performance: same JIT-compilation-cost rationale as get_sku_performance_summary above.
+SET jit = off
 AS $$
 DECLARE
   MAX_MARKETPLACE_LEN CONSTANT integer := 40;
   MAX_SKU_LEN          CONSTANT integer := 200;
   MAX_RANGE_DAYS       CONSTANT integer := 400;
 
+  v_marketplace_timezone text;
+  v_today date;
   v_canonical_sku text;
+  v_ads_profile_ids text[];
+
+  v_catalog_raw_skus text[];
+  v_sales_raw_skus   text[];
+  v_ads_raw_skus     text[];
+  v_cost_raw_skus    text[];
+  v_has_collision boolean;
+
   v_result jsonb;
 BEGIN
   IF p_workspace_id IS NULL THEN
@@ -735,17 +1145,68 @@ BEGIN
   IF (p_date_to - p_date_from) > MAX_RANGE_DAYS THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'range_too_large');
   END IF;
-  IF p_date_to > CURRENT_DATE + 1 THEN
+
+  SELECT ap.timezone INTO v_marketplace_timezone
+  FROM public.amazon_ads_profiles ap
+  WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id
+    AND ap.timezone IS NOT NULL
+  LIMIT 1;
+  v_today := CASE WHEN v_marketplace_timezone IS NOT NULL
+    THEN (now() AT TIME ZONE v_marketplace_timezone)::date
+    ELSE CURRENT_DATE
+  END;
+  IF p_date_to > v_today THEN
     RETURN jsonb_build_object('result', 'invalid_parameters', 'reason', 'date_to_in_future');
   END IF;
 
   v_canonical_sku := upper(btrim(p_sku));
 
-  WITH ads_profiles AS (
-    SELECT ap.profile_id FROM public.amazon_ads_profiles ap
-    WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id
-  ),
-  catalog_match AS (
+  SELECT array_agg(ap.profile_id) INTO v_ads_profile_ids
+  FROM public.amazon_ads_profiles ap
+  WHERE ap.workspace_id = p_workspace_id AND ap.marketplace_id = p_marketplace_id;
+  v_ads_profile_ids := COALESCE(v_ads_profile_ids, ARRAY[]::text[]);
+
+  -- Fix 4: collision check upfront, across all four sources, before any
+  -- day-by-day work -- an identity_conflict SKU never gets a combined series.
+  SELECT array_agg(DISTINCT li.sku) INTO v_catalog_raw_skus
+  FROM public.amazon_listing_items li
+  WHERE li.workspace_id = p_workspace_id AND li.marketplace_id = p_marketplace_id
+    AND upper(btrim(li.sku)) = v_canonical_sku;
+
+  SELECT array_agg(DISTINCT s.sku) INTO v_sales_raw_skus
+  FROM public.internal_business_report_sku_sales_traffic s
+  WHERE s.workspace_id = p_workspace_id AND s.marketplace_id = p_marketplace_id
+    AND upper(btrim(s.sku)) = v_canonical_sku;
+
+  SELECT array_agg(DISTINCT a.advertised_sku) INTO v_ads_raw_skus
+  FROM public.internal_ads_advertised_product_daily_rows a
+  WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids)
+    AND upper(btrim(a.advertised_sku)) = v_canonical_sku;
+
+  SELECT array_agg(DISTINCT c.sku) INTO v_cost_raw_skus
+  FROM public.internal_sku_cost_master c
+  WHERE c.workspace_id = p_workspace_id AND upper(btrim(c.sku)) = v_canonical_sku;
+
+  SELECT count(DISTINCT x) > 1 INTO v_has_collision
+  FROM unnest(
+    COALESCE(v_catalog_raw_skus, ARRAY[]::text[]) || COALESCE(v_sales_raw_skus, ARRAY[]::text[]) ||
+    COALESCE(v_ads_raw_skus, ARRAY[]::text[]) || COALESCE(v_cost_raw_skus, ARRAY[]::text[])
+  ) AS x;
+
+  IF v_has_collision THEN
+    RETURN jsonb_build_object(
+      'result', 'identity_conflict',
+      'canonicalSku', v_canonical_sku,
+      'evidence', jsonb_build_object(
+        'catalogRawSkus', to_jsonb(COALESCE(v_catalog_raw_skus, ARRAY[]::text[])),
+        'salesRawSkus', to_jsonb(COALESCE(v_sales_raw_skus, ARRAY[]::text[])),
+        'adsRawSkus', to_jsonb(COALESCE(v_ads_raw_skus, ARRAY[]::text[])),
+        'costMasterRawSkus', to_jsonb(COALESCE(v_cost_raw_skus, ARRAY[]::text[]))
+      )
+    );
+  END IF;
+
+  WITH catalog_match AS (
     SELECT li.sku AS raw_sku, li.asin, li.item_name
     FROM public.amazon_listing_items li
     WHERE li.workspace_id = p_workspace_id AND li.marketplace_id = p_marketplace_id
@@ -755,8 +1216,8 @@ BEGIN
   ads_match AS (
     SELECT DISTINCT a.advertised_sku, a.advertised_asin
     FROM public.internal_ads_advertised_product_daily_rows a
-    JOIN ads_profiles ap ON ap.profile_id = a.profile_id
-    WHERE a.workspace_id = p_workspace_id AND upper(btrim(a.advertised_sku)) = v_canonical_sku
+    WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids)
+      AND upper(btrim(a.advertised_sku)) = v_canonical_sku
   ),
   sales_earliest AS (
     SELECT min(s.report_date) AS d FROM public.internal_business_report_sku_sales_traffic s
@@ -764,8 +1225,7 @@ BEGIN
   ),
   ads_earliest AS (
     SELECT min(a.report_date) AS d FROM public.internal_ads_advertised_product_daily_rows a
-    JOIN ads_profiles ap ON ap.profile_id = a.profile_id
-    WHERE a.workspace_id = p_workspace_id
+    WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids)
   ),
   sales_runs AS (
     SELECT r.date_from, r.date_to, r.status, r.rows_rejected FROM public.internal_data_refresh_runs r
@@ -775,7 +1235,7 @@ BEGIN
   ads_runs AS (
     SELECT r.date_from, r.date_to, r.status, r.rows_rejected FROM public.internal_data_refresh_runs r
     WHERE r.workspace_id = p_workspace_id AND r.source = 'ads_advertised_product'
-      AND r.profile_id IN (SELECT profile_id FROM ads_profiles)
+      AND r.profile_id = ANY (v_ads_profile_ids)
       AND (r.marketplace_id IS NULL OR r.marketplace_id = p_marketplace_id)
   ),
   date_series AS (
@@ -792,8 +1252,8 @@ BEGIN
   sku_ads_daily AS (
     SELECT a.report_date, sum(a.spend) AS spend, sum(a.sales) AS attributed_sales
     FROM public.internal_ads_advertised_product_daily_rows a
-    JOIN ads_profiles ap ON ap.profile_id = a.profile_id
-    WHERE a.workspace_id = p_workspace_id AND upper(btrim(a.advertised_sku)) = v_canonical_sku
+    WHERE a.workspace_id = p_workspace_id AND a.profile_id = ANY (v_ads_profile_ids)
+      AND upper(btrim(a.advertised_sku)) = v_canonical_sku
       AND a.report_date BETWEEN p_date_from AND p_date_to
     GROUP BY a.report_date
   ),

@@ -105,4 +105,12 @@ describe('static safety checks', () => {
       assert.equal(content.includes("from '@/lib/supabase/admin'"), false, `${file} must not import the admin client directly -- it must go through summary.ts/daily.ts`)
     }
   })
+
+  test('Fix 5: the daily route never calls decodeURIComponent -- Next.js already decodes dynamic route segments, and a second decode can throw on (or mis-decode) a literal percent-containing SKU', () => {
+    const routeFiles = collectFiles(ROUTES_DIR, 'route.ts')
+    for (const file of routeFiles) {
+      const content = readFileSync(file, 'utf8')
+      assert.equal(content.includes('decodeURIComponent'), false, `${file} must not call decodeURIComponent -- route params are already decoded`)
+    }
+  })
 })

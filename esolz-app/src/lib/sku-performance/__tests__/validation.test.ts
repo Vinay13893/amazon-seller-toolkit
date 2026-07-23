@@ -2,7 +2,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   isValidMarketplaceId, isValidDateString, isValidSort, isValidFilterString, isValidSkuString,
-  clampLimit, clampOffset, optionalFilter, parseBooleanFlag,
+  parseStrictInt, validateLimit, validateOffset, optionalFilter, validateBooleanFlag,
   DEFAULT_LIMIT, MAX_LIMIT, MAX_OFFSET,
 } from '../validation'
 
@@ -77,36 +77,81 @@ describe('isValidSkuString', () => {
   })
 })
 
-describe('clampLimit', () => {
-  test('applies the default when absent', () => {
-    assert.equal(clampLimit(null), DEFAULT_LIMIT)
+describe('parseStrictInt', () => {
+  test('parses a plain positive integer', () => {
+    assert.equal(parseStrictInt('250'), 250)
   })
-  test('clamps a value above the ceiling', () => {
-    assert.equal(clampLimit('99999'), MAX_LIMIT)
+  test('parses a plain negative integer', () => {
+    assert.equal(parseStrictInt('-5'), -5)
   })
-  test('clamps a negative value up to 1', () => {
-    assert.equal(clampLimit('-5'), 1)
+  test('parses zero', () => {
+    assert.equal(parseStrictInt('0'), 0)
   })
-  test('"0" is treated as absent and falls back to the default (matches the pincode-monitoring tracker route convention: Math.max(1, requestedLimit || DEFAULT))', () => {
-    assert.equal(clampLimit('0'), DEFAULT_LIMIT)
+  test('rejects trailing garbage ("10abc")', () => {
+    assert.equal(parseStrictInt('10abc'), null)
   })
-  test('passes through a valid in-range value', () => {
-    assert.equal(clampLimit('250'), 250)
+  test('rejects leading garbage ("abc10")', () => {
+    assert.equal(parseStrictInt('abc10'), null)
   })
-  test('applies the default for garbage input', () => {
-    assert.equal(clampLimit('not-a-number'), DEFAULT_LIMIT)
+  test('rejects a mixed-garbage value ("5xyz")', () => {
+    assert.equal(parseStrictInt('5xyz'), null)
+  })
+  test('rejects a decimal value ("3.5")', () => {
+    assert.equal(parseStrictInt('3.5'), null)
+  })
+  test('rejects scientific notation ("1e5")', () => {
+    assert.equal(parseStrictInt('1e5'), null)
+  })
+  test('rejects whitespace padding (" 5")', () => {
+    assert.equal(parseStrictInt(' 5'), null)
+  })
+  test('rejects an empty string', () => {
+    assert.equal(parseStrictInt(''), null)
   })
 })
 
-describe('clampOffset', () => {
+describe('validateLimit', () => {
+  test('applies the default when absent', () => {
+    assert.deepEqual(validateLimit(null), { ok: true, value: DEFAULT_LIMIT })
+  })
+  test('rejects a value above the ceiling instead of clamping it', () => {
+    assert.deepEqual(validateLimit('99999'), { ok: false })
+  })
+  test('rejects a negative value instead of clamping it up to 1', () => {
+    assert.deepEqual(validateLimit('-5'), { ok: false })
+  })
+  test('rejects "0" instead of silently falling back to the default', () => {
+    assert.deepEqual(validateLimit('0'), { ok: false })
+  })
+  test('passes through a valid in-range value', () => {
+    assert.deepEqual(validateLimit('250'), { ok: true, value: 250 })
+  })
+  test('rejects garbage input ("10abc") instead of silently defaulting', () => {
+    assert.deepEqual(validateLimit('10abc'), { ok: false })
+  })
+  test('rejects a decimal value ("100.5")', () => {
+    assert.deepEqual(validateLimit('100.5'), { ok: false })
+  })
+  test('accepts exactly MAX_LIMIT', () => {
+    assert.deepEqual(validateLimit(String(MAX_LIMIT)), { ok: true, value: MAX_LIMIT })
+  })
+})
+
+describe('validateOffset', () => {
   test('defaults to 0 when absent', () => {
-    assert.equal(clampOffset(null), 0)
+    assert.deepEqual(validateOffset(null), { ok: true, value: 0 })
   })
-  test('clamps a negative value up to 0', () => {
-    assert.equal(clampOffset('-1'), 0)
+  test('rejects a negative value instead of clamping it up to 0', () => {
+    assert.deepEqual(validateOffset('-1'), { ok: false })
   })
-  test('clamps a value above the ceiling', () => {
-    assert.equal(clampOffset(String(MAX_OFFSET + 1000)), MAX_OFFSET)
+  test('rejects a value above the ceiling instead of clamping it', () => {
+    assert.deepEqual(validateOffset(String(MAX_OFFSET + 1000)), { ok: false })
+  })
+  test('rejects garbage input ("5xyz") instead of silently defaulting to 0', () => {
+    assert.deepEqual(validateOffset('5xyz'), { ok: false })
+  })
+  test('accepts exactly 0', () => {
+    assert.deepEqual(validateOffset('0'), { ok: true, value: 0 })
   })
 })
 
@@ -122,17 +167,29 @@ describe('optionalFilter', () => {
   })
 })
 
-describe('parseBooleanFlag', () => {
-  test('true string is true', () => {
-    assert.equal(parseBooleanFlag('true'), true)
+describe('validateBooleanFlag', () => {
+  test('"true" is true', () => {
+    assert.deepEqual(validateBooleanFlag('true'), { ok: true, value: true })
   })
-  test('1 string is true', () => {
-    assert.equal(parseBooleanFlag('1'), true)
+  test('"1" is true', () => {
+    assert.deepEqual(validateBooleanFlag('1'), { ok: true, value: true })
   })
   test('absent is false', () => {
-    assert.equal(parseBooleanFlag(null), false)
+    assert.deepEqual(validateBooleanFlag(null), { ok: true, value: false })
   })
-  test('false string is false', () => {
-    assert.equal(parseBooleanFlag('false'), false)
+  test('"false" is false', () => {
+    assert.deepEqual(validateBooleanFlag('false'), { ok: true, value: false })
+  })
+  test('"0" is false', () => {
+    assert.deepEqual(validateBooleanFlag('0'), { ok: true, value: false })
+  })
+  test('rejects an arbitrary truthy-looking value ("yes") instead of treating it as false', () => {
+    assert.deepEqual(validateBooleanFlag('yes'), { ok: false })
+  })
+  test('rejects a typo ("tru") instead of treating it as false', () => {
+    assert.deepEqual(validateBooleanFlag('tru'), { ok: false })
+  })
+  test('rejects an empty string instead of treating it as false', () => {
+    assert.deepEqual(validateBooleanFlag(''), { ok: false })
   })
 })
