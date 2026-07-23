@@ -5049,3 +5049,249 @@ or UI changed. No deployment. P1-B not started. PR #56 not merged.**
 **Next step (needs the founder):** PR #56 remains open for final merge review with this contract
 correction applied. **PR #56 has not been merged** — that remains a separate, explicit step pending
 founder review. P1-B does not start until that approval is given.
+
+### §23 update 6 (2026-07-23) — PR #56 merged; P1-B built: migration, 2 RPCs, TypeScript data
+### layer, 2 read-only API routes, SQL + TypeScript test suites — no UI, migration not applied
+
+**PR #56 merged.** Re-verified immediately before merge per the founder's explicit checklist: open,
+not draft, `mergeable_state: clean`, head exactly `d93dd71acfbaf2473aa98119dd3e463487a66b40`
+(matching the approved commit), base = current `master`, branch zero commits behind master, exactly
+the five documented files differed, Vercel check `success`, no newer commit since approval, no
+application/API/UI/migration file present. Merged via a standard merge commit:
+`e90fc2b96211c17163d97a4a0414af02b06eb491` (5 files changed, 1,880 insertions, 0 deletions — the
+five `.md` docs only). No production schema or row changed by the merge itself.
+
+**P1-B started, per explicit founder instruction, in a brand-new worktree**
+(`/home/user/amazon-seller-toolkit-sku-p1b`, branch `feature/sku-performance-p1b-data-api`, based on
+`origin/master` post-merge) — the P1-A audit worktree and both Pincode worktrees were never touched.
+**P1-C (UI) was not started** — confirmed by the production build output listing exactly the two new
+API routes and no `/dashboard/sku-performance` page.
+
+**Migration `065_sku_performance_p1b_rpcs.sql`** (next number after `064`, inspected directly, not
+guessed): two `SECURITY DEFINER` RPCs (`get_sku_performance_summary`, `get_sku_performance_daily`)
+plus two supporting partial indexes on `internal_data_refresh_runs` for the coverage-state range-
+overlap lookups. `REVOKE EXECUTE FROM PUBLIC` + `GRANT EXECUTE TO service_role` on both, fixed
+`search_path`, every parameter validated before any query, no generic RPC passthrough. **No existing
+source table's rows are read/written except via plain `SELECT`. No materialized table (Implementation
+Plan sec1 — not P1-B scope). Migration file exists on this branch only — never applied to any
+database, local scratch excepted for testing.**
+
+**Implementation decisions the proposed contract left open, recorded exactly as made (not silently
+assumed):**
+1. `internal_ads_advertised_product_daily_rows` has **no `marketplace_id` column of its own**
+   (confirmed directly against migrations 039/049) — every Ads-side query joins through
+   `amazon_ads_profiles` (`profile_id` → `marketplace_id`) instead.
+2. Ads-side `internal_data_refresh_runs` coverage matching filters by `workspace_id` + `profile_id`
+   (resolved via `amazon_ads_profiles` for the requested workspace/marketplace) and only *additionally*
+   requires `marketplace_id` equality when that column is non-null on the run row — defensive, since
+   the automated sync populating it was not independently confirmed to always set it.
+3. Product Spec sec3's "Mapping coverage" card (a SKU-count ratio among SKUs with spend) and
+   Implementation Plan sec2's "spend-weighted mapping coverage breakdown" (a spend-$ ratio) are two
+   different, both-locked metrics — the RPC returns **both** (`mappingCoverage.bySkuCount` and
+   `.bySpend`), never picking one and dropping the other document's requirement.
+4. "Mapping incomplete" (Product Spec sec6.4#8) is implemented literally as `mapping_state <>
+   'mapped'`, which does include `not_applicable` rows — exactly as the locked truth table states.
+5. The driving SKU universe is the **all-time** canonical union in workspace+marketplace scope, never
+   limited to the requested date range — a SKU with zero activity in the selected range still appears
+   as `no_activity`/`no_spend`, it does not disappear from the table.
+6. Source-health classification (`salesSourceState`/`adsSourceState`/`catalogSourceState`) is
+   deliberately **not** computed in SQL. `brahmastra-data-health.ts`'s real classifier
+   (`evaluateSyncedSource`) is a private, non-exported helper coupled to connection/OAuth-error
+   inspection this RPC has no access to; duplicating it in SQL would be exactly the reinvention the
+   Product Spec warns against. Instead the RPC returns raw facts (latest complete date, most recent
+   refresh-run status/timestamp) and a new, narrower TypeScript classifier
+   (`lib/sku-performance/source-health.ts`) derives the *State fields, reusing the same
+   `SourceHealthStatus` vocabulary type. **Recorded scope limitation:** this classifier never returns
+   `auth_required`/`rate_limited` — only `not_configured`/`failed`/`stale`/`healthy`.
+7. `workspaceId` is **never** accepted as a route query parameter on either endpoint — it comes only
+   from `getInternalAccessContext()`, so a caller cannot request another workspace's data by supplying
+   an arbitrary id (stricter than pincode-monitoring's pattern, which does accept a `workspaceId` param
+   because that feature's access resolution is shaped differently).
+8. The source-level "Data delayed" flag (Product Spec sec6.4#7) is computed once per response and
+   merged into every row's `flags.dataDelayed` by the TypeScript data-access layer
+   (`lib/sku-performance/summary.ts`), not computed per-row by the RPC — it is identical for every row
+   in a given response by definition (a source-level fact, never a per-SKU one).
+
+**RPC signatures** (exact, from the migration): `get_sku_performance_summary(p_workspace_id uuid,
+p_marketplace_id text, p_date_from date, p_date_to date, p_as_of date, p_limit integer, p_offset
+integer, p_sku_filter text, p_asin_filter text, p_category_filter text, p_brand_filter text,
+p_growing_only boolean, p_declining_only boolean, p_spend_spike_only boolean,
+p_no_attributed_sales_only boolean, p_high_tacos_only boolean, p_unmapped_only boolean,
+p_identity_conflict_only boolean, p_sort text) RETURNS jsonb` and `get_sku_performance_daily(
+p_workspace_id uuid, p_marketplace_id text, p_sku text, p_date_from date, p_date_to date) RETURNS
+jsonb`.
+
+**TypeScript data layer** (`esolz-app/src/lib/sku-performance/`, 8 files): `types.ts` (response-shape
+mirror), `rpc.ts` (the two hardcoded RPC wrappers, `RpcClient` injectable interface, never a generic
+`.rpc(name, params)` passthrough), `validation.ts` (bounds/format checks, no Zod dependency — matches
+the existing hand-rolled convention), `responses.ts` (`jsonOk`/`jsonError`/`internalError`/
+`mapInvalidParameters`), `source-health.ts` (the classifier above), `summary.ts`/`daily.ts` (thin
+real-I/O wrappers calling `createAdminClient()`, merging source-health facts).
+
+**Routes** (`esolz-app/src/app/api/sku-performance/`): `GET /summary` and `GET /[sku]/daily`, both
+gated by `getInternalAccessContext()` (same gate as `/api/internal/brahmastra-data-health`), bounded
+parameters mirroring `pincode-monitoring`'s route convention (explicit `MAX_*` constants, strict
+parsing, no silent coercion). **No write route of any kind exists** — confirmed by a static-source
+test that greps for POST/PUT/PATCH/DELETE exports.
+
+**Test suites:**
+- SQL (`esolz-app/supabase/tests/sku-performance-p1b/`, adapted directly from `pincode-p0a`'s scratch-
+  DB runner — same safety gates, no concurrency phase since both RPCs are pure reads with no claim/
+  finalize-style locking): 19 sequential correctness tests (canonical union visibility, campaign-
+  aggregation-before-join, mapping states incl. identity_conflict, base trend states and every
+  Attention flag, ACOS/TACOS zero-denominator truth table, pagination-vs-summary independence,
+  filters-before-pagination, deterministic sort, currency_mismatch, cross-workspace/marketplace
+  isolation, the full five-state coverage model including the "later failed retry never erases an
+  earlier CONFIRMED_ZERO" case and the manual-CSV-shaped gap, and every hard parameter ceiling on both
+  RPCs) **all passed**, run against a real local Postgres 16 instance bootstrapped from the complete
+  001–065 migration history. EXPLAIN ANALYZE at a representative 500-SKU/90-day volume (with a
+  comparable-volume second workspace diluting selectivity) confirmed both underlying scans hit the
+  existing workspace-prefixed indexes, never a sequential scan — **also passed**. The end-to-end RPC
+  call itself measured ~4.95s on this specific unoptimized, cold-cache local scratch VM at that
+  volume — recorded honestly as a data point, not claimed as production-representative (the
+  Implementation Plan's ~800ms figure is an explicit *production*-tuned promotion-trigger threshold,
+  not a P1-B build gate).
+- TypeScript (`esolz-app/src/lib/sku-performance/__tests__/`, `node:test` + `tsx`, matching
+  `pincode-monitoring`'s convention exactly): 57 new tests (parameter bounds/validation, response
+  shaping, the source-health classifier's every branch, the RPC wrapper's exact parameter mapping and
+  transport-error handling, and a static-source suite asserting no client component, no write route,
+  every route calls the access gate, `workspaceId` is never read from the query string, and the only
+  two Postgres RPC names called anywhere in this feature are the two locked ones) **all passed**.
+
+**Full verification, this round:** `npm test` (whole repo, not just this feature) — **200/200
+passed, zero regressions**. `npx tsc --noEmit` — **0 errors**. `npx eslint` on every new file — **0
+errors**. `npm run build` — **succeeded**, route listing shows exactly `/api/sku-performance/summary`
+and `/api/sku-performance/[sku]/daily` as the only two new routes, no new UI page.
+
+**Diff scope:** exactly 4 new paths, nothing else touched: `esolz-app/supabase/migrations/
+065_sku_performance_p1b_rpcs.sql`, `esolz-app/supabase/tests/sku-performance-p1b/`,
+`esolz-app/src/lib/sku-performance/`, `esolz-app/src/app/api/sku-performance/`.
+
+**No migration applied to production. No production row changed. No existing dashboard or route
+modified. P1-C (UI) not started. No deployment triggered intentionally** — pushing this branch will
+trigger the same automatic Vercel PR-preview build every prior round in this project has triggered,
+not a production deploy.
+
+**Next step (needs the founder):** review the new PR for P1-B. **Not merged** — pending explicit
+founder approval, same as every prior round. The migration must be applied to a real (non-scratch)
+Supabase project only after that approval, as a separate, explicit step. P1-C (the
+`/dashboard/sku-performance` page UI) remains not started.
+
+### §23 update 7 (2026-07-23) — PR #57 correction round: six correctness fixes, still not merged, migration edited in place
+
+Independent code review of PR #57 found six correctness blockers before it was ready for merge. This
+was one ordinary correction round (MVP Fast Delivery Mode) on the same branch/PR — **migration
+`065_sku_performance_p1b_rpcs.sql` was edited in place**, not superseded, because it has never been
+applied anywhere except a disposable local scratch database. No new PR, no product-spec rewrite, no
+migration applied to production.
+
+**Fix 1 — mixed-period TACOS.** `commonEffectiveDateFrom = GREATEST(requestedDateFrom,
+salesHistoryStartsAt, adsHistoryStartsAt)` replaces the old `LEAST()`-based combined start. Combined
+TACOS now sums spend/sales only over that common range; a missing source is never coalesced to the
+requested start and treated as if it existed. `dateRange` now separately returns
+`commonEffectiveDateFrom/To`, `salesEffectiveDateFrom`, `adsEffectiveDateFrom`, and `clampReasons` as
+an array (was a single lossy string).
+
+**Fix 2 — sort order.** The final `jsonb_agg` was silently re-sorting by `canonical_sku` regardless of
+the requested `p_sort`, discarding the `paged` CTE's correct ordering. Fixed with a `ROW_NUMBER()`
+assigned after the real sort, paginated and re-aggregated by that stable row number.
+
+**Fix 3 — summary coverage truth.** The summary RPC used to `COALESCE` a missing source row to zero
+without proving coverage. New per-(window, source) coverage model — `complete` / `partial` /
+`before_history` / `source_not_complete` / `unknown` — computed once per window×source pair (not
+per-SKU) via two new helpers, `_sku_perf_window_coverage()` and `_sku_perf_rollup_state()`. Trends
+resolve to `no_comparable_baseline` (never a false `no_activity`/`no_spend`) when their required
+windows aren't complete, and no flag is derived from an incomplete/unknown trend. Every ratio now
+returns `{value, state}` with `normal`/`not_applicable`/`undefined`/`undefined_high_risk`/`unknown`.
+
+**Fix 4 — cross-source identity collisions.** Canonical-collision detection now combines raw-SKU
+evidence from all four sources (Catalog, Business Report, Ads, Cost Master); a collision anywhere in
+that combined set — same-source or cross-source — makes the row `identity_conflict`. An
+identity_conflict row suppresses every window/trend/flag except `mappingIncomplete` and carries a new
+`identityConflictEvidence` object instead. The daily RPC now short-circuits to
+`{result: 'identity_conflict', evidence}` before any day-by-day work, never a combined series.
+
+**Fix 5 — strict validation.** SQL: a hard 400-day range ceiling now applies to the summary RPC too
+(previously daily-only), and future-date rejection uses the requesting marketplace's own Ads-profile
+timezone when configured, with no `CURRENT_DATE + 1` grace day when it isn't. TypeScript: `limit`/
+`offset`/boolean query params are now parsed by strict whole-string validators
+(`validateLimit`/`validateOffset`/`validateBooleanFlag` in `validation.ts`) that reject malformed
+input (`"10abc"`, decimals, out-of-range) with a 400 instead of silently clamping or defaulting. The
+daily route's redundant `decodeURIComponent()` call — Next.js already decodes dynamic route segments,
+so this was double-decoding and could throw on a literal percent-containing SKU — was removed.
+
+**Fix 6 — truthful source health.** `MAX(report_date)` is no longer called "latest complete."
+`salesLatestDataDate`/`adsLatestDataDate` (honest "latest row seen") are now returned separately from
+`salesLatestAcceptedCompleteDate`/`adsLatestAcceptedCompleteDate` (latest `date_to` among ONLY
+`status='success' AND rows_rejected=0` runs), plus `salesLastRunRowsRejected`/`adsLastRunRowsRejected`.
+The TypeScript classifier (`source-health.ts`) now judges freshness against the accepted-complete date
+and maps every run status conservatively into the existing `SourceHealthStatus` vocabulary:
+`failed`→failed, `partial_success`/`running`/`skipped-with-stale-evidence`/`success-with-rejected-rows`
+→stale, only a clean accepted-and-current success→healthy. `dataDelayed` is derived from this, never
+from row presence alone.
+
+**Narrow contract cleanup:** (1) Cost Master (no `marketplace_id` column) was removed from the
+`universe` union — it now only enriches an SKU already present via Catalog/Sales/Ads, never
+independently introduces a Cost-Master-only SKU into every marketplace. (2) `mappingIncomplete` is now
+`true` only for `unmapped`/`identity_conflict`, never `not_applicable` (no advertising activity is not
+a mapping problem). (3) `stale_metadata` remains a documented, deliberate MVP deferral (confirmed never
+implemented anywhere, including the TS `MappingState` type). (4) Summary-level ACOS/TACOS are now
+`{value, state}` objects, gated by a new workspace-scope coverage check, not a bare nullable number.
+
+**Performance.** The representative 500-SKU/90-day benchmark measured ~12.4s before this round's
+`auto_explain`-driven investigation found the actual dominant cost: **Postgres JIT compilation**, not
+query execution — ~11s of the ~12.4s was JIT Optimization+Emission compiling ~200 expression functions
+for a plan whose cost estimate crosses the JIT thresholds, while real plan execution finished in
+~1.1s. Both RPCs now set `jit = off` in their function definition (migration decision #11) — a
+targeted, per-function setting, not a server-wide change, an index, or a materialized table. Three
+warm runs after the fix: **1028ms, 909ms, 893ms (median 909ms)** — comfortably under the 2s target and
+the original "roughly five seconds is not acceptable" complaint.
+
+**Tests:** SQL sequential suite rewritten with new/expanded fixtures and assertions for every fix above
+(same-source and cross-source collision fixtures, a dedicated marketplace M3 for the coverage-gap
+daily-model tests so they never collide with M1's now-extended "healthy account" coverage, a dedicated
+marketplace M4 fixed safely in the past for the partial_success/unknown-window trend-suppression test
+so it can never collide with the marketplace-local future-date check) — **all pass**. TypeScript
+(`validation.test.ts`, `source-health.test.ts`, `static-checks.test.ts` updated/extended) — **225/225
+pass**. `npx tsc --noEmit` — 0 errors. `npx eslint` on every changed file — 0 errors. `npm run build` —
+succeeded, same two routes as before, no new UI.
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.
+
+### §23 update 8 (2026-07-23) — PR #57 follow-up: ASIN-mismatch identity conflicts unified with raw-SKU collisions, exact 400-inclusive-day ceiling, still not merged
+
+One small follow-up commit on top of update 7, same branch/PR, migration edited in place again (still
+never applied outside a local scratch DB).
+
+**ASIN-mismatch identity conflict.** `identityConflictEvidence` (both RPCs) now carries `reasons`
+(`raw_sku_collision` and/or `advertised_asin_catalog_asin_mismatch`), `catalogAsin`, and
+`advertisedAsins`, not just the four raw-SKU arrays — an ASIN-mismatch conflict (Catalog and Ads agree
+on the raw SKU string but disagree on ASIN) previously produced evidence that never named the ASINs
+actually in conflict. `get_sku_performance_daily`'s upfront short-circuit previously only fired for a
+raw-SKU collision; a SKU with only an ASIN mismatch (e.g. `SKU-CONFLICT-ASIN`) silently got a normal
+per-day `success` series from the daily endpoint despite the summary endpoint correctly flagging it
+`identity_conflict`. The daily RPC now uses the exact same two-reason decision as the summary RPC's
+`mapping_state` (same precedence — an ads-absent SKU is never `identity_conflict` in either RPC), so
+the two RPCs can never disagree about a given canonical SKU's conflict status. Also fixed a latent
+false-positive: the ASIN-mismatch boolean is now guarded on an actual catalog ASIN being present
+(`cg.asin IS NOT NULL` / `v_catalog_asin IS NOT NULL`) — without that guard, a catalog-absent SKU with
+any advertised ASIN would have spuriously read as a "mismatch" (`x IS DISTINCT FROM NULL` is true for
+any non-null x).
+
+**Exact 400 inclusive days.** Both RPCs' range ceiling checked `(dateTo - dateFrom) > 400`, a day
+DIFFERENCE, not an inclusive calendar-date count — it silently accepted 401 inclusive dates. Both RPCs
+and both TypeScript routes now check the inclusive count (`+ 1`); exactly 400 inclusive dates is
+accepted, 401 is rejected. The inclusive-day math is now a shared, directly-tested helper
+(`isRangeWithinInclusiveDays` in `validation.ts`) rather than inlined per route.
+
+**Tests:** SQL — new/extended assertions (TEST 4b/4c/4d/4e/4f, TEST 16j, TEST 19c) covering both
+conflict reasons independently, summary/daily conflict-status consistency across a raw-SKU-collision
+SKU, an ASIN-mismatch SKU, and a normal mapped SKU, and the exact 400-vs-401 inclusive boundary on both
+RPCs — **all pass**. TypeScript — 231/231 pass (6 new tests for `inclusiveDayCount`/
+`isRangeWithinInclusiveDays`). `npx tsc --noEmit` 0 errors. `npx eslint` 0 errors on every changed
+file. `npm run build` succeeded, same two routes, no new UI. The P1-C1 JSON fixture
+(`p1c1-sample-responses.json`) was regenerated to reflect the new evidence shape.
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.

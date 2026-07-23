@@ -1372,3 +1372,115 @@ contract, not new data findings.
 
 **No migration applied to production. No production row changed. No application code, API route, or UI
 changed. No deployment. P1-B not started. PR #56 not merged**, pending separate founder approval.
+
+## SKU Performance — PR #56 merged; P1-B built (migration, RPCs, TypeScript data layer, 2 read-only
+## routes, SQL + TS test suites) (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 6.
+
+**PR #56 merged** after re-verifying every precondition (open, not draft, mergeable, head matched the
+approved `d93dd71a...` exactly, base = current master, zero commits behind, exactly 5 files differed, Vercel
+green, no newer commit) — merge commit `e90fc2b96211c17163d97a4a0414af02b06eb491` (5 docs, 0 application
+code).
+
+**P1-B built** in a new worktree/branch (`feature/sku-performance-p1b-data-api`), per explicit founder
+instruction. **P1-C (UI) not started.**
+
+**Migration `065_sku_performance_p1b_rpcs.sql`** — two `SECURITY DEFINER` RPCs
+(`get_sku_performance_summary`, `get_sku_performance_daily`) plus 2 supporting partial indexes on
+`internal_data_refresh_runs`. `REVOKE EXECUTE FROM PUBLIC` + `GRANT EXECUTE TO service_role`, fixed
+`search_path`, no generic RPC passthrough. Implements the canonical cross-source SKU union, the corrected
+five-state coverage model, the selected-range + as-of contract, and the pagination/summary-count split
+exactly as locked in the merged Implementation Plan. **Not applied to any database except a local test
+scratch DB.**
+
+**Notable implementation decisions recorded** (full list in tracker §23 update 6): Ads rows have no
+`marketplace_id` column of their own and are scoped via `amazon_ads_profiles`; the RPC returns both a
+SKU-count and a spend-weighted mapping-coverage breakdown (the two locked docs specified different metrics);
+the driving SKU universe is all-time presence, not date-range-limited; source-health state classification
+(`healthy`/`stale`/`failed`/`not_configured`) is computed in a new, narrower TypeScript classifier rather than
+duplicated in SQL, with `auth_required`/`rate_limited` recorded as an explicit, intentional scope limitation;
+`workspaceId` is never accepted as a route query parameter, only from `getInternalAccessContext()`.
+
+**TypeScript layer** (`esolz-app/src/lib/sku-performance/`): `types.ts`, `rpc.ts` (2 hardcoded RPC wrappers),
+`validation.ts`, `responses.ts`, `source-health.ts`, `summary.ts`/`daily.ts`. **Routes**:
+`GET /api/sku-performance/summary`, `GET /api/sku-performance/[sku]/daily` — both gated by
+`getInternalAccessContext()`, no write verb exported by either.
+
+**Tests, all passed:** SQL suite (19 sequential tests + EXPLAIN ANALYZE at 500-SKU/90-day volume, run
+against a real local Postgres 16 built from the full 001–065 migration history — adapted from
+`pincode-p0a`'s scratch-DB runner); 57 new TypeScript tests (`node:test`/`tsx`, matching pincode-monitoring's
+convention). **Full verification:** `npm test` 200/200 (whole repo, zero regressions), `npx tsc --noEmit` 0
+errors, `npx eslint` 0 errors on every new file, `npm run build` succeeded with exactly the 2 new routes and
+no new UI page.
+
+**No migration applied to production. No production row changed. No existing dashboard/route modified. P1-C
+not started. No deployment triggered intentionally** (pushing will trigger the same automatic Vercel
+PR-preview build every prior round has triggered).
+
+**Next step (needs the founder):** review the new PR. **Not merged** — pending explicit approval, same as
+every prior round.
+
+## SKU Performance — PR #57 correction round: six correctness fixes closed, migration edited in place (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 7. Independent code review of PR #57 found six
+correctness blockers; this is that single ordinary correction round (same branch/PR, migration edited
+in place — it was never applied anywhere except a disposable local scratch database).
+
+**Six fixes closed:** (1) mixed-period TACOS — combined ratios now use
+`GREATEST(requestedFrom, salesHistoryStart, adsHistoryStart)` as the common comparable range instead of
+`LEAST()`, and a missing source is never coalesced to zero. (2) Sort order — `jsonb_agg` was silently
+re-sorting by `canonical_sku`; fixed with a stable `ROW_NUMBER()` assigned after the real sort. (3)
+Summary coverage truth — a new per-(window, source) coverage model
+(`complete`/`partial`/`before_history`/`source_not_complete`/`unknown`) replaces silent zero-coalescing;
+trends resolve to `no_comparable_baseline` (never a false `no_activity`) and no flag fires from an
+incomplete window. (4) Cross-source identity collisions — collision detection now spans all four
+sources (Catalog/Sales/Ads/Cost Master); a conflicted row suppresses all metrics and carries
+`identityConflictEvidence`; the daily RPC short-circuits before any combined series. (5) Strict
+validation — SQL gained a 400-day ceiling on the summary RPC and marketplace-local (not
+`CURRENT_DATE+1`) future-date rejection; TypeScript query-param parsing is now strict (rejects
+`"10abc"`, decimals, out-of-range instead of silently clamping/defaulting), and the daily route's
+double `decodeURIComponent()` call was removed. (6) Truthful source health — `salesLatestDataDate` is
+now honestly separated from `salesLatestAcceptedCompleteDate` (only accepted, `rows_rejected=0` runs),
+and the health classifier maps every run status conservatively (never reports partial data as healthy).
+
+**Narrow contract cleanup:** Cost Master no longer leaks a workspace-scoped-only SKU into every
+marketplace; `mappingIncomplete` no longer includes `not_applicable`; `stale_metadata`'s MVP deferral is
+now documented in the migration header; summary ACOS/TACOS are `{value, state}` objects.
+
+**Performance:** the 500-SKU/90-day benchmark measured ~12.4s; `auto_explain` profiling found ~11s of
+that was Postgres JIT compilation (not execution) of the function's large plan tree. Both RPCs now set
+`jit = off` (a targeted per-function setting, no index/materialized-table change). Three warm runs
+after the fix: **1028ms / 909ms / 893ms (median 909ms)**.
+
+**Tests:** SQL sequential suite rewritten with fixtures/assertions for every fix (all pass). TypeScript:
+225/225 pass, `npx tsc --noEmit` 0 errors, `npx eslint` 0 errors on every changed file, `npm run build`
+succeeded (same 2 routes, no new UI).
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.
+
+## SKU Performance — PR #57 follow-up: ASIN-mismatch conflicts + exact 400-day ceiling (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 8. One small follow-up commit on the same
+branch/PR as the six-fix correction round, migration edited in place again.
+
+**ASIN-mismatch identity conflict:** `identityConflictEvidence` now carries `reasons` (an array of
+`raw_sku_collision`/`advertised_asin_catalog_asin_mismatch`), `catalogAsin`, and `advertisedAsins` in
+both RPCs. The daily RPC previously only short-circuited to `identity_conflict` for a raw-SKU
+collision — a SKU with only an ASIN mismatch (Catalog and Ads agree on the SKU string, disagree on
+ASIN) silently returned a normal per-day series instead. It now uses the exact same two-reason
+decision as the summary RPC, so the two endpoints can never disagree about a SKU's conflict status.
+Also fixed a latent false-positive where a catalog-absent SKU with any advertised ASIN could spuriously
+read as a "mismatch."
+
+**Exact 400 inclusive days:** the range ceiling in both RPCs and both routes checked a day
+*difference* (`dateTo - dateFrom > 400`), which silently accepted 401 inclusive calendar dates. Fixed
+to check the inclusive count (`+ 1`) everywhere — exactly 400 accepted, 401 rejected.
+
+**Tests:** SQL suite extended with fixtures/assertions for both conflict reasons, summary/daily
+consistency, and the exact 400/401 boundary — all pass. TypeScript 231/231 pass, `tsc`/`eslint`/build
+all clean. P1-C1 JSON fixture regenerated with the new evidence shape.
+
+**No migration applied to production. No production row changed. Not merged** — pending founder review
+of the corrected PR #57.
