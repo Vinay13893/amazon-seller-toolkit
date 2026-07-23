@@ -170,6 +170,20 @@ export default function SkuDailyTrendsPage() {
 
       <Card className="rounded-lg border-border/70 shadow-none">
         <CardContent className="px-0">
+          {(view.kind === 'ready' || view.kind === 'no_comparable_data') && (
+            <div className="flex flex-col gap-2 border-b border-border px-5 pb-3 pt-1">
+              <p className="text-xs text-muted-foreground">
+                Showing {formatCount(view.result.pagination.returnedSkuCount)} of {formatCount(view.result.pagination.totalMatchingSkuCountAfterFilters)} SKUs
+              </p>
+              {view.result.pagination.hasMore && (
+                <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-400">
+                  <AlertCircle className="size-3.5 shrink-0" />
+                  More SKUs exist than this V0 page can currently display.
+                </div>
+              )}
+            </div>
+          )}
+
           {view.kind === 'loading' && (
             <div className="flex items-center justify-center gap-2 py-16">
               <Loader2 className="size-4 animate-spin text-muted-foreground" />

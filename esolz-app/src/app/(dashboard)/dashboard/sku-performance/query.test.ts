@@ -55,6 +55,15 @@ describe('buildSummaryQueryString', () => {
     assert.equal(qs.has('skuFilter'), false)
     assert.equal(qs.has('asinFilter'), false)
   })
+  // The omitted-param default limit is 100 -- production's canonical-SKU
+  // universe (~465) would be silently truncated, and client-side search can
+  // only ever cover the rows this fetch actually returned. limit=500 is the
+  // backend's own bound (MAX_LIMIT).
+  test('sends an explicit limit=500 and offset=0 so the full current SKU universe is covered', () => {
+    const qs = new URLSearchParams(buildSummaryQueryString({ dateFrom: '2026-06-24', dateTo: '2026-07-23' }))
+    assert.equal(qs.get('limit'), '500')
+    assert.equal(qs.get('offset'), '0')
+  })
 })
 
 describe('filterRowsByTitle', () => {

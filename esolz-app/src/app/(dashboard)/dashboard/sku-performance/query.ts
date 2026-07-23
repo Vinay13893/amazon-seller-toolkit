@@ -64,12 +64,24 @@ export function clampRangeToMaxDays(dateFrom: string, dateTo: string): string {
  * filterRowsByTitle). This deliberately does not search beyond the current
  * page (V0 has no pagination controls in scope).
  */
+/**
+ * Explicit limit=500 (the backend's own bound) rather than the omitted-param
+ * default of 100 -- production's current canonical-SKU universe is ~465,
+ * which the default limit would silently truncate, and V0's search is
+ * client-side only (see filterRowsByTitle), so it can only ever cover the
+ * rows this fetch actually returned.
+ */
+export const V0_SUMMARY_LIMIT = 500
+export const V0_SUMMARY_OFFSET = 0
+
 export function buildSummaryQueryString(params: { dateFrom: string; dateTo: string }): string {
   const qs = new URLSearchParams()
   qs.set('marketplaceId', MARKETPLACE_ID)
   qs.set('dateFrom', params.dateFrom)
   qs.set('dateTo', params.dateTo)
   qs.set('asOf', params.dateTo)
+  qs.set('limit', String(V0_SUMMARY_LIMIT))
+  qs.set('offset', String(V0_SUMMARY_OFFSET))
   return qs.toString()
 }
 
