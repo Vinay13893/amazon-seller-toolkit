@@ -1,6 +1,10 @@
-# SKU Performance — Implementation Plan (P1-A)
+# SKU Performance — Implementation Plan (P1-A / P1-B)
 
-Status: **plan only — nothing in this document is built in this pass**
+Status: **§1–§7 below are the original P1-A plan (locked design, amended through Update 5). P1-B
+has now been BUILT against this plan** — see "P1-B build note (2026-07-23)" at the end of §6 for
+where the actual implementation matches this document exactly and the small number of places it
+had to make an explicit decision the plan left open. Full detail:
+`BRAHMASTRA_MASTER_TRACKER.md` §23 update 6.
 Depends on: `SKU_DAILY_SALES_SPEND_DATA_AUDIT.md`, `SKU_DAILY_SALES_SPEND_PRODUCT_SPEC.md`
 Amended 2026-07-22 — Review Correction Round ("Update 2"): Corrections 4, 6, 8 applied (coverage-
 state model for missing-row-vs-confirmed-zero; the P1-A/B/C/D sequence revised so P1-B owns
@@ -12,7 +16,9 @@ final API/coverage contract consistency pass ("Update 5"): the coverage-state mo
 contradiction (`SOURCE_NOT_COMPLETE` and `UNKNOWN` both claiming "no covering run") is resolved
 with an explicit five-state decision order (§3); the summary RPC's date-range contract, canonical
 cross-source SKU universe, and pagination/summary-count separation are corrected to match the
-Product Spec (§2). Docs-only — no migration, RPC, route, or UI exists yet to change.
+Product Spec (§2). Amended again 2026-07-23 — **P1-B built** ("Update 6"): migration
+`065_sku_performance_p1b_rpcs.sql` implements both RPCs exactly as designed in §2/§3 below, plus a
+TypeScript data layer and two read-only routes. Not applied to production; P1-C not started.
 
 ## 1. Aggregation model decision
 
@@ -324,7 +330,19 @@ carried in §7 below, before the Yesterday/day-level UI is enabled for real use.
 integration **only** — explainable flags are no longer P1-D scope, they moved to P1-B above.
 
 **Do not start P1-B during this task unless explicitly instructed after this audit is reviewed** —
-per the explicit instruction. Nothing beyond P1-A is implemented in this branch.
+per the explicit instruction that applied through Update 5. **Superseded by explicit founder
+instruction on 2026-07-23: build P1-B.**
+
+**P1-B build note (2026-07-23).** Built exactly as designed above, in migration
+`065_sku_performance_p1b_rpcs.sql` plus `esolz-app/src/lib/sku-performance/` and
+`esolz-app/src/app/api/sku-performance/`. SQL scratch-DB tests and TypeScript route-layer tests both
+follow the patterns named above (`esolz-app/supabase/tests/pincode-p0a/` and
+`esolz-app/src/lib/pincode-monitoring/__tests__/`), all passing. No UI. Migration written but **not
+applied to production**. Full detail, including the small number of implementation decisions this
+plan left open (Ads rows' missing `marketplace_id` column, the dual SKU-count/spend-weighted mapping-
+coverage return, source-health classification living in TypeScript rather than SQL, and
+`workspaceId` never being an accepted route parameter), is recorded in `BRAHMASTRA_MASTER_TRACKER.md`
+§23 update 6 rather than duplicated here.
 
 ## 7. Dependencies and blockers carried forward
 

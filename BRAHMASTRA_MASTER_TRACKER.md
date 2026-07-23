@@ -5049,3 +5049,130 @@ or UI changed. No deployment. P1-B not started. PR #56 not merged.**
 **Next step (needs the founder):** PR #56 remains open for final merge review with this contract
 correction applied. **PR #56 has not been merged** — that remains a separate, explicit step pending
 founder review. P1-B does not start until that approval is given.
+
+### §23 update 6 (2026-07-23) — PR #56 merged; P1-B built: migration, 2 RPCs, TypeScript data
+### layer, 2 read-only API routes, SQL + TypeScript test suites — no UI, migration not applied
+
+**PR #56 merged.** Re-verified immediately before merge per the founder's explicit checklist: open,
+not draft, `mergeable_state: clean`, head exactly `d93dd71acfbaf2473aa98119dd3e463487a66b40`
+(matching the approved commit), base = current `master`, branch zero commits behind master, exactly
+the five documented files differed, Vercel check `success`, no newer commit since approval, no
+application/API/UI/migration file present. Merged via a standard merge commit:
+`e90fc2b96211c17163d97a4a0414af02b06eb491` (5 files changed, 1,880 insertions, 0 deletions — the
+five `.md` docs only). No production schema or row changed by the merge itself.
+
+**P1-B started, per explicit founder instruction, in a brand-new worktree**
+(`/home/user/amazon-seller-toolkit-sku-p1b`, branch `feature/sku-performance-p1b-data-api`, based on
+`origin/master` post-merge) — the P1-A audit worktree and both Pincode worktrees were never touched.
+**P1-C (UI) was not started** — confirmed by the production build output listing exactly the two new
+API routes and no `/dashboard/sku-performance` page.
+
+**Migration `065_sku_performance_p1b_rpcs.sql`** (next number after `064`, inspected directly, not
+guessed): two `SECURITY DEFINER` RPCs (`get_sku_performance_summary`, `get_sku_performance_daily`)
+plus two supporting partial indexes on `internal_data_refresh_runs` for the coverage-state range-
+overlap lookups. `REVOKE EXECUTE FROM PUBLIC` + `GRANT EXECUTE TO service_role` on both, fixed
+`search_path`, every parameter validated before any query, no generic RPC passthrough. **No existing
+source table's rows are read/written except via plain `SELECT`. No materialized table (Implementation
+Plan sec1 — not P1-B scope). Migration file exists on this branch only — never applied to any
+database, local scratch excepted for testing.**
+
+**Implementation decisions the proposed contract left open, recorded exactly as made (not silently
+assumed):**
+1. `internal_ads_advertised_product_daily_rows` has **no `marketplace_id` column of its own**
+   (confirmed directly against migrations 039/049) — every Ads-side query joins through
+   `amazon_ads_profiles` (`profile_id` → `marketplace_id`) instead.
+2. Ads-side `internal_data_refresh_runs` coverage matching filters by `workspace_id` + `profile_id`
+   (resolved via `amazon_ads_profiles` for the requested workspace/marketplace) and only *additionally*
+   requires `marketplace_id` equality when that column is non-null on the run row — defensive, since
+   the automated sync populating it was not independently confirmed to always set it.
+3. Product Spec sec3's "Mapping coverage" card (a SKU-count ratio among SKUs with spend) and
+   Implementation Plan sec2's "spend-weighted mapping coverage breakdown" (a spend-$ ratio) are two
+   different, both-locked metrics — the RPC returns **both** (`mappingCoverage.bySkuCount` and
+   `.bySpend`), never picking one and dropping the other document's requirement.
+4. "Mapping incomplete" (Product Spec sec6.4#8) is implemented literally as `mapping_state <>
+   'mapped'`, which does include `not_applicable` rows — exactly as the locked truth table states.
+5. The driving SKU universe is the **all-time** canonical union in workspace+marketplace scope, never
+   limited to the requested date range — a SKU with zero activity in the selected range still appears
+   as `no_activity`/`no_spend`, it does not disappear from the table.
+6. Source-health classification (`salesSourceState`/`adsSourceState`/`catalogSourceState`) is
+   deliberately **not** computed in SQL. `brahmastra-data-health.ts`'s real classifier
+   (`evaluateSyncedSource`) is a private, non-exported helper coupled to connection/OAuth-error
+   inspection this RPC has no access to; duplicating it in SQL would be exactly the reinvention the
+   Product Spec warns against. Instead the RPC returns raw facts (latest complete date, most recent
+   refresh-run status/timestamp) and a new, narrower TypeScript classifier
+   (`lib/sku-performance/source-health.ts`) derives the *State fields, reusing the same
+   `SourceHealthStatus` vocabulary type. **Recorded scope limitation:** this classifier never returns
+   `auth_required`/`rate_limited` — only `not_configured`/`failed`/`stale`/`healthy`.
+7. `workspaceId` is **never** accepted as a route query parameter on either endpoint — it comes only
+   from `getInternalAccessContext()`, so a caller cannot request another workspace's data by supplying
+   an arbitrary id (stricter than pincode-monitoring's pattern, which does accept a `workspaceId` param
+   because that feature's access resolution is shaped differently).
+8. The source-level "Data delayed" flag (Product Spec sec6.4#7) is computed once per response and
+   merged into every row's `flags.dataDelayed` by the TypeScript data-access layer
+   (`lib/sku-performance/summary.ts`), not computed per-row by the RPC — it is identical for every row
+   in a given response by definition (a source-level fact, never a per-SKU one).
+
+**RPC signatures** (exact, from the migration): `get_sku_performance_summary(p_workspace_id uuid,
+p_marketplace_id text, p_date_from date, p_date_to date, p_as_of date, p_limit integer, p_offset
+integer, p_sku_filter text, p_asin_filter text, p_category_filter text, p_brand_filter text,
+p_growing_only boolean, p_declining_only boolean, p_spend_spike_only boolean,
+p_no_attributed_sales_only boolean, p_high_tacos_only boolean, p_unmapped_only boolean,
+p_identity_conflict_only boolean, p_sort text) RETURNS jsonb` and `get_sku_performance_daily(
+p_workspace_id uuid, p_marketplace_id text, p_sku text, p_date_from date, p_date_to date) RETURNS
+jsonb`.
+
+**TypeScript data layer** (`esolz-app/src/lib/sku-performance/`, 8 files): `types.ts` (response-shape
+mirror), `rpc.ts` (the two hardcoded RPC wrappers, `RpcClient` injectable interface, never a generic
+`.rpc(name, params)` passthrough), `validation.ts` (bounds/format checks, no Zod dependency — matches
+the existing hand-rolled convention), `responses.ts` (`jsonOk`/`jsonError`/`internalError`/
+`mapInvalidParameters`), `source-health.ts` (the classifier above), `summary.ts`/`daily.ts` (thin
+real-I/O wrappers calling `createAdminClient()`, merging source-health facts).
+
+**Routes** (`esolz-app/src/app/api/sku-performance/`): `GET /summary` and `GET /[sku]/daily`, both
+gated by `getInternalAccessContext()` (same gate as `/api/internal/brahmastra-data-health`), bounded
+parameters mirroring `pincode-monitoring`'s route convention (explicit `MAX_*` constants, strict
+parsing, no silent coercion). **No write route of any kind exists** — confirmed by a static-source
+test that greps for POST/PUT/PATCH/DELETE exports.
+
+**Test suites:**
+- SQL (`esolz-app/supabase/tests/sku-performance-p1b/`, adapted directly from `pincode-p0a`'s scratch-
+  DB runner — same safety gates, no concurrency phase since both RPCs are pure reads with no claim/
+  finalize-style locking): 19 sequential correctness tests (canonical union visibility, campaign-
+  aggregation-before-join, mapping states incl. identity_conflict, base trend states and every
+  Attention flag, ACOS/TACOS zero-denominator truth table, pagination-vs-summary independence,
+  filters-before-pagination, deterministic sort, currency_mismatch, cross-workspace/marketplace
+  isolation, the full five-state coverage model including the "later failed retry never erases an
+  earlier CONFIRMED_ZERO" case and the manual-CSV-shaped gap, and every hard parameter ceiling on both
+  RPCs) **all passed**, run against a real local Postgres 16 instance bootstrapped from the complete
+  001–065 migration history. EXPLAIN ANALYZE at a representative 500-SKU/90-day volume (with a
+  comparable-volume second workspace diluting selectivity) confirmed both underlying scans hit the
+  existing workspace-prefixed indexes, never a sequential scan — **also passed**. The end-to-end RPC
+  call itself measured ~4.95s on this specific unoptimized, cold-cache local scratch VM at that
+  volume — recorded honestly as a data point, not claimed as production-representative (the
+  Implementation Plan's ~800ms figure is an explicit *production*-tuned promotion-trigger threshold,
+  not a P1-B build gate).
+- TypeScript (`esolz-app/src/lib/sku-performance/__tests__/`, `node:test` + `tsx`, matching
+  `pincode-monitoring`'s convention exactly): 57 new tests (parameter bounds/validation, response
+  shaping, the source-health classifier's every branch, the RPC wrapper's exact parameter mapping and
+  transport-error handling, and a static-source suite asserting no client component, no write route,
+  every route calls the access gate, `workspaceId` is never read from the query string, and the only
+  two Postgres RPC names called anywhere in this feature are the two locked ones) **all passed**.
+
+**Full verification, this round:** `npm test` (whole repo, not just this feature) — **200/200
+passed, zero regressions**. `npx tsc --noEmit` — **0 errors**. `npx eslint` on every new file — **0
+errors**. `npm run build` — **succeeded**, route listing shows exactly `/api/sku-performance/summary`
+and `/api/sku-performance/[sku]/daily` as the only two new routes, no new UI page.
+
+**Diff scope:** exactly 4 new paths, nothing else touched: `esolz-app/supabase/migrations/
+065_sku_performance_p1b_rpcs.sql`, `esolz-app/supabase/tests/sku-performance-p1b/`,
+`esolz-app/src/lib/sku-performance/`, `esolz-app/src/app/api/sku-performance/`.
+
+**No migration applied to production. No production row changed. No existing dashboard or route
+modified. P1-C (UI) not started. No deployment triggered intentionally** — pushing this branch will
+trigger the same automatic Vercel PR-preview build every prior round in this project has triggered,
+not a production deploy.
+
+**Next step (needs the founder):** review the new PR for P1-B. **Not merged** — pending explicit
+founder approval, same as every prior round. The migration must be applied to a real (non-scratch)
+Supabase project only after that approval, as a separate, explicit step. P1-C (the
+`/dashboard/sku-performance` page UI) remains not started.

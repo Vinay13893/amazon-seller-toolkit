@@ -1372,3 +1372,51 @@ contract, not new data findings.
 
 **No migration applied to production. No production row changed. No application code, API route, or UI
 changed. No deployment. P1-B not started. PR #56 not merged**, pending separate founder approval.
+
+## SKU Performance — PR #56 merged; P1-B built (migration, RPCs, TypeScript data layer, 2 read-only
+## routes, SQL + TS test suites) (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 6.
+
+**PR #56 merged** after re-verifying every precondition (open, not draft, mergeable, head matched the
+approved `d93dd71a...` exactly, base = current master, zero commits behind, exactly 5 files differed, Vercel
+green, no newer commit) — merge commit `e90fc2b96211c17163d97a4a0414af02b06eb491` (5 docs, 0 application
+code).
+
+**P1-B built** in a new worktree/branch (`feature/sku-performance-p1b-data-api`), per explicit founder
+instruction. **P1-C (UI) not started.**
+
+**Migration `065_sku_performance_p1b_rpcs.sql`** — two `SECURITY DEFINER` RPCs
+(`get_sku_performance_summary`, `get_sku_performance_daily`) plus 2 supporting partial indexes on
+`internal_data_refresh_runs`. `REVOKE EXECUTE FROM PUBLIC` + `GRANT EXECUTE TO service_role`, fixed
+`search_path`, no generic RPC passthrough. Implements the canonical cross-source SKU union, the corrected
+five-state coverage model, the selected-range + as-of contract, and the pagination/summary-count split
+exactly as locked in the merged Implementation Plan. **Not applied to any database except a local test
+scratch DB.**
+
+**Notable implementation decisions recorded** (full list in tracker §23 update 6): Ads rows have no
+`marketplace_id` column of their own and are scoped via `amazon_ads_profiles`; the RPC returns both a
+SKU-count and a spend-weighted mapping-coverage breakdown (the two locked docs specified different metrics);
+the driving SKU universe is all-time presence, not date-range-limited; source-health state classification
+(`healthy`/`stale`/`failed`/`not_configured`) is computed in a new, narrower TypeScript classifier rather than
+duplicated in SQL, with `auth_required`/`rate_limited` recorded as an explicit, intentional scope limitation;
+`workspaceId` is never accepted as a route query parameter, only from `getInternalAccessContext()`.
+
+**TypeScript layer** (`esolz-app/src/lib/sku-performance/`): `types.ts`, `rpc.ts` (2 hardcoded RPC wrappers),
+`validation.ts`, `responses.ts`, `source-health.ts`, `summary.ts`/`daily.ts`. **Routes**:
+`GET /api/sku-performance/summary`, `GET /api/sku-performance/[sku]/daily` — both gated by
+`getInternalAccessContext()`, no write verb exported by either.
+
+**Tests, all passed:** SQL suite (19 sequential tests + EXPLAIN ANALYZE at 500-SKU/90-day volume, run
+against a real local Postgres 16 built from the full 001–065 migration history — adapted from
+`pincode-p0a`'s scratch-DB runner); 57 new TypeScript tests (`node:test`/`tsx`, matching pincode-monitoring's
+convention). **Full verification:** `npm test` 200/200 (whole repo, zero regressions), `npx tsc --noEmit` 0
+errors, `npx eslint` 0 errors on every new file, `npm run build` succeeded with exactly the 2 new routes and
+no new UI page.
+
+**No migration applied to production. No production row changed. No existing dashboard/route modified. P1-C
+not started. No deployment triggered intentionally** (pushing will trigger the same automatic Vercel
+PR-preview build every prior round has triggered).
+
+**Next step (needs the founder):** review the new PR. **Not merged** — pending explicit approval, same as
+every prior round.
