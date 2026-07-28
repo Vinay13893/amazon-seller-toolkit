@@ -5372,3 +5372,55 @@ rather than claimed.
 **No migration applied to production (blocked, see Step 2). No production row changed. PR #59 opened
 (both commits pushed, marked ready for review), not merged, not deployed** — pending (a) the Supabase
 migration-apply permission being resolved, and (b) explicit founder go-ahead to merge and deploy.
+
+### §23 update 10 (2026-07-28) — migration 065 live, PR #59 merged and deployed, SKU Daily Trends V0 ready for team use
+
+**Migration 065: applied.** The Supabase MCP `apply_migration` tool remained blocked across every
+attempt this session (explicit rejections and repeated `MCP tool call requires approval` errors, never
+an approval dialog) — declined to hunt for a bypass (raw DB credentials, browser session) around that
+gate, since it's a deliberate approval control, not a bug to route around. The founder applied the
+exact byte-verified (SHA-256 `30518d55...`) merged-master SQL manually via the Supabase Dashboard SQL
+Editor instead. Verified live via read-only `execute_sql` (itself intermittently gated, but succeeded
+on retry): `get_sku_performance_summary` and `get_sku_performance_daily` both return real production
+data. Migration-history reconciliation (065 does not appear in `list_migrations`, since a manual SQL
+Editor apply doesn't register there the way the CLI/MCP path would) is tracked as a separate, non-
+blocking follow-up — the functions/grants themselves are confirmed live and correct, which is what
+actually matters functionally.
+
+**Production data verified real, not fabricated.** Summary RPC for the production workspace/marketplace
+over the latest 30 complete days: `result: success`, 466 SKUs returned, `currencyCode: INR`, sales
+accepted-complete through 2026-07-27 (yesterday), ads accepted-complete through 2026-07-25. Daily RPC
+spot-checked on a real SKU (`LT_Baby_Play_Mat_S`) over 7 days: sales and spend both render with real
+values on covered days; the 2 most recent days correctly show spend as `null`/`SOURCE_NOT_COMPLETE`,
+never coalesced to zero.
+
+**PR #59 merged.** Re-confirmed head `37a180f01774d064e2d735021df1ff0d5ff08462` (open, mergeable,
+Vercel preview success, no new commits) immediately before merging. Merged via ordinary merge commit
+`8664f24e671af064b0d51dc815763d8c19db39c4` into `master`.
+
+**Production deployment did not auto-trigger from the merge — a real, documented blocker, not a code
+issue.** `/dashboard/sku-performance` 404'd on the live domain after the merge while `/dashboard`
+correctly 403'd (auth-protected), showing the app itself was up but running a build predating this
+route. This matches a known pattern already recorded in this repo (§19, 2026-07-13 and 2026-07-16
+entries): merges to `master` don't reliably trigger a fresh Vercel production build for this project;
+only a genuine `vercel deploy --prod` (not a lightweight promote) has fixed this before. This session
+had no Vercel CLI/token and had lost Vercel MCP access to the `esolz-app` project mid-session (absent
+from `list_projects`), so could not trigger the rebuild directly — reported the exact cause and the two
+fix paths (dashboard manual rebuild, or `vercel deploy --prod` from repo root) back to the founder
+rather than attempting a workaround. **The founder triggered the deployment and visually confirmed the
+live production page** at `https://esolz-app.vercel.app/dashboard/sku-performance`: route loads, SKU
+Performance nav visible, 466/466 SKUs displayed, freshness strip showing Sales Healthy (through 27 Jul
+2026) / Ads Failed (through 25 Jul 2026) / Catalog Stale (synced 29 Jun 2026), date range 28 Jun–27 Jul
+2026, and the full table (Product, SKU, ASIN, Sales, Units, Spend, and remaining columns) rendering.
+
+**SKU Daily Trends V0 is now ready for team use** at `/dashboard/sku-performance`, production data
+confirmed live and correct.
+
+**Remaining, separate follow-up issues (not blockers for V0's current use, not addressed this round):**
+- Ads refresh has been failing (source health: Failed, last accepted-complete 2026-07-25) — a data-
+  freshness/pipeline issue upstream of this feature, not a V0 bug.
+- Catalog sync is stale (last synced 2026-06-29) — same category, upstream of this feature.
+- Migration 065's migration-history record reconciliation (manual SQL Editor apply vs. tracked
+  migration history) remains open.
+- Full P1-C1 (PR #58) remains untouched, not resumed. Pincode work was not started. No new PR was
+  opened for this closeout — docs only, as instructed.

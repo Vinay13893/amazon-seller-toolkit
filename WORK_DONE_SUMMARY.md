@@ -1514,3 +1514,23 @@ codebase-wide lint finding, not a regression).
 **No migration applied to production (blocked). No production row changed. PR #59 opened (ready for
 review), not merged, not deployed** — pending the Supabase migration-apply permission and explicit
 founder go-ahead to merge/deploy.
+
+## SKU Performance — migration 065 live, PR #59 merged and deployed, V0 ready for team use (2026-07-28)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 10. Supabase MCP `apply_migration` stayed
+blocked all session; the founder applied the byte-verified migration 065 SQL manually via the Supabase
+Dashboard SQL Editor. Verified live against real production data: `get_sku_performance_summary` returns
+466 SKUs, `currencyCode: INR`, sales complete through 2026-07-27, ads complete through 2026-07-25;
+`get_sku_performance_daily` spot-checked on a real SKU shows correct sales/spend and correctly renders
+incomplete recent days as `null`, never zero.
+
+PR #59 merged (head `37a180f`, merge commit `8664f24e671af064b0d51dc815763d8c19db39c4`) into `master`.
+Production did not auto-deploy from the merge — a known, previously-documented Vercel behavior for this
+project (see §19), not a code issue — and this session had no Vercel CLI/token or MCP project access to
+trigger a rebuild itself. Reported the exact cause and fix paths back to the founder, who triggered the
+deployment and visually confirmed the live page: 466/466 SKUs, correct freshness strip (Sales Healthy
+through 27 Jul, Ads Failed through 25 Jul, Catalog Stale since 29 Jun), correct date range, full table.
+
+**SKU Daily Trends V0 is live and ready for team use at `/dashboard/sku-performance`.** Remaining
+follow-ups (separate from this feature): Ads refresh pipeline failing, Catalog sync stale, migration
+065's migration-history record reconciliation. P1-C1 (PR #58) and Pincode work remain untouched.
