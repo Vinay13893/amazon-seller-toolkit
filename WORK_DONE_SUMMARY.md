@@ -1484,3 +1484,33 @@ all clean. P1-C1 JSON fixture regenerated with the new evidence shape.
 
 **No migration applied to production. No production row changed. Not merged** — pending founder review
 of the corrected PR #57.
+
+## SKU Performance — founder priority change: PR #57 merged, P1-C1 paused, SKU Daily Trends V0 opened as PR #59 (2026-07-23)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §23 update 9. The founder deprioritized the fuller P1-C1
+UI (PR #58, left untouched) in favor of a narrower same-day V0: date control (latest 30 *complete*
+days, ending yesterday), free-text search (SKU/ASIN/title, client-side only), a 12-column table, a
+freshness strip, and a per-row inline daily trend chart at the same `/dashboard/sku-performance` route.
+
+PR #57 was already merged (head `4909991`, merge commit `92594ff`) before this instruction arrived.
+Applying migration 065 to production is **blocked** — verified production has migrations only through
+059 (060-064 Pincode and 065 both correctly unapplied), and confirmed migration 065 is purely additive
+(2 indexes, 4 functions, service_role-only grants, no table writes), but three Supabase MCP tool calls
+(`list_tables`, `get_project`, `apply_migration`) returned `MCP tool call requires approval` and did
+not proceed; only the read-only `list_migrations` call succeeded. Per the founder's own instruction to
+stop and report if the migration can't be safely applied, this was not forced through.
+
+The V0 UI was built, tested, and shipped as PR #59 in two commits exactly as instructed (table first,
+opened as a draft PR immediately; chart second, once verified) — a real bug was caught before shipping:
+the summary RPC ANDs `skuFilter`/`asinFilter`, so sending one search term as both (as V0's first draft,
+and the earlier P1-C1 branch, both did) would have silently narrowed results instead of widening them;
+fixed by keeping search entirely client-side. The chart deliberately omits `connectNulls` so an
+untrustworthy day (UNKNOWN/SOURCE_NOT_COMPLETE/BEFORE_HISTORY) renders as a real gap, never a
+fabricated zero; an identity-conflict row never fetches or shows a chart.
+
+**Tests:** 39 new focused tests, 270/270 total pass. `tsc`/`eslint`/build all clean (one pre-existing,
+codebase-wide lint finding, not a regression).
+
+**No migration applied to production (blocked). No production row changed. PR #59 opened (ready for
+review), not merged, not deployed** — pending the Supabase migration-apply permission and explicit
+founder go-ahead to merge/deploy.

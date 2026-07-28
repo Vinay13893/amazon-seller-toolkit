@@ -5295,3 +5295,80 @@ file. `npm run build` succeeded, same two routes, no new UI. The P1-C1 JSON fixt
 
 **No migration applied to production. No production row changed. Not merged** — pending founder review
 of the corrected PR #57.
+
+### §23 update 9 (2026-07-23) — founder priority change: PR #57 merged, P1-C1 paused, SKU Daily Trends V0 built and opened as PR #59
+
+**Priority change, verbatim intent:** the founder deprioritized the full P1-C1 scope (a separate,
+still-open PR #58 on branch `feature/sku-performance-p1c1-ui`, left untouched and not worked further)
+in favor of a narrower, faster "SKU Daily Trends V0" — the same route
+(`/dashboard/sku-performance`) but a deliberately smaller feature set, to get an internally-usable
+daily SKU/ASIN sales-and-spend view shipped same-day. Pincode, Command Center, Actions Inbox, Finance,
+and competitor work were explicitly out of scope for this task.
+
+**Step 1 (merge PR #57):** already complete before this instruction arrived — re-verified: PR #57 was
+merged at exactly the founder-approved head `4909991`, merge commit `92594ff`, ordinary merge (not
+squashed). No re-merge action was taken or possible (GitHub reports it merged).
+
+**Step 2 (apply migration 065 to production) — blocked, not completed.** Verified via `list_migrations`
+against the production Supabase project (`okxfwcfxxrtmijmvztdq`) that production has migrations only
+through `059_review_solicitation_orders` — migrations 060-064 (confirmed Pincode P0-A/P0-B) and 065 are
+both **not applied**, exactly as expected. Read the full 065 migration and grepped for any
+`INSERT/UPDATE/DELETE/TRUNCATE/DROP/CREATE TABLE` statement — zero matches; confirmed its only
+statements are 2 additive `CREATE INDEX IF NOT EXISTS`, 4 `CREATE OR REPLACE FUNCTION`, and
+`REVOKE`/`GRANT` scoped to `service_role`, exactly matching the founder's safety description. However,
+three separate Supabase MCP tool calls (`list_tables`, `get_project`, and a real `apply_migration`
+attempt) all returned `MCP tool call requires approval` and did not proceed, while the read-only
+`list_migrations` call succeeded — indicating a session-level permission gate on the higher-risk
+Supabase tools that did not resolve. Per the founder's own instruction ("stop immediately and report
+before proceeding if migration 065 cannot be safely applied"), this was not forced through; migration
+065 remains unapplied to production pending that permission being granted.
+
+**Step 3 (SKU Daily Trends V0) — built, tested, PR opened.** Fresh worktree/branch
+`feature/sku-daily-trends-v0` off latest `origin/master`. Built exactly the narrow scope requested: a
+date-range control defaulting to the latest 30 *complete* marketplace-local days (ending yesterday,
+never today — today's data can never honestly be called complete), a single free-text search box
+(SKU/ASIN/product title), a 12-column table reading only the summary API's selected-range metrics, a
+compact freshness strip, a per-row inline-expanding daily trend chart (no drawer/sheet framework), and
+every required basic state (loading/unauthorized/unavailable/error/empty/no-comparable-data).
+Deliberately excluded everything the founder listed as out of scope (summary cards, advanced filters,
+CSV export, thresholds, drawer framework, sort control, server pagination).
+
+**A real correctness bug caught before shipping:** the summary RPC ANDs `p_sku_filter` and
+`p_asin_filter` together (`WHERE (sku ILIKE ...) AND (asin ILIKE ...)`), not OR. The natural approach
+of sending one free-text search term as both params (which the P1-C1 branch's `query.ts` also did,
+mislabeled there as "OR-like widening") would have silently *narrowed* results instead, excluding a
+legitimate SKU-only or ASIN-only match. Fixed by never sending search to the API as a filter param at
+all for V0's single search box — it is applied entirely client-side (against the page already
+returned) instead, matching on SKU, ASIN, and product title.
+
+**Chart truth-rule enforcement:** the daily trend chart's `Line` components deliberately omit
+`connectNulls` — a day whose `coverageState` isn't `REPORTED_VALUE`/`CONFIRMED_ZERO` (i.e.
+`UNKNOWN`/`SOURCE_NOT_COMPLETE`/`BEFORE_HISTORY`) maps to `null` and renders as a genuine gap in the
+line, never a fabricated zero. The per-day ACOS/TACOS breakdown beneath the chart shows a value only
+when `state === 'normal'` (blank otherwise, not even a word) — a narrower rule than the table's fuller
+state-label treatment, per the founder's explicit instruction. An identity-conflict row never fetches
+or renders a chart; it shows a compact notice (reasons, catalog ASIN, advertised ASINs) reusing the
+evidence already present in the summary response, avoiding a redundant daily-RPC round trip for a SKU
+already known to be conflicted.
+
+**Delivery-speed process followed:** commit 1 (table + search + date range + freshness strip + all
+basic states) was committed and pushed as soon as it built and tested clean, and PR #59 was opened as a
+draft immediately — not waiting for the chart. Commit 2 (the daily chart) followed once verified.
+
+**Tests:** 39 new focused unit tests (`format.test.ts`, `query.test.ts`) covering exactly what was
+asked — unknown-values-never-zero, identity-conflict suppression, ratio-state rendering, date-range
+behavior (yesterday-not-today default, month-boundary correctness), plus chart-gap/no-comparable-data
+derivation. `npm test` (whole repo): 270/270 pass. `npx tsc --noEmit`: 0 errors. `npx eslint` on every
+changed file: 0 errors except the same pre-existing, codebase-wide `react-hooks/set-state-in-effect`
+finding on the standard fetch-on-mount idiom already present unmodified in `brand-analytics/
+search-terms`, `buybox`, `alerts`, and `reports` — not a regression. `npm run build` succeeded;
+`/dashboard/sku-performance` builds as a static route. No new SQL test round was run (not needed — no
+SQL was changed).
+
+**Live browser / production verification was not possible in this environment** (no Supabase
+credentials configured, so `next dev` cannot pass the dashboard's auth middleware) — stated explicitly
+rather than claimed.
+
+**No migration applied to production (blocked, see Step 2). No production row changed. PR #59 opened
+(both commits pushed, marked ready for review), not merged, not deployed** — pending (a) the Supabase
+migration-apply permission being resolved, and (b) explicit founder go-ahead to merge and deploy.
