@@ -1534,3 +1534,26 @@ through 27 Jul, Ads Failed through 25 Jul, Catalog Stale since 29 Jun), correct 
 **SKU Daily Trends V0 is live and ready for team use at `/dashboard/sku-performance`.** Remaining
 follow-ups (separate from this feature): Ads refresh pipeline failing, Catalog sync stale, migration
 065's migration-history record reconciliation. P1-C1 (PR #58) and Pincode work remain untouched.
+
+## Ads Data Refresh Failure — diagnosed, fixed, recovered, closed (2026-07-28 to 2026-07-29)
+
+Full detail in `BRAHMASTRA_MASTER_TRACKER.md` §24. All 6 Ads sources had failed identically for 2
+straight days (2026-07-27/28) with `did not complete within 900000ms` — Amazon's report generation
+outran our 15-min poll ceiling, confirmed via read-only diagnosis (11 distinct real report IDs, auth
+fine, never reached download/parse/DB). Found a second real gap while investigating the fix:
+`poll-pending-reports.ts` silently skipped the 3 SP deep-report sources (advertised_product/
+targeting/search_term) — exactly what SKU Performance reads.
+
+Fix (PR #61, merged `4fa4914`): raised the poll ceiling to 1,500,000ms (25 min) for all sources,
+extended the recovery script to cover all 6, extracted the shared logic into `src/lib/internal/` with
+21 new tests (292/292 total pass, `tsc`/`eslint`/build all clean) — no pipeline redesign, no locking/
+retry/Ads-write behavior touched.
+
+Recovery: founder ran the one-off `poll-pending-reports.ts --lookback-hours=72` on the merged fix —
+16/16 recovered, 0 pending, 0 failed, 0 rejected. Verified live: all 6 sources current through
+2026-07-28, SKU Performance's Ads freshness no longer `Failed`, 448 real advertised-product rows
+confirmed for 2026-07-28.
+
+**Incident closed.** Founder decision: no hourly recovery cron for now — `poll-pending-reports.ts`
+stays available as a manual tool, next 5 daily runs will be monitored, hourly cron reconsidered only on
+a repeat timeout, dates falling behind again, or repeated manual recovery becoming necessary.
