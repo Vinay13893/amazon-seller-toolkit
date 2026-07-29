@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import {
   AlertCircle, ChevronDown, ChevronRight, Loader2, Lock, PackageSearch, Search, ServerCrash,
 } from 'lucide-react'
@@ -12,7 +13,7 @@ import { Label } from '@/components/ui/label'
 import type { SkuPerformanceDailyResult, SkuPerformanceRow, SkuPerformanceSummaryResult } from '@/lib/sku-performance/types'
 import {
   buildDailyQueryString, buildSummaryQueryString, clampRangeToMaxDays, defaultDateRange,
-  deriveChartViewState, derivePageViewState, filterRowsByTitle,
+  deriveChartViewState, derivePageViewState, filterRowsByTitle, parseDeepLinkParams,
 } from './query'
 import {
   dataStatus, formatCount, formatMoney, formatRatio, salesTrendLabel, spendTrendLabel, toneBadgeClassName,
@@ -37,12 +38,26 @@ const INITIAL_SUMMARY_STATE: FetchState<SkuPerformanceSummaryResult> = { loading
 const INITIAL_DAILY_STATE: FetchState<SkuPerformanceDailyResult> = { loading: false, status: null, error: null, result: null }
 
 export default function SkuDailyTrendsPage() {
+  return (
+    <Suspense fallback={null}>
+      <SkuDailyTrendsPageInner />
+    </Suspense>
+  )
+}
+
+function SkuDailyTrendsPageInner() {
+  const searchParams = useSearchParams()
+  // A deep link (e.g. from the Daily Command Center) seeds INITIAL state
+  // only -- once loaded, the page behaves exactly as before (date pickers,
+  // search box, row toggling all still work normally). A missing/invalid
+  // deep link falls back to the same default range as always.
+  const [{ sku: deepLinkSku, dateFrom: deepLinkFrom, dateTo: deepLinkTo }] = useState(() => parseDeepLinkParams(searchParams))
   const [{ dateFrom: defaultFrom, dateTo: defaultTo }] = useState(() => defaultDateRange())
-  const [dateFrom, setDateFrom] = useState(defaultFrom)
-  const [dateTo, setDateTo] = useState(defaultTo)
+  const [dateFrom, setDateFrom] = useState(deepLinkFrom ?? defaultFrom)
+  const [dateTo, setDateTo] = useState(deepLinkTo ?? defaultTo)
   const [search, setSearch] = useState('')
   const [summary, setSummary] = useState(INITIAL_SUMMARY_STATE)
-  const [selectedSku, setSelectedSku] = useState<string | null>(null)
+  const [selectedSku, setSelectedSku] = useState<string | null>(deepLinkSku)
   const [daily, setDaily] = useState(INITIAL_DAILY_STATE)
 
   const summaryQueryString = useMemo(() => buildSummaryQueryString({ dateFrom, dateTo }), [dateFrom, dateTo])
@@ -127,6 +142,20 @@ export default function SkuDailyTrendsPage() {
   const visibleRows = view.kind === 'ready' || view.kind === 'no_comparable_data'
     ? filterRowsByTitle(view.result.rows, search)
     : []
+
+  // A deep-linked SKU is pre-selected (see the useState initializer above)
+  // so its row renders expanded as soon as the table loads, but its daily
+  // trend still needs the same on-demand fetch a manual click would trigger
+  // -- this runs it once, the first time the deep-linked row actually
+  // appears in a loaded result.
+  useEffect(() => {
+    if (!deepLinkSku || daily.result || daily.loading) return
+    if (view.kind !== 'ready' && view.kind !== 'no_comparable_data') return
+    const row = view.result.rows.find(r => r.sku === deepLinkSku)
+    if (!row) return
+    if (row.mappingState !== 'identity_conflict') void loadDaily(row.sku)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkSku, view.kind])
 
   return (
     <div className="flex flex-col gap-5">

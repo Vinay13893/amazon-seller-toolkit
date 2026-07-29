@@ -93,6 +93,36 @@ export function buildDailyQueryString(params: { dateFrom: string; dateTo: string
   return qs.toString()
 }
 
+// ------------------------------------------------------------ deep link ---
+
+export interface DeepLinkParams {
+  sku: string | null
+  dateFrom: string | null
+  dateTo: string | null
+}
+
+const YYYY_MM_DD = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Reads an optional `?sku=&dateFrom=&dateTo=` deep link (e.g. from the
+ * Daily Command Center's attention sections) into initial page state. A
+ * malformed or partial date pair is ignored entirely (falls back to the
+ * normal default range) rather than applying just one bound -- never a
+ * dateFrom without a dateTo or vice versa.
+ */
+export function parseDeepLinkParams(searchParams: URLSearchParams): DeepLinkParams {
+  const sku = searchParams.get('sku')
+  const dateFromRaw = searchParams.get('dateFrom')
+  const dateToRaw = searchParams.get('dateTo')
+  const datesValid = dateFromRaw !== null && dateToRaw !== null
+    && YYYY_MM_DD.test(dateFromRaw) && YYYY_MM_DD.test(dateToRaw) && dateFromRaw <= dateToRaw
+  return {
+    sku: sku && sku.trim().length > 0 ? sku : null,
+    dateFrom: datesValid ? dateFromRaw : null,
+    dateTo: datesValid ? dateToRaw : null,
+  }
+}
+
 // ------------------------------------------------------------- search ---
 
 /**
