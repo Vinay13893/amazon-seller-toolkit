@@ -5,6 +5,14 @@
 // If completed, it downloads, parses, and upserts the data — no new report
 // request needed. Safe to run multiple times (idempotent upserts).
 //
+// Covers all 6 Ads sources: the 3 campaign-daily-family reports
+// (ads_campaign_daily/ads_sd_campaign_daily/ads_sb_campaign_daily) and, as
+// of 2026-07-28, the 3 SP deep reports (ads_advertised_product/
+// ads_targeting/ads_search_term) too -- these were previously silently
+// skipped here ("no table mapping"), which meant a timeout on any of them
+// could never self-heal via this recovery path even though their Amazon
+// report kept generating in the background exactly like the others.
+//
 // Usage:
 //   npx tsx scripts/poll-pending-reports.ts
 //   npx tsx scripts/poll-pending-reports.ts --max-wait-ms=60000   # per-report poll ceiling (default 300000ms)
@@ -24,7 +32,14 @@ import {
 import { jsonRowsToCsv } from '../src/lib/internal/json-rows-to-csv'
 import { resolveDirectAdsCredentials } from '../src/lib/internal/amazon-ads-direct-credentials'
 import { resolveBrahmastraProfile } from '../src/lib/internal/brahmastra-ads-profile-selection'
-import { parseAdsCampaignDailyReport, type AdsCampaignDailyRecord } from '../src/lib/internal/ads-campaign-daily-parser'
+import { parseAdsCampaignDailyReport } from '../src/lib/internal/ads-campaign-daily-parser'
+import {
+  parseDeepReport,
+  resolveAdvertisedProductPortfolio,
+  type DeepReportRecord,
+} from '../src/lib/internal/ads-deep-report-parser'
+import { campaignDailyRowFor, deepReportRowFor, ADS_REPORT_SOURCES } from '../src/lib/internal/ads-report-row-mappers'
+import { splitRowsForUpsert } from '../src/lib/internal/ads-upsert-split'
 
 try {
   const envText = readFileSync(resolve(process.cwd(), '.env.local'), 'utf8')
@@ -44,45 +59,11 @@ function parseArgs(): Map<string, string> {
   return args
 }
 
-const SOURCE_TO_TABLE: Record<string, { table: string; batchTable: string }> = {
-  ads_campaign_daily: { table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches' },
-  ads_sd_campaign_daily: { table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches' },
-  ads_sb_campaign_daily: { table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches' },
-}
-
-function campaignDailyRowFor(record: AdsCampaignDailyRecord, workspaceId: string, profileId: string, batchId: string) {
-  return {
-    workspace_id: workspaceId,
-    profile_id: profileId,
-    upload_batch_id: batchId,
-    report_date: record.reportDate,
-    campaign_name: record.campaignName,
-    campaign_id: record.campaignId,
-    campaign_status: record.campaignStatus,
-    campaign_type: record.campaignType,
-    targeting_type: record.targetingType,
-    portfolio_name: record.portfolioName,
-    ad_group_name: record.adGroupName,
-    targeting: record.targeting,
-    match_type: record.matchType,
-    advertised_sku: record.advertisedSku,
-    advertised_asin: record.advertisedAsin,
-    search_term: record.searchTerm,
-    impressions: record.impressions,
-    clicks: record.clicks,
-    ctr: record.ctr,
-    spend: record.spend,
-    cpc: record.cpc,
-    purchases: record.purchases,
-    sales: record.sales,
-    acos: record.acos,
-    roas: record.roas,
-    easyhome_portfolio: record.easyhomePortfolio,
-    dedupe_key: record.dedupeKey,
-    raw_row: record.rawRow,
-    source: 'ads_api_auto',
-  }
-}
+// Source -> table/batchTable/kind, campaignDailyRowFor/deepReportRowFor all
+// now live in ads-report-row-mappers.ts (imported above), shared with
+// scripts/sync-ads-reports.ts -- this is the exact map that was previously
+// duplicated here missing the 3 deep-report sources (see header comment).
+const SOURCE_TO_TABLE = ADS_REPORT_SOURCES
 
 async function upsertByDedupeKey(
   admin: SupabaseClient,
@@ -106,13 +87,7 @@ async function upsertByDedupeKey(
     for (const row of pageRows ?? []) existingIdByKey.set(row.dedupe_key as string, row.id as string)
     if (!pageRows || pageRows.length < PAGE) break
   }
-  const insertRows: Array<Record<string, unknown>> = []
-  const updateRows: Array<Record<string, unknown> & { id: string }> = []
-  for (const row of rows) {
-    const existingId = existingIdByKey.get(row.dedupe_key as string)
-    if (existingId) updateRows.push({ ...row, id: existingId })
-    else insertRows.push(row)
-  }
+  const { insertRows, updateRows } = splitRowsForUpsert(existingIdByKey, rows)
   for (let i = 0; i < insertRows.length; i += CHUNK) {
     const { error } = await admin.from(table).insert(insertRows.slice(i, i + CHUNK))
     if (error) throw new Error(`Inserting ${table} rows failed: ${error.message}`)
@@ -194,7 +169,7 @@ async function main() {
     console.log(`\n[${i + 1}/${timedOut.length}] ${source} ${run.date_from} → ${run.date_to} (reportId: ${reportId})`)
 
     if (!tableInfo) {
-      console.log(`  Skipping — no table mapping for source "${source}" (deep reports not handled here)`)
+      console.log(`  Skipping — no table mapping for source "${source}"`)
       skipped++; continue
     }
 
@@ -227,45 +202,111 @@ async function main() {
 
       const jsonRows = await downloadAdsReportRows(downloadUrl)
       const csv = jsonRowsToCsv(jsonRows)
-      const result = parseAdsCampaignDailyReport(csv)
-      if (!result.ok) throw new Error(result.error)
-
       const workspaceId = run.workspace_id as string
       const profileId = run.profile_id as string
 
-      if (result.accepted.length > 0) {
-        const { data: batch, error: batchError } = await admin
-          .from(tableInfo.batchTable)
-          .insert({
-            workspace_id: workspaceId, profile_id: profileId,
-            original_filename: `ads-api-poll-recovered-${source}-${run.date_from}-${run.date_to}`,
-            report_date_start: result.stats.dateRangeStart,
-            report_date_end: result.stats.dateRangeEnd,
-            row_count: result.stats.totalRowCount,
-            accepted_count: result.stats.acceptedCount,
-            rejected_count: result.stats.rejectedCount,
-            total_spend: result.stats.totalSpend,
-            total_sales: result.stats.totalSales,
-            campaign_count: result.stats.campaignCount,
-            unmapped_campaign_count: result.stats.unmappedCampaignCount,
-          })
-          .select('id').single()
-        if (batchError || !batch) throw new Error(`Batch insert failed: ${batchError?.message}`)
+      let insertedCount = 0
+      let updatedCount = 0
+      let rejectedCount = 0
 
-        const dedupedRows = new Map<string, ReturnType<typeof campaignDailyRowFor>>()
-        for (const record of result.accepted) {
-          const row = campaignDailyRowFor(record, workspaceId, profileId, batch.id as string)
-          dedupedRows.set(row.dedupe_key, row)
+      if (tableInfo.kind === null) {
+        const result = parseAdsCampaignDailyReport(csv)
+        if (!result.ok) throw new Error(result.error)
+        rejectedCount = result.rejected.length
+
+        if (result.accepted.length > 0) {
+          const { data: batch, error: batchError } = await admin
+            .from(tableInfo.batchTable)
+            .insert({
+              workspace_id: workspaceId, profile_id: profileId,
+              original_filename: `ads-api-poll-recovered-${source}-${run.date_from}-${run.date_to}`,
+              report_date_start: result.stats.dateRangeStart,
+              report_date_end: result.stats.dateRangeEnd,
+              row_count: result.stats.totalRowCount,
+              accepted_count: result.stats.acceptedCount,
+              rejected_count: result.stats.rejectedCount,
+              total_spend: result.stats.totalSpend,
+              total_sales: result.stats.totalSales,
+              campaign_count: result.stats.campaignCount,
+              unmapped_campaign_count: result.stats.unmappedCampaignCount,
+            })
+            .select('id').single()
+          if (batchError || !batch) throw new Error(`Batch insert failed: ${batchError?.message}`)
+
+          const dedupedRows = new Map<string, ReturnType<typeof campaignDailyRowFor>>()
+          for (const record of result.accepted) {
+            const row = campaignDailyRowFor(record, workspaceId, profileId, batch.id as string)
+            dedupedRows.set(row.dedupe_key, row)
+          }
+          const upserted = await upsertByDedupeKey(admin, tableInfo.table, workspaceId, profileId, [...dedupedRows.values()])
+          insertedCount = upserted.insertedCount
+          updatedCount = upserted.updatedCount
+          await admin.from(tableInfo.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
+          console.log(`  ✅ recovered: fetched ${jsonRows.length}, inserted ${insertedCount}, updated ${updatedCount}, rejected ${result.rejected.length}`)
+        } else {
+          console.log(`  ✅ recovered: 0 accepted rows (empty date range)`)
         }
-        const { insertedCount, updatedCount } = await upsertByDedupeKey(admin, tableInfo.table, workspaceId, profileId, [...dedupedRows.values()])
-        await admin.from(tableInfo.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
-        console.log(`  ✅ recovered: fetched ${jsonRows.length}, inserted ${insertedCount}, updated ${updatedCount}, rejected ${result.rejected.length}`)
       } else {
-        console.log(`  ✅ recovered: 0 accepted rows (empty date range)`)
+        // SP deep report (advertised_product / targeting / search_term) —
+        // same parse/upsert shape sync-ads-reports.ts uses for these kinds.
+        const kind = tableInfo.kind
+        const result = parseDeepReport(csv, kind)
+        if (!result.ok) throw new Error(result.error)
+        rejectedCount = result.rejected.length
+
+        if (result.accepted.length > 0) {
+          const costMasterCategoryBySkuNorm = new Map<string, string | null>()
+          if (kind === 'advertised_product') {
+            const { data } = await admin.from('internal_sku_cost_master').select('sku_norm, category').eq('workspace_id', workspaceId).limit(10000)
+            for (const row of data ?? []) costMasterCategoryBySkuNorm.set(row.sku_norm as string, (row.category as string | null) ?? null)
+          }
+          let unmappedCount = 0
+          const resolved = result.accepted.map((record: DeepReportRecord) => {
+            const portfolio = kind === 'advertised_product'
+              ? resolveAdvertisedProductPortfolio(record, costMasterCategoryBySkuNorm)
+              : record.easyhomePortfolio
+            if (portfolio === 'Unmapped / Needs Review') unmappedCount += 1
+            return { record, portfolio }
+          })
+
+          const { data: batch, error: batchError } = await admin
+            .from(tableInfo.batchTable)
+            .insert({
+              workspace_id: workspaceId, profile_id: profileId,
+              report_kind: kind,
+              original_filename: `ads-api-poll-recovered-${source}-${run.date_from}-${run.date_to}`,
+              report_date_start: result.stats.dateRangeStart,
+              report_date_end: result.stats.dateRangeEnd,
+              row_count: result.stats.totalRowCount,
+              accepted_count: result.stats.acceptedCount,
+              rejected_count: result.stats.rejectedCount,
+              total_spend: result.stats.totalSpend,
+              total_sales: result.stats.totalSales,
+              total_purchases: result.stats.totalPurchases,
+              campaign_count: result.stats.campaignCount,
+              unmapped_count: unmappedCount,
+              attribution_window_used: result.stats.attributionWindowUsed,
+            })
+            .select('id').single()
+          if (batchError || !batch) throw new Error(`Batch insert failed: ${batchError?.message}`)
+
+          const dedupedRows = new Map<string, ReturnType<typeof deepReportRowFor>>()
+          for (const { record, portfolio } of resolved) {
+            const row = deepReportRowFor(record, kind, workspaceId, profileId, batch.id as string, portfolio)
+            dedupedRows.set(row.dedupe_key, row)
+          }
+          const upserted = await upsertByDedupeKey(admin, tableInfo.table, workspaceId, profileId, [...dedupedRows.values()])
+          insertedCount = upserted.insertedCount
+          updatedCount = upserted.updatedCount
+          await admin.from(tableInfo.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
+          console.log(`  ✅ recovered: fetched ${jsonRows.length}, inserted ${insertedCount}, updated ${updatedCount}, rejected ${result.rejected.length}`)
+        } else {
+          console.log(`  ✅ recovered: 0 accepted rows (empty date range)`)
+        }
       }
 
       await admin.from('internal_data_refresh_runs')
-        .update({ status: 'success', finished_at: new Date().toISOString(), rows_fetched: jsonRows.length, error_message: null })
+        .update({ status: 'success', finished_at: new Date().toISOString(), rows_fetched: jsonRows.length, rows_inserted: insertedCount, rows_updated: updatedCount, rows_rejected: rejectedCount, error_message: null })
         .eq('id', run.id)
       succeeded++
     } catch (err) {
