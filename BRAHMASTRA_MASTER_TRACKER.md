@@ -5418,9 +5418,67 @@ confirmed live and correct.
 
 **Remaining, separate follow-up issues (not blockers for V0's current use, not addressed this round):**
 - Ads refresh has been failing (source health: Failed, last accepted-complete 2026-07-25) — a data-
-  freshness/pipeline issue upstream of this feature, not a V0 bug.
+  freshness/pipeline issue upstream of this feature, not a V0 bug. **Resolved and closed, see §24.**
 - Catalog sync is stale (last synced 2026-06-29) — same category, upstream of this feature.
 - Migration 065's migration-history record reconciliation (manual SQL Editor apply vs. tracked
   migration history) remains open.
 - Full P1-C1 (PR #58) remains untouched, not resumed. Pincode work was not started. No new PR was
   opened for this closeout — docs only, as instructed.
+
+## 24. Ads Data Refresh Failure — diagnosis, fix, recovery, and closeout (2026-07-28 to 2026-07-29)
+
+**Trigger:** SKU Performance's freshness strip showed Ads source health as `Failed`, last accepted-
+complete date 2026-07-25 (flagged as a follow-up in §23 update 10). Investigated as a dedicated,
+read-only-first diagnostic task in a fresh worktree off `origin/master`.
+
+**Diagnosis.** Queried production `internal_data_refresh_runs` for all 6 Ads sources
+(`ads_campaign_daily`, `ads_sd_campaign_daily`, `ads_sb_campaign_daily`, `ads_advertised_product`,
+`ads_targeting`, `ads_search_term`). Every source ran cleanly 2026-07-22 through 07-26 (real row
+counts, `COMPLETED` Amazon status), then **every single source failed identically on both 2026-07-27
+and 2026-07-28** with `Report {id} did not complete within 900000ms` — 11 distinct Amazon report IDs,
+each genuinely created (auth/report-creation both fine) but still `PENDING` on Amazon's side when our
+900,000ms (15 min) poll ceiling gave up. `ads_sd_campaign_daily` alone kept succeeding, because it
+already had its own 1,500,000ms override. Ruled out (all evidence-based, not assumed): scheduler
+(firing on its normal ~daily schedule), auth/token (all 9 profiles `active`, real report IDs obtained
+every time), download/parse/DB-upsert (never reached — `rows_fetched=0` on every failure), and
+locking/overlap. Root cause: **report polling timeout** — Amazon's report-generation latency for this
+profile exceeded our ceiling for 2 consecutive days, for all report types uniformly.
+
+**A second, real gap found during the fix, not assumed:** `scripts/poll-pending-reports.ts` (the
+existing recovery tool, built to re-poll a previously-timed-out `amazon_report_id` instead of
+requesting a new one) only had table mappings for the 3 campaign-daily-family sources and **silently
+skipped** the 3 SP deep reports (`ads_advertised_product`/`ads_targeting`/`ads_search_term`) — exactly
+the source SKU Performance's chart reads from. A timeout on any of those 3 could never have self-
+healed via that path even though Amazon kept generating the report in the background.
+
+**Fix (PR #61, merged as `4fa4914`):** raised the default poll ceiling from 900,000ms to 1,500,000ms
+(25 min) for all sources, matching the pre-existing SD override (reuse-before-recreate logic via
+`findReusableReport`/`report_request_key` already existed and needed no change). Extended
+`poll-pending-reports.ts` to cover all 6 sources, reusing the exact parse/upsert logic
+`sync-ads-reports.ts` already had proven for deep reports. Extracted the row-mapping, timeout-
+resolution, reuse-decision, and upsert-split logic (previously duplicated inline in both scripts) into
+`src/lib/internal/` so both scripts stay identical by construction and the logic is covered by 21 new
+focused tests instead of only running against a live Supabase/Amazon connection — not a pipeline
+redesign, no sequential-locking/retry/backoff/Ads-write behavior touched. Full verification: 292/292
+tests pass, `tsc`/`eslint` clean, `npm run build` succeeds.
+
+**Recovery.** Founder ran the one-off recovery command
+(`npx tsx scripts/poll-pending-reports.ts --lookback-hours=72`) on the same Render service/environment
+as the daily sync, on the merged fix. Result: **16 recovered, 0 still pending, 0 permanently failed, 0
+skipped, 0 rejected rows.** Post-recovery verification (read-only SQL against production): all 6
+sources' `latest_accepted_complete_date = 2026-07-28`, 3 successful runs each in the trailing 72h, 0
+failures; `get_sku_performance_summary`'s `adsLastRunStatus = 'success'`,
+`adsLatestAcceptedCompleteDate = 2026-07-28` (no longer `Failed`); 448 real rows confirmed in
+`internal_ads_advertised_product_daily_rows` for `report_date = 2026-07-28`, matching sales' own
+currency for the same date.
+
+**Founder decision: no hourly `poll-pending-reports.ts` cron added.** `poll-pending-reports.ts` stays
+available as a manual recovery tool only. The normal daily command
+(`npx tsx scripts/sync-ads-reports.ts --days=14 --ad-products=SP,SD,SB`) has been restored as-is (only
+its internal default timeout changed via the merged code). Founder will monitor the next 5 scheduled
+daily Ads runs; an hourly recovery cron is to be reconsidered only if a report again exceeds the new
+25-minute ceiling, accepted-complete dates fall behind again, or repeated manual recovery becomes
+necessary.
+
+**Incident status: closed.** No code, UI, Render schedule, Catalog, or Pincode changes were made
+outside the merged PR #61 fix itself.
