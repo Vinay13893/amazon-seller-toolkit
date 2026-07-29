@@ -11,7 +11,7 @@
 //   npx tsx scripts/sync-ads-reports.ts                                     # last 7 days (today excluded)
 //   npx tsx scripts/sync-ads-reports.ts --days=2                            # last 2 days (manual test)
 //   npx tsx scripts/sync-ads-reports.ts --from=2026-06-20 --to=2026-06-25
-//   npx tsx scripts/sync-ads-reports.ts --report-timeout-ms=900000          # default; report polling ceiling
+//   npx tsx scripts/sync-ads-reports.ts --report-timeout-ms=1500000         # default; report polling ceiling
 //   npx tsx scripts/sync-ads-reports.ts --force-refresh                     # bypass the recent-success skip
 //   npx tsx scripts/sync-ads-reports.ts --days=90 --backfill --chunk-days=7 --ad-products=SP,SD,SB
 //       Backfill mode: splits the full date range into --chunk-days-sized windows and
@@ -35,8 +35,10 @@
 //      AMZN_ADS_MARKETPLACE or AMAZON_ADS_MARKETPLACE (descriptive only)
 //
 // Reliability hardening (Phase R1):
-//   - Report polling timeout is configurable (default 15 min — Amazon report
-//     generation regularly takes longer than the old 3-minute ceiling).
+//   - Report polling timeout is configurable (default 25 min, raised from 15
+//     min 2026-07-28 -- every report type hit the old 15-min ceiling with
+//     Amazon still PENDING for 2 straight days, see BRAHMASTRA_MASTER_TRACKER.md
+//     sec on the ads-refresh-failure diagnosis).
 //   - One report failing/timing out never stops the other 3 from running.
 //   - A per-workspace+profile concurrency lock prevents two sync runs (e.g.
 //     an overlapping manual trigger) from racing each other.
@@ -61,13 +63,16 @@ import {
 import { jsonRowsToCsv } from '../src/lib/internal/json-rows-to-csv'
 import { resolveDirectAdsCredentials } from '../src/lib/internal/amazon-ads-direct-credentials'
 import { resolveBrahmastraProfile } from '../src/lib/internal/brahmastra-ads-profile-selection'
-import { parseAdsCampaignDailyReport, type AdsCampaignDailyRecord } from '../src/lib/internal/ads-campaign-daily-parser'
+import { parseAdsCampaignDailyReport } from '../src/lib/internal/ads-campaign-daily-parser'
 import {
   parseDeepReport,
   resolveAdvertisedProductPortfolio,
   type DeepReportKind,
-  type DeepReportRecord,
 } from '../src/lib/internal/ads-deep-report-parser'
+import { campaignDailyRowFor, deepReportRowFor } from '../src/lib/internal/ads-report-row-mappers'
+import { resolveReportTimeoutMs } from '../src/lib/internal/ads-report-timeout'
+import { decideReportReuse, AMAZON_REPORT_RETENTION_MS as REUSE_RETENTION_MS } from '../src/lib/internal/ads-report-reuse'
+import { splitRowsForUpsert } from '../src/lib/internal/ads-upsert-split'
 
 // Tolerate a missing .env.local (Render sets real env vars directly; this is
 // only for local manual testing convenience).
@@ -129,21 +134,19 @@ function deepReportDefs(): ReportDef[] {
 }
 
 const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer than this is a crashed/abandoned attempt
-// Two separate windows for the reuse logic:
-// SUCCESS_SKIP_MS  — skip re-importing if we already succeeded for this exact range recently (avoids double-work on back-to-back runs)
-// AMAZON_REPORT_RETENTION_MS — always reuse an existing Amazon report ID for the same range if one exists within Amazon's 30-day
-//   report retention window, even if our previous run timed out or failed. This means a timed-out run never wastes its Amazon report
-//   slot — the next run picks up the already-queued generation instead of submitting a duplicate request.
-const SUCCESS_SKIP_MS = 6 * 60 * 60 * 1000
-const AMAZON_REPORT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+// Reuse-window sizing (SUCCESS_SKIP_MS, AMAZON_REPORT_RETENTION_MS) and the
+// reuse-vs-recreate decision itself now live in ads-report-reuse.ts
+// (imported as decideReportReuse/REUSE_RETENTION_MS above) so they're
+// covered by a real test independent of any live Supabase call.
 
-// SD campaign report generation has been observed timing out right at the
-// default 900s polling ceiling (2026-07-07 incident). This is a per-report-
-// type override, not a global increase — every other report type keeps the
-// default reportTimeoutMs, so this doesn't change polling frequency or add
-// any extra requests, only how long we're willing to wait for this one
-// report before giving up.
-const SD_CAMPAIGN_TIMEOUT_MS = 1_500_000 // 25 min (default is 15 min)
+// SD campaign report generation was first observed timing out right at the
+// old 900s default polling ceiling (2026-07-07 incident) -- this per-
+// report-type override predates and now simply matches the global
+// `reportTimeoutMs` default (raised to the same 1,500,000ms 2026-07-28,
+// after every report type started hitting the old 900s ceiling). Left in
+// place, explicit, so this report type's ceiling can never silently
+// regress if the global default ever changes again.
+const SD_CAMPAIGN_TIMEOUT_MS = 1_500_000 // 25 min
 
 // Bounded retry-with-backoff for HTTP 429 on report *creation* only — the
 // exact failure mode observed on ads_sb_campaign_daily (2026-07-07). Any
@@ -203,80 +206,9 @@ async function requestAdsReportWithRetry(ctx: AdsApiContext, reportType: AdsRepo
   throw new Error(`${source}: report creation retry loop exited unexpectedly`)
 }
 
-function campaignDailyRowFor(record: AdsCampaignDailyRecord, workspaceId: string, profileId: string, batchId: string) {
-  return {
-    workspace_id: workspaceId,
-    profile_id: profileId,
-    upload_batch_id: batchId,
-    report_date: record.reportDate,
-    campaign_name: record.campaignName,
-    campaign_id: record.campaignId,
-    campaign_status: record.campaignStatus,
-    campaign_type: record.campaignType,
-    targeting_type: record.targetingType,
-    portfolio_name: record.portfolioName,
-    ad_group_name: record.adGroupName,
-    targeting: record.targeting,
-    match_type: record.matchType,
-    advertised_sku: record.advertisedSku,
-    advertised_asin: record.advertisedAsin,
-    search_term: record.searchTerm,
-    impressions: record.impressions,
-    clicks: record.clicks,
-    ctr: record.ctr,
-    spend: record.spend,
-    cpc: record.cpc,
-    purchases: record.purchases,
-    sales: record.sales,
-    acos: record.acos,
-    roas: record.roas,
-    easyhome_portfolio: record.easyhomePortfolio,
-    dedupe_key: record.dedupeKey,
-    raw_row: record.rawRow,
-    source: 'ads_api_auto',
-  }
-}
-
-function deepReportRowFor(record: DeepReportRecord, kind: DeepReportKind, workspaceId: string, profileId: string, batchId: string, portfolio: string) {
-  const base = {
-    workspace_id: workspaceId,
-    profile_id: profileId,
-    upload_batch_id: batchId,
-    report_date: record.reportDate,
-    campaign_name: record.campaignName,
-    campaign_id: record.campaignId,
-    campaign_status: record.campaignStatus,
-    ad_group_name: record.adGroupName,
-    ad_group_id: record.adGroupId,
-    impressions: record.impressions,
-    clicks: record.clicks,
-    ctr: record.ctr,
-    spend: record.spend,
-    cpc: record.cpc,
-    purchases: record.purchases,
-    sales: record.sales,
-    units: record.units,
-    acos: record.acos,
-    roas: record.roas,
-    easyhome_portfolio: portfolio,
-    dedupe_key: record.dedupeKey,
-    raw_row: record.rawRow,
-    source: 'ads_api_auto',
-  }
-  if (kind === 'advertised_product') return { ...base, advertised_asin: record.advertisedAsin, advertised_sku: record.advertisedSku }
-  if (kind === 'targeting') {
-    return {
-      ...base,
-      targeting: record.targeting,
-      keyword: record.keyword,
-      keyword_type: record.keywordType,
-      keyword_id: record.keywordId,
-      keyword_bid: record.keywordBid,
-      match_type: record.matchType,
-    }
-  }
-  return { ...base, search_term: record.searchTerm, targeting: record.targeting }
-}
+// campaignDailyRowFor/deepReportRowFor now live in ads-report-row-mappers.ts
+// (imported above) -- shared with scripts/poll-pending-reports.ts so both
+// scripts stay byte-identical by construction instead of hand-duplicated.
 
 /**
  * Same dedupe-by-key insert/update split already used by the manual-upload
@@ -301,13 +233,7 @@ async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspace
     if (!pageRows || pageRows.length < PAGE) break
   }
 
-  const insertRows: Array<Record<string, unknown>> = []
-  const updateRows: Array<Record<string, unknown> & { id: string }> = []
-  for (const row of rows) {
-    const existingId = existingIdByKey.get(row.dedupe_key as string)
-    if (existingId) updateRows.push({ ...row, id: existingId })
-    else insertRows.push(row)
-  }
+  const { insertRows, updateRows } = splitRowsForUpsert(existingIdByKey, rows)
 
   for (let i = 0; i < insertRows.length; i += CHUNK) {
     const { error } = await admin.from(table).insert(insertRows.slice(i, i + CHUNK))
@@ -358,8 +284,7 @@ type ReusableReport = { amazonReportId: string; alreadySucceeded: boolean }
  *  if the successful import is recent enough to avoid redundant re-imports on back-to-back manual runs. */
 async function findReusableReport(admin: SupabaseClient, requestKey: string, forceRefresh: boolean): Promise<ReusableReport | null> {
   if (forceRefresh) return null
-  const retentionCutoff = new Date(Date.now() - AMAZON_REPORT_RETENTION_MS).toISOString()
-  const successCutoff = new Date(Date.now() - SUCCESS_SKIP_MS).toISOString()
+  const retentionCutoff = new Date(Date.now() - REUSE_RETENTION_MS).toISOString()
   const { data } = await admin
     .from('internal_data_refresh_runs')
     .select('status, amazon_report_id, started_at')
@@ -369,9 +294,12 @@ async function findReusableReport(admin: SupabaseClient, requestKey: string, for
     .order('started_at', { ascending: false })
     .limit(1)
     .maybeSingle()
-  if (!data?.amazon_report_id) return null
-  const alreadySucceeded = data.status === 'success' && (data.started_at as string) >= successCutoff
-  return { amazonReportId: data.amazon_report_id as string, alreadySucceeded }
+  const decision = decideReportReuse(
+    data ? { status: data.status as string, amazon_report_id: data.amazon_report_id as string | null, started_at: data.started_at as string } : null,
+    new Date(),
+  )
+  if (!decision.reuse || !decision.amazonReportId) return null
+  return { amazonReportId: decision.amazonReportId, alreadySucceeded: decision.alreadySucceeded }
 }
 
 type ReportOutcome = { source: string; status: 'success' | 'failed' | 'skipped' }
@@ -668,7 +596,7 @@ async function main() {
   const days = args.has('days') ? Number(args.get('days')) : 7
   const endDate = args.get('to') ?? addDays(todayIso(), -1)
   const startDate = args.get('from') ?? addDays(endDate, -(Math.max(1, days) - 1))
-  const reportTimeoutMs = args.has('report-timeout-ms') ? Number(args.get('report-timeout-ms')) : 900_000
+  const reportTimeoutMs = resolveReportTimeoutMs(args)
   const forceRefresh = args.has('force-refresh')
 
   const backfill = args.has('backfill')
