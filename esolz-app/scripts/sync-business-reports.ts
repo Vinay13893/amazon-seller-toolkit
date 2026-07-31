@@ -4,12 +4,28 @@
 // creates a report and reads it back. Never calls a write endpoint, never
 // touches Amazon Ads sync, never touches payment-transaction data.
 //
+// Sales-grain fix (this revision): Amazon's `salesAndTrafficByAsin`
+// section has NO per-day breakdown of its own — for a multi-day request
+// it is a TOTAL for the entire requested range, not one day. The
+// PREVIOUS version of this script requested one 14-day rolling window per
+// run and stored that window's SKU-level TOTAL under a single
+// `report_date` (the window's last day), which compounds into massive
+// (~9x-23x observed) inflation once multiple overlapping daily runs are
+// summed downstream. This version requests SKU-level (and, incidentally,
+// by-date) data ONE MARKETPLACE-LOCAL CALENDAR DAY AT A TIME — every
+// request this script makes now has dateFrom === dateTo, so the by-ASIN
+// section is always genuinely that one day's data, never a range total.
+// See src/lib/internal/business-report-grain-guard.ts for the invariant
+// this enforces (fail-closed, never silently distributes a range total
+// across days).
+//
 // Usage:
 //   npx tsx scripts/sync-business-reports.ts                          # default: last 14 days
 //   npx tsx scripts/sync-business-reports.ts --days=30                # 30-day backfill/correction window
 //   npx tsx scripts/sync-business-reports.ts --date-start=2026-06-15 --date-end=2026-06-15
 //   npx tsx scripts/sync-business-reports.ts --workspace-id=... --marketplace-id=A21TJRUUN4KGV
 //   npx tsx scripts/sync-business-reports.ts --dry-run                # parse only, write nothing
+//   npx tsx scripts/sync-business-reports.ts --force-refresh          # re-request every day in range, even already-confirmed ones
 //   npx tsx scripts/sync-business-reports.ts --report-timeout-ms=900000
 //
 // Required env vars (Render): NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
@@ -24,10 +40,19 @@
 //   - A per-workspace+marketplace concurrency lock (via internal_data_refresh_runs,
 //     source='business_report_sp_api') prevents two sync runs from racing.
 //   - Stale "running" rows older than 2 hours are cleaned up at startup.
-//   - Re-running for the same exact (workspace, marketplace, date range)
-//     within a few hours reuses the in-flight/just-finished Amazon report
-//     instead of requesting a new one, unless --force-refresh is passed.
+//   - Each calendar day is its own Amazon report request + its own
+//     internal_data_refresh_runs row (date_from === date_to always). A day
+//     already 'confirmed complete' (status='success', rows_rejected=0) is
+//     skipped without an Amazon call unless --force-refresh is passed —
+//     see shouldSkipAlreadyConfirmedDate() — so the switch to per-day
+//     requests doesn't multiply Amazon Reports API call volume on every
+//     run of a rolling window whose earlier days are already correct.
+//   - Re-running for the same exact single day within a few hours reuses
+//     the in-flight/just-finished Amazon report instead of requesting a
+//     new one, unless --force-refresh is passed.
 //   - 429s are backed off (see waitForSalesAndTrafficReport).
+//   - Days are processed strictly sequentially (never in parallel) —
+//     bounded, predictable load on Amazon's low-quota Reports API.
 //   - Manual CSV import (src/lib/internal/business-report-sales-traffic-parser.ts)
 //     remains available as a backup path — this script only adds automation
 //     on top of it; it does not replace or remove the manual importer.
@@ -46,6 +71,21 @@ import {
   type SalesAndTrafficByDateRow,
   type SalesAndTrafficByAsinRow,
 } from '../src/lib/internal/business-report-sp-api-client'
+import {
+  resolveMarketplaceTimezone,
+  marketplaceTodayIso,
+  marketplaceYesterdayIso,
+  addCalendarDays,
+  enumerateCalendarDays,
+  marketplaceCalendarDayWindow,
+} from '../src/lib/internal/business-report-marketplace-time'
+import { resolveSkuReportDate } from '../src/lib/internal/business-report-grain-guard'
+import {
+  validateSkuRows,
+  classifyStructuralCompleteness,
+  shouldSkipAlreadyConfirmedDate,
+} from '../src/lib/internal/business-report-run-outcome'
+import { computeDateScopeReplacement, skuScopeKey } from '../src/lib/internal/business-report-date-scope-replace'
 
 try {
   const envText = readFileSync(resolve(process.cwd(), '.env.local'), 'utf8')
@@ -73,15 +113,6 @@ function parseArgs(): Map<string, string> {
     if (bareFlag) args.set(bareFlag[1], '1')
   }
   return args
-}
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-function addDays(iso: string, delta: number): string {
-  const d = new Date(`${iso}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + delta)
-  return d.toISOString().slice(0, 10)
 }
 
 async function cleanupStaleRuns(admin: SupabaseClient): Promise<void> {
@@ -128,7 +159,24 @@ async function findReusableReport(admin: SupabaseClient, requestKey: string, for
   return { amazonReportId: data.amazon_report_id as string, alreadySucceeded: data.status === 'success' }
 }
 
-function byDateRow(row: SalesAndTrafficByDateRow, workspaceId: string, marketplaceId: string, filename: string, reportId: string) {
+/** Most recent run row for this exact single day (any status) — feeds shouldSkipAlreadyConfirmedDate(). */
+async function findLatestRunForDate(admin: SupabaseClient, workspaceId: string, marketplaceId: string, day: string): Promise<{ status: string; rowsRejected: number } | null> {
+  const { data } = await admin
+    .from('internal_data_refresh_runs')
+    .select('status, rows_rejected')
+    .eq('source', SOURCE)
+    .eq('workspace_id', workspaceId)
+    .eq('marketplace_id', marketplaceId)
+    .eq('date_from', day)
+    .eq('date_to', day)
+    .order('started_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!data) return null
+  return { status: data.status as string, rowsRejected: (data.rows_rejected as number) ?? 0 }
+}
+
+function byDateRow(row: SalesAndTrafficByDateRow, workspaceId: string, marketplaceId: string, filename: string) {
   return {
     workspace_id: workspaceId,
     marketplace_id: marketplaceId,
@@ -188,6 +236,10 @@ function skuRow(row: SalesAndTrafficByAsinRow, reportDate: string, workspaceId: 
  * regardless of the existing row's marketplace_id, so the auto-synced
  * value always replaces whatever was there (manual import or a prior auto
  * sync) — exactly one row per real-world day, ever.
+ *
+ * Unchanged by the sales-grain fix (spec: "keep by-date processing as-is
+ * — it's already correct") beyond now always being called with exactly
+ * one row (this script requests one day at a time).
  */
 async function upsertByDateRows(admin: SupabaseClient, workspaceId: string, rows: Array<Record<string, unknown>>, dryRun: boolean): Promise<number> {
   if (rows.length === 0 || dryRun) return rows.length
@@ -209,32 +261,38 @@ async function upsertByDateRows(admin: SupabaseClient, workspaceId: string, rows
     else insertRows.push(row)
   }
 
-  const CHUNK = 500
-  for (let i = 0; i < insertRows.length; i += CHUNK) {
-    const { error: insertError } = await admin.from(BY_DATE_TABLE).insert(insertRows.slice(i, i + CHUNK))
+  if (insertRows.length > 0) {
+    const { error: insertError } = await admin.from(BY_DATE_TABLE).insert(insertRows)
     if (insertError) throw new Error(`Inserting ${BY_DATE_TABLE} rows failed: ${insertError.message}`)
   }
-  for (let i = 0; i < updateRows.length; i += CHUNK) {
-    const { error: updateError } = await admin.from(BY_DATE_TABLE).upsert(updateRows.slice(i, i + CHUNK), { onConflict: 'id' })
+  if (updateRows.length > 0) {
+    const { error: updateError } = await admin.from(BY_DATE_TABLE).upsert(updateRows, { onConflict: 'id' })
     if (updateError) throw new Error(`Updating ${BY_DATE_TABLE} rows failed: ${updateError.message}`)
   }
   return rows.length
 }
 
 /**
- * The SKU/ASIN table's uniqueness uses a coalesce()-based expression index
- * (sku_norm/child_asin/parent_asin are nullable), which PostgREST's
- * `.upsert({onConflict})` cannot target directly — it only matches a literal
- * column-list constraint. Manual select-existing-by-id + insert/update
- * split instead, same pattern as the Ads sync's dedupe-key upsert.
+ * Full date-scope replacement (spec Phase 5) for the SKU/ASIN table,
+ * scoped to exactly (workspace_id, marketplace_id, report_date) — this
+ * script only ever calls it with rows for ONE already-grain-validated
+ * day. Replaces the old plain upsert (insert-if-missing/update-if-present,
+ * no delete), which let a stale row for a SKU that legitimately had zero
+ * activity on a corrected day survive forever. Writes in a safe order:
+ * insert + update BEFORE delete, so a mid-batch failure never loses a row
+ * that isn't yet superseded by its replacement — if the delete step
+ * fails, the scope is left with extra (soon-to-be-stale) rows rather than
+ * missing rows, and the failure is thrown so the run is recorded failed,
+ * never silently marked successful.
  */
-async function upsertSkuRows(admin: SupabaseClient, workspaceId: string, marketplaceId: string, reportDate: string, rows: Array<Record<string, unknown>>, dryRun: boolean): Promise<{ inserted: number; updated: number }> {
-  if (rows.length === 0) return { inserted: 0, updated: 0 }
-  if (dryRun) return { inserted: rows.length, updated: 0 }
-
-  const keyOf = (r: { sku_norm: unknown; child_asin: unknown; parent_asin: unknown }) =>
-    `${r.sku_norm ?? ''}|${r.child_asin ?? ''}|${r.parent_asin ?? ''}`
-
+async function replaceSkuDateScope(
+  admin: SupabaseClient,
+  workspaceId: string,
+  marketplaceId: string,
+  reportDate: string,
+  rows: Array<Record<string, unknown>>,
+  dryRun: boolean,
+): Promise<{ inserted: number; updated: number; deleted: number }> {
   const { data: existingRows, error } = await admin
     .from(SKU_TABLE)
     .select('id, sku_norm, child_asin, parent_asin')
@@ -242,27 +300,170 @@ async function upsertSkuRows(admin: SupabaseClient, workspaceId: string, marketp
     .eq('marketplace_id', marketplaceId)
     .eq('report_date', reportDate)
   if (error) throw new Error(`Reading existing ${SKU_TABLE} rows failed: ${error.message}`)
-  const existingIdByKey = new Map<string, string>()
-  for (const row of existingRows ?? []) existingIdByKey.set(keyOf(row), row.id as string)
 
-  const insertRows: Array<Record<string, unknown>> = []
-  const updateRows: Array<Record<string, unknown> & { id: string }> = []
-  for (const row of rows) {
-    const existingId = existingIdByKey.get(keyOf(row as { sku_norm: unknown; child_asin: unknown; parent_asin: unknown }))
-    if (existingId) updateRows.push({ ...row, id: existingId })
-    else insertRows.push(row)
-  }
+  const existingScoped = (existingRows ?? []).map(r => ({
+    id: r.id as string,
+    key: skuScopeKey({ sku_norm: r.sku_norm as string | null, child_asin: r.child_asin as string | null, parent_asin: r.parent_asin as string | null }),
+  }))
+  const plan = computeDateScopeReplacement(
+    existingScoped,
+    rows,
+    row => skuScopeKey({ sku_norm: (row.sku_norm as string | null) ?? null, child_asin: (row.child_asin as string | null) ?? null, parent_asin: (row.parent_asin as string | null) ?? null }),
+  )
 
-  const CHUNK = 500
-  for (let i = 0; i < insertRows.length; i += CHUNK) {
-    const { error: insertError } = await admin.from(SKU_TABLE).insert(insertRows.slice(i, i + CHUNK))
+  if (dryRun) return { inserted: plan.toInsert.length, updated: plan.toUpdate.length, deleted: plan.toDeleteIds.length }
+
+  if (plan.toInsert.length > 0) {
+    const { error: insertError } = await admin.from(SKU_TABLE).insert(plan.toInsert)
     if (insertError) throw new Error(`Inserting ${SKU_TABLE} rows failed: ${insertError.message}`)
   }
-  for (let i = 0; i < updateRows.length; i += CHUNK) {
-    const { error: updateError } = await admin.from(SKU_TABLE).upsert(updateRows.slice(i, i + CHUNK), { onConflict: 'id' })
+  if (plan.toUpdate.length > 0) {
+    const { error: updateError } = await admin.from(SKU_TABLE).upsert(plan.toUpdate, { onConflict: 'id' })
     if (updateError) throw new Error(`Updating ${SKU_TABLE} rows failed: ${updateError.message}`)
   }
-  return { inserted: insertRows.length, updated: updateRows.length }
+  if (plan.toDeleteIds.length > 0) {
+    const { error: deleteError } = await admin.from(SKU_TABLE).delete().in('id', plan.toDeleteIds)
+    if (deleteError) throw new Error(`Deleting stale ${SKU_TABLE} rows failed: ${deleteError.message} (scope workspace=${workspaceId} marketplace=${marketplaceId} date=${reportDate} left with ${plan.toInsert.length + plan.toUpdate.length} correct rows plus ${plan.toDeleteIds.length} stale row(s) not yet removed — safe to re-run)`)
+  }
+  return { inserted: plan.toInsert.length, updated: plan.toUpdate.length, deleted: plan.toDeleteIds.length }
+}
+
+type DayOutcome = { day: string; status: 'success' | 'partial_success' | 'failed' | 'skipped'; reason: string | null; skuInserted: number; skuUpdated: number; skuDeleted: number }
+
+async function syncOneDay(
+  admin: SupabaseClient,
+  accessToken: string,
+  day: string,
+  workspaceId: string,
+  marketplaceId: string,
+  timeZone: string,
+  dryRun: boolean,
+  forceRefresh: boolean,
+  reportTimeoutMs: number,
+): Promise<DayOutcome> {
+  const requestKey = `${workspaceId}|${marketplaceId}|${SALES_AND_TRAFFIC_REPORT_TYPE}|${day}|${day}|DAY|SKU`
+
+  const latestRun = await findLatestRunForDate(admin, workspaceId, marketplaceId, day)
+  if (!dryRun && shouldSkipAlreadyConfirmedDate(latestRun, forceRefresh)) {
+    console.log(`  ${day}: SKIPPED — already confirmed complete (use --force-refresh to redo).`)
+    return { day, status: 'skipped', reason: 'already_confirmed_complete', skuInserted: 0, skuUpdated: 0, skuDeleted: 0 }
+  }
+
+  const reusable = await findReusableReport(admin, requestKey, forceRefresh)
+  if (reusable?.alreadySucceeded) {
+    console.log(`  ${day}: SKIPPED — already synced successfully within the last 6h (use --force-refresh to redo).`)
+    await admin.from('internal_data_refresh_runs').insert({
+      workspace_id: workspaceId, marketplace_id: marketplaceId, source: SOURCE, status: 'skipped',
+      date_from: day, date_to: day, finished_at: new Date().toISOString(),
+      report_request_key: requestKey, report_type: SALES_AND_TRAFFIC_REPORT_TYPE,
+      error_message: 'Already synced recently for this exact date; use --force-refresh to redo.',
+    })
+    return { day, status: 'skipped', reason: 'reused_recent_success', skuInserted: 0, skuUpdated: 0, skuDeleted: 0 }
+  }
+
+  const reportOptions = { dateGranularity: 'DAY', asinGranularity: 'SKU' }
+  const { data: runRow } = await admin
+    .from('internal_data_refresh_runs')
+    .insert({
+      workspace_id: workspaceId, marketplace_id: marketplaceId, source: SOURCE, status: 'running',
+      date_from: day, date_to: day, report_request_key: requestKey,
+      report_type: SALES_AND_TRAFFIC_REPORT_TYPE, report_options: reportOptions,
+    })
+    .select('id')
+    .single()
+  const runId = runRow?.id as string | undefined
+
+  try {
+    let reportId: string
+    if (reusable) {
+      reportId = reusable.amazonReportId
+      console.log(`  ${day}: reusing in-flight Amazon report ${reportId}.`)
+    } else {
+      const window = marketplaceCalendarDayWindow(day, timeZone)
+      const created = await createAmazonReport(accessToken, {
+        reportType: SALES_AND_TRAFFIC_REPORT_TYPE,
+        marketplaceIds: [marketplaceId],
+        dataStartTime: window.dataStartTime,
+        dataEndTime: window.dataEndTime,
+        reportOptions,
+      })
+      reportId = created.reportId
+      console.log(`  ${day}: report requested (${reportId}).`)
+    }
+    if (runId) {
+      await admin.from('internal_data_refresh_runs').update({ amazon_report_id: reportId, amazon_report_status: 'IN_QUEUE', amazon_report_created_at: new Date().toISOString() }).eq('id', runId)
+    }
+
+    const waitResult = await waitForSalesAndTrafficReport(accessToken, reportId, { maxWaitMs: reportTimeoutMs })
+    if (waitResult.status !== 'DONE') {
+      throw new Error(`Report ended in terminal state ${waitResult.status} (not DONE) — no data to import.`)
+    }
+    if (runId) {
+      await admin.from('internal_data_refresh_runs').update({ amazon_report_status: 'DONE', amazon_report_completed_at: new Date().toISOString(), report_document_id: waitResult.reportDocumentId }).eq('id', runId)
+    }
+
+    const document = await getAmazonReportDocument(accessToken, waitResult.reportDocumentId)
+    const rawJson = await downloadAmazonReportDocument(document)
+    const parsed = parseSalesAndTrafficReport(rawJson)
+
+    // Grain guard: this script only ever requests dateFrom === dateTo, so
+    // this can never actually throw here — it documents and enforces the
+    // invariant at the exact point a report_date is derived, rather than
+    // trusting the request loop never to regress.
+    const skuReportDate = resolveSkuReportDate(day, day)
+
+    const byDateMatches = parsed.byDate.filter(r => r.date === day)
+    const { accepted: acceptedSkuRows, rejected: rejectedSkuRows } = validateSkuRows(parsed.byAsin)
+    const completeness = classifyStructuralCompleteness({
+      byDateMatchCount: byDateMatches.length,
+      byDateOrderedProductSales: byDateMatches[0]?.orderedProductSales ?? null,
+      skuRowsFetched: parsed.byAsin.length,
+      skuRowsRejected: rejectedSkuRows.length,
+    })
+
+    if (completeness.status === 'failed') {
+      throw new Error(`Structurally incomplete report for ${day}: ${completeness.reason}. rows_rejected recorded truthfully; no data written; NOT marked successful.`)
+    }
+
+    const filename = `spapi-auto-${SALES_AND_TRAFFIC_REPORT_TYPE}-${day}`
+    const byDateRows = byDateMatches.map(r => byDateRow(r, workspaceId, marketplaceId, filename))
+    const byDateUpserted = await upsertByDateRows(admin, workspaceId, byDateRows, dryRun)
+
+    const costMasterCategoryBySkuNorm = new Map<string, string | null>()
+    if (acceptedSkuRows.length > 0) {
+      const { data: costMasterRows } = await admin.from('internal_sku_cost_master').select('sku_norm, category').eq('workspace_id', workspaceId).limit(10000)
+      for (const row of costMasterRows ?? []) costMasterCategoryBySkuNorm.set(row.sku_norm as string, (row.category as string | null) ?? null)
+    }
+    const skuRows = acceptedSkuRows.map(r => skuRow(r, skuReportDate, workspaceId, marketplaceId, reportId, costMasterCategoryBySkuNorm))
+    const unmappedCount = skuRows.filter(r => r.portfolio === 'Unmapped / Needs Review').length
+    const skuResult = await replaceSkuDateScope(admin, workspaceId, marketplaceId, skuReportDate, skuRows, dryRun)
+
+    console.log(
+      `  ${day}: by-date rows=${byDateUpserted}, SKU rows fetched=${parsed.byAsin.length} accepted=${acceptedSkuRows.length} rejected=${rejectedSkuRows.length} ` +
+      `(${unmappedCount} unmapped) — insert=${skuResult.inserted} update=${skuResult.updated} delete=${skuResult.deleted} — status=${completeness.status}${completeness.reason ? ` (${completeness.reason})` : ''}.`,
+    )
+
+    if (runId) {
+      await admin.from('internal_data_refresh_runs').update({
+        status: completeness.status,
+        finished_at: new Date().toISOString(),
+        rows_fetched: parsed.byDate.length + parsed.byAsin.length,
+        rows_inserted: byDateUpserted + skuResult.inserted,
+        rows_updated: skuResult.updated,
+        rows_rejected: rejectedSkuRows.length,
+        error_message: completeness.reason,
+      }).eq('id', runId)
+    }
+
+    return { day, status: completeness.status, reason: completeness.reason, skuInserted: skuResult.inserted, skuUpdated: skuResult.updated, skuDeleted: skuResult.deleted }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`  ${day}: FAILED — ${message}`)
+    if (runId) {
+      await admin.from('internal_data_refresh_runs').update({ status: 'failed', finished_at: new Date().toISOString(), error_message: message }).eq('id', runId)
+    }
+    return { day, status: 'failed', reason: message, skuInserted: 0, skuUpdated: 0, skuDeleted: 0 }
+  }
 }
 
 async function main() {
@@ -317,10 +518,29 @@ async function main() {
     return
   }
 
-  const dateEnd = args.get('date-end') ?? addDays(todayIso(), -1) // yesterday by default — today's Business Report data is partial
-  const dateStart = args.get('date-start') ?? addDays(dateEnd, -(args.has('days') ? Number(args.get('days')) : 14) + 1)
+  // Timezone correctness (spec Phase 4): every calendar-day decision below
+  // — "yesterday", the default range, and each report's requested window —
+  // is anchored to the MARKETPLACE'S local timezone, never server-UTC and
+  // never whatever timezone the machine running this script happens to be
+  // in. Fails closed for an unrecognized marketplace rather than silently
+  // assuming UTC.
+  const timeZone = resolveMarketplaceTimezone(marketplaceId)
+  if (!timeZone) {
+    console.error(`Missing requirement: no known timezone for marketplace ${marketplaceId} — refusing to guess UTC. Add it to MARKETPLACE_TIMEZONES in src/lib/internal/business-report-marketplace-time.ts.`)
+    process.exitCode = 1
+    return
+  }
 
-  console.log(`Business Report SP-API sync — workspace ${workspaceId}, marketplace ${marketplaceId}, range ${dateStart} → ${dateEnd}${dryRun ? ' (dry run)' : ''}`)
+  const dateEnd = args.get('date-end') ?? marketplaceYesterdayIso(timeZone) // yesterday (marketplace-local) by default — today's Business Report data is partial
+  const dateStart = args.get('date-start') ?? addCalendarDays(dateEnd, -(args.has('days') ? Number(args.get('days')) : 14) + 1)
+  const days = enumerateCalendarDays(dateStart, dateEnd)
+  if (days.length === 0) {
+    console.error(`Missing requirement: invalid date range ${dateStart} → ${dateEnd} (date-start after date-end).`)
+    process.exitCode = 1
+    return
+  }
+
+  console.log(`Business Report SP-API sync — workspace ${workspaceId}, marketplace ${marketplaceId} (${timeZone}), range ${dateStart} → ${dateEnd} (${days.length} day(s), one Amazon report per day)${dryRun ? ' (dry run)' : ''}. Marketplace "today" is ${marketplaceTodayIso(timeZone)}.`)
 
   await cleanupStaleRuns(admin)
   if (await isSyncLocked(admin, workspaceId, marketplaceId)) {
@@ -328,111 +548,24 @@ async function main() {
     return
   }
 
-  const requestKey = `${workspaceId}|${marketplaceId}|${SALES_AND_TRAFFIC_REPORT_TYPE}|${dateStart}|${dateEnd}|DAY|SKU`
-  const reusable = await findReusableReport(admin, requestKey, forceRefresh)
-  if (reusable?.alreadySucceeded) {
-    console.log('SKIPPED — already synced successfully for this exact range within the last 6h (use --force-refresh to redo).')
-    await admin.from('internal_data_refresh_runs').insert({
-      workspace_id: workspaceId, marketplace_id: marketplaceId, source: SOURCE, status: 'skipped',
-      date_from: dateStart, date_to: dateEnd, finished_at: new Date().toISOString(),
-      report_request_key: requestKey, report_type: SALES_AND_TRAFFIC_REPORT_TYPE,
-      error_message: 'Already synced recently for this exact date range; use --force-refresh to redo.',
-    })
-    return
+  const refreshToken = decryptToken(connection.refresh_token_encrypted as string)
+  const tokenResult = await refreshAccessToken(refreshToken)
+
+  const outcomes: DayOutcome[] = []
+  for (const day of days) {
+    // Sequential, never parallel — bounded load on Amazon's low-quota
+    // Reports API, and each day's failure is independent of the others
+    // (a bad day doesn't abort the whole run).
+    const outcome = await syncOneDay(admin, tokenResult.access_token, day, workspaceId, marketplaceId, timeZone, dryRun, forceRefresh, reportTimeoutMs)
+    outcomes.push(outcome)
   }
 
-  const reportOptions = { dateGranularity: 'DAY', asinGranularity: 'SKU' }
-  const { data: runRow } = await admin
-    .from('internal_data_refresh_runs')
-    .insert({
-      workspace_id: workspaceId, marketplace_id: marketplaceId, source: SOURCE, status: 'running',
-      date_from: dateStart, date_to: dateEnd, report_request_key: requestKey,
-      report_type: SALES_AND_TRAFFIC_REPORT_TYPE, report_options: reportOptions,
-    })
-    .select('id')
-    .single()
-  const runId = runRow?.id as string | undefined
-
-  try {
-    const refreshToken = decryptToken(connection.refresh_token_encrypted as string)
-    const tokenResult = await refreshAccessToken(refreshToken)
-
-    let reportId: string
-    if (reusable) {
-      reportId = reusable.amazonReportId
-      console.log(`Reusing in-flight Amazon report ${reportId} instead of requesting a new one.`)
-    } else {
-      const created = await createAmazonReport(tokenResult.access_token, {
-        reportType: SALES_AND_TRAFFIC_REPORT_TYPE,
-        marketplaceIds: [marketplaceId],
-        dataStartTime: `${dateStart}T00:00:00Z`,
-        dataEndTime: `${dateEnd}T23:59:59Z`,
-        reportOptions,
-      })
-      reportId = created.reportId
-      console.log('Report requested:', reportId)
-    }
-    if (runId) {
-      await admin.from('internal_data_refresh_runs').update({ amazon_report_id: reportId, amazon_report_status: 'IN_QUEUE', amazon_report_created_at: new Date().toISOString() }).eq('id', runId)
-    }
-
-    const waitResult = await waitForSalesAndTrafficReport(tokenResult.access_token, reportId, { maxWaitMs: reportTimeoutMs })
-    if (waitResult.status !== 'DONE') {
-      throw new Error(`Report ended in terminal state ${waitResult.status} (not DONE) — no data to import.`)
-    }
-    if (runId) {
-      await admin.from('internal_data_refresh_runs').update({ amazon_report_status: 'DONE', amazon_report_completed_at: new Date().toISOString(), report_document_id: waitResult.reportDocumentId }).eq('id', runId)
-    }
-
-    const document = await getAmazonReportDocument(tokenResult.access_token, waitResult.reportDocumentId)
-    const rawJson = await downloadAmazonReportDocument(document)
-    const parsed = parseSalesAndTrafficReport(rawJson)
-    console.log(`Parsed ${parsed.byDate.length} by-date row(s), ${parsed.byAsin.length} by-SKU/ASIN row(s).`)
-
-    const filename = `spapi-auto-${SALES_AND_TRAFFIC_REPORT_TYPE}-${dateStart}-${dateEnd}`
-    const byDateRows = parsed.byDate.map(r => byDateRow(r, workspaceId!, marketplaceId, filename, reportId))
-    const byDateInserted = await upsertByDateRows(admin, workspaceId!, byDateRows, dryRun)
-
-    let skuInserted = 0
-    let unmappedCount = 0
-    if (parsed.byAsin.length > 0) {
-      const { data: costMasterRows } = await admin.from('internal_sku_cost_master').select('sku_norm, category').eq('workspace_id', workspaceId).limit(10000)
-      const costMasterCategoryBySkuNorm = new Map<string, string | null>()
-      for (const row of costMasterRows ?? []) costMasterCategoryBySkuNorm.set(row.sku_norm as string, (row.category as string | null) ?? null)
-
-      // The report is range-level, but salesAndTrafficByAsin has no per-day
-      // breakdown when dateGranularity=DAY spans multiple days in one
-      // request — Amazon returns ASIN totals for the WHOLE requested range
-      // in that case. For a single-day request (date-start === date-end)
-      // the ASIN rows correctly represent that one day.
-      const skuReportDate = dateStart === dateEnd ? dateStart : dateEnd
-      const skuRows = parsed.byAsin.map(r => skuRow(r, skuReportDate, workspaceId!, marketplaceId, reportId, costMasterCategoryBySkuNorm))
-      unmappedCount = skuRows.filter(r => r.portfolio === 'Unmapped / Needs Review').length
-      const skuResult = await upsertSkuRows(admin, workspaceId!, marketplaceId, skuReportDate, skuRows, dryRun)
-      skuInserted = skuResult.inserted + skuResult.updated
-    }
-
-    console.log(`By-date rows upserted: ${byDateInserted}. SKU/ASIN rows upserted: ${skuInserted} (${unmappedCount} unmapped to a portfolio).`)
-
-    if (runId) {
-      await admin.from('internal_data_refresh_runs').update({
-        status: 'success',
-        finished_at: new Date().toISOString(),
-        rows_fetched: parsed.byDate.length + parsed.byAsin.length,
-        rows_inserted: byDateInserted + skuInserted,
-        rows_updated: 0,
-        rows_rejected: 0,
-      }).eq('id', runId)
-    }
-    console.log(dryRun ? 'Dry run complete — no rows written.' : 'Sync complete.')
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error('Business Report sync failed:', message)
-    if (runId) {
-      await admin.from('internal_data_refresh_runs').update({ status: 'failed', finished_at: new Date().toISOString(), error_message: message }).eq('id', runId)
-    }
-    process.exitCode = 1
-  }
+  const succeeded = outcomes.filter(o => o.status === 'success').length
+  const partial = outcomes.filter(o => o.status === 'partial_success').length
+  const failed = outcomes.filter(o => o.status === 'failed').length
+  const skipped = outcomes.filter(o => o.status === 'skipped').length
+  console.log(`Sync complete${dryRun ? ' (dry run — no rows written)' : ''}: ${succeeded} succeeded, ${partial} partial, ${failed} failed, ${skipped} skipped (of ${days.length} day(s)).`)
+  if (failed > 0) process.exitCode = 1
 }
 
 main().catch(err => {

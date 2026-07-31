@@ -15,7 +15,7 @@ import {
   deriveChartViewState, derivePageViewState, filterRowsByTitle,
 } from './query'
 import {
-  dataStatus, formatCount, formatMoney, formatRatio, salesTrendLabel, spendTrendLabel, toneBadgeClassName,
+  dataStatus, formatCount, formatMoney, formatRatio, formatWindowSales, formatWindowUnits, salesTrendLabel, spendTrendLabel, toneBadgeClassName,
 } from './format'
 import { FreshnessStrip } from './freshness-strip'
 import { DailyChart } from './daily-chart'
@@ -311,8 +311,13 @@ function SkuRowGroup({ row, currencyCode, expanded, onToggle, daily }: {
 
         {window ? (
           <>
-            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.sales, currencyCode)}</td>
-            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatCount(window.units)}</td>
+            {/* Sales-grain fix: gated on salesCoverageState -- a window with
+                unresolved/missing days must never render its raw (possibly
+                partial or entirely absent) sum as a trustworthy number,
+                especially not a silent zero. Spend/attributedSales below are
+                unchanged (Ads source, out of this PR's scope). */}
+            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatWindowSales(window.sales, window.salesCoverageState, currencyCode)}</td>
+            <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatWindowUnits(window.units, window.salesCoverageState)}</td>
             <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.spend, currencyCode)}</td>
             <td className="px-4 py-3 text-right align-top text-sm text-foreground">{formatMoney(window.attributedSales, currencyCode)}</td>
             <RatioCell tone={formatRatio(window.acos).tone} text={formatRatio(window.acos).text} />
