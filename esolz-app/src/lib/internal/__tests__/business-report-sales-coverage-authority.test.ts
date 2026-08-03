@@ -5,6 +5,7 @@ import {
   latestExactDayRun,
   isSalesDayConfirmed,
   hasAnyCoveringRun,
+  classifySalesDayCoverage,
   type SalesRunRecord,
 } from '../business-report-sales-coverage-authority'
 
@@ -184,5 +185,104 @@ describe('hasAnyCoveringRun (deliberately unchanged semantics)', () => {
   })
   test('no run at all covering the date -> false', () => {
     assert.equal(hasAnyCoveringRun([], DAY), false)
+  })
+})
+
+// ============================================================
+// Daily raw-value-leak fix: classifySalesDayCoverage
+// ============================================================
+// The pre-merge review found the FIRST version of this migration's
+// `get_sku_performance_daily` checked "raw row exists -> REPORTED_VALUE"
+// BEFORE checking authority at all -- so a physically-present row
+// (corrupted, or a crash-mixed correct+stale state) still leaked as a
+// trustworthy REPORTED_VALUE regardless of the exact-day authority. Every
+// scenario A-H below proves the CORRECTED ordering: authority (and
+// before-history) is always checked first; a raw value is NEVER read or
+// exposed unless the exact-day authoritative run for that date actually
+// succeeded.
+
+describe('classifySalesDayCoverage — the daily raw-value-leak fix, all required scenarios', () => {
+  test('A. old corrupted raw row, literally no run of any kind covering the date -> UNKNOWN, sales/units NULL (raw value never leaks)', () => {
+    const result = classifySalesDayCoverage({ runs: [], targetDate: DAY, isBeforeHistory: false, rawValue: 999999 })
+    assert.deepEqual(result, { state: 'UNKNOWN', value: null })
+  })
+
+  test('the known historical case: old corrupted raw row + ONLY old multi-day successes covering it -> SOURCE_NOT_COMPLETE, sales/units NULL', () => {
+    const runs = [run({ id: 'old-multiday', dateFrom: '2026-07-01', dateTo: '2026-07-28', status: 'success', rowsRejected: 0 })]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 72902971.71 })
+    assert.deepEqual(result, { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('B. old exact-day success, newer exact-day RUNNING, raw row physically present -> SOURCE_NOT_COMPLETE, NULL (no leak, no fallback to the old success)', () => {
+    const runs = [
+      run({ id: 'attempt-1', status: 'success', rowsRejected: 0, startedAt: '2026-07-21T00:00:00.000Z' }),
+      run({ id: 'attempt-2', status: 'running', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' }),
+    ]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 176305 })
+    assert.deepEqual(result, { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('C. old exact-day success, newer exact-day FAILED, raw row physically present -> SOURCE_NOT_COMPLETE, NULL', () => {
+    const runs = [
+      run({ id: 'attempt-1', status: 'success', rowsRejected: 0, startedAt: '2026-07-21T00:00:00.000Z' }),
+      run({ id: 'attempt-2', status: 'failed', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' }),
+    ]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 176305 })
+    assert.deepEqual(result, { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('D. crash mid-upsert (latest exact-day attempt still running, partially-applied raw row present) -> SOURCE_NOT_COMPLETE, NULL', () => {
+    const runs = [run({ id: 'crashed-attempt', status: 'running', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' })]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 42000 })
+    assert.deepEqual(result, { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('E. crash after upsert, before stale-delete (correct+stale rows coexist; latest attempt still running) -> SOURCE_NOT_COMPLETE, NULL regardless of which value the row holds', () => {
+    const runs = [run({ id: 'crashed-attempt', status: 'running', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' })]
+    // Whichever value happens to be physically stored for this SKU right now (correct-new or stale-old), it must not leak.
+    const resultWithStaleValue = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 999999 })
+    const resultWithCorrectValue = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 4200 })
+    assert.deepEqual(resultWithStaleValue, { state: 'SOURCE_NOT_COMPLETE', value: null })
+    assert.deepEqual(resultWithCorrectValue, { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('F. crash mid stale-delete (latest attempt still running/failed either way) -> SOURCE_NOT_COMPLETE, NULL', () => {
+    const runsStillRunning = [run({ id: 'crashed-attempt', status: 'running', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' })]
+    const runsCleanedUpFailed = [run({ id: 'crashed-attempt', status: 'failed', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' })]
+    assert.deepEqual(classifySalesDayCoverage({ runs: runsStillRunning, targetDate: DAY, isBeforeHistory: false, rawValue: 42000 }), { state: 'SOURCE_NOT_COMPLETE', value: null })
+    assert.deepEqual(classifySalesDayCoverage({ runs: runsCleanedUpFailed, targetDate: DAY, isBeforeHistory: false, rawValue: 42000 }), { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('G. writes complete but crash before run marked success -> latest exact-day run stays running/failed -> SOURCE_NOT_COMPLETE, NULL even though the underlying data is actually already correct', () => {
+    const runs = [run({ id: 'crashed-before-success-write', status: 'running', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' })]
+    // The DB row is now genuinely correct (writes completed) -- but the run was never marked success, so it must still be hidden.
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 4200 })
+    assert.deepEqual(result, { state: 'SOURCE_NOT_COMPLETE', value: null })
+  })
+
+  test('H (a). clean exact-day success, raw row present -> REPORTED_VALUE, the real value', () => {
+    const runs = [run({ id: 'clean-success', status: 'success', rowsRejected: 0 })]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: 4200 })
+    assert.deepEqual(result, { state: 'REPORTED_VALUE', value: 4200 })
+  })
+
+  test('H (b). clean exact-day success, raw row ABSENT -> CONFIRMED_ZERO, value 0', () => {
+    const runs = [run({ id: 'clean-success', status: 'success', rowsRejected: 0 })]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: false, rawValue: null })
+    assert.deepEqual(result, { state: 'CONFIRMED_ZERO', value: 0 })
+  })
+
+  test('before_history takes priority over everything else, including a raw row and/or an authoritative success', () => {
+    const runs = [run({ id: 'clean-success', status: 'success', rowsRejected: 0 })]
+    const result = classifySalesDayCoverage({ runs, targetDate: DAY, isBeforeHistory: true, rawValue: 4200 })
+    assert.deepEqual(result, { state: 'BEFORE_HISTORY', value: null })
+  })
+
+  test('zero is a real, distinguishable value: CONFIRMED_ZERO (0) is never confused with UNKNOWN/SOURCE_NOT_COMPLETE (null)', () => {
+    const confirmedZero = classifySalesDayCoverage({ runs: [run({ status: 'success', rowsRejected: 0 })], targetDate: DAY, isBeforeHistory: false, rawValue: null })
+    const unknown = classifySalesDayCoverage({ runs: [], targetDate: DAY, isBeforeHistory: false, rawValue: null })
+    assert.equal(confirmedZero.value, 0)
+    assert.equal(unknown.value, null)
+    assert.notEqual(confirmedZero.state, unknown.state)
   })
 })

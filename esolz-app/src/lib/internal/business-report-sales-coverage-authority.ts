@@ -82,3 +82,40 @@ export function isSalesDayConfirmed(runs: SalesRunRecord[], targetDate: string):
 export function hasAnyCoveringRun(runs: SalesRunRecord[], targetDate: string): boolean {
   return runs.some(r => r.dateFrom <= targetDate && r.dateTo >= targetDate)
 }
+
+export type SalesDayCoverageState = 'BEFORE_HISTORY' | 'SOURCE_NOT_COMPLETE' | 'UNKNOWN' | 'REPORTED_VALUE' | 'CONFIRMED_ZERO'
+export type SalesDayCoverageResult = { state: SalesDayCoverageState; value: number | null }
+
+/**
+ * Mirrors `get_sku_performance_daily`'s CORRECTED `daily_states` CASE
+ * ordering (migration 066, amended round). This exact ordering is the fix
+ * for the daily raw-value-leak defect: the FIRST version of this
+ * migration checked `rawValue !== null -> REPORTED_VALUE` BEFORE checking
+ * authority at all, so a physically-present row (an old corrupted row, or
+ * the correct+stale mix a crash between upsert and stale-delete leaves
+ * behind) still surfaced as REPORTED_VALUE regardless of whether the
+ * exact-day authoritative run actually confirmed that date.
+ *
+ * Order now matches the locked invariant exactly:
+ *   A. before history                       -> BEFORE_HISTORY,       null
+ *   B. not authoritative, some run covers it -> SOURCE_NOT_COMPLETE, null
+ *   C. not authoritative, no run at all      -> UNKNOWN,              null
+ *   D. authoritative, raw row exists         -> REPORTED_VALUE,       rawValue
+ *   E. authoritative, no raw row             -> CONFIRMED_ZERO,       0
+ * A raw value is NEVER read/exposed unless the exact-day authoritative
+ * run for that date actually succeeded (B and C both return null
+ * regardless of `rawValue` — the whole point of this fix).
+ */
+export function classifySalesDayCoverage(input: {
+  runs: SalesRunRecord[]
+  targetDate: string
+  isBeforeHistory: boolean
+  /** The stored row's value for this exact SKU + date, or null if no row exists. */
+  rawValue: number | null
+}): SalesDayCoverageResult {
+  if (input.isBeforeHistory) return { state: 'BEFORE_HISTORY', value: null }
+  if (!isSalesDayConfirmed(input.runs, input.targetDate)) {
+    return { state: hasAnyCoveringRun(input.runs, input.targetDate) ? 'SOURCE_NOT_COMPLETE' : 'UNKNOWN', value: null }
+  }
+  return input.rawValue !== null ? { state: 'REPORTED_VALUE', value: input.rawValue } : { state: 'CONFIRMED_ZERO', value: 0 }
+}

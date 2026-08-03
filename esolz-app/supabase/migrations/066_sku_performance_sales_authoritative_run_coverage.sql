@@ -5,6 +5,23 @@
 -- in place; this is a new, forward-only migration that redefines exactly
 -- the three functions below via CREATE OR REPLACE.
 --
+-- Amended (same commit round, still unapplied anywhere -- edited in place
+-- rather than superseded, exactly per migration 065's own precedent for a
+-- migration with no production history to preserve): a second pre-merge
+-- review found `get_sku_performance_daily`'s `daily_states` CTE checked
+-- `raw_sales_value IS NOT NULL` -> 'REPORTED_VALUE' BEFORE checking the new
+-- authoritative-run predicate at all -- so a physically-present row
+-- (including an old corrupted row, or the correct+stale mix a crash
+-- between upsert and stale-delete can leave behind) still surfaced as
+-- REPORTED_VALUE regardless of whether the exact-day authority actually
+-- confirmed that date. That made this migration's "a failed/partial
+-- reprocessing attempt is invisible as trustworthy data" claim false for
+-- the per-day drill-down specifically (it was already true for the
+-- window-level summary). `daily_states`' CASE ordering is corrected below:
+-- before_history, then authority (source_not_complete/unknown when not
+-- authoritative), THEN raw-row-presence (reported_value/confirmed_zero)
+-- only once authoritative. See that CTE for the full explanation.
+--
 -- ============================================================
 -- The confirmed defect this migration closes
 -- ============================================================
@@ -504,20 +521,41 @@ BEGIN
   daily_states AS (
     SELECT
       db.d,
+      -- Daily raw-value-leak fix (found in pre-merge review of the first
+      -- version of this migration): the ORIGINAL ordering here checked
+      -- `raw_sales_value IS NOT NULL` FIRST, before the new authoritative-
+      -- run predicate -- so a physically-present row (including an old
+      -- corrupted row, or the correct+stale mix a crash between upsert and
+      -- stale-delete can leave behind) still surfaced as REPORTED_VALUE
+      -- regardless of what `sales_confirmed_zero_evidence` (the exact-day
+      -- authority check) said. That made the "a failed/partial reprocessing
+      -- attempt is invisible as trustworthy data" guarantee false for this
+      -- function specifically -- true only for the window-level summary.
+      -- Authority (and before-history) is now checked FIRST: a raw row is
+      -- only ever read as REPORTED_VALUE, and a missing row only ever read
+      -- as CONFIRMED_ZERO, once the exact-day authoritative run for that
+      -- date has actually succeeded. before_history is structurally
+      -- disjoint from "a raw row exists" (a row can never predate the
+      -- workspace/marketplace's own earliest row), but is still checked
+      -- ahead of authority for clarity and defense in depth.
       CASE
-        WHEN db.raw_sales_value IS NOT NULL THEN 'REPORTED_VALUE'
         WHEN db.sales_before_history THEN 'BEFORE_HISTORY'
-        WHEN db.sales_confirmed_zero_evidence THEN 'CONFIRMED_ZERO'
-        WHEN db.sales_any_covering_run THEN 'SOURCE_NOT_COMPLETE'
-        ELSE 'UNKNOWN'
+        WHEN NOT db.sales_confirmed_zero_evidence AND db.sales_any_covering_run THEN 'SOURCE_NOT_COMPLETE'
+        WHEN NOT db.sales_confirmed_zero_evidence THEN 'UNKNOWN'
+        WHEN db.raw_sales_value IS NOT NULL THEN 'REPORTED_VALUE'
+        ELSE 'CONFIRMED_ZERO'
       END AS sales_coverage_state,
       CASE
+        WHEN db.sales_before_history THEN NULL
+        WHEN NOT db.sales_confirmed_zero_evidence THEN NULL
         WHEN db.raw_sales_value IS NOT NULL THEN db.raw_sales_value
-        WHEN NOT db.sales_before_history AND db.sales_confirmed_zero_evidence THEN 0
+        ELSE 0
       END AS sales_value,
       CASE
+        WHEN db.sales_before_history THEN NULL
+        WHEN NOT db.sales_confirmed_zero_evidence THEN NULL
         WHEN db.raw_units_value IS NOT NULL THEN db.raw_units_value
-        WHEN NOT db.sales_before_history AND db.sales_confirmed_zero_evidence THEN 0
+        ELSE 0
       END AS units_value,
       CASE
         WHEN db.raw_spend_value IS NOT NULL THEN 'REPORTED_VALUE'
