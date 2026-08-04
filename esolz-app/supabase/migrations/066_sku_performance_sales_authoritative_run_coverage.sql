@@ -22,6 +22,33 @@
 -- authoritative), THEN raw-row-presence (reported_value/confirmed_zero)
 -- only once authoritative. See that CTE for the full explanation.
 --
+-- Amended again (same commit round, still unapplied anywhere): the same
+-- category of defect exists a THIRD time, in `get_sku_performance_summary`
+-- itself -- `v_sales_latest_accepted_complete_date` (`MAX(date_to)` over
+-- ANY successful run, no exact-day scoping) feeds the page's "Sales:
+-- Healthy" freshness badge via salesLatestAcceptedCompleteDate ->
+-- summary.ts -> classifySourceHealth -> the freshness strip, independent
+-- of the value-level salesCoverageState fix above -- so the badge could
+-- say "healthy, current" for a date the per-value gate correctly now
+-- calls source_not_complete. Closing this WITHOUT redefining
+-- get_sku_performance_summary's own ~900-line body (which would require
+-- reproducing the entire function via CREATE OR REPLACE -- Postgres has
+-- no way to patch one expression in place -- an unacceptable transcription
+-- risk with no live Postgres available to verify the result) is done via
+-- the new `get_sku_performance_sales_freshness_date` function below: a
+-- small, standalone, narrowly-scoped, directly-callable RPC (REVOKE FROM
+-- PUBLIC + GRANT TO service_role, matching the two main entry-point RPCs'
+-- pattern -- NOT an internal `_`-prefixed helper, since the application
+-- layer calls it directly) returning the MAX date among dates whose
+-- LATEST exact-day attempt succeeded cleanly. The application layer
+-- (src/lib/sku-performance/summary.ts) calls this alongside
+-- get_sku_performance_summary and OVERRIDES the legacy
+-- salesLatestAcceptedCompleteDate field with this authoritative value
+-- before it ever reaches classifySourceHealth -- the badge and the
+-- per-value gate can no longer disagree, without touching the large
+-- function at all. Ads freshness (adsLatestAcceptedCompleteDate) is
+-- untouched -- Ads never had this bug.
+--
 -- ============================================================
 -- The confirmed defect this migration closes
 -- ============================================================
@@ -157,16 +184,50 @@
 -- ============================================================
 -- Returns true iff, among every internal_data_refresh_runs row for this
 -- workspace/marketplace/source whose EXACT scope is date_from = date_to =
--- p_target_date, the LATEST one (started_at DESC, then id DESC as a
--- deterministic tie-breaker for the vanishingly-rare case of two rows
--- sharing the same started_at instant -- id is a random UUID, not
--- chronological, but ORDER BY on it is still fully deterministic and
--- repeatable, which is all a tie-breaker needs to be) has
--- status = 'success' AND rows_rejected = 0. A multi-day run is invisible
--- to this function by construction (the date_from = date_to filter alone
--- excludes it) -- it is never eligible to certify a day, regardless of
--- its own status. No exact-day run at all -> false (COALESCE), never
--- true, never NULL.
+-- p_target_date, the LATEST one has status = 'success' AND
+-- rows_rejected = 0. A multi-day run is invisible to this function by
+-- construction (the date_from = date_to filter alone excludes it) -- it
+-- is never eligible to certify a day, regardless of its own status. No
+-- exact-day run at all -> false (COALESCE), never true, never NULL.
+--
+-- Ordering (checked against the actual schema, migration 046, and every
+-- INSERT call site into this table before choosing it -- not assumed):
+--   1. started_at DESC (primary) -- an immutable, not-null,
+--      insert-time-defaulted timestamp (`default now()`), and the same
+--      column every other "most recent run" query in this codebase already
+--      orders by (cleanupStaleRuns, findReusableReport, findLatestRunForDate,
+--      brahmastra-data-health.ts), so this stays consistent with the rest
+--      of the system's notion of "latest."
+--   2. created_at DESC (secondary tie-break) -- also `default now()`,
+--      same immutability guarantee as started_at. In THIS codebase's
+--      actual write paths (scripts/sync-business-reports.ts,
+--      scripts/sync-ads-reports.ts -- the only two INSERT call sites into
+--      this table) neither column is ever explicitly overridden, so both
+--      default to the identical `now()` evaluated once per INSERT
+--      statement's transaction snapshot -- started_at and created_at are
+--      therefore always equal for every row that exists today, and this
+--      tie-break is a genuine no-op right now. It is still included,
+--      ahead of the UUID tie-break, as defense-in-depth: if a future
+--      write path (e.g. a historical backfill script) ever legitimately
+--      sets started_at to a date OTHER than true insertion time (to
+--      represent "what date this run covers" rather than "when it was
+--      inserted"), created_at remains a true, uninterfered-with record of
+--      actual insertion order, and this ordering degrades gracefully to
+--      still picking the truly-latest-inserted attempt instead of being
+--      silently wrong.
+--   3. id DESC (final tie-break) -- id is a random UUID
+--      (gen_random_uuid()), not chronological, so this step is NOT a
+--      timestamp comparison and carries no meaning about which attempt is
+--      "really" latest. It exists ONLY to guarantee a single deterministic,
+--      repeatable answer for the vanishingly-rare case where both
+--      started_at AND created_at are exactly equal down to the
+--      microsecond (e.g. two rows inserted in the same statement/batch) --
+--      an exact-timestamp tie at steps 1-2 cannot itself produce a WRONG
+--      authority choice (both candidate rows are equally "latest" by every
+--      real signal available), it can only leave the choice between two
+--      attempts this function has no further true ordering evidence to
+--      distinguish -- id DESC just picks one of them consistently rather
+--      than depending on undefined SQL row order.
 CREATE OR REPLACE FUNCTION public._sku_perf_sales_day_confirmed(
   p_workspace_id   uuid,
   p_marketplace_id text,
@@ -184,7 +245,7 @@ AS $$
       AND r.source = 'business_report_sp_api'
       AND r.date_from = p_target_date
       AND r.date_to = p_target_date
-    ORDER BY r.started_at DESC, r.id DESC
+    ORDER BY r.started_at DESC, r.created_at DESC, r.id DESC
     LIMIT 1
   ), false);
 $$;
@@ -614,5 +675,54 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.get_sku_performance_daily(uuid, text, text, date, date) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_sku_performance_daily(uuid, text, text, date, date) TO service_role;
+
+-- ============================================================
+-- 4. get_sku_performance_sales_freshness_date -- the narrow freshness fix
+-- ============================================================
+-- Returns the MAX date among every date whose LATEST exact-day
+-- (date_from = date_to) Sales attempt succeeded cleanly
+-- (status='success', rows_rejected=0) -- i.e. the same authoritative-run
+-- contract as `_sku_perf_sales_day_confirmed`, applied across every date
+-- that source has ever attempted rather than checked one date at a time.
+-- NULL when no date has ever been authoritatively confirmed.
+--
+-- A per-date correlated call to `_sku_perf_sales_day_confirmed` would work
+-- but means one function call per distinct exact-day date on file, an
+-- unbounded (and unnecessarily repeated) cost as history grows -- this
+-- instead does one single set-based pass: DISTINCT ON (date) picks the
+-- single latest attempt per date directly (same started_at/created_at/id
+-- ordering as `_sku_perf_sales_day_confirmed` -- see that function's
+-- header comment for the full ordering rationale), then MAX() over the
+-- dates whose latest attempt qualifies.
+CREATE OR REPLACE FUNCTION public.get_sku_performance_sales_freshness_date(
+  p_workspace_id   uuid,
+  p_marketplace_id text
+)
+RETURNS date
+LANGUAGE sql STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  WITH exact_day_runs AS (
+    SELECT r.date_from AS d, r.status, r.rows_rejected, r.started_at, r.created_at, r.id
+    FROM public.internal_data_refresh_runs r
+    WHERE r.workspace_id = p_workspace_id
+      AND r.marketplace_id = p_marketplace_id
+      AND r.source = 'business_report_sp_api'
+      AND r.date_from = r.date_to
+      AND p_workspace_id IS NOT NULL
+      AND p_marketplace_id IS NOT NULL
+      AND length(p_marketplace_id) > 0
+  ),
+  latest_per_day AS (
+    SELECT DISTINCT ON (d) d, status, rows_rejected
+    FROM exact_day_runs
+    ORDER BY d, started_at DESC, created_at DESC, id DESC
+  )
+  SELECT max(d) FROM latest_per_day WHERE status = 'success' AND rows_rejected = 0;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.get_sku_performance_sales_freshness_date(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_sku_performance_sales_freshness_date(uuid, text) TO service_role;
 
 notify pgrst, 'reload schema';

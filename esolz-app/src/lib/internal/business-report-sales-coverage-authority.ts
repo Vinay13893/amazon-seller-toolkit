@@ -29,6 +29,8 @@ export type SalesRunRecord = {
   status: string
   rowsRejected: number
   startedAt: string
+  /** Set once at insert time, default `now()`, same immutability guarantee as startedAt — see latestExactDayRun's doc comment for why this is a tie-break, not the primary key. */
+  createdAt: string
 }
 
 /** A multi-day run is never eligible to certify a SKU-day, full stop — this is the entire gate. */
@@ -38,20 +40,36 @@ export function isExactDayRun(run: SalesRunRecord, targetDate: string): boolean 
 
 /**
  * The single latest exact-day attempt for `targetDate`, or null if none
- * exists. Ordered by `startedAt` DESC, then `id` DESC as a deterministic
- * tie-breaker (mirrors the SQL's `ORDER BY started_at DESC, id DESC`) —
- * `finished_at` is deliberately never used for ordering since a currently-
- * running attempt has none yet, and `started_at` is set once at insert
- * time and never mutated by any later UPDATE in this codebase, making it
- * a safe, immutable ordering key. The tie-break only needs to be
- * deterministic and repeatable, not chronologically meaningful — a random
- * UUID compared lexicographically satisfies that.
+ * exists. Ordered `startedAt DESC, createdAt DESC, id DESC` (mirrors the
+ * SQL exactly — see migration 066's `_sku_perf_sales_day_confirmed` header
+ * comment for the full rationale, checked against the actual schema and
+ * every INSERT call site rather than assumed):
+ *   1. startedAt (primary) — immutable, insert-time-defaulted, the same
+ *      column every other "most recent run" query in this codebase
+ *      already orders by.
+ *   2. createdAt (secondary tie-break) — same immutability guarantee as
+ *      startedAt. In this codebase's actual write paths neither column is
+ *      ever explicitly overridden, so both default to the identical
+ *      `now()` for every row that exists today — this tie-break is a
+ *      genuine no-op right now, kept as defense-in-depth for a future
+ *      write path that might legitimately set startedAt to something
+ *      other than true insertion time.
+ *   3. id (final tie-break) — a random UUID, not chronological; exists
+ *      only to guarantee one deterministic, repeatable answer for the
+ *      vanishingly-rare case where startedAt AND createdAt are both
+ *      exactly equal. An exact-timestamp tie at steps 1-2 cannot itself
+ *      produce a WRONG authority choice (both candidates are equally
+ *      "latest" by every real signal available) — id DESC just picks one
+ *      of them consistently instead of depending on undefined order.
+ * `finished_at` is deliberately never used — a currently-running attempt
+ * has none yet.
  */
 export function latestExactDayRun(runs: SalesRunRecord[], targetDate: string): SalesRunRecord | null {
   const exactDayRuns = runs.filter(r => isExactDayRun(r, targetDate))
   if (exactDayRuns.length === 0) return null
   return [...exactDayRuns].sort((a, b) => {
     if (a.startedAt !== b.startedAt) return a.startedAt < b.startedAt ? 1 : -1
+    if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1
     return a.id < b.id ? 1 : -1
   })[0]
 }
@@ -118,4 +136,24 @@ export function classifySalesDayCoverage(input: {
     return { state: hasAnyCoveringRun(input.runs, input.targetDate) ? 'SOURCE_NOT_COMPLETE' : 'UNKNOWN', value: null }
   }
   return input.rawValue !== null ? { state: 'REPORTED_VALUE', value: input.rawValue } : { state: 'CONFIRMED_ZERO', value: 0 }
+}
+
+/**
+ * Mirrors the new `get_sku_performance_sales_freshness_date` SQL function
+ * (migration 066, third amended round) — the narrow freshness-badge fix.
+ * The MAX date among every distinct exact-day date on file whose LATEST
+ * attempt is authoritatively confirmed (isSalesDayConfirmed), or null if
+ * none ever was. This is what `summary.ts` uses to override the legacy
+ * `salesLatestAcceptedCompleteDate` field before it reaches
+ * `classifySourceHealth` — closing the "badge says healthy while the
+ * per-value gate says source_not_complete" contradiction, because
+ * `classifySourceHealth` already treats a null accepted-complete date as
+ * 'stale' unconditionally (see source-health.ts), before ever consulting
+ * the still-unfixed lastRunStatus fields.
+ */
+export function latestSalesAuthoritativeCompleteDate(runs: SalesRunRecord[]): string | null {
+  const exactDayDates = [...new Set(runs.filter(r => r.dateFrom === r.dateTo).map(r => r.dateFrom))]
+  const confirmedDates = exactDayDates.filter(d => isSalesDayConfirmed(runs, d))
+  if (confirmedDates.length === 0) return null
+  return confirmedDates.sort().at(-1) as string
 }

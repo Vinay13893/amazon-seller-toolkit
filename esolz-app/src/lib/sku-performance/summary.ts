@@ -13,9 +13,22 @@
  * rows_rejected=0) refresh run's date_to — never from the plain "latest
  * row seen" date (`salesLatestDataDate`/`adsLatestDataDate`), which can
  * exist even when every run covering it failed or rejected rows.
+ *
+ * Sales coverage-trust follow-up (migration 066): `get_sku_performance_summary`'s
+ * own `salesLatestAcceptedCompleteDate` is computed from ANY successful
+ * run (no exact-day scope) — the same category of defect the coverage-
+ * trust fix closed for salesCoverageState, just not yet closed at the
+ * source (redefining that ~900-line function was judged too risky to do
+ * blind, with no live Postgres available to verify it — see migration
+ * 066's header). Closed here instead, narrowly, at the API layer: a
+ * second, small RPC (`get_sku_performance_sales_freshness_date`) computes
+ * the authoritative-run-only date, and its result OVERRIDES the legacy
+ * field before classifySourceHealth ever sees it — so the freshness badge
+ * and the per-value salesCoverageState gate can never disagree. Ads
+ * freshness is untouched (Ads never had this bug).
  */
 import { createAdminClient } from '@/lib/supabase/admin'
-import { getSkuPerformanceSummary as callSummaryRpc, type GetSummaryArgs } from './rpc'
+import { getSkuPerformanceSummary as callSummaryRpc, getSkuPerformanceSalesFreshnessDate, type GetSummaryArgs } from './rpc'
 import { classifySourceHealth } from './source-health'
 import type { SkuPerformanceSummaryResult } from './types'
 
@@ -26,6 +39,19 @@ export async function fetchSkuPerformanceSummary(args: GetSummaryArgs): Promise<
   if (result.result !== 'success') {
     return result
   }
+
+  // Narrow override: never trust the legacy salesLatestAcceptedCompleteDate
+  // (any successful run, no exact-day scope) for the health badge -- only
+  // the authoritative-run-only date from the dedicated RPC. A transport
+  // failure on this SECOND call must not silently fall back to the
+  // untrustworthy legacy value either -- it propagates like any other RPC
+  // failure (SkuPerformanceRpcTransportError), rather than risking a
+  // healthy-looking badge built on unverified data.
+  const authoritativeSalesFreshnessDate = await getSkuPerformanceSalesFreshnessDate(admin, {
+    workspaceId: args.workspaceId,
+    marketplaceId: args.marketplaceId,
+  })
+  result.summary.salesLatestAcceptedCompleteDate = authoritativeSalesFreshnessDate
 
   const salesSourceState = classifySourceHealth({
     latestAcceptedCompleteDate: result.summary.salesLatestAcceptedCompleteDate,

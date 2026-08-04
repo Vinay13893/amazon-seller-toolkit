@@ -6,6 +6,7 @@ import {
   isSalesDayConfirmed,
   hasAnyCoveringRun,
   classifySalesDayCoverage,
+  latestSalesAuthoritativeCompleteDate,
   type SalesRunRecord,
 } from '../business-report-sales-coverage-authority'
 
@@ -20,6 +21,7 @@ function run(overrides: Partial<SalesRunRecord>): SalesRunRecord {
     status: 'success',
     rowsRejected: 0,
     startedAt: '2026-07-21T03:30:00.000Z',
+    createdAt: '2026-07-21T03:30:00.000Z',
     ...overrides,
   }
 }
@@ -159,6 +161,62 @@ describe('deterministic tie-break', () => {
       run({ id: 'new-running', status: 'running', rowsRejected: 0, startedAt: '2026-07-22T00:00:00.000Z' }),
     ]
     assert.equal(latestExactDayRun(runs, DAY)?.id, 'new-running')
+  })
+
+  test('createdAt breaks a startedAt tie BEFORE falling through to the id tie-break', () => {
+    const sameStartedAt = '2026-07-22T03:30:00.000Z'
+    const runs = [
+      run({ id: 'zzz-inserted-first', status: 'failed', startedAt: sameStartedAt, createdAt: '2026-07-22T03:29:00.000Z' }),
+      run({ id: 'aaa-inserted-second', status: 'success', rowsRejected: 0, startedAt: sameStartedAt, createdAt: '2026-07-22T03:31:00.000Z' }),
+    ]
+    // Even though 'zzz' > 'aaa' lexicographically (which would win an id-only tie-break),
+    // createdAt DESC correctly picks the genuinely-later-inserted row instead.
+    assert.equal(latestExactDayRun(runs, DAY)?.id, 'aaa-inserted-second')
+    assert.equal(isSalesDayConfirmed(runs, DAY), true)
+  })
+
+  test('id is the tie-break of last resort: only reached when BOTH startedAt and createdAt are exactly equal', () => {
+    const sameInstant = '2026-07-22T03:30:00.000Z'
+    const runs = [
+      run({ id: 'aaa', status: 'failed', startedAt: sameInstant, createdAt: sameInstant }),
+      run({ id: 'zzz', status: 'success', rowsRejected: 0, startedAt: sameInstant, createdAt: sameInstant }),
+    ]
+    assert.equal(latestExactDayRun(runs, DAY)?.id, 'zzz')
+  })
+
+  test('in this codebase\'s actual write paths startedAt and createdAt are always equal (both default to the same now()) -- the createdAt tie-break is a documented no-op today, not a source of disagreement', () => {
+    const runs = [run({ id: 'typical-row', status: 'success', rowsRejected: 0, startedAt: '2026-07-22T03:30:00.000Z', createdAt: '2026-07-22T03:30:00.000Z' })]
+    assert.equal(isSalesDayConfirmed(runs, DAY), true)
+  })
+})
+
+describe('latestSalesAuthoritativeCompleteDate (the narrow freshness-badge fix)', () => {
+  test('null when no exact-day run exists at all', () => {
+    assert.equal(latestSalesAuthoritativeCompleteDate([]), null)
+  })
+
+  test('null when only old multi-day success runs exist -- this is the exact bug being closed: a multi-day success must never produce a "fresh" freshness date', () => {
+    const runs = [run({ id: 'old-multiday', dateFrom: '2026-07-01', dateTo: '2026-07-28', status: 'success', rowsRejected: 0 })]
+    assert.equal(latestSalesAuthoritativeCompleteDate(runs), null)
+  })
+
+  test('the MAX date among confirmed exact-day dates, ignoring unconfirmed ones', () => {
+    const runs = [
+      run({ id: 'day-1', dateFrom: '2026-07-18', dateTo: '2026-07-18', status: 'success', rowsRejected: 0 }),
+      run({ id: 'day-2', dateFrom: '2026-07-19', dateTo: '2026-07-19', status: 'failed' }), // not confirmed, must not count
+      run({ id: 'day-3', dateFrom: '2026-07-20', dateTo: '2026-07-20', status: 'success', rowsRejected: 0 }),
+    ]
+    assert.equal(latestSalesAuthoritativeCompleteDate(runs), '2026-07-20')
+  })
+
+  test('a newer exact-day attempt that is running/failed does not advance the freshness date past the last CONFIRMED one, and does not fall back either if that newer attempt itself never succeeds', () => {
+    const runs = [
+      run({ id: 'day-1-success', dateFrom: '2026-07-18', dateTo: '2026-07-18', status: 'success', rowsRejected: 0 }),
+      run({ id: 'day-2-attempt-1-success', dateFrom: '2026-07-19', dateTo: '2026-07-19', status: 'success', rowsRejected: 0, startedAt: '2026-07-20T00:00:00.000Z' }),
+      run({ id: 'day-2-attempt-2-running', dateFrom: '2026-07-19', dateTo: '2026-07-19', status: 'running', startedAt: '2026-07-21T00:00:00.000Z' }),
+    ]
+    // 2026-07-19's LATEST attempt is now 'running' -- that date is no longer confirmed at all (no fallback to attempt-1) -- so the freshness date is 2026-07-18, not 2026-07-19.
+    assert.equal(latestSalesAuthoritativeCompleteDate(runs), '2026-07-18')
   })
 })
 

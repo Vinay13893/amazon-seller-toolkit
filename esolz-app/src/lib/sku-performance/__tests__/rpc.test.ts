@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { getSkuPerformanceSummary, getSkuPerformanceDaily, SkuPerformanceRpcTransportError, type RpcClient } from '../rpc'
+import { getSkuPerformanceSummary, getSkuPerformanceDaily, getSkuPerformanceSalesFreshnessDate, SkuPerformanceRpcTransportError, type RpcClient } from '../rpc'
 
 function fakeClient(response: { data: unknown; error: unknown }, captured: { fn?: string; params?: Record<string, unknown> }): RpcClient {
   return {
@@ -82,6 +82,31 @@ describe('getSkuPerformanceDaily', () => {
     await assert.rejects(
       () => getSkuPerformanceDaily(client, { workspaceId: 'ws1', marketplaceId: 'M1', sku: 'SKU-1', dateFrom: '2026-07-01', dateTo: '2026-07-20' }),
       (err: unknown) => err instanceof SkuPerformanceRpcTransportError && err.rpcName === 'get_sku_performance_daily',
+    )
+  })
+})
+
+describe('getSkuPerformanceSalesFreshnessDate (narrow freshness-badge fix, migration 066)', () => {
+  test('calls exactly the get_sku_performance_sales_freshness_date RPC name with the exact p_ parameters', async () => {
+    const captured: { fn?: string; params?: Record<string, unknown> } = {}
+    const client = fakeClient({ data: '2026-07-20', error: null }, captured)
+    const result = await getSkuPerformanceSalesFreshnessDate(client, { workspaceId: 'ws1', marketplaceId: 'M1' })
+    assert.equal(captured.fn, 'get_sku_performance_sales_freshness_date')
+    assert.deepEqual(captured.params, { p_workspace_id: 'ws1', p_marketplace_id: 'M1' })
+    assert.equal(result, '2026-07-20')
+  })
+
+  test('a null RPC result (no authoritative date ever confirmed) returns null, not undefined or an error', async () => {
+    const client = fakeClient({ data: null, error: null }, {})
+    const result = await getSkuPerformanceSalesFreshnessDate(client, { workspaceId: 'ws1', marketplaceId: 'M1' })
+    assert.equal(result, null)
+  })
+
+  test('throws SkuPerformanceRpcTransportError on an RPC error -- never silently falls back to the legacy untrustworthy date', async () => {
+    const client = fakeClient({ data: null, error: { message: 'timeout' } }, {})
+    await assert.rejects(
+      () => getSkuPerformanceSalesFreshnessDate(client, { workspaceId: 'ws1', marketplaceId: 'M1' }),
+      (err: unknown) => err instanceof SkuPerformanceRpcTransportError && err.rpcName === 'get_sku_performance_sales_freshness_date',
     )
   })
 })

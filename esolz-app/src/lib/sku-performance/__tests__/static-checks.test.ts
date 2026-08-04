@@ -75,7 +75,7 @@ describe('static safety checks', () => {
     }
   })
 
-  test('the only two Postgres RPC names called anywhere are the two locked P1-B RPCs (no generic .rpc(name, params) passthrough)', () => {
+  test('the only three Postgres RPC names called anywhere are the locked P1-B RPCs plus the narrow sales-freshness-date RPC (no generic .rpc(name, params) passthrough)', () => {
     const allTsFiles = [...collectFiles(LIB_DIR, '.ts'), ...collectFiles(ROUTES_DIR, 'route.ts')].filter((f) => !f.includes('__tests__'))
     const rpcCallRe = /\.rpc\(\s*(['"])([^'"]+)\1/g
     const calledNames = new Set<string>()
@@ -85,10 +85,14 @@ describe('static safety checks', () => {
         calledNames.add(match[2])
       }
     }
+    // Sales coverage-trust follow-up (migration 066): get_sku_performance_sales_freshness_date
+    // is a deliberate, narrow third RPC -- summary.ts calls it to override the legacy
+    // salesLatestAcceptedCompleteDate field before it reaches classifySourceHealth,
+    // without ever touching get_sku_performance_summary's own body.
     assert.deepEqual(
       [...calledNames].sort(),
-      ['get_sku_performance_daily', 'get_sku_performance_summary'],
-      'exactly these two hardcoded RPC names must be the only ones called anywhere in this feature',
+      ['get_sku_performance_daily', 'get_sku_performance_sales_freshness_date', 'get_sku_performance_summary'],
+      'exactly these three hardcoded RPC names must be the only ones called anywhere in this feature',
     )
     // And confirm every such call site is inside rpc.ts specifically.
     for (const file of allTsFiles) {
