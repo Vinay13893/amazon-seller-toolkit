@@ -7,8 +7,24 @@
 -- (TEST 11 in particular) replace a prior version that could not actually
 -- have caught its own bug (see TEST 11's comment).
 --
+-- Amended again -- sales-grain fix, coverage-trust follow-up (migration
+-- 066): this suite's Sales-domain fixtures used to encode the OLD, now-
+-- corrected assumption that ONE multi-day internal_data_refresh_runs row
+-- can certify every individual day within its range as coverage-complete
+-- -- exactly the defect migration 066 closes (a multi-day pre-fix run must
+-- never certify a SKU-day; only the LATEST EXACT-DAY, date_from=date_to,
+-- attempt for that specific date may). Every Sales-side fixture below was
+-- rewritten to use exact-day runs where the ORIGINAL intent was "this date
+-- is confirmed complete," while multi-day runs are kept (and in TEST 22,
+-- deliberately used) ONLY where the intent is now "an attempt happened,
+-- but must NOT be able to certify a date" -- see TEST 22 for the new
+-- dedicated authoritative-run test matrix, and the updated comments on the
+-- M1/M3 fixtures below for what changed and why. Ads-domain fixtures are
+-- completely untouched -- Ads never had this bug, and its multi-day
+-- windows are still legitimately coverage-complete evidence.
+--
 -- Run ONLY against a scratch/local database bootstrapped from the real
--- repository migrations (001-065) -- see run-tests.sh, which refuses a
+-- repository migrations (001-066) -- see run-tests.sh, which refuses a
 -- production connection before this file is ever invoked.
 --
 -- Every assertion RAISEs a plain, greppable EXCEPTION on failure. A clean
@@ -188,10 +204,10 @@ INSERT INTO public.internal_business_report_sku_sales_traffic
   ('a0000000-0000-0000-0000-000000000001', 'M1', '2026-07-16', 'SKU-CAMPAIGN-MULTI', 'SKU-CAMPAIGN-MULTI', 'ASINMULTI01', 1000, 8);
 
 -- ---------------- Broad "healthy account" refresh-run coverage for M1 ----------------
--- Everything on M1 dated 2026-05-01..2026-07-20 relies on this: an accepted
--- successful run for BOTH sources covering the entire window (extended back
--- to 2026-05-01, not just July, so TEST 15's mixed-period-TACOS regression
--- -- which deliberately requests a range starting before either source's
+-- Everything on M1 dated 2026-05-01..2026-07-20 relies on this: complete
+-- coverage for BOTH sources across the entire window (extended back to
+-- 2026-05-01, not just July, so TEST 15's mixed-period-TACOS regression --
+-- which deliberately requests a range starting before either source's
 -- history -- sees complete coverage across its whole requested range, not
 -- just the before-history days that are exempt regardless). A SKU with no
 -- row on some day within it is therefore a real, confirmed zero (not
@@ -199,10 +215,28 @@ INSERT INTO public.internal_business_report_sku_sales_traffic
 -- looks like. The deliberately-incomplete coverage-state-model fixtures
 -- live on marketplace M3 instead (see below) so they never collide with
 -- this broad M1 coverage.
+--
+-- Sales-grain fix, coverage-trust follow-up: a single multi-day
+-- business_report_sp_api run can no longer certify ANY day (migration
+-- 066) -- ONE exact-day (date_from=date_to) success row is inserted per
+-- calendar day in the window instead, via generate_series, so M1 remains
+-- genuinely "every day individually confirmed complete" rather than
+-- relying on the exact defect this migration exists to close. The
+-- original multi-day row is kept alongside it (harmless, and itself now a
+-- live proof that a multi-day run coexisting with real exact-day coverage
+-- changes nothing -- the exact-day rows are what the authority check
+-- actually consults). Ads is completely unchanged: its single multi-day
+-- run is still legitimately sufficient coverage evidence, exactly as
+-- before -- Ads never had the range-total-as-single-day bug.
 INSERT INTO public.internal_data_refresh_runs
   (workspace_id, marketplace_id, profile_id, source, status, date_from, date_to, rows_rejected, started_at) VALUES
   ('a0000000-0000-0000-0000-000000000001', 'M1', NULL, 'business_report_sp_api', 'success', '2026-05-01', '2026-07-20', 0, '2026-07-21T00:00:00Z'),
   ('a0000000-0000-0000-0000-000000000001', 'M1', 'P1', 'ads_advertised_product', 'success', '2026-05-01', '2026-07-20', 0, '2026-07-21T00:00:00Z');
+
+INSERT INTO public.internal_data_refresh_runs
+  (workspace_id, marketplace_id, profile_id, source, status, date_from, date_to, rows_rejected, started_at)
+SELECT 'a0000000-0000-0000-0000-000000000001', 'M1', NULL, 'business_report_sp_api', 'success', d, d, 0, '2026-07-21T00:00:00Z'
+FROM generate_series('2026-05-01'::date, '2026-07-20'::date, interval '1 day') AS d;
 
 -- ---------------- Coverage-state model fixtures (marketplace M3, fully isolated) ----------------
 -- SKU-COVERAGE-TEST: no catalog/ads presence, sales rows/refresh-runs
@@ -212,6 +246,17 @@ INSERT INTO public.internal_data_refresh_runs
 -- deliberate coverage GAPS never collide with M1's broad "healthy account"
 -- coverage above -- the two fixture sets test opposite scenarios in the
 -- same June/July calendar window and cannot share a marketplace scope.
+--
+-- Sales-grain fix, coverage-trust follow-up: every Sales-side run below is
+-- now an EXACT-DAY (date_from=date_to) row -- under migration 066 a
+-- multi-day run can no longer certify ANY date at all (is_confirmed_zero
+-- requires an exact-day match), so the ORIGINAL fixture (a single 06-11..
+-- 06-20 multi-day success "covering" both Date B and Date F) would no
+-- longer produce CONFIRMED_ZERO for either date -- it would now correctly
+-- read as SOURCE_NOT_COMPLETE instead (has_any_run=true via the range
+-- overlap, is_confirmed_zero=false since no exact-day success exists).
+-- Rewritten below so each date that is SUPPOSED to be CONFIRMED_ZERO or
+-- REPORTED_VALUE has its own genuine exact-day success backing it.
 INSERT INTO public.internal_business_report_sku_sales_traffic
   (workspace_id, marketplace_id, report_date, sku, sku_norm, child_asin, ordered_product_sales, units_ordered) VALUES
   -- History anchor for the M3 SCOPE (sales_earliest is computed per
@@ -220,19 +265,40 @@ INSERT INTO public.internal_business_report_sku_sales_traffic
   -- this fixture set moved marketplaces, so Date A below is still BEFORE
   -- this history and Dates B/C/D still fall on/after it.
   ('a0000000-0000-0000-0000-000000000001', 'M3', '2026-06-10', 'SKU-M3-HISTORY-ANCHOR', 'SKU-M3-HISTORY-ANCHOR', NULL, 1, 1),
-  -- Date E = 2026-07-10: REPORTED_VALUE (a real row, even with zero refresh-run evidence covering it)
-  ('a0000000-0000-0000-0000-000000000001', 'M3', '2026-07-10', 'SKU-COVERAGE-TEST', 'SKU-COVERAGE-TEST', NULL, 777, 7);
+  -- Date E = 2026-07-10: REPORTED_VALUE -- now REQUIRES a genuine exact-day
+  -- authoritative success for 2026-07-10 (see below); under the raw-value-
+  -- leak fix a physically-present row is no longer sufacient on its own.
+  ('a0000000-0000-0000-0000-000000000001', 'M3', '2026-07-10', 'SKU-COVERAGE-TEST', 'SKU-COVERAGE-TEST', NULL, 777, 7),
+  -- Date G = 2026-07-12: a raw row exists but ZERO runs of any kind (exact-
+  -- day or multi-day) ever cover it -- direct proof of the raw-value-leak
+  -- fix: this must render UNKNOWN, never REPORTED_VALUE, despite the
+  -- physically-present row (see TEST 17g).
+  ('a0000000-0000-0000-0000-000000000001', 'M3', '2026-07-12', 'SKU-COVERAGE-ORPHAN-ROW', 'SKU-COVERAGE-ORPHAN-ROW', NULL, 555, 5);
 
 INSERT INTO public.internal_data_refresh_runs
   (workspace_id, marketplace_id, source, status, date_from, date_to, rows_rejected, started_at) VALUES
-  -- covers Date B (2026-06-15) and Date F (2026-06-16): accepted successful run
-  ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'success', '2026-06-11', '2026-06-20', 0, '2026-06-21T00:00:00Z'),
-  -- a LATER failed retry over the SAME range as the successful run above -- must NOT erase Date F's CONFIRMED_ZERO
+  -- Date B (2026-06-15): genuine exact-day success -> CONFIRMED_ZERO (SKU-COVERAGE-TEST has no row on this date).
+  ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'success', '2026-06-15', '2026-06-15', 0, '2026-06-16T00:00:00Z'),
+  -- Date F (2026-06-16): genuine exact-day success -> CONFIRMED_ZERO ...
+  ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'success', '2026-06-16', '2026-06-16', 0, '2026-06-17T00:00:00Z'),
+  -- ... PLUS a LATER multi-day failed run that happens to overlap Date F --
+  -- must NOT un-confirm it (TEST 17f, rewritten): only a NEWER EXACT-DAY
+  -- attempt for 2026-06-16 itself could ever supersede the exact-day
+  -- success above -- a wider-range run is invisible to the authority check
+  -- entirely (it only ever queries date_from = date_to = target_date).
   ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'failed', '2026-06-11', '2026-06-20', 0, '2026-06-25T00:00:00Z'),
-  -- covers Date C (2026-06-25): failed-only, no successful run covers this date -> SOURCE_NOT_COMPLETE
-  ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'failed', '2026-06-21', '2026-06-30', 0, '2026-07-01T00:00:00Z');
+  -- Date C (2026-06-25): failed-only multi-day run covers it, no exact-day
+  -- success ever exists for this date -> SOURCE_NOT_COMPLETE. This part of
+  -- the original fixture was already correct under the new model --
+  -- has_any_run (unchanged semantics) is still satisfied by a multi-day
+  -- overlap; only is_confirmed_zero requires the exact-day scope.
+  ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'failed', '2026-06-21', '2026-06-30', 0, '2026-07-01T00:00:00Z'),
+  -- Date E (2026-07-10): genuine exact-day success -> the physical row
+  -- above is now authoritatively confirmed -> REPORTED_VALUE.
+  ('a0000000-0000-0000-0000-000000000001', 'M3', 'business_report_sp_api', 'success', '2026-07-10', '2026-07-10', 0, '2026-07-11T00:00:00Z');
   -- Date D (2026-07-05) intentionally has NO covering run at all -> UNKNOWN
   -- Date A (2026-06-05) predates 2026-06-10, the earliest sales row in scope -> BEFORE_HISTORY
+  -- Date G (2026-07-12, SKU-COVERAGE-ORPHAN-ROW) intentionally has NO covering run at all either -> UNKNOWN despite its physically-present row
 
 -- Ads-side coverage fixtures, same shape, different SKU, mirrors the manual-CSV
 -- scenario: a date with a real row and NO refresh run at all covering the
@@ -264,6 +330,89 @@ INSERT INTO public.internal_business_report_sku_sales_traffic
 INSERT INTO public.internal_data_refresh_runs
   (workspace_id, marketplace_id, source, status, date_from, date_to, rows_rejected, started_at) VALUES
   ('a0000000-0000-0000-0000-000000000001', 'M4', 'business_report_sp_api', 'partial_success', '2026-01-09', '2026-01-15', 3, '2026-01-16T00:00:00Z');
+
+-- ---------------- Sales-grain fix, coverage-trust follow-up: dedicated authoritative-run matrix (marketplace M6, + M7 for marketplace isolation) ----------------
+-- New, self-contained fixture set (TEST 22 below) covering exactly the
+-- founder-specified scenarios not already exercised by TEST 17/17g: an old
+-- multi-day success covering a date it can no longer certify; a newer
+-- exact-day attempt (running/failed) superseding an older exact-day
+-- success with no fallback; the crash-window "correct+stale rows, latest
+-- attempt running" scenario staying hidden; workspace isolation; and
+-- marketplace isolation. Dates are deliberately January 2026 (same
+-- reasoning as M4's fixture above: far from "today" regardless of the
+-- real calendar date this suite executes on, so the marketplace-local
+-- future-date check never interferes) and on their own marketplace(s) so
+-- they can never collide with M1/M3/M4's fixtures.
+INSERT INTO public.amazon_ads_profiles (id, workspace_id, amazon_ads_connection_id, profile_id, marketplace_id, currency_code, timezone) VALUES
+  ('e0000000-0000-0000-0000-000000000006', 'a0000000-0000-0000-0000-000000000001', 'd0000000-0000-0000-0000-000000000001', 'P6', 'M6', 'INR', NULL);
+
+INSERT INTO public.internal_business_report_sku_sales_traffic
+  (workspace_id, marketplace_id, report_date, sku, sku_norm, child_asin, ordered_product_sales, units_ordered) VALUES
+  -- SKU-OLD-MULTIDAY: a raw row exists, covered ONLY by an old multi-day
+  -- success run -- must be SOURCE_NOT_COMPLETE, never REPORTED_VALUE,
+  -- despite the physically-present (and deliberately implausible, 999999)
+  -- value below.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', '2026-01-20', 'SKU-OLD-MULTIDAY', 'SKU-OLD-MULTIDAY', NULL, 999999, 1),
+  -- SKU-SUPERSEDE-RUNNING / SKU-SUPERSEDE-FAILED: raw rows exist, each
+  -- covered by an OLDER exact-day success THEN a NEWER exact-day
+  -- running/failed attempt for the SAME date -- must be
+  -- SOURCE_NOT_COMPLETE (no fallback to the older success), never REPORTED_VALUE.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', '2026-01-21', 'SKU-SUPERSEDE-RUNNING', 'SKU-SUPERSEDE-RUNNING', NULL, 100, 1),
+  ('a0000000-0000-0000-0000-000000000001', 'M6', '2026-01-22', 'SKU-SUPERSEDE-FAILED', 'SKU-SUPERSEDE-FAILED', NULL, 100, 1),
+  -- SKU-MIXED-STALE: simulates the crash-window scenario (correct+stale
+  -- rows coexisting during a mid-replacement crash) -- a raw row
+  -- physically exists (standing in for either the correct-new or
+  -- stale-old value, it must not matter which) on a date whose latest
+  -- exact-day attempt is still 'running' -- must be hidden
+  -- (SOURCE_NOT_COMPLETE, value NULL) regardless of the row's physical value.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', '2026-01-23', 'SKU-MIXED-STALE', 'SKU-MIXED-STALE', NULL, 424242, 1),
+  -- SKU-ISO-DATE: the raw row lives on M6 itself (the marketplace under
+  -- test) -- M6 has NO covering run at all for this date. The ONLY
+  -- exact-day success for this date exists on a DIFFERENT marketplace
+  -- (M7, see below) and must never leak across marketplaces to confirm
+  -- M6's row.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', '2026-01-24', 'SKU-ISO-DATE', 'SKU-ISO-DATE', NULL, 321, 1);
+
+INSERT INTO public.internal_data_refresh_runs
+  (workspace_id, marketplace_id, source, status, date_from, date_to, rows_rejected, started_at) VALUES
+  -- SKU-OLD-MULTIDAY (2026-01-20): ONLY an old multi-day success covers it.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'business_report_sp_api', 'success', '2026-01-15', '2026-01-25', 0, '2026-01-26T00:00:00Z'),
+  -- SKU-SUPERSEDE-RUNNING (2026-01-21): older exact-day success, THEN a
+  -- newer exact-day RUNNING attempt for the same exact date -- must supersede, no fallback.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'business_report_sp_api', 'success', '2026-01-21', '2026-01-21', 0, '2026-01-22T00:00:00Z'),
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'business_report_sp_api', 'running', '2026-01-21', '2026-01-21', 0, '2026-01-23T00:00:00Z'),
+  -- SKU-SUPERSEDE-FAILED (2026-01-22): older exact-day success, THEN a
+  -- newer exact-day FAILED attempt for the same exact date -- must supersede, no fallback.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'business_report_sp_api', 'success', '2026-01-22', '2026-01-22', 0, '2026-01-23T00:00:00Z'),
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'business_report_sp_api', 'failed', '2026-01-22', '2026-01-22', 0, '2026-01-24T00:00:00Z'),
+  -- SKU-MIXED-STALE (2026-01-23): only a still-RUNNING exact-day attempt --
+  -- the crash-window scenario.
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'business_report_sp_api', 'running', '2026-01-23', '2026-01-23', 0, '2026-01-24T00:00:00Z'),
+  -- Marketplace-isolation companion: an exact-day success on M7 (same
+  -- workspace, DIFFERENT marketplace, SAME date as SKU-ISO-DATE) -- must
+  -- never leak into M6's authority determination.
+  ('a0000000-0000-0000-0000-000000000001', 'M7', 'business_report_sp_api', 'success', '2026-01-24', '2026-01-24', 0, '2026-01-25T00:00:00Z'),
+  -- Workspace-isolation companion: WS_B has an exact-day success for the
+  -- SAME marketplace (M6) and SAME date as SKU-OLD-MULTIDAY (2026-01-20) --
+  -- must never leak into WS_A's authority determination (SKU-OLD-MULTIDAY
+  -- must still be SOURCE_NOT_COMPLETE for WS_A, not suddenly confirmed).
+  ('a0000000-0000-0000-0000-000000000002', 'M6', 'business_report_sp_api', 'success', '2026-01-20', '2026-01-20', 0, '2026-01-21T00:00:00Z');
+
+-- TEST 22g (Ads-unchanged) evidence: an Ads multi-day success run on M6
+-- (via profile P6) -- STILL correctly certifies coverage on its own,
+-- proving this whole fix is Sales-only. Not exact-day-scoped on purpose.
+-- Separate INSERT (own column list, includes profile_id) from the
+-- Sales-only block above.
+INSERT INTO public.internal_data_refresh_runs
+  (workspace_id, marketplace_id, profile_id, source, status, date_from, date_to, rows_rejected, started_at) VALUES
+  ('a0000000-0000-0000-0000-000000000001', 'M6', 'P6', 'ads_advertised_product', 'success', '2026-01-15', '2026-01-25', 0, '2026-01-26T00:00:00Z');
+
+-- TEST 22g (Ads-unchanged) evidence: an ads-only SKU on M6, spend=42, no
+-- catalog/sales/cost-master row anywhere -- exists purely so its Ads
+-- coverageState can be checked against the multi-day success run above.
+INSERT INTO public.internal_ads_advertised_product_daily_rows
+  (workspace_id, upload_batch_id, profile_id, report_date, campaign_name, campaign_id, ad_group_name, advertised_sku, advertised_asin, spend, sales, source, dedupe_key, raw_row) VALUES
+  ('a0000000-0000-0000-0000-000000000001', 'f0000000-0000-0000-0000-000000000001', 'P6', '2026-01-20', 'Campaign M6 Ads', 'CMP-M6', 'AG1', 'SKU-ADS-M6-UNCHANGED', 'ASINM6ADS', 42, 0, 'ads_api_auto', 'DK-M6-ADS', '{}');
 
 COMMIT;
 
@@ -871,8 +1020,36 @@ BEGIN
   IF v_e->'sales'->>'coverageState' <> 'REPORTED_VALUE' THEN RAISE EXCEPTION 'TEST 17e FAILED: expected REPORTED_VALUE, got %', v_e; END IF;
   IF (v_e->'sales'->>'value')::numeric <> 777 THEN RAISE EXCEPTION 'TEST 17e FAILED: expected value 777, got %', v_e; END IF;
 
+  -- Sales-grain fix, coverage-trust follow-up: Date F's OWN exact-day
+  -- success (2026-06-16) must survive a LATER multi-day FAILED run that
+  -- merely overlaps it (2026-06-11..2026-06-20, started AFTER Date F's own
+  -- success) -- proving a wider-range attempt is invisible to the
+  -- authority check entirely (it only ever looks for date_from=date_to=
+  -- target_date), so it can neither certify NOR decertify a date it
+  -- doesn't exactly match.
   SELECT d INTO v_f FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-06-16';
-  IF v_f->'sales'->>'coverageState' <> 'CONFIRMED_ZERO' THEN RAISE EXCEPTION 'TEST 17f FAILED: a later failed retry erased earlier successful coverage, got %', v_f; END IF;
+  IF v_f->'sales'->>'coverageState' <> 'CONFIRMED_ZERO' THEN RAISE EXCEPTION 'TEST 17f FAILED: a later multi-day failed run (which is not exact-day-scoped) must not affect Date F''s own exact-day success, got %', v_f; END IF;
+END $$;
+
+-- ================================================================
+-- TEST 17g: sales-grain fix, coverage-trust follow-up -- the daily
+-- raw-value-leak fix's direct proof: a physically-present row with ZERO
+-- covering runs of any kind (exact-day or multi-day) must render UNKNOWN,
+-- never REPORTED_VALUE. Before this fix, `raw_sales_value IS NOT NULL`
+-- was checked BEFORE authority, so this exact scenario would have leaked.
+-- ================================================================
+DO $$
+DECLARE v_result jsonb; v_g jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M3', 'SKU-COVERAGE-ORPHAN-ROW', '2026-07-12', '2026-07-12');
+  IF v_result->>'result' <> 'success' THEN RAISE EXCEPTION 'TEST 17g SEED FAILED: %', v_result; END IF;
+  SELECT d INTO v_g FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-07-12';
+  IF v_g->'sales'->>'coverageState' <> 'UNKNOWN' THEN
+    RAISE EXCEPTION 'TEST 17g FAILED (daily raw-value-leak fix): a physically-present row with NO covering run at all must be UNKNOWN, not REPORTED_VALUE -- got %', v_g;
+  END IF;
+  IF v_g->'sales'->>'value' IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 17g FAILED (daily raw-value-leak fix): the raw stored value (555) must never be exposed for an UNKNOWN date, got %', v_g;
+  END IF;
 END $$;
 
 -- ================================================================
@@ -981,6 +1158,158 @@ BEGIN
   END IF;
   IF NOT (v_result->'summary'->'tacos' ? 'value') OR NOT (v_result->'summary'->'tacos' ? 'state') THEN
     RAISE EXCEPTION 'TEST 21e FAILED (narrow cleanup #4): summary.tacos must be a {value, state} object, got %', v_result->'summary'->'tacos';
+  END IF;
+END $$;
+
+-- ================================================================
+-- TEST 22: sales-grain fix, coverage-trust follow-up -- the dedicated
+-- authoritative-run matrix (marketplace M6/M7). See the fixture block
+-- above for the full scenario descriptions.
+-- ================================================================
+
+-- 22a: an old multi-day success can no longer certify any date -- SOURCE_NOT_COMPLETE, raw value never exposed.
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-OLD-MULTIDAY', '2026-01-20', '2026-01-20');
+  IF v_result->>'result' <> 'success' THEN RAISE EXCEPTION 'TEST 22a SEED FAILED: %', v_result; END IF;
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-20';
+  IF v_day->'sales'->>'coverageState' <> 'SOURCE_NOT_COMPLETE' THEN
+    RAISE EXCEPTION 'TEST 22a FAILED: an old multi-day success run must never certify a date, got %', v_day;
+  END IF;
+  IF v_day->'sales'->>'value' IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 22a FAILED: the raw stored value (999999) must never be exposed when not authoritative, got %', v_day;
+  END IF;
+END $$;
+
+-- 22b: a newer exact-day RUNNING attempt supersedes an older exact-day success -- no fallback.
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-SUPERSEDE-RUNNING', '2026-01-21', '2026-01-21');
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-21';
+  IF v_day->'sales'->>'coverageState' <> 'SOURCE_NOT_COMPLETE' THEN
+    RAISE EXCEPTION 'TEST 22b FAILED: a newer exact-day RUNNING attempt must supersede the older success with no fallback, got %', v_day;
+  END IF;
+  IF v_day->'sales'->>'value' IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 22b FAILED: the raw stored value must never be exposed while the latest attempt is running, got %', v_day;
+  END IF;
+END $$;
+
+-- 22c: a newer exact-day FAILED attempt supersedes an older exact-day success -- no fallback.
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-SUPERSEDE-FAILED', '2026-01-22', '2026-01-22');
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-22';
+  IF v_day->'sales'->>'coverageState' <> 'SOURCE_NOT_COMPLETE' THEN
+    RAISE EXCEPTION 'TEST 22c FAILED: a newer exact-day FAILED attempt must supersede the older success with no fallback, got %', v_day;
+  END IF;
+  IF v_day->'sales'->>'value' IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 22c FAILED: the raw stored value must never be exposed once the latest attempt failed, got %', v_day;
+  END IF;
+END $$;
+
+-- 22d: the crash-window scenario (correct+stale rows coexisting, latest exact-day attempt still running) stays hidden.
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-MIXED-STALE', '2026-01-23', '2026-01-23');
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-23';
+  IF v_day->'sales'->>'coverageState' <> 'SOURCE_NOT_COMPLETE' THEN
+    RAISE EXCEPTION 'TEST 22d FAILED: a still-running exact-day attempt must leave the date hidden regardless of whatever the physical row currently holds, got %', v_day;
+  END IF;
+  IF v_day->'sales'->>'value' IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 22d FAILED: the physically-present (correct-or-stale, indistinguishable) value 424242 must never be exposed mid-crash-window, got %', v_day;
+  END IF;
+END $$;
+
+-- 22e: marketplace isolation -- the raw row lives on M6 (no covering run
+-- on M6 at all); M7's exact-day success for the SAME date must never leak
+-- into M6's determination. Expected: UNKNOWN, not REPORTED_VALUE (which
+-- is what a marketplace-isolation leak would produce, since the raw row
+-- does physically exist on M6).
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-ISO-DATE', '2026-01-24', '2026-01-24');
+  IF v_result->>'result' <> 'success' THEN RAISE EXCEPTION 'TEST 22e SEED FAILED: %', v_result; END IF;
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-24';
+  IF v_day->'sales'->>'coverageState' <> 'UNKNOWN' THEN
+    RAISE EXCEPTION 'TEST 22e FAILED (marketplace isolation): M7''s exact-day success leaked into M6''s authority determination -- expected UNKNOWN, got %', v_day;
+  END IF;
+  IF v_day->'sales'->>'value' IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 22e FAILED (marketplace isolation): the raw stored value (321) must never be exposed when only a DIFFERENT marketplace confirms this date, got %', v_day;
+  END IF;
+END $$;
+
+-- 22f: workspace isolation -- WS_B's exact-day success for the same marketplace+date must never leak into WS_A's determination (SKU-OLD-MULTIDAY must still be SOURCE_NOT_COMPLETE for WS_A).
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-OLD-MULTIDAY', '2026-01-20', '2026-01-20');
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-20';
+  IF v_day->'sales'->>'coverageState' <> 'SOURCE_NOT_COMPLETE' THEN
+    RAISE EXCEPTION 'TEST 22f FAILED (workspace isolation): WS_B''s exact-day success for the same marketplace+date leaked into WS_A''s authority determination, got %', v_day;
+  END IF;
+END $$;
+
+-- 22g: Ads behavior is completely unchanged -- a multi-day Ads run STILL
+-- correctly confirms coverage (proving the fix's Sales-only scope).
+-- Fixtures (the SKU-ADS-M6-UNCHANGED row and its covering multi-day Ads
+-- run) live in the main fixture block above, alongside everything else.
+DO $$
+DECLARE v_result jsonb; v_day jsonb;
+BEGIN
+  v_result := public.get_sku_performance_daily('a0000000-0000-0000-0000-000000000001', 'M6', 'SKU-ADS-M6-UNCHANGED', '2026-01-20', '2026-01-20');
+  IF v_result->>'result' <> 'success' THEN RAISE EXCEPTION 'TEST 22g SEED FAILED: %', v_result; END IF;
+  SELECT d INTO v_day FROM jsonb_array_elements(v_result->'days') d WHERE d->>'date' = '2026-01-20';
+  IF v_day->'spend'->>'coverageState' <> 'REPORTED_VALUE' THEN
+    RAISE EXCEPTION 'TEST 22g FAILED: an Ads multi-day success run must STILL certify coverage (unchanged, Sales-only fix), got %', v_day;
+  END IF;
+  IF (v_day->'spend'->>'value')::numeric <> 42 THEN
+    RAISE EXCEPTION 'TEST 22g FAILED: expected Ads spend value 42, got %', v_day;
+  END IF;
+END $$;
+
+-- ================================================================
+-- TEST 23: sales-grain fix, freshness-badge follow-up -- get_sku_performance_sales_freshness_date
+-- ================================================================
+
+-- 23a: M1 has a genuine exact-day success through 2026-07-20 (via the generate_series fixture above) -- freshness date must be exactly that.
+DO $$
+DECLARE v_date date;
+BEGIN
+  v_date := public.get_sku_performance_sales_freshness_date('a0000000-0000-0000-0000-000000000001', 'M1');
+  IF v_date <> '2026-07-20' THEN
+    RAISE EXCEPTION 'TEST 23a FAILED: expected M1 authoritative freshness date = 2026-07-20, got %', v_date;
+  END IF;
+END $$;
+
+-- 23b: M6 has SEVERAL runs that superficially look like recent success
+-- evidence (an old multi-day success, and two dates whose OLDER attempt
+-- was a clean exact-day success) -- but NOT ONE date on M6 currently has a
+-- LATEST exact-day attempt that succeeded (the two exact-day successes
+-- were both superseded by a later running/failed attempt for the same
+-- date). The freshness date must therefore be NULL -- this is the exact
+-- scenario that makes the old, unfixed logic dangerous (it would have
+-- returned a recent-looking date from the old multi-day run alone).
+DO $$
+DECLARE v_date date;
+BEGIN
+  v_date := public.get_sku_performance_sales_freshness_date('a0000000-0000-0000-0000-000000000001', 'M6');
+  IF v_date IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 23b FAILED: M6 has no date with a currently-successful LATEST exact-day attempt -- expected NULL, got %', v_date;
+  END IF;
+END $$;
+
+-- 23c: a marketplace with NO exact-day runs at all (M4, only ever touched by a multi-day partial_success) -- freshness date must be NULL.
+DO $$
+DECLARE v_date date;
+BEGIN
+  v_date := public.get_sku_performance_sales_freshness_date('a0000000-0000-0000-0000-000000000001', 'M4');
+  IF v_date IS NOT NULL THEN
+    RAISE EXCEPTION 'TEST 23c FAILED: M4 has never had an exact-day run at all -- expected NULL, got %', v_date;
   END IF;
 END $$;
 
