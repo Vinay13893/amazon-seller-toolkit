@@ -82,6 +82,43 @@ jobs:
             echo "supabase/config.toml already present, using it as-is."
           fi
 
+      - name: CI-only stub for pre-migration-system legacy tables (never committed to git)
+        working-directory: esolz-app
+        run: |
+          # Migration 004_lock_legacy_tables.sql ALTER TABLE ... ENABLE ROW LEVEL
+          # SECURITY's 7 tables that predate this repo's migration system
+          # entirely (per that migration's own header comment) -- they exist
+          # organically in the real production database's history but are
+          # never CREATEd by any tracked migration file, so a from-scratch
+          # bootstrap of migrations 001-066 fails at 004 with
+          # "relation ... does not exist". Confirmed via grep: no migration
+          # OTHER than 004 references any of these 7 table names, so a bare,
+          # column-minimal stub is safe and does not affect anything
+          # downstream (including migration 066).
+          #
+          # This writes a SYNTHETIC, CI-ONLY migration file directly into the
+          # runner's checkout (numbered 000 so it sorts and applies before
+          # 001) -- it is NEVER staged, committed, or pushed anywhere; it
+          # exists only in this ephemeral job's filesystem and disappears
+          # when the runner is torn down. Migration 004 itself, and every
+          # other real migration file, is completely untouched.
+          cat > supabase/migrations/000_ci_stub_legacy_tables.sql <<'SQL'
+          -- CI-ONLY, NEVER COMMITTED: minimal stand-ins for the 7
+          -- pre-migration-system legacy tables migration 004 locks down via
+          -- RLS, so a from-scratch migration bootstrap doesn't fail on a
+          -- table that only ever existed organically in real production
+          -- history. No other migration references these tables.
+          CREATE TABLE IF NOT EXISTS public.seller_credentials (id serial primary key);
+          CREATE TABLE IF NOT EXISTS public.users (id serial primary key);
+          CREATE TABLE IF NOT EXISTS public.asins (id serial primary key);
+          CREATE TABLE IF NOT EXISTS public.bsr_history (id serial primary key);
+          CREATE TABLE IF NOT EXISTS public.job_logs (id serial primary key);
+          CREATE TABLE IF NOT EXISTS public.keyword_ranks (id serial primary key);
+          CREATE TABLE IF NOT EXISTS public.tool_usage (id serial primary key);
+          SQL
+          echo "Wrote CI-only supabase/migrations/000_ci_stub_legacy_tables.sql (untracked, not part of the PR diff):"
+          git status --porcelain supabase/migrations/ || true
+
       - name: supabase start (local, ephemeral stack only)
         working-directory: esolz-app
         run: supabase start
