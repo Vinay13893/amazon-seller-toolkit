@@ -1,0 +1,202 @@
+name: TEMP - PR 64 Postgres validation (sales-grain fix)
+# TEMPORARY validation-only workflow for PR #64
+# (fix/business-report-daily-sku-grain). Exists ONLY to run migration 066
+# against a real, entirely local/ephemeral Postgres instance -- something
+# no sandboxed session in this whole effort has been able to do. This file
+# is removed from the branch in its own commit once validation is
+# complete; it is CI infrastructure, not product code, and must never
+# survive into the mergeable diff.
+#
+# Safety:
+#   - workflow_dispatch ONLY -- never runs automatically on push/PR/schedule.
+#   - Zero production Supabase credentials, zero Amazon credentials, zero
+#     repository secrets of any kind are referenced anywhere below.
+#   - The only Postgres instance touched is the Supabase CLI's own local
+#     dev stack, started fresh on the runner and destroyed with it -- never
+#     any external host.
+#   - Never deploys, never pushes migrations remotely, never merges
+#     branches, never touches production data.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+
+      - name: Confirm no production/Amazon secrets are referenced
+        run: |
+          echo "This job uses zero repository secrets. Confirming the environment has none of the production variable names set:"
+          for var in NEXT_PUBLIC_SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY SPAPI_LWA_CLIENT_ID SPAPI_LWA_CLIENT_SECRET SPAPI_ENCRYPTION_KEY; do
+            if [ -n "${!var:-}" ]; then
+              echo "UNEXPECTED: $var is set -- aborting, this job must never see production/Amazon credentials." >&2
+              exit 1
+            fi
+          done
+          echo "Confirmed: no production or Amazon credential env vars present."
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Confirm Docker is actually reachable on this runner
+        run: |
+          echo "== docker version =="
+          docker version
+          echo "== docker ps =="
+          docker ps
+          echo "Docker daemon confirmed reachable on this runner (this is the check that fails in the sandbox this PR was otherwise developed in)."
+
+      - name: Initialize local Supabase project config (if not already present)
+        working-directory: esolz-app
+        run: |
+          if [ ! -f supabase/config.toml ]; then
+            echo "No supabase/config.toml in this repo -- initializing one now (matches the repo's actual layout: esolz-app/supabase/migrations already exists and will be picked up automatically)."
+            supabase init --with-vscode-settings=false --with-intellij-settings=false
+          else
+            echo "supabase/config.toml already present, using it as-is."
+          fi
+
+      - name: supabase start (local, ephemeral stack only)
+        working-directory: esolz-app
+        run: supabase start
+
+      - name: Print resolved local DB connection info (never production)
+        working-directory: esolz-app
+        id: dbinfo
+        run: |
+          supabase status -o env > /tmp/supabase_status.env
+          cat /tmp/supabase_status.env | sed -E 's/(PASSWORD|KEY|JWT_SECRET)=.*/\1=[redacted]/'
+          DB_URL=$(grep '^DB_URL=' /tmp/supabase_status.env | cut -d= -f2- | tr -d '"')
+          echo "db_url=$DB_URL" >> "$GITHUB_OUTPUT"
+          HOST_PART=$(echo "$DB_URL" | sed -E 's#.*@([^/]+)/.*#\1#')
+          echo "Resolved local DB host:port = $HOST_PART"
+          case "$HOST_PART" in
+            127.0.0.1:*|localhost:*)
+              echo "Confirmed: local DB host is 127.0.0.1/localhost -- not any remote or production host." ;;
+            *)
+              echo "ABORTING: resolved DB host ($HOST_PART) is not localhost -- refusing to proceed, this must never touch a non-local database." >&2
+              exit 1 ;;
+          esac
+          if echo "$DB_URL" | grep -qi 'okxfwcfxxrtmijmvztdq'; then
+            echo "ABORTING: resolved DB URL references the production project ref -- refusing to proceed." >&2
+            exit 1
+          fi
+          echo "Confirmed: local DB URL does not reference the production project ref (okxfwcfxxrtmijmvztdq)."
+
+      - name: Apply the migration chain through 066 (supabase db reset)
+        working-directory: esolz-app
+        run: |
+          echo "Resetting the local database and replaying every migration file in esolz-app/supabase/migrations, in order, 001 through 066."
+          supabase db reset
+
+      - name: List applied migrations (real evidence, not assertion)
+        working-directory: esolz-app
+        run: |
+          DB_URL="${{ steps.dbinfo.outputs.db_url }}"
+          psql "$DB_URL" -c "select version from supabase_migrations.schema_migrations order by version;"
+
+      - name: Verify migration 066's functions exist with correct signatures, SECURITY DEFINER, search_path
+        working-directory: esolz-app
+        run: |
+          DB_URL="${{ steps.dbinfo.outputs.db_url }}"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          \echo '== Function existence, signatures, SECURITY DEFINER, search_path =='
+          SELECT
+            p.proname,
+            pg_get_function_identity_arguments(p.oid) AS args,
+            pg_get_function_result(p.oid) AS returns,
+            p.prosecdef AS security_definer,
+            p.proconfig AS config_settings
+          FROM pg_proc p
+          WHERE p.pronamespace = 'public'::regnamespace
+            AND p.proname IN (
+              '_sku_perf_sales_day_confirmed',
+              '_sku_perf_window_coverage',
+              '_sku_perf_rollup_state',
+              'get_sku_performance_daily',
+              'get_sku_performance_summary',
+              'get_sku_performance_sales_freshness_date'
+            )
+          ORDER BY p.proname;
+
+          \echo '== PUBLIC / service_role EXECUTE grants =='
+          SELECT routine_name, grantee, privilege_type
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = 'public'
+            AND routine_name IN (
+              '_sku_perf_sales_day_confirmed',
+              '_sku_perf_window_coverage',
+              'get_sku_performance_daily',
+              'get_sku_performance_summary',
+              'get_sku_performance_sales_freshness_date'
+            )
+          ORDER BY routine_name, grantee;
+
+          \echo '== Explicit check: PUBLIC must NOT have EXECUTE on any of these =='
+          SELECT routine_name
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = 'public'
+            AND grantee = 'PUBLIC'
+            AND routine_name IN (
+              '_sku_perf_sales_day_confirmed',
+              '_sku_perf_window_coverage',
+              'get_sku_performance_daily',
+              'get_sku_performance_summary',
+              'get_sku_performance_sales_freshness_date'
+            );
+
+          \echo '== Explicit check: service_role MUST have EXECUTE on the 3 directly-callable entry points =='
+          SELECT routine_name, count(*) AS service_role_grant_count
+          FROM information_schema.routine_privileges
+          WHERE routine_schema = 'public'
+            AND grantee = 'service_role'
+            AND routine_name IN ('get_sku_performance_daily', 'get_sku_performance_summary', 'get_sku_performance_sales_freshness_date')
+          GROUP BY routine_name
+          ORDER BY routine_name;
+          SQL
+
+      - name: Update SQL fixture suite is already in the checkout -- run it for real
+        working-directory: esolz-app
+        run: |
+          DB_URL="${{ steps.dbinfo.outputs.db_url }}"
+          echo "Running supabase/tests/sku-performance-p1b/sequential.sql against the freshly-migrated local database."
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sku-performance-p1b/sequential.sql
+
+      - name: Install npm dependencies
+        working-directory: esolz-app
+        run: npm ci
+
+      - name: Focused TypeScript tests
+        working-directory: esolz-app
+        run: node --import tsx --test src/lib/internal/__tests__/business-report-*.test.ts src/lib/sku-performance/__tests__/*.test.ts
+
+      - name: Full TypeScript test suite
+        working-directory: esolz-app
+        run: node --import tsx --test 'src/**/*.test.ts'
+
+      - name: TypeScript type-check
+        working-directory: esolz-app
+        run: npx tsc --noEmit
+
+      - name: ESLint on changed files
+        working-directory: esolz-app
+        run: npx eslint scripts/sync-business-reports.ts scripts/repair-business-report-sku-daily.ts src/lib/internal/business-report-*.ts src/lib/internal/__tests__/business-report-*.test.ts src/lib/sku-performance/rpc.ts src/lib/sku-performance/summary.ts src/lib/sku-performance/__tests__/*.test.ts "src/app/(dashboard)/dashboard/sku-performance/format.ts" "src/app/(dashboard)/dashboard/sku-performance/format.test.ts" "src/app/(dashboard)/dashboard/sku-performance/page.tsx"
+
+      - name: Production build
+        working-directory: esolz-app
+        run: npm run build
+
+      - name: Summary
+        if: always()
+        run: echo "Validation run complete -- see each step above for pass/fail evidence. Nothing in this job wrote to any non-local database, and no production/Amazon credentials were ever available to it."
