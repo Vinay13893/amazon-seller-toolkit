@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   formatMoney, formatRatio, formatRatioIfNormal, dataStatus, isTrustworthyDayValue,
+  isWindowSalesTrustworthy, formatWindowSales, formatWindowUnits, windowCoverageStateLabel,
 } from './format'
+import type { WindowCoverageState } from '@/lib/sku-performance/types'
 import type { Ratio, SkuPerformanceSummaryResult, SkuPerformanceDailyResult } from '@/lib/sku-performance/types'
 
 const fixturePath = fileURLToPath(new URL('../../../../lib/sku-performance/__fixtures__/p1c1-sample-responses.json', import.meta.url))
@@ -107,5 +109,62 @@ describe('isTrustworthyDayValue (chart must preserve gaps for the rest)', () => 
     if (fixture.getDailyResponseSuccess.result !== 'success') return
     const states = fixture.getDailyResponseSuccess.days.map(d => d.sales.coverageState)
     assert.ok(states.includes('REPORTED_VALUE') || states.includes('CONFIRMED_ZERO'))
+  })
+})
+
+// ---- window-level Sales coverage gating (sales-grain fix, Sales-only) ----
+// Regression coverage for the summary table's Sales/Units cells: before this
+// fix, `window.sales`/`window.units` rendered unconditionally regardless of
+// `salesCoverageState`, so a window with missing/unresolved days could show
+// a raw partial sum -- including a bare 0 -- as if it were a complete,
+// trustworthy total.
+
+describe('window-level Sales/Units coverage gating', () => {
+  test('isWindowSalesTrustworthy is true ONLY for "complete"', () => {
+    assert.equal(isWindowSalesTrustworthy('complete'), true)
+    assert.equal(isWindowSalesTrustworthy('partial'), false)
+    assert.equal(isWindowSalesTrustworthy('before_history'), false)
+    assert.equal(isWindowSalesTrustworthy('source_not_complete'), false)
+    assert.equal(isWindowSalesTrustworthy('unknown'), false)
+  })
+
+  test('a complete window renders its real Sales number, currency-aware', () => {
+    assert.match(formatWindowSales(1234.5, 'complete', 'INR'), /1,234\.50/)
+  })
+
+  test('a complete window renders its real Units count', () => {
+    assert.equal(formatWindowUnits(42, 'complete'), '42')
+  })
+
+  test('an UNKNOWN-coverage window with a zero sum never renders as ₹0 -- it renders the Unknown label instead', () => {
+    const text = formatWindowSales(0, 'unknown', 'INR')
+    assert.doesNotMatch(text, /0\.00/)
+    assert.equal(text, windowCoverageStateLabel('unknown'))
+  })
+
+  test('a source_not_complete window never renders its (possibly partial) raw sum as a trustworthy number', () => {
+    const text = formatWindowSales(999, 'source_not_complete', 'INR')
+    assert.doesNotMatch(text, /999/)
+  })
+
+  test('a before_history window never renders a number either -- absence of history is not the same fact as a confirmed zero', () => {
+    const text = formatWindowSales(0, 'before_history', 'INR')
+    assert.equal(text, windowCoverageStateLabel('before_history'))
+  })
+
+  test('a partial window (some days resolved, some not) never renders its partial sum as complete', () => {
+    assert.equal(formatWindowUnits(7, 'partial'), windowCoverageStateLabel('partial'))
+  })
+
+  test('every WindowCoverageState has a distinct, non-empty label', () => {
+    const states: WindowCoverageState[] = ['complete', 'partial', 'before_history', 'source_not_complete', 'unknown']
+    const labels = states.map(windowCoverageStateLabel)
+    assert.equal(new Set(labels).size, labels.length)
+    for (const label of labels) assert.ok(label.length > 0)
+  })
+
+  test('zero is still shown as a real number for a complete window -- the guard is about coverage state, not about the value being zero', () => {
+    assert.match(formatWindowSales(0, 'complete', 'INR'), /0\.00/)
+    assert.equal(formatWindowUnits(0, 'complete'), '0')
   })
 })

@@ -2,9 +2,14 @@
  * SKU Performance P1-B — narrow, typed, hardcoded-name RPC wrappers.
  *
  * Mirrors `esolz-app/src/lib/pincode-monitoring/rpc.ts`'s convention: exactly
- * the two Postgres RPCs this feature is allowed to call, never a generic
- * `.rpc(name, params)` passthrough. Both RPCs are called only through the
+ * the named Postgres RPCs this feature is allowed to call, never a generic
+ * `.rpc(name, params)` passthrough. All RPCs are called only through the
  * admin (service-role) client — see the route handlers.
+ *
+ * Sales coverage-trust follow-up (migration 066): `getSkuPerformanceSalesFreshnessDate`
+ * is the narrow, standalone third RPC that lets `summary.ts` override
+ * `salesLatestAcceptedCompleteDate` with an authoritative-run-only date
+ * without ever touching `get_sku_performance_summary`'s own body.
  */
 import type { SkuPerformanceDailyResult, SkuPerformanceSummaryResult } from './types'
 import type { SortValue } from './validation'
@@ -94,4 +99,27 @@ export async function getSkuPerformanceDaily(client: RpcClient, args: GetDailyAr
   })
   if (error) throw new SkuPerformanceRpcTransportError('get_sku_performance_daily', error)
   return data as SkuPerformanceDailyResult
+}
+
+export interface GetSalesFreshnessDateArgs {
+  workspaceId: string
+  marketplaceId: string
+}
+
+/**
+ * The MAX date among every date whose LATEST exact-day Sales attempt
+ * succeeded cleanly — the authoritative-run-only replacement for the
+ * legacy `salesLatestAcceptedCompleteDate` field (which is still returned
+ * by `get_sku_performance_summary` itself, computed from ANY successful
+ * run regardless of exact-day scope — see `summary.ts` for where this
+ * value overrides it). NULL when no date has ever been authoritatively
+ * confirmed for this workspace/marketplace.
+ */
+export async function getSkuPerformanceSalesFreshnessDate(client: RpcClient, args: GetSalesFreshnessDateArgs): Promise<string | null> {
+  const { data, error } = await client.rpc('get_sku_performance_sales_freshness_date', {
+    p_workspace_id: args.workspaceId,
+    p_marketplace_id: args.marketplaceId,
+  })
+  if (error) throw new SkuPerformanceRpcTransportError('get_sku_performance_sales_freshness_date', error)
+  return (data as string | null) ?? null
 }

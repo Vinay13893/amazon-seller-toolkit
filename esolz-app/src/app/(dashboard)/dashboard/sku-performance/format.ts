@@ -20,6 +20,7 @@ import type {
   SkuPerformanceRow,
   SpendTrend,
   CoverageState,
+  WindowCoverageState,
 } from '@/lib/sku-performance/types'
 import type { SourceHealthStatus } from '@/lib/internal/brahmastra-data-health'
 
@@ -246,6 +247,49 @@ export function dataStatus(row: Pick<SkuPerformanceRow, 'mappingState' | 'select
 /** True only for a per-day coverage state that carries a real, trustworthy value — every other state must never be plotted as zero. */
 export function isTrustworthyDayValue(state: CoverageState): boolean {
   return state === 'REPORTED_VALUE' || state === 'CONFIRMED_ZERO'
+}
+
+// ----------------------------------------------- window-level Sales only ---
+// Sales-grain fix, narrow scope: the summary table's window aggregates
+// (selectedRange/yesterday/t7/prior7/t30) render `window.sales`/`window.units`
+// directly, with no gate on `window.salesCoverageState` at all — a window
+// whose sales coverage is 'partial'/'unknown'/'source_not_complete' (some or
+// all of its problem dates unresolved) or 'before_history' (no source data
+// existed yet) still shows its raw COALESCE(...,0) sum as if it were a
+// trustworthy number. When that sum happens to be 0 because rows are simply
+// MISSING (not because sales were confirmed zero), this is exactly the "no
+// missing row may be read as zero" defect, just at the window/summary level
+// instead of the single-day level. `isTrustworthyDayValue`/`CoverageState`
+// above already correctly guard the per-day drill-down chart; this is the
+// analogous guard for the window-level Sales cells in the summary table.
+// Deliberately NOT extended to spend/attributedSales/ACOS/TACOS here — this
+// PR's scope is the Sales source only (see PR description).
+
+const WINDOW_COVERAGE_STATE_LABELS: Record<WindowCoverageState, string> = {
+  complete: 'Complete',
+  partial: 'Partial — some days unresolved',
+  before_history: 'Before available history',
+  source_not_complete: 'Data delayed',
+  unknown: 'Unknown',
+}
+
+export function windowCoverageStateLabel(state: WindowCoverageState): string {
+  return WINDOW_COVERAGE_STATE_LABELS[state] ?? 'Unknown'
+}
+
+/** Only a 'complete' window (every problem date individually resolved) has a Sales sum trustworthy enough to display as a number. */
+export function isWindowSalesTrustworthy(state: WindowCoverageState): boolean {
+  return state === 'complete'
+}
+
+/** Never renders a partial/unknown/before-history window's Sales sum as if it were a complete, trustworthy total — including never rendering it as a silent ₹0. */
+export function formatWindowSales(sales: number, state: WindowCoverageState, currencyCode: string | null): string {
+  return isWindowSalesTrustworthy(state) ? formatMoney(sales, currencyCode) : windowCoverageStateLabel(state)
+}
+
+/** Same rule as formatWindowSales, for the Units column (also a Sales-source field). */
+export function formatWindowUnits(units: number, state: WindowCoverageState): string {
+  return isWindowSalesTrustworthy(state) ? formatCount(units) : windowCoverageStateLabel(state)
 }
 
 const TONE_BADGE_CLASSES: Record<Tone, string> = {

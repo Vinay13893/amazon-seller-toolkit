@@ -38,6 +38,11 @@ yarn-error.log*
 SPAPI_HANDOFF.txt
 SAAS_CONTEXT.txt
 *_HANDOFF.txt
+
+# scripts/repair-business-report-sku-daily.ts output (console summary is
+# fine to share, but the JSON/CSV reports can contain real sales figures
+# and should never be committed)
+/.reports/
 *_CONTEXT.txt
 
 # vercel
