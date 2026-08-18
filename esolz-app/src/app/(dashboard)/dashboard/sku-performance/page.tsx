@@ -70,7 +70,10 @@ export default function SkuDailyTrendsPage() {
   }, [summaryQueryString])
 
   useEffect(() => {
-    void loadSummary()
+    const timer = window.setTimeout(() => {
+      void loadSummary()
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [loadSummary])
 
   const loadDaily = useCallback(async (sku: string) => {
