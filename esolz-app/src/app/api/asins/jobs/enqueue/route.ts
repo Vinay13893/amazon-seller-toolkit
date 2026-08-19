@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
+import { buildAsinCheckerJobCandidates, type NewAsinCheckerJob } from '@/lib/asins/product-separation'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -22,27 +23,10 @@ const RATE_LIMIT_REASONS = new Set([
   'SP-API pricing call failed with HTTP 429',
 ])
 
-const MARKETPLACE_ID_BY_MARKETPLACE: Record<string, string> = {
-  IN: 'A21TJRUUN4KGV',
-  US: 'ATVPDKIKX0DER',
-  UK: 'A1F83G8C2ARO7P',
-  GB: 'A1F83G8C2ARO7P',
-  DE: 'A1PA6795UKMFR9',
-}
-
-type NewJobRow = {
-  workspace_id: string
-  job_type: string
-  target_type: 'my_product' | 'competitor_asin'
-  target_id: string
-  marketplace_id: string
-  payload_json: { asin: string }
-}
-
 type AdminClient = ReturnType<typeof createAdminClient>
 
 type WorkspaceCandidates = {
-  candidates: NewJobRow[]
+  candidates: NewAsinCheckerJob[]
   totalActiveMyProducts: number
   totalActiveCompetitors: number
 }
@@ -63,7 +47,7 @@ async function buildCandidatesForWorkspace(
       .limit(1000),
     admin
       .from('tracked_asins')
-      .select('id, asin, marketplace')
+      .select('id, asin, marketplace, status')
       .eq('workspace_id', workspaceId)
       .neq('status', 'archived')
       .limit(1000),
@@ -78,59 +62,27 @@ async function buildCandidatesForWorkspace(
 
   if (listingsResult.error || trackedResult.error || activeJobsResult.error) return null
 
-  const cadenceCutoff = Date.now() - DEFAULT_CADENCE_HOURS * 60 * 60 * 1000
-  const rateLimitCutoff = Date.now() - PRICING_COOLDOWN_RETRY_MINUTES * 60 * 1000
-  const skipKeys = new Set<string>()
-  for (const job of activeJobsResult.data ?? []) {
-    const key = `${job.target_type}:${job.target_id}`
-    if (job.status === 'queued' || job.status === 'running') {
-      skipKeys.add(key)
-      continue
-    }
-    if (forceRefresh) continue
-    if ((job.status === 'completed' || job.status === 'failed') && job.completed_at) {
-      const completedAt = new Date(job.completed_at).getTime()
-      const cutoff = RATE_LIMIT_REASONS.has(String(job.last_error_safe ?? '')) ? rateLimitCutoff : cadenceCutoff
-      if (completedAt > cutoff) skipKeys.add(key)
-    }
-  }
-
-  const candidates: NewJobRow[] = []
-  let totalActiveMyProducts = 0
-  for (const listing of listingsResult.data ?? []) {
-    if (!listing.asin) continue
-    totalActiveMyProducts += 1
-    if (candidates.filter(c => c.target_type === 'my_product').length >= remainingMyProducts) continue
-    const key = `my_product:${listing.id}`
-    if (skipKeys.has(key)) continue
-    candidates.push({
-      workspace_id: workspaceId,
-      job_type: JOB_TYPE,
-      target_type: 'my_product',
-      target_id: listing.id as string,
-      marketplace_id: (listing.marketplace_id as string | null) ?? DEFAULT_MARKETPLACE_ID,
-      payload_json: { asin: (listing.asin as string).toUpperCase() },
-    })
-  }
-
-  let totalActiveCompetitors = 0
-  for (const tracked of trackedResult.data ?? []) {
-    totalActiveCompetitors += 1
-    if (candidates.filter(c => c.target_type === 'competitor_asin').length >= remainingCompetitors) continue
-    const key = `competitor_asin:${tracked.id}`
-    if (skipKeys.has(key)) continue
-    const marketplaceId = MARKETPLACE_ID_BY_MARKETPLACE[String(tracked.marketplace).toUpperCase()] ?? DEFAULT_MARKETPLACE_ID
-    candidates.push({
-      workspace_id: workspaceId,
-      job_type: JOB_TYPE,
-      target_type: 'competitor_asin',
-      target_id: tracked.id as string,
-      marketplace_id: marketplaceId,
-      payload_json: { asin: String(tracked.asin).toUpperCase() },
-    })
-  }
-
-  return { candidates, totalActiveMyProducts, totalActiveCompetitors }
+  return buildAsinCheckerJobCandidates({
+    workspaceId,
+    jobType: JOB_TYPE,
+    listings: (listingsResult.data ?? []) as Array<{ id: string; asin: string | null; marketplace_id: string | null }>,
+    trackedAsins: (trackedResult.data ?? []) as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>,
+    activeJobs: (activeJobsResult.data ?? []) as Array<{
+      target_type: 'my_product' | 'competitor_asin'
+      target_id: string
+      status: string
+      completed_at: string | null
+      last_error_safe: string | null
+    }>,
+    remainingMyProducts,
+    remainingCompetitors,
+    forceRefresh,
+    nowMs: Date.now(),
+    cadenceHours: DEFAULT_CADENCE_HOURS,
+    pricingCooldownRetryMinutes: PRICING_COOLDOWN_RETRY_MINUTES,
+    rateLimitReasons: RATE_LIMIT_REASONS,
+    defaultMarketplaceId: DEFAULT_MARKETPLACE_ID,
+  })
 }
 
 export async function POST(request: Request) {
@@ -173,7 +125,7 @@ export async function POST(request: Request) {
 
   let totalActiveMyProducts = 0
   let totalActiveCompetitors = 0
-  const allCandidates: NewJobRow[] = []
+  const allCandidates: NewAsinCheckerJob[] = []
   let remainingMyProducts = MAX_MY_PRODUCTS_PER_RUN
   let remainingCompetitors = MAX_COMPETITORS_PER_RUN
 
