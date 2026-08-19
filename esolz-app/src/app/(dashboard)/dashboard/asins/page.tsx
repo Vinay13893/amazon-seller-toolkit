@@ -7,19 +7,20 @@ import { AsinDashboardTable } from '@/components/asins/AsinDashboardTable'
 import { ProductCard } from '@/components/asins/ProductCard'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Marketplace, ProductSnapshot } from '@/types'
+import { ProductSnapshot } from '@/types'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { formatPrice, pricingUnavailableLabel } from '@/lib/format'
 import { toast } from 'sonner'
 import {
   getWorkspaceId,
   getAsinLimit,
-  getTrackedAsins,
-  addTrackedAsin,
+  getCompetitorAsins,
+  addCompetitorAsin,
   archiveTrackedAsin,
   incrementAsinUsage,
   type AddAsinInput,
 } from '@/lib/supabase/asins'
+import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
 import {
   Package,
   LayoutGrid,
@@ -122,17 +123,6 @@ export default function AsinsPage() {
   const [listingsHasMore, setListingsHasMore]       = useState(false)
   const [listingSync, setListingSync]               = useState<ListingSyncSummary | null>(null)
   const [checkerSummary, setCheckerSummary]         = useState<CheckerSummary | null>(null)
-  const [trackingFromListingAsin, setTrackingFromListingAsin] = useState<string | null>(null)
-
-  function marketplaceFromMarketplaceId(marketplaceId: string): Marketplace {
-    const map: Record<string, Marketplace> = {
-      A21TJRUUN4KGV: 'IN',
-      ATVPDKIKX0DER: 'US',
-      A1F83G8C2ARO7P: 'UK',
-      A1PA6795UKMFR9: 'DE',
-    }
-    return map[marketplaceId] ?? 'IN'
-  }
 
   const loadAmazonListings = useCallback(async (options?: { append?: boolean; search?: string; offset?: number }) => {
     const append = options?.append ?? false
@@ -185,14 +175,19 @@ export default function AsinsPage() {
     setWorkspaceId(wsId)
     const [limit, asins] = await Promise.all([
       getAsinLimit(wsId),
-      getTrackedAsins(wsId),
+      getCompetitorAsins(wsId),
     ])
     setMaxAsins(limit)
     setProducts(asins)
     setLoading(false)
   }, [])
 
-  useEffect(() => { void loadData() }, [loadData])
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadData()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [loadData])
 
   // Refresh Amazon listings when the background watcher finishes a sync
   useEffect(() => {
@@ -273,7 +268,7 @@ export default function AsinsPage() {
         '.',
       )
       await loadAmazonListings({ search: listingSearch })
-      if (workspaceId) setProducts(await getTrackedAsins(workspaceId))
+      if (workspaceId) setProducts(await getCompetitorAsins(workspaceId))
     } catch {
       setCheckStatus('Product check failed unexpectedly.')
     } finally {
@@ -283,74 +278,18 @@ export default function AsinsPage() {
 
   async function handleAddAsin(data: AddAsinInput): Promise<{ error?: string }> {
     if (!workspaceId) return { error: 'Not signed in' }
-    const newProduct = await addTrackedAsin(workspaceId, data)
-    if (!newProduct) return { error: 'Failed to save ASIN. It may already be tracked, or a database error occurred.' }
-    setProducts(prev => [newProduct, ...prev])
+    const result = await addCompetitorAsin(workspaceId, data)
+    if (result.outcome === 'already_active' || result.outcome === 'invalid_asin' || result.outcome === 'own_product' || result.outcome === 'unavailable') {
+      return { error: result.message }
+    }
+    if (!result.product) return { error: 'Failed to save competitor ASIN. Please try again.' }
+    setProducts(prev => [result.product!, ...prev])
     void incrementAsinUsage(workspaceId)
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('asin:usage-changed'))
     }
-    toast.success(`"${data.productTitle}" is now being tracked.`)
+    toast.success(result.message)
     return {}
-  }
-
-  async function handleTrackFromListing(item: AmazonListingItem) {
-    if (!workspaceId || !item.asin) return
-
-    const normalizedAsin = item.asin.toUpperCase()
-    const alreadyTracked = products.some(
-      (product) => product.asin.toUpperCase() === normalizedAsin
-    )
-    if (alreadyTracked) {
-      toast.info('Already tracked.')
-      return
-    }
-
-    if (products.length >= maxAsins) {
-      toast.error('You have reached your ASIN limit for this plan.')
-      return
-    }
-
-    setTrackingFromListingAsin(normalizedAsin)
-    try {
-      const created = await addTrackedAsin(workspaceId, {
-        asin: normalizedAsin,
-        marketplace: marketplaceFromMarketplaceId(item.marketplace_id),
-        productTitle: item.item_name?.trim() || normalizedAsin,
-        brand: item.brand?.trim() || '',
-        category: item.product_type?.trim() || '',
-        imageUrl: item.image_url?.trim() || '',
-      })
-
-      if (!created) {
-        const refreshed = await getTrackedAsins(workspaceId)
-        setProducts(refreshed)
-        const nowTracked = refreshed.some(
-          (product) => product.asin.toUpperCase() === normalizedAsin
-        )
-        if (nowTracked) {
-          toast.info('Already tracked.')
-          return
-        }
-        toast.error('Failed to track ASIN from listing. Please try again.')
-        return
-      }
-
-      await incrementAsinUsage(workspaceId)
-      if (typeof window !== 'undefined') {
-        window.dispatchEvent(new CustomEvent('asin:usage-changed'))
-      }
-
-      const [asins, limit] = await Promise.all([
-        getTrackedAsins(workspaceId),
-        getAsinLimit(workspaceId),
-      ])
-      setProducts(asins)
-      setMaxAsins(limit)
-      toast.success('ASIN added to tracking from Amazon listings.')
-    } finally {
-      setTrackingFromListingAsin(null)
-    }
   }
 
   async function handleDeleteAsin(id: string) {
@@ -723,7 +662,6 @@ export default function AsinsPage() {
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Deal Tag</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Last Checked</th>
                     <th className="text-left px-4 py-3 font-medium text-muted-foreground text-xs">Updated</th>
-                    <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -846,19 +784,6 @@ export default function AsinsPage() {
                         {item.last_synced_at
                           ? new Date(item.last_synced_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
                           : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {item.asin && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-7 text-xs"
-                            disabled={trackingFromListingAsin === item.asin.toUpperCase() || atLimit}
-                            onClick={() => void handleTrackFromListing(item)}
-                          >
-                            {trackingFromListingAsin === item.asin.toUpperCase() ? 'Tracking…' : 'Track ASIN'}
-                          </Button>
-                        )}
                       </td>
                     </tr>
                   ))}

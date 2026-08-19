@@ -1,6 +1,11 @@
 import { createClient } from '@/lib/supabase/client'
-import { normalizeEmbed } from '@/lib/supabase/normalize'
 import { incrementAsinCounter } from '@/lib/supabase/usage'
+import {
+  buildOwnCatalogKeySet,
+  filterCompetitorTrackedAsins,
+  isTrackedAsinCompetitor,
+  marketplaceIdForMarketplace,
+} from '@/lib/asins/product-separation'
 import { ProductSnapshot, Marketplace } from '@/types'
 
 // ── Shared input type (used by dialog + page) ─────────────────────────────
@@ -20,18 +25,16 @@ function currencyForMarketplace(mp: string): string {
   return 'INR'
 }
 
-// ── Track ASIN (add / restore) ─────────────────────────────────────────────
+// ── Manually tracked competitor ASINs (add / restore) ──────────────────────
 // Amazon ASINs are exactly 10 uppercase alphanumeric characters. Kept in sync
-// with the client-side check in components/asins/AddAsinDialog.tsx — this
-// copy guards the "Track ASIN" path from a My Products row, which doesn't
-// go through that dialog and has no format validation of its own.
+// with the client-side check in components/asins/AddAsinDialog.tsx.
 export const ASIN_FORMAT_REGEX = /^[A-Z0-9]{10}$/
 
 export function isValidAsinFormat(asin: string): boolean {
   return ASIN_FORMAT_REGEX.test(asin.trim().toUpperCase())
 }
 
-export type TrackAsinOutcome = 'already_active' | 'restored' | 'added' | 'invalid_asin' | 'unavailable'
+export type TrackAsinOutcome = 'already_active' | 'restored' | 'added' | 'invalid_asin' | 'own_product' | 'unavailable'
 
 export interface TrackAsinResult {
   outcome: TrackAsinOutcome
@@ -80,6 +83,27 @@ function mapTrackedAsinRow(row: TrackedAsinRow): ProductSnapshot {
 
 type TrackAsinSupabase = ReturnType<typeof createClient>
 
+async function trackedAsinIsOwnCatalogProduct(
+  supabase: TrackAsinSupabase,
+  workspaceId: string,
+  asin: string,
+  marketplace: Marketplace,
+): Promise<{ ownProduct: boolean; error: boolean }> {
+  const marketplaceId = marketplaceIdForMarketplace(marketplace)
+  if (!marketplaceId) return { ownProduct: false, error: false }
+
+  const { data, error } = await supabase
+    .from('amazon_listing_items')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('asin', asin)
+    .eq('marketplace_id', marketplaceId)
+    .maybeSingle()
+
+  if (error) return { ownProduct: false, error: true }
+  return { ownProduct: Boolean(data), error: false }
+}
+
 async function findTrackedAsinRow(
   supabase: TrackAsinSupabase,
   workspaceId: string,
@@ -105,9 +129,8 @@ const UNAVAILABLE_RESULT: TrackAsinResult = {
 }
 
 /**
- * Adds a manually-tracked ASIN (Competitors tab, or "Track ASIN" from a My
- * Products row), reactivating a previously archived (soft-deleted) row
- * instead of attempting a duplicate insert against the
+ * Adds a manually-tracked ASIN, reactivating a previously archived
+ * (soft-deleted) row instead of attempting a duplicate insert against the
  * (workspace_id, asin, marketplace) unique constraint. Safe under
  * concurrent calls for the same ASIN — never creates a duplicate row.
  *
@@ -190,6 +213,34 @@ export async function addOrRestoreTrackedAsin(
 
   if (!inserted) return UNAVAILABLE_RESULT
   return { outcome: 'added', product: mapTrackedAsinRow(inserted as TrackedAsinRow), message: 'ASIN added to tracking.' }
+}
+
+export async function addOrRestoreCompetitorAsin(
+  workspaceId: string,
+  input: AddAsinInput,
+  supabaseClient?: TrackAsinSupabase,
+): Promise<TrackAsinResult> {
+  const asin = input.asin.trim().toUpperCase()
+  if (!isValidAsinFormat(asin)) {
+    return {
+      outcome: 'invalid_asin',
+      product: null,
+      message: 'Enter a valid 10-character Amazon ASIN (e.g. B0BN5NZCGH).',
+    }
+  }
+
+  const supabase = supabaseClient ?? createClient()
+  const ownCatalogCheck = await trackedAsinIsOwnCatalogProduct(supabase, workspaceId, asin, input.marketplace)
+  if (ownCatalogCheck.error) return UNAVAILABLE_RESULT
+  if (ownCatalogCheck.ownProduct) {
+    return {
+      outcome: 'own_product',
+      product: null,
+      message: 'This ASIN belongs to My Products. It is already available there and does not need to be added as a competitor.',
+    }
+  }
+
+  return addOrRestoreTrackedAsin(workspaceId, { ...input, asin }, supabase)
 }
 
 function availabilityFromScore(score: number | null) {
@@ -312,7 +363,7 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
 
   type SnapshotNoStatus = Omit<SnapshotWithStatus, 'scrape_status'>
 
-  let snapshotsByAsinId = new Map<string, SnapshotWithStatus[]>()
+  const snapshotsByAsinId = new Map<string, SnapshotWithStatus[]>()
 
   if (trackedAsinIds.length > 0) {
     const withStatus = await supabase
@@ -388,6 +439,58 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
   })
 }
 
+async function getOwnCatalogListingKeys(workspaceId: string): Promise<Set<string> | null> {
+  const supabase = createClient()
+  const { data, error } = await supabase
+    .from('amazon_listing_items')
+    .select('asin, marketplace_id')
+    .eq('workspace_id', workspaceId)
+    .not('asin', 'is', null)
+    .limit(5000)
+
+  if (error) return null
+  return buildOwnCatalogKeySet((data ?? []) as Array<{ asin: string | null; marketplace_id: string | null }>)
+}
+
+export async function getCompetitorAsins(workspaceId: string): Promise<ProductSnapshot[]> {
+  const [trackedAsins, ownCatalogKeys] = await Promise.all([
+    getTrackedAsins(workspaceId),
+    getOwnCatalogListingKeys(workspaceId),
+  ])
+
+  if (!ownCatalogKeys) return trackedAsins
+
+  return trackedAsins.filter(product => isTrackedAsinCompetitor({
+    asin: product.asin,
+    marketplace: product.marketplace,
+    status: product.is_active ? 'active' : 'archived',
+  }, ownCatalogKeys))
+}
+
+async function getCompetitorAsinCount(workspaceId: string): Promise<number> {
+  const supabase = createClient()
+  const [trackedResult, listingsResult] = await Promise.all([
+    supabase
+      .from('tracked_asins')
+      .select('id, asin, marketplace, status')
+      .eq('workspace_id', workspaceId)
+      .neq('status', 'archived')
+      .limit(5000),
+    supabase
+      .from('amazon_listing_items')
+      .select('asin, marketplace_id')
+      .eq('workspace_id', workspaceId)
+      .not('asin', 'is', null)
+      .limit(5000),
+  ])
+
+  if (trackedResult.error || listingsResult.error) return 0
+  return filterCompetitorTrackedAsins(
+    (trackedResult.data ?? []) as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>,
+    (listingsResult.data ?? []) as Array<{ asin: string | null; marketplace_id: string | null }>,
+  ).length
+}
+
 /**
  * Backward-compatible wrapper kept for existing callers (the ASIN page UI).
  * Fixes the underlying archive/reinsert bug transparently: a previously
@@ -402,6 +505,13 @@ export async function addTrackedAsin(
 ): Promise<ProductSnapshot | null> {
   const result = await addOrRestoreTrackedAsin(workspaceId, input)
   return result.outcome === 'added' || result.outcome === 'restored' ? result.product : null
+}
+
+export async function addCompetitorAsin(
+  workspaceId: string,
+  input: AddAsinInput,
+): Promise<TrackAsinResult> {
+  return addOrRestoreCompetitorAsin(workspaceId, input)
 }
 
 /** Increment asin_count in usage_counters for the current calendar month. */
@@ -505,15 +615,9 @@ export async function getPlanUsage(): Promise<PlanUsage | null> {
     }
   }
 
-  const countResult = await supabase
-    .from('tracked_asins')
-    .select('id', { count: 'exact', head: true })
-    .eq('workspace_id', workspaceId)
-    .neq('status', 'archived')
-
   return {
     planName:  entitlement.planName,
     asinLimit: entitlement.asinLimit,
-    asinCount: countResult.count ?? 0,
+    asinCount: await getCompetitorAsinCount(workspaceId),
   }
 }

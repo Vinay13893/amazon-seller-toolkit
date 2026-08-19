@@ -115,15 +115,14 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
         render={<Button disabled={atLimit} className="gap-1.5" />}
       >
         <Plus className="size-4" />
-        Add ASIN
+        Add Competitor
       </DialogTrigger>
 
       <DialogContent className="sm:max-w-md max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Track a New ASIN</DialogTitle>
+          <DialogTitle>Track Competitor ASIN</DialogTitle>
           <p className="text-sm text-muted-foreground mt-1">
-            Enter the Amazon ASIN you want to monitor. We&apos;ll start tracking its
-            BSR, category, and rank history immediately.
+            Enter a competitor&apos;s Amazon ASIN to monitor its BSR, pricing, and rank history.
           </p>
         </DialogHeader>
 
@@ -132,7 +131,7 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
             <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/5 px-3.5 py-3">
               <AlertCircle className="size-4 shrink-0 text-destructive mt-0.5" />
               <p className="text-sm text-foreground">
-                You have reached your ASIN limit. Upgrade your plan to add more ASINs.
+                You have reached your competitor ASIN limit. Upgrade your plan to add more competitors.
               </p>
             </div>
           </div>
@@ -275,7 +274,7 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
                     Addingâ€¦
                   </>
                 ) : (
-                  'Start Tracking'
+                  'Start Competitor Tracking'
                 )}
               </Button>
             </DialogFooter>
