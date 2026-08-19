@@ -5,6 +5,17 @@
 -- stores only the user's BSR dashboard selection and never owns source product
 -- identity or BSR history. History remains in public.asin_snapshots.
 
+-- These composite indexes look redundant beside the parent tables' primary
+-- keys on id, but they are required for the composite foreign keys below.
+-- The BSR target row carries workspace_id, so the database must prove the
+-- referenced source row belongs to the same workspace, not merely that the
+-- source id exists globally.
+CREATE UNIQUE INDEX IF NOT EXISTS amazon_listing_items_workspace_id_id_uidx
+  ON public.amazon_listing_items (workspace_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS tracked_asins_workspace_id_id_uidx
+  ON public.tracked_asins (workspace_id, id);
+
 CREATE TABLE IF NOT EXISTS public.bsr_tracking_targets (
   id                     uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id           uuid        NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
