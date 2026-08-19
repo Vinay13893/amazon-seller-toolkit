@@ -98,6 +98,7 @@ async function trackedAsinIsOwnCatalogProduct(
     .eq('workspace_id', workspaceId)
     .eq('asin', asin)
     .eq('marketplace_id', marketplaceId)
+    .limit(1)
     .maybeSingle()
 
   if (error) return { ownProduct: false, error: true }
@@ -452,19 +453,26 @@ async function getOwnCatalogListingKeys(workspaceId: string): Promise<Set<string
   return buildOwnCatalogKeySet((data ?? []) as Array<{ asin: string | null; marketplace_id: string | null }>)
 }
 
-export async function getCompetitorAsins(workspaceId: string): Promise<ProductSnapshot[]> {
-  const [trackedAsins, ownCatalogKeys] = await Promise.all([
-    getTrackedAsins(workspaceId),
-    getOwnCatalogListingKeys(workspaceId),
-  ])
-
-  if (!ownCatalogKeys) return trackedAsins
+export function filterCompetitorProductSnapshots(
+  trackedAsins: ProductSnapshot[],
+  ownCatalogKeys: Set<string> | null,
+): ProductSnapshot[] {
+  if (!ownCatalogKeys) return []
 
   return trackedAsins.filter(product => isTrackedAsinCompetitor({
     asin: product.asin,
     marketplace: product.marketplace,
     status: product.is_active ? 'active' : 'archived',
   }, ownCatalogKeys))
+}
+
+export async function getCompetitorAsins(workspaceId: string): Promise<ProductSnapshot[]> {
+  const [trackedAsins, ownCatalogKeys] = await Promise.all([
+    getTrackedAsins(workspaceId),
+    getOwnCatalogListingKeys(workspaceId),
+  ])
+
+  return filterCompetitorProductSnapshots(trackedAsins, ownCatalogKeys)
 }
 
 async function getCompetitorAsinCount(workspaceId: string): Promise<number> {

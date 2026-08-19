@@ -6,7 +6,12 @@ import {
   type OwnCatalogListingIdentity,
   type TrackedAsinIdentity,
 } from './product-separation'
-import { addOrRestoreCompetitorAsin, type AddAsinInput } from '@/lib/supabase/asins'
+import {
+  addOrRestoreCompetitorAsin,
+  filterCompetitorProductSnapshots,
+  type AddAsinInput,
+} from '@/lib/supabase/asins'
+import type { ProductSnapshot } from '@/types'
 
 const WORKSPACE_ID = 'workspace-1'
 const JOB_TYPE = 'product_page_snapshot'
@@ -137,6 +142,10 @@ function makeFakeSupabase(rowsByTable: Record<string, FakeRow[]>) {
           filters.push([col, val])
           return builder
         },
+        limit(count: number) {
+          void count
+          return builder
+        },
         update(nextPatch: Partial<FakeRow>) {
           mode = 'update'
           patch = nextPatch
@@ -211,6 +220,42 @@ test('add-competitor path refuses an own catalog ASIN', async () => {
   assert.match(result.message, /belongs to My Products/)
 })
 
+test('add-competitor path refuses an ASIN when multiple own SKUs share the same ASIN', async () => {
+  const supabase = makeFakeSupabase({
+    amazon_listing_items: [
+      {
+        id: 'listing-own-in-1',
+        workspace_id: WORKSPACE_ID,
+        asin: 'B0OWNIN001',
+        marketplace_id: 'A21TJRUUN4KGV',
+      },
+      {
+        id: 'listing-own-in-2',
+        workspace_id: WORKSPACE_ID,
+        asin: 'B0OWNIN001',
+        marketplace_id: 'A21TJRUUN4KGV',
+      },
+    ],
+    tracked_asins: [],
+  })
+
+  const result = await addOrRestoreCompetitorAsin(WORKSPACE_ID, addInput, supabase)
+
+  assert.equal(result.outcome, 'own_product')
+})
+
+test('catalog classification unavailable fails closed and returns no confirmed competitors', () => {
+  const competitors = filterCompetitorProductSnapshots(
+    [
+      productSnapshot({ id: 'tracked-own', asin: 'B0OWNIN001', marketplace: 'IN' }),
+      productSnapshot({ id: 'tracked-external', asin: 'B0EXTERNAL', marketplace: 'IN' }),
+    ],
+    null,
+  )
+
+  assert.deepEqual(competitors, [])
+})
+
 test('competitor quota/count uses competitors only', () => {
   const competitors = filterCompetitorTrackedAsins(
     [
@@ -224,3 +269,30 @@ test('competitor quota/count uses competitors only', () => {
   assert.equal(competitors.length, 1)
   assert.equal(competitors[0].id, 'tracked-external')
 })
+
+function productSnapshot(overrides: Partial<ProductSnapshot>): ProductSnapshot {
+  return {
+    id: 'tracked-default',
+    asin: 'B0DEFAULT',
+    label: 'Default product',
+    marketplace: 'IN',
+    is_active: true,
+    created_at: '2026-08-19T00:00:00.000Z',
+    bsr_rank: null,
+    bsr_rank_prev: null,
+    category: null,
+    sub_rank: null,
+    sub_category: null,
+    price: null,
+    price_currency: 'INR',
+    rating: null,
+    review_count: null,
+    buybox_winner: null,
+    buybox_is_self: null,
+    availability: null,
+    availability_score: null,
+    scrape_status: null,
+    captured_at: null,
+    ...overrides,
+  }
+}
