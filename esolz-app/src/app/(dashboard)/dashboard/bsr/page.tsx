@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
   LineChart,
@@ -11,36 +11,70 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart2,
+  Bell,
+  Check,
+  Clock,
+  Eye,
+  Loader2,
+  Minus,
+  Package,
+  Plus,
+  Search,
+  Tag,
+  TrendingDown,
+  TrendingUp,
+} from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
+import {
+  buildBsrTargetView,
+  marketplaceLabelForListing,
+  resolveBsrCandidateRows,
+  resolveBsrSnapshotRows,
+  summarizeBsrTargets,
+  targetKey,
+  untrackBsrTargetPatch,
+  type BsrSnapshotRow,
+  type BsrSourceProduct,
+  type BsrTargetType,
+  type BsrTargetView,
+  type BsrTrackingTargetRow,
+} from '@/lib/bsr/bsr-tracking'
 import { createClient } from '@/lib/supabase/client'
-import { getWorkspaceId, getTrackedAsins } from '@/lib/supabase/asins'
+import { getWorkspaceId } from '@/lib/supabase/asins'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { ProductSnapshot } from '@/types'
-import {
-  Package,
-  TrendingUp,
-  TrendingDown,
-  Minus,
-  BarChart2,
-  ExternalLink,
-  Bell,
-  Plus,
-  ArrowUpRight,
-  ArrowDownRight,
-  Tag,
-  Clock,
-  Loader2,
-} from 'lucide-react'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+type BsrPoint = { date: string; rank: number }
 
-interface BsrPoint { date: string; rank: number }
+type ListingCandidateRow = {
+  id: string
+  asin: string | null
+  sku: string | null
+  marketplace_id: string | null
+  item_name: string | null
+  image_url: string | null
+}
 
-// ─── Tooltip ──────────────────────────────────────────────────────────────────
+type TrackedCandidateRow = {
+  id: string
+  asin: string | null
+  marketplace: string | null
+  product_title: string | null
+  image_url: string | null
+  status: string | null
+}
+
+type TrackingTargetMutation = {
+  amazon_listing_item_id?: string | null
+  tracked_asin_id?: string | null
+}
 
 function BsrTooltip({
   active,
@@ -61,8 +95,6 @@ function BsrTooltip({
     </div>
   )
 }
-
-// ─── Range Toggle ─────────────────────────────────────────────────────────────
 
 function RangeToggle({
   value,
@@ -92,26 +124,15 @@ function RangeToggle({
   )
 }
 
-// ─── Chart skeleton ───────────────────────────────────────────────────────────
-
-function ChartSkeleton() {
-  return (
-    <div className="h-[260px] flex items-center justify-center">
-      <p className="text-muted-foreground/40 text-sm">Loading chart…</p>
-    </div>
-  )
-}
-
-// ─── Movement chip ────────────────────────────────────────────────────────────
-
 function MovementChip({ movement }: { movement: number | null }) {
-  if (movement === null) return <span className="text-muted-foreground text-xs">—</span>
-  if (movement === 0)
+  if (movement === null) return <span className="text-muted-foreground text-xs">-</span>
+  if (movement === 0) {
     return (
       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-        <Minus className="size-3" /> —
+        <Minus className="size-3" /> -
       </span>
     )
+  }
   const improved = movement > 0
   return (
     <span
@@ -122,299 +143,448 @@ function MovementChip({ movement }: { movement: number | null }) {
           : 'bg-red-500/10 text-red-400 border border-red-500/20',
       )}
     >
-      {improved ? (
-        <ArrowUpRight className="size-3" />
-      ) : (
-        <ArrowDownRight className="size-3" />
-      )}
+      {improved ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
       {improved ? '+' : ''}
       {movement.toLocaleString('en-IN')}
     </span>
   )
 }
 
-// ─── Main page ────────────────────────────────────────────────────────────────
+function ChartSkeleton() {
+  return (
+    <div className="h-[260px] flex items-center justify-center">
+      <p className="text-muted-foreground/40 text-sm">Loading chart...</p>
+    </div>
+  )
+}
+
+function sourceFromListing(row: ListingCandidateRow): BsrSourceProduct | null {
+  if (!row.id || !row.asin) return null
+  return {
+    targetType: 'my_product',
+    sourceId: row.id,
+    asin: row.asin,
+    marketplace: marketplaceLabelForListing(row.marketplace_id),
+    label: row.item_name || row.sku || row.asin,
+    sku: row.sku,
+    imageUrl: row.image_url,
+  }
+}
+
+function sourceFromTracked(row: TrackedCandidateRow): BsrSourceProduct | null {
+  if (!row.id || !row.asin || !row.marketplace) return null
+  return {
+    targetType: 'competitor_asin',
+    sourceId: row.id,
+    asin: row.asin,
+    marketplace: row.marketplace,
+    label: row.product_title || row.asin,
+    imageUrl: row.image_url,
+  }
+}
+
+function sourceMutation(source: BsrSourceProduct): TrackingTargetMutation {
+  return source.targetType === 'my_product'
+    ? { amazon_listing_item_id: source.sourceId, tracked_asin_id: null }
+    : { amazon_listing_item_id: null, tracked_asin_id: source.sourceId }
+}
+
+function rowKeyFromTarget(row: BsrTrackingTargetRow): string | null {
+  if (row.amazon_listing_item_id) return targetKey('my_product', row.amazon_listing_item_id)
+  if (row.tracked_asin_id) return targetKey('competitor_asin', row.tracked_asin_id)
+  return null
+}
+
+function includesSearch(source: BsrSourceProduct, search: string): boolean {
+  const q = search.trim().toLowerCase()
+  if (!q) return true
+  return [source.label, source.asin, source.sku, source.marketplace]
+    .filter(Boolean)
+    .some(value => String(value).toLowerCase().includes(q))
+}
+
+function freshnessLabel(target: BsrTargetView): string {
+  if (!target.lastCheckedAt) return 'Never checked'
+  if (target.currentRank !== null && target.rankCapturedAt !== target.lastCheckedAt) return 'Using last BSR'
+  if (target.currentRank === null && target.latestStatus) return 'BSR not found'
+  return 'Current'
+}
 
 export default function BsrTrackerPage() {
-  const [products, setProducts]                 = useState<ProductSnapshot[]>([])
-  const [loading, setLoading]                   = useState(true)
-  const [selectedAsinCode, setSelectedAsinCode] = useState<string>('')
-  const [selectedAsinId, setSelectedAsinId]     = useState<string>('')
-  const [chartRange, setChartRange]             = useState<7 | 14 | 30>(30)
-  const [bsrHistory, setBsrHistory]             = useState<BsrPoint[]>([])
-  const [chartLoading, setChartLoading]         = useState(false)
-  const [mounted, setMounted]                   = useState(false)
+  const [workspaceId, setWorkspaceId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<BsrTargetType>('my_product')
+  const [loading, setLoading] = useState(true)
+  const [configUnavailable, setConfigUnavailable] = useState(false)
+  const [catalogUnavailable, setCatalogUnavailable] = useState(false)
+  const [trackedUnavailable, setTrackedUnavailable] = useState(false)
+  const [myBsrUnavailable, setMyBsrUnavailable] = useState(false)
+  const [competitorBsrUnavailable, setCompetitorBsrUnavailable] = useState(false)
+  const [myCandidates, setMyCandidates] = useState<BsrSourceProduct[]>([])
+  const [competitorCandidates, setCompetitorCandidates] = useState<BsrSourceProduct[]>([])
+  const [targets, setTargets] = useState<BsrTrackingTargetRow[]>([])
+  const [targetViews, setTargetViews] = useState<BsrTargetView[]>([])
+  const [search, setSearch] = useState('')
+  const [savingKey, setSavingKey] = useState<string | null>(null)
+  const [selectedKey, setSelectedKey] = useState('')
+  const [chartRange, setChartRange] = useState<7 | 14 | 30>(30)
+  const [bsrHistory, setBsrHistory] = useState<BsrPoint[]>([])
+  const [chartLoading, setChartLoading] = useState(false)
+  const [chartBsrUnavailable, setChartBsrUnavailable] = useState(false)
 
-  useEffect(() => { setMounted(true) }, [])
+  const activeCandidates = activeTab === 'my_product' ? myCandidates : competitorCandidates
+  const activeTargets = useMemo(
+    () => targetViews.filter(target => target.targetType === activeTab),
+    [activeTab, targetViews],
+  )
 
-  // ── Load workspace products ────────────────────────────────────────────────
-
-  const loadProducts = useCallback(async () => {
-    setLoading(true)
-    const wsId = await getWorkspaceId()
-    if (!wsId) { setLoading(false); return }
-    const asins = await getTrackedAsins(wsId)
-    setProducts(asins)
-    const first = asins.find(a => a.bsr_rank !== null) ?? asins[0]
-    if (first) {
-      setSelectedAsinCode(first.asin)
-      setSelectedAsinId(first.id)
+  const activeTargetRowsByKey = useMemo(() => {
+    const map = new Map<string, BsrTrackingTargetRow>()
+    for (const target of targets) {
+      if (target.status !== 'active') continue
+      const key = rowKeyFromTarget(target)
+      if (key) map.set(key, target)
     }
+    return map
+  }, [targets])
+
+  const allTargetRowsByKey = useMemo(() => {
+    const map = new Map<string, BsrTrackingTargetRow>()
+    for (const target of targets) {
+      const key = rowKeyFromTarget(target)
+      if (key) map.set(key, target)
+    }
+    return map
+  }, [targets])
+
+  const selectedTarget = useMemo(
+    () => activeTargets.find(target => targetKey(target.targetType, target.sourceId) === selectedKey) ?? activeTargets[0] ?? null,
+    [activeTargets, selectedKey],
+  )
+
+  const summary = useMemo(() => summarizeBsrTargets(activeTargets), [activeTargets])
+
+  const movers = useMemo(
+    () => activeTargets.filter(target => target.movement !== null),
+    [activeTargets],
+  )
+  const gainers = useMemo(
+    () => movers.filter(target => target.movement! > 0).sort((a, b) => b.movement! - a.movement!),
+    [movers],
+  )
+  const drops = useMemo(
+    () => movers.filter(target => target.movement! < 0).sort((a, b) => a.movement! - b.movement!),
+    [movers],
+  )
+
+  const categoryBreakdown = useMemo(() => {
+    const map = new Map<string, BsrTargetView[]>()
+    for (const target of activeTargets) {
+      if (!target.category || target.currentRank === null) continue
+      if (!map.has(target.category)) map.set(target.category, [])
+      map.get(target.category)?.push(target)
+    }
+    return Array.from(map.entries()).map(([category, rows]) => {
+      const average = Math.round(rows.reduce((sum, target) => sum + target.currentRank!, 0) / rows.length)
+      const best = Math.min(...rows.map(target => target.currentRank!))
+      const improving = rows.filter(target => target.movement !== null && target.movement > 0).length
+      return { category, rows, average, best, improving }
+    })
+  }, [activeTargets])
+
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setConfigUnavailable(false)
+    setCatalogUnavailable(false)
+    setTrackedUnavailable(false)
+    setMyBsrUnavailable(false)
+    setCompetitorBsrUnavailable(false)
+    const wsId = await getWorkspaceId()
+    setWorkspaceId(wsId)
+    if (!wsId) {
+      setLoading(false)
+      return
+    }
+
+    const supabase = createClient()
+    const [targetResult, listingResult, trackedResult] = await Promise.all([
+      supabase
+        .from('bsr_tracking_targets')
+        .select('id, workspace_id, amazon_listing_item_id, tracked_asin_id, status, created_at, updated_at, removed_at')
+        .eq('workspace_id', wsId),
+      supabase
+        .from('amazon_listing_items')
+        .select('id, asin, sku, marketplace_id, item_name, image_url')
+        .eq('workspace_id', wsId)
+        .not('asin', 'is', null)
+        .order('item_name', { ascending: true }),
+      supabase
+        .from('tracked_asins')
+        .select('id, asin, marketplace, product_title, image_url, status')
+        .eq('workspace_id', wsId)
+        .neq('status', 'archived')
+        .order('created_at', { ascending: false }),
+    ])
+
+    const targetRows = targetResult.error ? [] : (targetResult.data ?? []) as BsrTrackingTargetRow[]
+    if (targetResult.error) {
+      setConfigUnavailable(true)
+      setTargets([])
+    } else {
+      setTargets(targetRows)
+    }
+
+    const candidateRows = resolveBsrCandidateRows({
+      listings: (listingResult.data ?? []) as ListingCandidateRow[],
+      trackedAsins: (trackedResult.data ?? []) as TrackedCandidateRow[],
+      catalogUnavailable: Boolean(listingResult.error),
+      trackedUnavailable: Boolean(trackedResult.error),
+    })
+    setCatalogUnavailable(candidateRows.catalogUnavailable)
+    setTrackedUnavailable(candidateRows.trackedUnavailable)
+
+    const mySources = candidateRows.myRows.map(sourceFromListing).filter((source): source is BsrSourceProduct => Boolean(source))
+    const competitorSources = candidateRows.competitorRows.map(sourceFromTracked).filter((source): source is BsrSourceProduct => Boolean(source))
+
+    setMyCandidates(mySources)
+    setCompetitorCandidates(competitorSources)
+
+    const allSources = [...mySources, ...competitorSources]
+    const sourceByKey = new Map(allSources.map(source => [targetKey(source.targetType, source.sourceId), source]))
+    const activeRows = targetRows.filter(row => row.status === 'active')
+    const listingIds = candidateRows.catalogUnavailable
+      ? []
+      : activeRows.map(row => row.amazon_listing_item_id).filter((id): id is string => Boolean(id))
+    const trackedIds = candidateRows.catalogUnavailable || candidateRows.trackedUnavailable
+      ? []
+      : activeRows.map(row => row.tracked_asin_id).filter((id): id is string => Boolean(id))
+
+    const snapshotFields = 'amazon_listing_item_id, tracked_asin_id, bsr, bsr_category, bsr_ranks, scrape_status, checked_at'
+    const snapshotResults = await Promise.all([
+      listingIds.length
+        ? supabase
+            .from('asin_snapshots')
+            .select(snapshotFields)
+            .in('amazon_listing_item_id', listingIds)
+            .order('checked_at', { ascending: false })
+        : Promise.resolve({ data: [], error: null }),
+      trackedIds.length
+        ? supabase
+            .from('asin_snapshots')
+            .select(snapshotFields)
+            .in('tracked_asin_id', trackedIds)
+            .order('checked_at', { ascending: false })
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    const listingSnapshots = resolveBsrSnapshotRows({
+      snapshots: (snapshotResults[0].data ?? []) as BsrSnapshotRow[],
+      unavailable: Boolean(snapshotResults[0].error),
+    })
+    const trackedSnapshots = resolveBsrSnapshotRows({
+      snapshots: (snapshotResults[1].data ?? []) as BsrSnapshotRow[],
+      unavailable: Boolean(snapshotResults[1].error),
+    })
+    setMyBsrUnavailable(listingSnapshots.unavailable)
+    setCompetitorBsrUnavailable(trackedSnapshots.unavailable)
+    const snapshots = [...listingSnapshots.snapshots, ...trackedSnapshots.snapshots]
+
+    const views = activeRows.flatMap(row => {
+      if (row.amazon_listing_item_id && listingSnapshots.unavailable) return []
+      if (row.tracked_asin_id && trackedSnapshots.unavailable) return []
+      const key = rowKeyFromTarget(row)
+      const source = key ? sourceByKey.get(key) : null
+      return source ? [buildBsrTargetView(source, row.id, snapshots)] : []
+    })
+
+    setTargetViews(views)
+    setSelectedKey(prev => {
+      if (prev && views.some(view => targetKey(view.targetType, view.sourceId) === prev)) return prev
+      const first = views.find(view => view.targetType === activeTab && view.currentRank !== null)
+        ?? views.find(view => view.targetType === activeTab)
+      return first ? targetKey(first.targetType, first.sourceId) : ''
+    })
     setLoading(false)
-  }, [])
+  }, [activeTab])
 
-  useEffect(() => { void loadProducts() }, [loadProducts])
+  useEffect(() => {
+    queueMicrotask(() => { void loadData() })
+  }, [loadData])
 
-  // ── Load real BSR history from asin_snapshots ─────────────────────────────
-
-  const loadHistory = useCallback(async (asinId: string, days: number) => {
-    if (!asinId) return
+  const loadHistory = useCallback(async (target: BsrTargetView | null, days: number) => {
+    if (!target) {
+      setChartBsrUnavailable(false)
+      setBsrHistory([])
+      return
+    }
     setChartLoading(true)
+    setChartBsrUnavailable(false)
     const supabase = createClient()
     const since = new Date(Date.now() - days * 86_400_000).toISOString()
+    const column = target.targetType === 'my_product' ? 'amazon_listing_item_id' : 'tracked_asin_id'
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('asin_snapshots')
       .select('bsr, checked_at')
-      .eq('tracked_asin_id', asinId)
+      .eq(column, target.sourceId)
       .gte('checked_at', since)
       .not('bsr', 'is', null)
       .order('checked_at', { ascending: true })
 
-    const points: BsrPoint[] = (data ?? []).map(row => ({
-      date: new Date(row.checked_at as string).toLocaleDateString('en-GB', {
-        day: 'numeric', month: 'short',
-      }),
-      rank: row.bsr as number,
-    }))
-    setBsrHistory(points)
+    if (error) {
+      setChartBsrUnavailable(true)
+      setBsrHistory([])
+      setChartLoading(false)
+      return
+    }
+
+    setBsrHistory(((data ?? []) as Array<{ bsr: number; checked_at: string }>).map(row => ({
+      date: new Date(row.checked_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+      rank: row.bsr,
+    })))
     setChartLoading(false)
   }, [])
 
   useEffect(() => {
-    if (selectedAsinId) void loadHistory(selectedAsinId, chartRange)
-  }, [selectedAsinId, chartRange, loadHistory])
+    queueMicrotask(() => { void loadHistory(selectedTarget, chartRange) })
+  }, [selectedTarget, chartRange, loadHistory])
 
-  // ── Derived data ───────────────────────────────────────────────────────────
+  const trackSource = useCallback(async (source: BsrSourceProduct) => {
+    if (!workspaceId) return
+    const key = targetKey(source.targetType, source.sourceId)
+    setSavingKey(key)
+    const supabase = createClient()
+    const existing = allTargetRowsByKey.get(key)
+    const mutation = sourceMutation(source)
+    const result = existing
+      ? await supabase
+          .from('bsr_tracking_targets')
+          .update({ status: 'active', removed_at: null })
+          .eq('id', existing.id)
+          .eq('workspace_id', workspaceId)
+      : await supabase
+          .from('bsr_tracking_targets')
+          .insert({ workspace_id: workspaceId, status: 'active', ...mutation })
 
-  const productsWithBsr = useMemo(
-    () => products.filter(p => p.bsr_rank !== null),
-    [products],
-  )
+    if (!result.error) await loadData()
+    setSelectedKey(key)
+    setSavingKey(null)
+  }, [allTargetRowsByKey, loadData, workspaceId])
 
-  const avgBsr = useMemo(() => {
-    if (!productsWithBsr.length) return null
-    return Math.round(
-      productsWithBsr.reduce((s, p) => s + p.bsr_rank!, 0) / productsWithBsr.length,
-    )
-  }, [productsWithBsr])
+  const untrackSource = useCallback(async (target: BsrTargetView) => {
+    if (!workspaceId) return
+    const key = targetKey(target.targetType, target.sourceId)
+    setSavingKey(key)
+    const supabase = createClient()
+    await supabase
+      .from('bsr_tracking_targets')
+      .update(untrackBsrTargetPatch(new Date().toISOString()))
+      .eq('id', target.trackingTargetId)
+      .eq('workspace_id', workspaceId)
+    await loadData()
+    setSavingKey(null)
+  }, [loadData, workspaceId])
 
-  const movementsWithData = useMemo(
-    () =>
-      products
-        .filter(p => p.bsr_rank !== null && p.bsr_rank_prev !== null)
-        .map(p => ({ ...p, movement: p.bsr_rank_prev! - p.bsr_rank! })),
-    [products],
-  )
-
-  const gainers = useMemo(
-    () =>
-      [...movementsWithData]
-        .filter(p => p.movement > 0)
-        .sort((a, b) => b.movement - a.movement),
-    [movementsWithData],
-  )
-
-  const losers = useMemo(
-    () =>
-      [...movementsWithData]
-        .filter(p => p.movement < 0)
-        .sort((a, b) => a.movement - b.movement),
-    [movementsWithData],
-  )
-
-  const biggestGainer  = gainers[0] ?? null
-  const biggestLoser   = losers[0] ?? null
-  const improvingCount = movementsWithData.filter(p => p.movement > 0).length
-  const decliningCount = movementsWithData.filter(p => p.movement < 0).length
-
-  const selectedProduct = useMemo(
-    () => products.find(p => p.asin === selectedAsinCode) ?? null,
-    [products, selectedAsinCode],
-  )
-
-  function bsrCategoryLabel(p: ProductSnapshot): string | null {
-    if (p.bsr_rank === null) return null
-    if (!p.category || p.category === 'BASE_PRODUCT') return null
-    return p.sub_category ? `${p.category} · ${p.sub_category}` : p.category
-  }
-
-  function deriveBsrState(p: ProductSnapshot): 'never_checked' | 'bsr_not_found' | 'failed' | 'stale' | 'ok' {
-    if (!p.captured_at) return 'never_checked'
-
-    const hasCatalogSignals = p.label !== p.asin || p.category !== null
-
-    if (p.bsr_rank === null) return hasCatalogSignals ? 'bsr_not_found' : 'failed'
-
-    const ageMs = Date.now() - new Date(p.captured_at).getTime()
-    if (ageMs > 24 * 60 * 60 * 1000) return 'stale'
-    return 'ok'
-  }
-
-  const categoryBreakdown = useMemo(() => {
-    const map = new Map<string, { products: ProductSnapshot[]; count: number }>()
-    for (const p of products) {
-      if (!p.category || p.bsr_rank === null || p.category === 'BASE_PRODUCT') continue
-      if (!map.has(p.category)) map.set(p.category, { products: [], count: 0 })
-      const entry = map.get(p.category)!
-      entry.products.push(p)
-      entry.count++
-    }
-    return Array.from(map.entries()).map(([cat, data]) => {
-      const withBsr = data.products.filter(p => p.bsr_rank !== null)
-      const avg = withBsr.length
-        ? Math.round(withBsr.reduce((s, p) => s + p.bsr_rank!, 0) / withBsr.length)
-        : null
-      const best = withBsr.length ? Math.min(...withBsr.map(p => p.bsr_rank!)) : null
-      const improving = withBsr.filter(
-        p => p.bsr_rank_prev !== null && p.bsr_rank! < p.bsr_rank_prev!,
-      ).length
-      return { category: cat, count: data.count, avgBsr: avg, bestBsr: best, improving, products: data.products }
-    })
-  }, [products])
-
-  // ── Loading / empty states ─────────────────────────────────────────────────
+  const filteredCandidates = activeCandidates.filter(source => includesSearch(source, search))
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground gap-2">
         <Loader2 className="w-5 h-5 animate-spin" />
-        <span className="text-sm">Loading BSR data…</span>
+        <span className="text-sm">Loading BSR Tracker...</span>
       </div>
     )
   }
-
-  if (products.length === 0) {
-    return (
-      <div className="p-6 max-w-[1400px] mx-auto">
-        <div className="flex flex-col items-center justify-center py-20 text-center gap-4 bg-card border border-border rounded-xl">
-          <BarChart2 className="size-12 text-muted-foreground/30" />
-          <div>
-            <p className="font-semibold text-lg">No ASINs tracked yet</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Add your first ASIN to start tracking BSR.
-            </p>
-          </div>
-          <Button render={<Link href="/dashboard/asins" />} className="mt-2">
-            <Plus className="size-4 mr-1.5" /> Add ASIN to Track
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto space-y-8">
-
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
+    <div className="p-6 w-full max-w-[1800px] mx-auto space-y-7">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-foreground">BSR Tracker</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Monitor Best Seller Rank movement and category performance for your tracked ASINs. Next: refresh ASIN data to keep ranks current. Data source: Amazon Catalog API first, backed by tracked_asins and asin_snapshots.
+          <p className="text-sm text-muted-foreground mt-1 max-w-4xl">
+            Select catalog products or confirmed competitors for BSR monitoring. BSR history comes from asin_snapshots and remains available after a target is selected.
           </p>
         </div>
-        <Button render={<Link href="/dashboard/asins" />} className="gap-2 shrink-0">
+        <Button render={<Link href="/dashboard/asins" />} variant="outline" className="gap-2 shrink-0">
           <Plus className="size-4" />
-          Add ASIN to Track
+          Add competitors in ASIN Tracking
         </Button>
       </div>
 
-      {/* ── Summary KPI cards ───────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        <KpiCard
-          label="Tracked ASINs"
-          value={String(products.length)}
-          sub={`${productsWithBsr.length} with BSR data`}
-          icon={Package}
-        />
-        <KpiCard
-          label="Average BSR"
-          value={avgBsr !== null ? `#${avgBsr.toLocaleString('en-IN')}` : '—'}
-          sub={avgBsr !== null ? 'across all categories' : 'Refresh an ASIN first'}
-          icon={BarChart2}
-        />
-        <KpiCard
-          label="Biggest Gainer"
-          value={biggestGainer ? `#${biggestGainer.bsr_rank!.toLocaleString('en-IN')}` : '—'}
-          sub={biggestGainer ? biggestGainer.label : 'Need 2+ snapshots per ASIN'}
-          icon={TrendingUp}
-          trend={
-            biggestGainer
-              ? { value: -biggestGainer.movement, label: `+${biggestGainer.movement} positions` }
-              : undefined
-          }
-        />
-        <KpiCard
-          label="Biggest Loser"
-          value={biggestLoser ? `#${biggestLoser.bsr_rank!.toLocaleString('en-IN')}` : '—'}
-          sub={biggestLoser ? biggestLoser.label : 'No drops detected'}
-          icon={TrendingDown}
-          trend={
-            biggestLoser
-              ? { value: Math.abs(biggestLoser.movement), label: `${biggestLoser.movement} positions` }
-              : undefined
-          }
-        />
-        <KpiCard
-          label="Improving"
-          value={String(improvingCount)}
-          sub="products gaining rank"
-          icon={ArrowUpRight}
-          trend={
-            improvingCount > 0
-              ? { value: -1, label: `${improvingCount} of ${products.length}` }
-              : undefined
-          }
-        />
-        <KpiCard
-          label="Declining"
-          value={String(decliningCount)}
-          sub="products losing rank"
-          icon={ArrowDownRight}
-          trend={
-            decliningCount > 0
-              ? { value: 1, label: `${decliningCount} of ${products.length}` }
-              : undefined
-          }
-        />
+      {configUnavailable && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          BSR target selection table is not available yet. The migration in this PR must be reviewed and applied before tracking selections can be saved.
+        </div>
+      )}
+
+      {catalogUnavailable && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          Catalog products are temporarily unavailable. Competitor ASINs are hidden until ownership can be verified.
+        </div>
+      )}
+
+      {trackedUnavailable && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          Competitor ASINs are temporarily unavailable. Existing competitor targets are hidden until the read succeeds.
+        </div>
+      )}
+
+      {(myBsrUnavailable || competitorBsrUnavailable) && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          BSR snapshot data is temporarily unavailable for {myBsrUnavailable && competitorBsrUnavailable ? 'My ASINs and competitors' : myBsrUnavailable ? 'My ASINs' : 'competitors'}. Rankings are hidden rather than shown as missing BSR.
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 border-b border-border">
+        {([
+          ['my_product', 'My ASINs'],
+          ['competitor_asin', 'Competitor ASINs'],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => {
+              setActiveTab(value)
+              setSearch('')
+              const first = targetViews.find(view => view.targetType === value)
+              setSelectedKey(first ? targetKey(first.targetType, first.sourceId) : '')
+            }}
+            className={cn(
+              'px-3 py-2 text-sm font-medium border-b-2 transition-colors',
+              activeTab === value
+                ? 'border-primary text-foreground'
+                : 'border-transparent text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
-      {/* ── BSR Trend Chart ─────────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <KpiCard label="BSR Targets" value={String(summary.totalTargets)} sub={`${summary.targetsWithBsr} with BSR data`} icon={Package} />
+        <KpiCard label="Average BSR" value={summary.averageBsr !== null ? `#${summary.averageBsr.toLocaleString('en-IN')}` : '-'} sub={activeTab === 'my_product' ? 'selected My ASINs only' : 'selected competitors only'} icon={BarChart2} />
+        <KpiCard label="Biggest Gainer" value={gainers[0]?.currentRank !== null && gainers[0] ? `#${gainers[0].currentRank.toLocaleString('en-IN')}` : '-'} sub={gainers[0]?.label ?? 'Need 2+ BSR snapshots'} icon={TrendingUp} />
+        <KpiCard label="Biggest Drop" value={drops[0]?.currentRank !== null && drops[0] ? `#${drops[0].currentRank.toLocaleString('en-IN')}` : '-'} sub={drops[0]?.label ?? 'No drops detected'} icon={TrendingDown} />
+        <KpiCard label="Improving" value={String(summary.improvingCount)} sub={`of ${summary.totalTargets} targets`} icon={ArrowUpRight} />
+        <KpiCard label="Declining" value={String(summary.decliningCount)} sub={`of ${summary.totalTargets} targets`} icon={ArrowDownRight} />
+      </div>
+
       <div className="rounded-xl border border-border bg-card p-5">
         <div className="flex items-start justify-between gap-4 mb-5 flex-wrap">
           <div>
             <h2 className="font-semibold text-foreground">BSR Trend</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Historical rank movement — lower BSR = better
-            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">Historical rank movement for the selected {activeTab === 'my_product' ? 'My ASIN' : 'competitor'} target.</p>
           </div>
           <div className="flex items-center gap-3 flex-wrap">
             <select
-              value={selectedAsinCode}
-              onChange={e => {
-                const code = e.target.value
-                const prod = products.find(p => p.asin === code)
-                setSelectedAsinCode(code)
-                if (prod) setSelectedAsinId(prod.id)
-              }}
-              className="text-xs bg-muted border border-border rounded-md px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+              value={selectedTarget ? targetKey(selectedTarget.targetType, selectedTarget.sourceId) : ''}
+              onChange={e => setSelectedKey(e.target.value)}
+              className="text-xs bg-muted border border-border rounded-md px-3 py-1.5 text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer max-w-[280px]"
             >
-              {products.map(p => (
-                <option key={p.asin} value={p.asin}>
-                  {p.label}
+              {activeTargets.length === 0 ? (
+                <option value="">No BSR targets selected</option>
+              ) : activeTargets.map(target => (
+                <option key={targetKey(target.targetType, target.sourceId)} value={targetKey(target.targetType, target.sourceId)}>
+                  {target.label}
                 </option>
               ))}
             </select>
@@ -422,438 +592,255 @@ export default function BsrTrackerPage() {
           </div>
         </div>
 
-        {!mounted || chartLoading ? (
+        {chartLoading ? (
           <ChartSkeleton />
+        ) : chartBsrUnavailable ? (
+          <div className="h-[260px] flex flex-col items-center justify-center gap-2">
+            <BarChart2 className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">BSR history temporarily unavailable</p>
+            <p className="text-xs text-muted-foreground/70">Snapshot results could not be read, so the chart is hidden for now.</p>
+          </div>
         ) : bsrHistory.length < 2 ? (
           <div className="h-[260px] flex flex-col items-center justify-center gap-2">
             <BarChart2 className="size-8 text-muted-foreground/30" />
             <p className="text-sm text-muted-foreground">No BSR history yet</p>
-            <p className="text-xs text-muted-foreground/70">
-              Refresh this ASIN over time to build BSR history.
-            </p>
+            <p className="text-xs text-muted-foreground/70">Existing BSR snapshots will appear here after the target is selected.</p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={260}>
-            <LineChart
-              data={bsrHistory}
-              margin={{ top: 4, right: 4, left: 0, bottom: 0 }}
-            >
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fill: '#94a3b8', fontSize: 10 }}
-                  axisLine={false}
-                  tickLine={false}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  reversed={true}
-                  domain={['auto', 'auto']}
-                  tick={{ fill: '#94a3b8', fontSize: 10 }}
-                  axisLine={false}
-                  tickLine={false}
-                  tickFormatter={(v: number) =>
-                    v >= 1000 ? `#${(v / 1000).toFixed(1)}k` : `#${v}`
-                  }
-                  width={48}
-                />
-                <Tooltip content={<BsrTooltip />} />
-                <Line
-                  type="monotone"
-                  dataKey="rank"
-                  stroke="oklch(0.741 0.174 66.5)"
-                  strokeWidth={2}
-                  dot={false}
-                  activeDot={{ r: 4, fill: 'oklch(0.741 0.174 66.5)', stroke: 'oklch(0.741 0.174 66.5)' }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
+            <LineChart data={bsrHistory} margin={{ top: 4, right: 12, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.08)" />
+              <XAxis dataKey="date" tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+              <YAxis reversed domain={['auto', 'auto']} tick={{ fill: '#94a3b8', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(v: number) => v >= 1000 ? `#${(v / 1000).toFixed(1)}k` : `#${v}`} width={54} />
+              <Tooltip content={<BsrTooltip />} />
+              <Line type="monotone" dataKey="rank" stroke="oklch(0.741 0.174 66.5)" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: 'oklch(0.741 0.174 66.5)', stroke: 'oklch(0.741 0.174 66.5)' }} />
+            </LineChart>
+          </ResponsiveContainer>
+        )}
 
-        <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            Showing last {chartRange} days ·{' '}
-            {selectedProduct ? (bsrCategoryLabel(selectedProduct) ?? 'No category data') : 'No category data'}
-          </span>
-          {selectedAsinCode && (
-            <Link
-              href={`/dashboard/asins/${selectedAsinCode}`}
-              className="flex items-center gap-1 hover:text-foreground transition-colors"
-            >
-              View full detail <ExternalLink className="size-3" />
-            </Link>
-          )}
+        <div className="mt-3 text-xs text-muted-foreground">
+          Showing last {chartRange} days
+          {selectedTarget?.category ? ` in ${selectedTarget.category}` : ''}
         </div>
       </div>
 
-      {/* ── Top Movers ──────────────────────────────────────────────────────── */}
+      <div className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
+          <div>
+            <h2 className="font-semibold text-foreground">{activeTab === 'my_product' ? 'Add from My Products' : 'Select Competitor ASINs'}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {activeTab === 'my_product'
+                ? 'Catalog products stay in amazon_listing_items. Track BSR only creates BSR configuration.'
+                : 'Competitor choices come only from ASIN Tracking competitors.'}
+            </p>
+          </div>
+          <div className="relative">
+            <Search className="size-3.5 absolute left-2.5 top-2.5 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search title, ASIN, SKU"
+              className="w-[260px] max-w-full rounded-md border border-border bg-muted/30 pl-8 pr-3 py-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+        </div>
+
+        {activeTab === 'competitor_asin' && (catalogUnavailable || trackedUnavailable) ? (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center">
+            <p className="text-sm font-medium text-foreground">Competitor ASINs temporarily unavailable</p>
+            <p className="text-xs text-muted-foreground mt-1">Ownership or competitor data could not be verified, so no tracked ASIN is shown as a confirmed competitor.</p>
+          </div>
+        ) : activeTab === 'competitor_asin' && competitorCandidates.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center">
+            <p className="text-sm font-medium text-foreground">No competitors available yet</p>
+            <p className="text-xs text-muted-foreground mt-1">Add competitors in ASIN Tracking first.</p>
+            <Button render={<Link href="/dashboard/asins" />} className="mt-4" size="sm">
+              Open ASIN Tracking
+            </Button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto pr-1">
+            {filteredCandidates.map(source => {
+              const key = targetKey(source.targetType, source.sourceId)
+              const isTracking = activeTargetRowsByKey.has(key)
+              return (
+                <div key={key} className="rounded-lg border border-border bg-muted/10 p-3 flex items-center gap-3">
+                  {source.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={source.imageUrl} alt="" className="size-10 rounded object-cover bg-muted shrink-0" />
+                  ) : (
+                    <div className="size-10 rounded bg-muted flex items-center justify-center shrink-0">
+                      <Package className="size-4 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-foreground truncate">{source.label}</p>
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <span className="font-mono text-[10px] text-muted-foreground bg-background/80 rounded px-1.5 py-0.5">{source.asin}</span>
+                      <Badge variant="secondary" className="text-[9px]">{source.marketplace}</Badge>
+                      {source.sku && <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">{source.sku}</span>}
+                    </div>
+                  </div>
+                  {isTracking ? (
+                    <Badge className="bg-green-500/15 text-green-400 border-green-500/20">
+                      <Check className="size-3 mr-1" /> Tracking
+                    </Badge>
+                  ) : (
+                    <Button size="sm" variant="outline" onClick={() => void trackSource(source)} disabled={savingKey === key || configUnavailable}>
+                      {savingKey === key ? <Loader2 className="size-3 animate-spin" /> : 'Track BSR'}
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-        {/* Gainers */}
-        <div className="rounded-xl border border-green-500/20 bg-card p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="size-6 rounded-full bg-green-500/15 flex items-center justify-center">
-              <TrendingUp className="size-3.5 text-green-400" />
-            </div>
-            <h2 className="font-semibold text-foreground">Biggest Gainers</h2>
-            <Badge
-              variant="secondary"
-              className="ml-auto text-[10px] bg-green-500/10 text-green-400 border border-green-500/20"
-            >
-              {gainers.length} products
-            </Badge>
-          </div>
-
-          {gainers.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-6">
-              {productsWithBsr.length === 0
-                ? 'Click Refresh Data on an ASIN detail page to collect BSR data from Amazon Catalog.'
-                : 'No improvements detected — need 2+ snapshots per ASIN.'}
-            </p>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {gainers.map(p => (
-                <div
-                  key={p.asin}
-                  className="flex items-center gap-3 rounded-lg bg-green-500/5 border border-green-500/10 px-3 py-2.5"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{p.label}</p>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1">
-                        {p.asin}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-bold text-green-400">
-                      #{p.bsr_rank!.toLocaleString('en-IN')}
-                    </p>
-                    <MovementChip movement={p.movement} />
-                  </div>
-                  <Link
-                    href={`/dashboard/asins/${p.asin}`}
-                    className="text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    <ExternalLink className="size-3.5" />
-                  </Link>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Losers */}
-        <div className="rounded-xl border border-red-500/20 bg-card p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="size-6 rounded-full bg-red-500/15 flex items-center justify-center">
-              <TrendingDown className="size-3.5 text-red-400" />
-            </div>
-            <h2 className="font-semibold text-foreground">Biggest Drops</h2>
-            <Badge
-              variant="secondary"
-              className="ml-auto text-[10px] bg-red-500/10 text-red-400 border border-red-500/20"
-            >
-              {losers.length} products
-            </Badge>
-          </div>
-
-          {losers.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-6">
-              {productsWithBsr.length === 0
-                ? 'Click Refresh Data on an ASIN detail page to collect BSR data from Amazon Catalog.'
-                : 'No drops detected yet.'}
-            </p>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {losers.map(p => (
-                <div
-                  key={p.asin}
-                  className="flex items-center gap-3 rounded-lg bg-red-500/5 border border-red-500/10 px-3 py-2.5"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{p.label}</p>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1">
-                        {p.asin}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-bold text-red-400">
-                      #{p.bsr_rank!.toLocaleString('en-IN')}
-                    </p>
-                    <MovementChip movement={p.movement} />
-                  </div>
-                  <Link
-                    href={`/dashboard/asins/${p.asin}`}
-                    className="text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    <ExternalLink className="size-3.5" />
-                  </Link>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <MoverPanel title="Biggest Gainers" tone="green" rows={gainers} empty={summary.targetsWithBsr === 0 ? 'Select targets with BSR snapshots to see gainers.' : 'No improvements detected yet.'} onView={target => setSelectedKey(targetKey(target.targetType, target.sourceId))} />
+        <MoverPanel title="Biggest Drops" tone="red" rows={drops} empty={summary.targetsWithBsr === 0 ? 'Select targets with BSR snapshots to see drops.' : 'No drops detected yet.'} onView={target => setSelectedKey(targetKey(target.targetType, target.sourceId))} />
       </div>
 
-      {/* ── BSR Tracking Table ──────────────────────────────────────────────── */}
       <div className="rounded-xl border border-border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
           <div>
             <h2 className="font-semibold text-foreground">BSR Tracking Table</h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              All tracked ASINs with rank movement
+              {activeTab === 'my_product' ? 'Selected My ASIN targets only' : 'Selected competitor targets only'}
             </p>
           </div>
-          <Badge variant="secondary" className="text-xs">
-            {products.length} ASINs
-          </Badge>
+          <Badge variant="secondary" className="text-xs">{activeTargets.length} ASINs</Badge>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/30">
-                <th className="text-left text-xs text-muted-foreground font-medium px-5 py-3">
-                  Product
-                </th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden md:table-cell">
-                  Marketplace
-                </th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden lg:table-cell">
-                  Category
-                </th>
-                <th className="text-right text-xs text-muted-foreground font-medium px-4 py-3">
-                  Current BSR
-                </th>
-                <th className="text-right text-xs text-muted-foreground font-medium px-4 py-3 hidden sm:table-cell">
-                  Previous BSR
-                </th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3">
-                  Movement
-                </th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3 hidden sm:table-cell">
-                  Trend
-                </th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">
-                  Last Checked
-                </th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 hidden xl:table-cell">
-                  Freshness
-                </th>
-                <th className="text-right text-xs text-muted-foreground font-medium px-5 py-3">
-                  Action
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/50">
-              {products.map(p => {
-                const movement =
-                  p.bsr_rank !== null && p.bsr_rank_prev !== null
-                    ? p.bsr_rank_prev - p.bsr_rank
-                    : null
-                const isImproving = movement !== null && movement > 0
-                const isDeclining = movement !== null && movement < 0
-
-                return (
-                  <tr key={p.asin} className="hover:bg-muted/20 transition-colors">
+        {activeTargets.length === 0 ? (
+          <div className="p-10 text-center">
+            <BarChart2 className="size-10 text-muted-foreground/30 mx-auto mb-3" />
+            <p className="font-medium text-foreground">
+              {activeTab === 'my_product' ? 'No products selected for BSR tracking yet' : 'No competitors selected for BSR tracking yet'}
+            </p>
+            <p className="text-sm text-muted-foreground mt-1">
+              {activeTab === 'my_product' ? 'Use Add from My Products above.' : 'Select an existing competitor above, or add competitors in ASIN Tracking first.'}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1120px] text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30">
+                  <th className="text-left text-xs text-muted-foreground font-medium px-5 py-3 w-[28%]">Product</th>
+                  <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 w-[15%]">Category</th>
+                  <th className="text-right text-xs text-muted-foreground font-medium px-4 py-3 w-[10%]">Current BSR</th>
+                  <th className="text-right text-xs text-muted-foreground font-medium px-4 py-3 w-[12%]">Subcategory Rank</th>
+                  <th className="text-right text-xs text-muted-foreground font-medium px-4 py-3 w-[9%]">Previous</th>
+                  <th className="text-center text-xs text-muted-foreground font-medium px-4 py-3 w-[9%]">Movement</th>
+                  <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 w-[8%]">Last Checked</th>
+                  <th className="text-left text-xs text-muted-foreground font-medium px-4 py-3 w-[8%]">Freshness</th>
+                  <th className="text-right text-xs text-muted-foreground font-medium px-5 py-3 w-[9%]">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/50">
+                {activeTargets.map(target => (
+                  <tr key={targetKey(target.targetType, target.sourceId)} className="hover:bg-muted/20 transition-colors">
                     <td className="px-5 py-3.5">
-                      <div className="flex flex-col gap-0.5">
-                        <span className="font-medium text-foreground text-sm leading-snug">
-                          {p.label}
-                        </span>
-                        <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5 w-fit">
-                          {p.asin}
-                        </span>
+                      <div className="flex flex-col gap-1">
+                        <span className="font-medium text-foreground leading-snug line-clamp-2">{target.label}</span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5">{target.asin}</span>
+                          <Badge variant="secondary" className="text-[9px]">{target.marketplace}</Badge>
+                          {target.sku && <span className="text-[10px] text-muted-foreground">{target.sku}</span>}
+                        </div>
                       </div>
                     </td>
-                    <td className="px-4 py-3.5 hidden md:table-cell">
-                      <span className="text-xs text-muted-foreground">🇮🇳 {p.marketplace}</span>
-                    </td>
-                    <td className="px-4 py-3.5 hidden lg:table-cell">
-                      {bsrCategoryLabel(p) ? (
-                        <span className="text-xs text-muted-foreground truncate max-w-[160px] block">
-                          {bsrCategoryLabel(p)}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
+                    <td className="px-4 py-3.5">
+                      {target.category ? <span className="text-xs text-muted-foreground">{target.category}</span> : <span className="text-xs text-muted-foreground">-</span>}
                     </td>
                     <td className="px-4 py-3.5 text-right">
-                      {p.bsr_rank !== null ? (
-                        <span className="font-semibold text-foreground tabular-nums">
-                          #{p.bsr_rank.toLocaleString('en-IN')}
-                        </span>
-                      ) : (
-                        (() => {
-                          const state = deriveBsrState(p)
-                          if (state === 'never_checked') {
-                            return <Badge variant="secondary" className="text-[10px]">Never checked</Badge>
-                          }
-                          if (state === 'bsr_not_found') {
-                            return <Badge className="text-[10px] bg-yellow-500/15 text-yellow-400 border-yellow-500/20">BSR not found</Badge>
-                          }
-                          return <Badge className="text-[10px] bg-red-500/15 text-red-400 border-red-500/20">Failed</Badge>
-                        })()
-                      )}
+                      {target.currentRank !== null ? <span className="font-semibold tabular-nums">#{target.currentRank.toLocaleString('en-IN')}</span> : <Badge variant="secondary" className="text-[10px]">No BSR</Badge>}
                     </td>
-                    <td className="px-4 py-3.5 text-right hidden sm:table-cell">
-                      {p.bsr_rank_prev !== null ? (
-                        <span className="text-muted-foreground tabular-nums text-xs">
-                          #{p.bsr_rank_prev.toLocaleString('en-IN')}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground text-xs">—</span>
-                      )}
+                    <td className="px-4 py-3.5 text-right">
+                      {target.subcategory && target.subcategoryRank !== null ? (
+                        <div className="text-xs">
+                          <p className="text-foreground font-medium tabular-nums">#{target.subcategoryRank.toLocaleString('en-IN')}</p>
+                          <p className="text-muted-foreground truncate max-w-[150px] ml-auto">{target.subcategory}</p>
+                        </div>
+                      ) : <span className="text-xs text-muted-foreground">-</span>}
                     </td>
-                    <td className="px-4 py-3.5 text-center">
-                      <MovementChip movement={movement} />
+                    <td className="px-4 py-3.5 text-right">
+                      {target.previousRank !== null ? <span className="text-xs text-muted-foreground tabular-nums">#{target.previousRank.toLocaleString('en-IN')}</span> : <span className="text-xs text-muted-foreground">-</span>}
                     </td>
-                    <td className="px-4 py-3.5 text-center hidden sm:table-cell">
-                      {isImproving ? (
-                        <TrendingUp className="size-4 text-green-400 mx-auto" />
-                      ) : isDeclining ? (
-                        <TrendingDown className="size-4 text-red-400 mx-auto" />
-                      ) : (
-                        <Minus className="size-4 text-muted-foreground/40 mx-auto" />
-                      )}
-                    </td>
-                    <td className="px-4 py-3.5 hidden xl:table-cell">
+                    <td className="px-4 py-3.5 text-center"><MovementChip movement={target.movement} /></td>
+                    <td className="px-4 py-3.5">
                       <span className="text-xs text-muted-foreground flex items-center gap-1">
                         <Clock className="size-3" />
-                        {timeAgo(p.captured_at)}
+                        {timeAgo(target.lastCheckedAt)}
                       </span>
                     </td>
-                    <td className="px-4 py-3.5 hidden xl:table-cell">
-                      <DataFreshnessBadge checkedAt={p.captured_at} />
+                    <td className="px-4 py-3.5">
+                      <div className="flex flex-col gap-1">
+                        <DataFreshnessBadge checkedAt={target.lastCheckedAt} />
+                        <span className="text-[10px] text-muted-foreground">{freshnessLabel(target)}</span>
+                      </div>
                     </td>
-                    <td className="px-5 py-3.5 text-right">
-                      <Link
-                        href={`/dashboard/asins/${p.asin}`}
-                        className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-primary transition-colors font-medium"
-                      >
-                        <ExternalLink className="size-3.5" />
-                        <span className="hidden sm:inline">View Detail</span>
-                      </Link>
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setSelectedKey(targetKey(target.targetType, target.sourceId))}>
+                          <Eye className="size-3.5 mr-1" /> View Trend
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => void untrackSource(target)} disabled={savingKey === targetKey(target.targetType, target.sourceId)}>
+                          Untrack
+                        </Button>
+                      </div>
                     </td>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* ── Category Breakdown + Alerts ─────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-        {/* Category Breakdown */}
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex items-center gap-2 mb-4">
             <Tag className="size-4 text-primary shrink-0" />
             <h2 className="font-semibold text-foreground">Category Breakdown</h2>
           </div>
-
           {categoryBreakdown.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">
-              Category data will appear after refreshing an ASIN.
-            </p>
+            <p className="text-sm text-muted-foreground text-center py-8">BSR category data will appear from Amazon snapshot categories.</p>
           ) : (
-          <div className="flex flex-col gap-3">
-            {categoryBreakdown.map(cat => (
-              <div
-                key={cat.category}
-                className="rounded-lg border border-border bg-muted/20 p-4"
-              >
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div>
-                    <p className="text-sm font-medium text-foreground">{cat.category}</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      {cat.count} product{cat.count !== 1 ? 's' : ''}
-                    </p>
-                  </div>
-                  {cat.improving > 0 && (
-                    <span className="text-[10px] font-medium text-green-400 bg-green-500/10 border border-green-500/20 rounded-full px-2 py-0.5 flex items-center gap-1 shrink-0">
-                      <TrendingUp className="size-2.5" />
-                      {cat.improving} improving
-                    </span>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-md bg-muted/30 p-2.5">
-                    <p className="text-[10px] text-muted-foreground mb-0.5">Best BSR</p>
-                    <p className="text-sm font-bold text-foreground">
-                      {cat.bestBsr !== null
-                        ? `#${cat.bestBsr.toLocaleString('en-IN')}`
-                        : '—'}
-                    </p>
-                  </div>
-                  <div className="rounded-md bg-muted/30 p-2.5">
-                    <p className="text-[10px] text-muted-foreground mb-0.5">Avg BSR</p>
-                    <p className="text-sm font-bold text-foreground">
-                      {cat.avgBsr !== null
-                        ? `#${cat.avgBsr.toLocaleString('en-IN')}`
-                        : '—'}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mt-3 flex flex-col gap-1.5">
-                  {cat.products.map(p => (
-                    <div key={p.asin} className="flex items-center justify-between gap-2">
-                      <span className="text-xs text-muted-foreground truncate flex-1">
-                        {p.label}
-                      </span>
-                      <span className="text-xs font-medium text-foreground shrink-0">
-                        {p.bsr_rank !== null
-                          ? `#${p.bsr_rank.toLocaleString('en-IN')}`
-                          : '—'}
-                      </span>
+            <div className="flex flex-col gap-3">
+              {categoryBreakdown.map(category => (
+                <div key={category.category} className="rounded-lg border border-border bg-muted/20 p-4">
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{category.category}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{category.rows.length} target{category.rows.length !== 1 ? 's' : ''}</p>
                     </div>
-                  ))}
+                    {category.improving > 0 && <Badge className="bg-green-500/15 text-green-400 border-green-500/20">{category.improving} improving</Badge>}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-md bg-muted/30 p-2.5">
+                      <p className="text-[10px] text-muted-foreground mb-0.5">Best BSR</p>
+                      <p className="text-sm font-bold text-foreground">#{category.best.toLocaleString('en-IN')}</p>
+                    </div>
+                    <div className="rounded-md bg-muted/30 p-2.5">
+                      <p className="text-[10px] text-muted-foreground mb-0.5">Avg BSR</p>
+                      <p className="text-sm font-bold text-foreground">#{category.average.toLocaleString('en-IN')}</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
-
-            {products.filter(p => !p.category).length > 0 && (
-              <div className="rounded-lg border border-dashed border-border bg-muted/10 p-4">
-                <p className="text-sm font-medium text-muted-foreground">Uncategorised</p>
-                <p className="text-xs text-muted-foreground/60 mt-0.5">
-                  {products.filter(p => !p.category).length} product(s) pending first scrape
-                </p>
-                <div className="mt-2 flex flex-col gap-1">
-                  {products
-                    .filter(p => !p.category)
-                    .map(p => (
-                      <div key={p.asin} className="flex items-center justify-between gap-2">
-                        <span className="text-xs text-muted-foreground truncate flex-1">
-                          {p.label}
-                        </span>
-                        <Badge variant="secondary" className="text-[9px]">
-                          No Data
-                        </Badge>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
           )}
         </div>
 
-        {/* BSR Alerts — placeholder until alerts engine is built */}
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="flex items-center gap-2 mb-4">
             <Bell className="size-4 text-primary shrink-0" />
             <h2 className="font-semibold text-foreground">BSR Alerts</h2>
-            <Badge variant="secondary" className="ml-auto text-xs">
-              Coming soon
-            </Badge>
+            <Badge variant="secondary" className="ml-auto text-xs">Coming soon</Badge>
           </div>
-
           <div className="flex flex-col items-center justify-center py-10 text-center gap-2">
             <Bell className="size-8 text-muted-foreground/20" />
             <p className="text-sm text-muted-foreground font-medium">Alert detection coming soon</p>
@@ -863,6 +850,58 @@ export default function BsrTrackerPage() {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function MoverPanel({
+  title,
+  tone,
+  rows,
+  empty,
+  onView,
+}: {
+  title: string
+  tone: 'green' | 'red'
+  rows: BsrTargetView[]
+  empty: string
+  onView: (target: BsrTargetView) => void
+}) {
+  const isGreen = tone === 'green'
+  return (
+    <div className={cn('rounded-xl border bg-card p-5', isGreen ? 'border-green-500/20' : 'border-red-500/20')}>
+      <div className="flex items-center gap-2 mb-4">
+        <div className={cn('size-6 rounded-full flex items-center justify-center', isGreen ? 'bg-green-500/15' : 'bg-red-500/15')}>
+          {isGreen ? <TrendingUp className="size-3.5 text-green-400" /> : <TrendingDown className="size-3.5 text-red-400" />}
+        </div>
+        <h2 className="font-semibold text-foreground">{title}</h2>
+        <Badge variant="secondary" className={cn('ml-auto text-[10px] border', isGreen ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20')}>
+          {rows.length} targets
+        </Badge>
+      </div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground text-center py-6">{empty}</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.slice(0, 8).map(target => (
+            <div key={targetKey(target.targetType, target.sourceId)} className={cn('flex items-center gap-3 rounded-lg border px-3 py-2.5', isGreen ? 'bg-green-500/5 border-green-500/10' : 'bg-red-500/5 border-red-500/10')}>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">{target.label}</p>
+                <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1">{target.asin}</span>
+              </div>
+              <div className="text-right shrink-0">
+                <p className={cn('text-sm font-bold', isGreen ? 'text-green-400' : 'text-red-400')}>
+                  {target.currentRank !== null ? `#${target.currentRank.toLocaleString('en-IN')}` : '-'}
+                </p>
+                <MovementChip movement={target.movement} />
+              </div>
+              <button type="button" onClick={() => onView(target)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <Eye className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
