@@ -68,6 +68,18 @@ export type BsrKpiSummary = {
   decliningCount: number
 }
 
+export type BsrCandidateRows<TListing, TTracked> = {
+  myRows: TListing[]
+  competitorRows: TTracked[]
+  catalogUnavailable: boolean
+  trackedUnavailable: boolean
+}
+
+export type BsrSnapshotRows = {
+  snapshots: BsrSnapshotRow[]
+  unavailable: boolean
+}
+
 export type BsrUntrackPatch = {
   status: 'removed'
   removed_at: string
@@ -119,6 +131,43 @@ export function filterBsrCompetitorCandidates<T extends TrackedAsinIdentity>(
   ownListings: OwnCatalogListingIdentity[],
 ): T[] {
   return filterCompetitorTrackedAsins(trackedAsins, ownListings)
+}
+
+export function resolveBsrCandidateRows<TListing extends OwnCatalogListingIdentity, TTracked extends TrackedAsinIdentity>({
+  listings,
+  trackedAsins,
+  catalogUnavailable,
+  trackedUnavailable,
+}: {
+  listings: TListing[]
+  trackedAsins: TTracked[]
+  catalogUnavailable: boolean
+  trackedUnavailable: boolean
+}): BsrCandidateRows<TListing, TTracked> {
+  const verifiedListings = catalogUnavailable ? [] : listings
+  const verifiedTrackedRows = catalogUnavailable || trackedUnavailable
+    ? []
+    : filterBsrCompetitorCandidates(trackedAsins, verifiedListings)
+
+  return {
+    myRows: verifiedListings,
+    competitorRows: verifiedTrackedRows,
+    catalogUnavailable,
+    trackedUnavailable,
+  }
+}
+
+export function resolveBsrSnapshotRows({
+  snapshots,
+  unavailable,
+}: {
+  snapshots: BsrSnapshotRow[]
+  unavailable: boolean
+}): BsrSnapshotRows {
+  return {
+    snapshots: unavailable ? [] : snapshots,
+    unavailable,
+  }
 }
 
 export function snapshotMatchesTarget(snapshot: BsrSnapshotRow, targetType: BsrTargetType, sourceId: string): boolean {

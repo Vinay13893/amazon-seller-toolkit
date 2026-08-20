@@ -34,8 +34,9 @@ import { KpiCard } from '@/components/dashboard/KpiCard'
 import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 import {
   buildBsrTargetView,
-  filterBsrCompetitorCandidates,
   marketplaceLabelForListing,
+  resolveBsrCandidateRows,
+  resolveBsrSnapshotRows,
   summarizeBsrTargets,
   targetKey,
   untrackBsrTargetPatch,
@@ -214,6 +215,10 @@ export default function BsrTrackerPage() {
   const [activeTab, setActiveTab] = useState<BsrTargetType>('my_product')
   const [loading, setLoading] = useState(true)
   const [configUnavailable, setConfigUnavailable] = useState(false)
+  const [catalogUnavailable, setCatalogUnavailable] = useState(false)
+  const [trackedUnavailable, setTrackedUnavailable] = useState(false)
+  const [myBsrUnavailable, setMyBsrUnavailable] = useState(false)
+  const [competitorBsrUnavailable, setCompetitorBsrUnavailable] = useState(false)
   const [myCandidates, setMyCandidates] = useState<BsrSourceProduct[]>([])
   const [competitorCandidates, setCompetitorCandidates] = useState<BsrSourceProduct[]>([])
   const [targets, setTargets] = useState<BsrTrackingTargetRow[]>([])
@@ -224,6 +229,7 @@ export default function BsrTrackerPage() {
   const [chartRange, setChartRange] = useState<7 | 14 | 30>(30)
   const [bsrHistory, setBsrHistory] = useState<BsrPoint[]>([])
   const [chartLoading, setChartLoading] = useState(false)
+  const [chartBsrUnavailable, setChartBsrUnavailable] = useState(false)
 
   const activeCandidates = activeTab === 'my_product' ? myCandidates : competitorCandidates
   const activeTargets = useMemo(
@@ -288,6 +294,10 @@ export default function BsrTrackerPage() {
   const loadData = useCallback(async () => {
     setLoading(true)
     setConfigUnavailable(false)
+    setCatalogUnavailable(false)
+    setTrackedUnavailable(false)
+    setMyBsrUnavailable(false)
+    setCompetitorBsrUnavailable(false)
     const wsId = await getWorkspaceId()
     setWorkspaceId(wsId)
     if (!wsId) {
@@ -315,27 +325,38 @@ export default function BsrTrackerPage() {
         .order('created_at', { ascending: false }),
     ])
 
+    const targetRows = targetResult.error ? [] : (targetResult.data ?? []) as BsrTrackingTargetRow[]
     if (targetResult.error) {
       setConfigUnavailable(true)
       setTargets([])
     } else {
-      setTargets((targetResult.data ?? []) as BsrTrackingTargetRow[])
+      setTargets(targetRows)
     }
 
-    const listings = (listingResult.data ?? []) as ListingCandidateRow[]
-    const trackedRows = (trackedResult.data ?? []) as TrackedCandidateRow[]
-    const mySources = listings.map(sourceFromListing).filter((source): source is BsrSourceProduct => Boolean(source))
-    const competitorRows = filterBsrCompetitorCandidates(trackedRows, listings)
-    const competitorSources = competitorRows.map(sourceFromTracked).filter((source): source is BsrSourceProduct => Boolean(source))
+    const candidateRows = resolveBsrCandidateRows({
+      listings: (listingResult.data ?? []) as ListingCandidateRow[],
+      trackedAsins: (trackedResult.data ?? []) as TrackedCandidateRow[],
+      catalogUnavailable: Boolean(listingResult.error),
+      trackedUnavailable: Boolean(trackedResult.error),
+    })
+    setCatalogUnavailable(candidateRows.catalogUnavailable)
+    setTrackedUnavailable(candidateRows.trackedUnavailable)
+
+    const mySources = candidateRows.myRows.map(sourceFromListing).filter((source): source is BsrSourceProduct => Boolean(source))
+    const competitorSources = candidateRows.competitorRows.map(sourceFromTracked).filter((source): source is BsrSourceProduct => Boolean(source))
 
     setMyCandidates(mySources)
     setCompetitorCandidates(competitorSources)
 
     const allSources = [...mySources, ...competitorSources]
     const sourceByKey = new Map(allSources.map(source => [targetKey(source.targetType, source.sourceId), source]))
-    const activeRows = ((targetResult.data ?? []) as BsrTrackingTargetRow[]).filter(row => row.status === 'active')
-    const listingIds = activeRows.map(row => row.amazon_listing_item_id).filter((id): id is string => Boolean(id))
-    const trackedIds = activeRows.map(row => row.tracked_asin_id).filter((id): id is string => Boolean(id))
+    const activeRows = targetRows.filter(row => row.status === 'active')
+    const listingIds = candidateRows.catalogUnavailable
+      ? []
+      : activeRows.map(row => row.amazon_listing_item_id).filter((id): id is string => Boolean(id))
+    const trackedIds = candidateRows.catalogUnavailable || candidateRows.trackedUnavailable
+      ? []
+      : activeRows.map(row => row.tracked_asin_id).filter((id): id is string => Boolean(id))
 
     const snapshotFields = 'amazon_listing_item_id, tracked_asin_id, bsr, bsr_category, bsr_ranks, scrape_status, checked_at'
     const snapshotResults = await Promise.all([
@@ -354,9 +375,21 @@ export default function BsrTrackerPage() {
             .order('checked_at', { ascending: false })
         : Promise.resolve({ data: [], error: null }),
     ])
-    const snapshots = snapshotResults.flatMap(result => (result.data ?? []) as BsrSnapshotRow[])
+    const listingSnapshots = resolveBsrSnapshotRows({
+      snapshots: (snapshotResults[0].data ?? []) as BsrSnapshotRow[],
+      unavailable: Boolean(snapshotResults[0].error),
+    })
+    const trackedSnapshots = resolveBsrSnapshotRows({
+      snapshots: (snapshotResults[1].data ?? []) as BsrSnapshotRow[],
+      unavailable: Boolean(snapshotResults[1].error),
+    })
+    setMyBsrUnavailable(listingSnapshots.unavailable)
+    setCompetitorBsrUnavailable(trackedSnapshots.unavailable)
+    const snapshots = [...listingSnapshots.snapshots, ...trackedSnapshots.snapshots]
 
     const views = activeRows.flatMap(row => {
+      if (row.amazon_listing_item_id && listingSnapshots.unavailable) return []
+      if (row.tracked_asin_id && trackedSnapshots.unavailable) return []
       const key = rowKeyFromTarget(row)
       const source = key ? sourceByKey.get(key) : null
       return source ? [buildBsrTargetView(source, row.id, snapshots)] : []
@@ -378,21 +411,30 @@ export default function BsrTrackerPage() {
 
   const loadHistory = useCallback(async (target: BsrTargetView | null, days: number) => {
     if (!target) {
+      setChartBsrUnavailable(false)
       setBsrHistory([])
       return
     }
     setChartLoading(true)
+    setChartBsrUnavailable(false)
     const supabase = createClient()
     const since = new Date(Date.now() - days * 86_400_000).toISOString()
     const column = target.targetType === 'my_product' ? 'amazon_listing_item_id' : 'tracked_asin_id'
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('asin_snapshots')
       .select('bsr, checked_at')
       .eq(column, target.sourceId)
       .gte('checked_at', since)
       .not('bsr', 'is', null)
       .order('checked_at', { ascending: true })
+
+    if (error) {
+      setChartBsrUnavailable(true)
+      setBsrHistory([])
+      setChartLoading(false)
+      return
+    }
 
     setBsrHistory(((data ?? []) as Array<{ bsr: number; checked_at: string }>).map(row => ({
       date: new Date(row.checked_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
@@ -473,6 +515,24 @@ export default function BsrTrackerPage() {
         </div>
       )}
 
+      {catalogUnavailable && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          Catalog products are temporarily unavailable. Competitor ASINs are hidden until ownership can be verified.
+        </div>
+      )}
+
+      {trackedUnavailable && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          Competitor ASINs are temporarily unavailable. Existing competitor targets are hidden until the read succeeds.
+        </div>
+      )}
+
+      {(myBsrUnavailable || competitorBsrUnavailable) && (
+        <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-300">
+          BSR snapshot data is temporarily unavailable for {myBsrUnavailable && competitorBsrUnavailable ? 'My ASINs and competitors' : myBsrUnavailable ? 'My ASINs' : 'competitors'}. Rankings are hidden rather than shown as missing BSR.
+        </div>
+      )}
+
       <div className="flex items-center gap-2 border-b border-border">
         {([
           ['my_product', 'My ASINs'],
@@ -534,6 +594,12 @@ export default function BsrTrackerPage() {
 
         {chartLoading ? (
           <ChartSkeleton />
+        ) : chartBsrUnavailable ? (
+          <div className="h-[260px] flex flex-col items-center justify-center gap-2">
+            <BarChart2 className="size-8 text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">BSR history temporarily unavailable</p>
+            <p className="text-xs text-muted-foreground/70">Snapshot results could not be read, so the chart is hidden for now.</p>
+          </div>
         ) : bsrHistory.length < 2 ? (
           <div className="h-[260px] flex flex-col items-center justify-center gap-2">
             <BarChart2 className="size-8 text-muted-foreground/30" />
@@ -579,7 +645,12 @@ export default function BsrTrackerPage() {
           </div>
         </div>
 
-        {activeTab === 'competitor_asin' && competitorCandidates.length === 0 ? (
+        {activeTab === 'competitor_asin' && (catalogUnavailable || trackedUnavailable) ? (
+          <div className="rounded-lg border border-dashed border-border p-6 text-center">
+            <p className="text-sm font-medium text-foreground">Competitor ASINs temporarily unavailable</p>
+            <p className="text-xs text-muted-foreground mt-1">Ownership or competitor data could not be verified, so no tracked ASIN is shown as a confirmed competitor.</p>
+          </div>
+        ) : activeTab === 'competitor_asin' && competitorCandidates.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border p-6 text-center">
             <p className="text-sm font-medium text-foreground">No competitors available yet</p>
             <p className="text-xs text-muted-foreground mt-1">Add competitors in ASIN Tracking first.</p>

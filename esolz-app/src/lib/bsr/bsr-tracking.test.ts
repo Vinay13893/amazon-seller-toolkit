@@ -5,6 +5,8 @@ import {
   filterBsrCompetitorCandidates,
   hasDuplicateBsrTarget,
   rankMetricsForTarget,
+  resolveBsrCandidateRows,
+  resolveBsrSnapshotRows,
   snapshotsForTarget,
   summarizeBsrTargets,
   targetKey,
@@ -118,6 +120,66 @@ test('own product never becomes a competitor BSR candidate through legacy tracke
   )
 
   assert.deepEqual(competitors.map(row => row.id), ['tracked-external'])
+})
+
+test('catalog read unavailable fails closed and returns no competitor candidates', () => {
+  const result = resolveBsrCandidateRows({
+    listings: [],
+    trackedAsins: [
+      { id: 'tracked-own', asin: 'B0OWNIN001', marketplace: 'IN', status: 'active' },
+      { id: 'tracked-external', asin: 'B0EXTERN1', marketplace: 'IN', status: 'active' },
+    ],
+    catalogUnavailable: true,
+    trackedUnavailable: false,
+  })
+
+  assert.equal(result.catalogUnavailable, true)
+  assert.deepEqual(result.myRows, [])
+  assert.deepEqual(result.competitorRows, [])
+})
+
+test('tracked-ASIN read unavailable fails closed and returns no competitor candidates', () => {
+  const result = resolveBsrCandidateRows({
+    listings: [ownListing],
+    trackedAsins: [],
+    catalogUnavailable: false,
+    trackedUnavailable: true,
+  })
+
+  assert.equal(result.trackedUnavailable, true)
+  assert.deepEqual(result.myRows, [ownListing])
+  assert.deepEqual(result.competitorRows, [])
+})
+
+test('successful catalog and tracked reads preserve normal competitor filtering', () => {
+  const result = resolveBsrCandidateRows({
+    listings: [ownListing],
+    trackedAsins: [
+      { id: 'tracked-own', asin: 'B0OWNIN001', marketplace: 'IN', status: 'active' },
+      { id: 'tracked-external', asin: 'B0EXTERN1', marketplace: 'IN', status: 'active' },
+    ],
+    catalogUnavailable: false,
+    trackedUnavailable: false,
+  })
+
+  assert.deepEqual(result.myRows, [ownListing])
+  assert.deepEqual(result.competitorRows.map(row => row.id), ['tracked-external'])
+})
+
+test('snapshot read unavailable is distinct from a successful empty snapshot result', () => {
+  const unavailable = resolveBsrSnapshotRows({
+    snapshots: [snapshot({ amazon_listing_item_id: 'listing-in', bsr: 100 })],
+    unavailable: true,
+  })
+  const empty = resolveBsrSnapshotRows({
+    snapshots: [],
+    unavailable: false,
+  })
+
+  assert.equal(unavailable.unavailable, true)
+  assert.deepEqual(unavailable.snapshots, [])
+  assert.equal(empty.unavailable, false)
+  assert.deepEqual(empty.snapshots, [])
 })
 
 test('same ASIN in a different marketplace remains distinct', () => {
