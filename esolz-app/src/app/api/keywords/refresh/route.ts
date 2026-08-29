@@ -12,6 +12,7 @@ import {
   CheckerWorkerUnavailableError,
   toWorkerMarketplace,
 } from '@/lib/checkers/checker-worker-client'
+import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120
@@ -39,7 +40,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
  * POST /api/keywords/refresh
  *
  * Refreshes a caller-selected small batch of tracked keywords in the workspace.
- * Keywords without an ASIN association are skipped (rank check requires an ASIN).
+ * Keywords without a product association are skipped (rank check requires an ASIN).
  *
  * Inserts keyword_rank_snapshots rows for each checked keyword.
  */
@@ -75,13 +76,12 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // ── Keywords with ASIN association ────────────────────────────────────────
+  // ── Keywords with product association ─────────────────────────────────────
   const { data: keywords, error: kwErr } = await supabase
     .from('tracked_keywords')
-    .select('id, keyword, marketplace, tracked_asin_id, tracked_asins(asin, marketplace)')
+    .select('id, keyword, marketplace, tracked_asin_id, amazon_listing_item_id')
     .eq('workspace_id', workspaceId)
     .in('id', keywordIds)
-    .not('tracked_asin_id', 'is', null)
 
   if (kwErr) {
     return NextResponse.json({ error: 'Failed to load tracked keywords' }, { status: 500 })
@@ -89,9 +89,49 @@ export async function POST(req: NextRequest) {
   if (!keywords || keywords.length === 0) {
     return NextResponse.json({
       results: [],
-      message: 'No keywords with ASIN associations found. Track keywords from an ASIN detail page to enable rank refresh.',
+      message: 'No selected keywords found in this workspace.',
     })
   }
+
+  const listingIds = [...new Set(
+    keywords
+      .map(row => row.amazon_listing_item_id as string | null)
+      .filter((id): id is string => Boolean(id)),
+  )]
+  const trackedAsinIds = [...new Set(
+    keywords
+      .map(row => row.tracked_asin_id as string | null)
+      .filter((id): id is string => Boolean(id)),
+  )]
+
+  const [listingRowsResult, trackedRowsResult] = await Promise.all([
+    listingIds.length
+      ? supabase
+          .from('amazon_listing_items')
+          .select('id, asin, marketplace_id')
+          .eq('workspace_id', workspaceId)
+          .in('id', listingIds)
+      : Promise.resolve({ data: [] as Array<{ id: string; asin: string | null; marketplace_id: string | null }>, error: null }),
+    trackedAsinIds.length
+      ? supabase
+          .from('tracked_asins')
+          .select('id, asin, marketplace, status')
+          .eq('workspace_id', workspaceId)
+          .in('id', trackedAsinIds)
+          .neq('status', 'archived')
+      : Promise.resolve({ data: [] as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>, error: null }),
+  ])
+
+  if (listingRowsResult.error || trackedRowsResult.error) {
+    return NextResponse.json({ error: 'Failed to resolve keyword products' }, { status: 500 })
+  }
+
+  const listingById = new Map(
+    (listingRowsResult.data ?? []).map(row => [row.id as string, row]),
+  )
+  const trackedById = new Map(
+    (trackedRowsResult.data ?? []).map(row => [row.id as string, row]),
+  )
 
   const admin = createAdminClient()
   let runtimeUnavailableDetected = false
@@ -112,7 +152,7 @@ export async function POST(req: NextRequest) {
 
   async function insertFailedSnapshot(params: {
     trackedKeywordId: string
-    trackedAsinId: string
+    trackedAsinId: string | null
     keyword: string
     checkedAt: string
     scrapeStatus: 'failed' | 'checker_unavailable'
@@ -136,7 +176,7 @@ export async function POST(req: NextRequest) {
         page:               null,
         position_on_page:   null,
         found:              false,
-          scrape_status:      params.scrapeStatus,
+        scrape_status:      params.scrapeStatus,
         error_message:      params.errorMessage,
         page_status:        null,
         checked_at:         params.checkedAt,
@@ -144,15 +184,15 @@ export async function POST(req: NextRequest) {
   }
 
   for (const kw of keywords) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const asinRow = Array.isArray(kw.tracked_asins)
-      ? kw.tracked_asins[0]
-      : kw.tracked_asins as { asin: string; marketplace: string } | null
-
-    const asin       = asinRow?.asin
-    const market     = kw.marketplace ?? asinRow?.marketplace ?? 'IN'
+    const listingId = kw.amazon_listing_item_id as string | null
+    const trackedAsinId = kw.tracked_asin_id as string | null
+    const listing = listingId ? listingById.get(listingId) : null
+    const tracked = trackedAsinId ? trackedById.get(trackedAsinId) : null
+    const asin = listing?.asin ?? tracked?.asin ?? null
+    const market = listing?.marketplace_id
+      ? marketplaceFromMarketplaceId(listing.marketplace_id as string)
+      : ((tracked?.marketplace as string | null) ?? kw.marketplace ?? 'IN')
     const workerMarket = toWorkerMarketplace(market)
-    const trackedAsinId = kw.tracked_asin_id as string
     const workerConfigured = isWorkerConfigured()
     if (!asin) continue
 
