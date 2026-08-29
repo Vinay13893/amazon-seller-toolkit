@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { marketplaceFromMarketplaceId, marketplaceIdForMarketplace } from '@/lib/asins/product-separation'
 
 export const runtime = 'nodejs'
 
@@ -8,11 +9,15 @@ export const runtime = 'nodejs'
  * POST /api/keywords/track
  *
  * Saves a keyword to tracked_keywords for the user's workspace.
- * tracked_asin_id is LEFT NULL — use /api/asins/[asin]/keywords/track to link to an ASIN.
  *
- * Uses ignoreDuplicates: true so it never overwrites an existing ASIN association.
+ * Product-bound keywords should use stable source identity:
+ * - targetType: 'my_product', sourceId: amazon_listing_items.id
+ * - targetType: 'competitor_asin', sourceId: tracked_asins.id
  *
- * Body: { keyword, marketplace, search_volume?, cpc_estimate?, difficulty? }
+ * If targetType/sourceId are omitted, the keyword is saved as unassigned
+ * research only and cannot be refreshed until attached to a product.
+ *
+ * Body: { keyword, marketplace?, targetType?, sourceId?, search_volume?, cpc_estimate?, difficulty? }
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -24,6 +29,8 @@ export async function POST(req: NextRequest) {
   const body = await req.json() as {
     keyword:        string
     marketplace?:   string
+    targetType?:     'my_product' | 'competitor_asin'
+    sourceId?:       string
     search_volume?: number | null
     cpc_estimate?:  number | null
     difficulty?:    number | null
@@ -47,17 +54,105 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const marketplace = (body.marketplace ?? 'IN').toUpperCase().replace('AMAZON.', '')
+  let marketplace = (body.marketplace ?? 'IN').toUpperCase().replace('AMAZON.', '')
+  let amazonListingItemId: string | null = null
+  let trackedAsinId: string | null = null
+
+  if (body.targetType || body.sourceId) {
+    if (
+      (body.targetType !== 'my_product' && body.targetType !== 'competitor_asin')
+      || !body.sourceId
+    ) {
+      return NextResponse.json({ error: 'Valid targetType and sourceId are required.' }, { status: 400 })
+    }
+
+    if (body.targetType === 'my_product') {
+      const { data: listing, error: listingError } = await supabase
+        .from('amazon_listing_items')
+        .select('id, asin, marketplace_id')
+        .eq('workspace_id', member.workspace_id)
+        .eq('id', body.sourceId)
+        .maybeSingle()
+
+      if (listingError) {
+        return NextResponse.json({ error: 'Failed to validate product ownership.' }, { status: 500 })
+      }
+      if (!listing?.id || !listing.asin || !listing.marketplace_id) {
+        return NextResponse.json({ error: 'My Product not found in this workspace.' }, { status: 404 })
+      }
+
+      amazonListingItemId = listing.id as string
+      trackedAsinId = null
+      marketplace = marketplaceFromMarketplaceId(listing.marketplace_id as string)
+    } else {
+      const { data: tracked, error: trackedError } = await supabase
+        .from('tracked_asins')
+        .select('id, asin, marketplace, status')
+        .eq('workspace_id', member.workspace_id)
+        .eq('id', body.sourceId)
+        .neq('status', 'archived')
+        .maybeSingle()
+
+      if (trackedError) {
+        return NextResponse.json({ error: 'Failed to validate competitor ASIN.' }, { status: 500 })
+      }
+      if (!tracked?.id || !tracked.asin || !tracked.marketplace) {
+        return NextResponse.json({ error: 'Competitor ASIN not found in this workspace.' }, { status: 404 })
+      }
+
+      const marketplaceId = marketplaceIdForMarketplace(tracked.marketplace as string)
+      if (!marketplaceId) {
+        return NextResponse.json({ error: 'Unsupported competitor marketplace.' }, { status: 400 })
+      }
+
+      const { data: ownListing, error: ownListingError } = await supabase
+        .from('amazon_listing_items')
+        .select('id')
+        .eq('workspace_id', member.workspace_id)
+        .eq('asin', (tracked.asin as string).toUpperCase())
+        .eq('marketplace_id', marketplaceId)
+        .limit(1)
+        .maybeSingle()
+
+      if (ownListingError) {
+        return NextResponse.json({ error: 'Failed to validate product ownership.' }, { status: 500 })
+      }
+      if (ownListing?.id) {
+        return NextResponse.json(
+          { error: 'This ASIN belongs to My Products and cannot be tracked as a competitor.' },
+          { status: 409 },
+        )
+      }
+
+      amazonListingItemId = null
+      trackedAsinId = tracked.id as string
+      marketplace = (tracked.marketplace as string).toUpperCase()
+    }
+  }
 
   // ── 3. Check if already exists (to decide whether to increment keyword_count) ─
-  const { data: existing } = await supabase
+  let existingQuery = supabase
     .from('tracked_keywords')
     .select('id')
     .eq('workspace_id', member.workspace_id)
     .eq('keyword', body.keyword.trim())
     .eq('marketplace', marketplace)
-    .is('tracked_asin_id', null)
-    .maybeSingle()
+
+  if (amazonListingItemId) {
+    existingQuery = existingQuery
+      .eq('amazon_listing_item_id', amazonListingItemId)
+      .is('tracked_asin_id', null)
+  } else if (trackedAsinId) {
+    existingQuery = existingQuery
+      .eq('tracked_asin_id', trackedAsinId)
+      .is('amazon_listing_item_id', null)
+  } else {
+    existingQuery = existingQuery
+      .is('tracked_asin_id', null)
+      .is('amazon_listing_item_id', null)
+  }
+
+  const { data: existing } = await existingQuery.maybeSingle()
 
   // ── 4. Insert only when this unassigned keyword does not already exist ───
   const insertResult = existing
@@ -71,7 +166,8 @@ export async function POST(req: NextRequest) {
         search_volume:   body.search_volume  ?? null,
         cpc_estimate:    body.cpc_estimate   ?? null,
         difficulty:      body.difficulty     ?? null,
-        tracked_asin_id: null,
+        amazon_listing_item_id: amazonListingItemId,
+        tracked_asin_id: trackedAsinId,
       })
       .select()
       .single()

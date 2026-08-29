@@ -8,6 +8,10 @@ import {
   INTERNAL_TEST_ASIN_LIMIT,
   isInternalTestAccount,
 } from '@/lib/internal-test-entitlement'
+import {
+  filterCompetitorTrackedAsins,
+  marketplaceIdForMarketplace,
+} from '@/lib/asins/product-separation'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -27,7 +31,6 @@ const ENRICHMENT_TIMEOUT_MS = 10_000
 type RequestBody = {
   asin?: unknown
   marketplace?: unknown
-  sourceType?: unknown
   title?: unknown
   brand?: unknown
 }
@@ -50,7 +53,6 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => null) as RequestBody | null
   const asin = optionalText(body?.asin, 10)?.toUpperCase() ?? ''
   const marketplace = optionalText(body?.marketplace, 2)?.toUpperCase() ?? ''
-  const sourceType = body?.sourceType === 'competitor' ? 'competitor' : 'external'
   const suppliedTitleRaw = optionalText(body?.title, 500)
   const suppliedTitle = isFakeExternalTitle(suppliedTitleRaw) ? null : suppliedTitleRaw
   const suppliedBrand = optionalText(body?.brand, 200)
@@ -72,6 +74,30 @@ export async function POST(request: Request) {
 
   const workspaceId = membership.workspace_id
   const admin = createAdminClient()
+  const marketplaceId = marketplaceIdForMarketplace(marketplace)
+  if (!marketplaceId) {
+    return NextResponse.json({ error: 'Invalid ASIN or marketplace.' }, { status: 400 })
+  }
+
+  const { data: ownListing, error: ownListingError } = await admin
+    .from('amazon_listing_items')
+    .select('id')
+    .eq('workspace_id', workspaceId)
+    .eq('asin', asin)
+    .eq('marketplace_id', marketplaceId)
+    .limit(1)
+    .maybeSingle()
+
+  if (ownListingError) {
+    return NextResponse.json({ error: 'Could not validate catalog ownership.' }, { status: 500 })
+  }
+  if (ownListing?.id) {
+    return NextResponse.json(
+      { error: 'This ASIN belongs to My Products. Select it from My ASINs instead of adding it as a competitor.' },
+      { status: 409 },
+    )
+  }
+
   const { data: existingTracked } = await admin
     .from('tracked_asins')
     .select('id, product_title, brand, image_url')
@@ -96,13 +122,31 @@ export async function POST(request: Request) {
       asinLimit = plan?.asin_limit ?? 5
     }
 
-    const { count } = await admin
-      .from('tracked_asins')
-      .select('id', { count: 'exact', head: true })
-      .eq('workspace_id', workspaceId)
-      .neq('status', 'archived')
+    const [trackedResult, listingResult] = await Promise.all([
+      admin
+        .from('tracked_asins')
+        .select('id, asin, marketplace, status')
+        .eq('workspace_id', workspaceId)
+        .neq('status', 'archived')
+        .limit(5000),
+      admin
+        .from('amazon_listing_items')
+        .select('id, asin, marketplace_id')
+        .eq('workspace_id', workspaceId)
+        .not('asin', 'is', null)
+        .limit(5000),
+    ])
 
-    if ((count ?? 0) >= asinLimit) {
+    if (trackedResult.error || listingResult.error) {
+      return NextResponse.json({ error: 'Unable to check ASIN limit right now.' }, { status: 500 })
+    }
+
+    const competitorCount = filterCompetitorTrackedAsins(
+      (trackedResult.data ?? []) as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>,
+      (listingResult.data ?? []) as Array<{ id: string; asin: string | null; marketplace_id: string | null }>,
+    ).length
+
+    if (competitorCount >= asinLimit) {
       return NextResponse.json({ error: 'You have reached your ASIN limit for this plan.' }, { status: 403 })
     }
   }
@@ -117,7 +161,7 @@ export async function POST(request: Request) {
         marketplace,
         product_title: suppliedTitle,
         brand: suppliedBrand,
-        category: sourceType === 'competitor' ? 'Competitor ASIN' : 'External ASIN',
+        category: 'Competitor ASIN',
         image_url: null,
         status: 'active',
       })
@@ -149,7 +193,7 @@ export async function POST(request: Request) {
         marketplace,
         image_url: pendingImage,
         product_url: productUrl,
-        source_type: sourceType,
+        source_type: 'competitor',
         metadata_status: 'pending',
         last_enriched_at: null,
         error_code: null,
@@ -238,6 +282,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       tracked: true,
       alreadyTracked: Boolean(existingTracked),
+      trackedAsinId: trackedId,
       metadataStatus,
       product: { title, brand, imageUrl },
     })
@@ -266,6 +311,7 @@ export async function POST(request: Request) {
         {
           tracked: true,
           alreadyTracked: Boolean(existingTracked),
+          trackedAsinId: trackedId,
           metadataStatus,
           errorCode: 'metadata_finalize_failed',
           errorMessage: 'Product details are not available yet.',
@@ -277,6 +323,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       tracked: true,
       alreadyTracked: Boolean(existingTracked),
+      trackedAsinId: trackedId,
       metadataStatus,
       errorCode,
       errorMessage: 'Product details are not available yet.',
