@@ -12,6 +12,10 @@
     {
       "path": "/api/cron/review-requests/process-eligibility",
       "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/catalog/refresh-listings",
+      "schedule": "0 */6 * * *"
     }
   ]
 }
