@@ -7,6 +7,12 @@ import {
   extractNextPageToken,
   type ListingItem,
 } from '@/lib/amazon/spapi-client'
+import {
+  buildFailedPageMetadata,
+  buildSuccessfulPageMetadata,
+  upsertCatalogListingsPage,
+  type CatalogJobMetadata,
+} from '@/lib/amazon/catalog-refresh-listings'
 
 export const runtime = 'nodejs'
 export const maxDuration = 200
@@ -69,13 +75,6 @@ const STALE_RUNNING_MS = 60 * 60 * 1000 // 1h
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = any
 
-interface CronJobMeta {
-  page_token?: string | null
-  pages?: number
-  items_fetched?: number
-  items_upserted?: number
-}
-
 interface WorkspaceResult {
   status:
     | 'skipped_fresh'
@@ -88,6 +87,34 @@ interface WorkspaceResult {
   pages_this_run?: number
   items_upserted_this_run?: number
   job_completed?: boolean
+}
+
+async function markJobFailed(
+  admin: Admin,
+  jobId: string,
+  errorMessage: string,
+  metadata?: CatalogJobMetadata,
+): Promise<{ ok: true } | { ok: false; reason: 'job_fail_state_update_failed' }> {
+  const update: Record<string, unknown> = {
+    status: 'failed',
+    finished_at: new Date().toISOString(),
+    error_message: errorMessage,
+  }
+  if (metadata) {
+    update.metadata = metadata
+  }
+
+  const { error } = await admin
+    .from('amazon_sync_jobs')
+    .update(update)
+    .eq('id', jobId)
+
+  if (error) {
+    console.error('[catalog/refresh-listings] failed to persist failed job state')
+    return { ok: false, reason: 'job_fail_state_update_failed' }
+  }
+
+  return { ok: true }
 }
 
 export async function GET(request: NextRequest) {
@@ -171,18 +198,22 @@ async function refreshWorkspaceCatalog(
     .eq('status', 'running')
     .order('created_at', { ascending: false })
 
-  let job: { id: string; metadata: CronJobMeta } | null = null
+  let job: { id: string; metadata: CatalogJobMetadata } | null = null
 
   for (const r of runningJobs ?? []) {
     const startedMs = r.started_at ? new Date(r.started_at).getTime() : 0
     if (Date.now() - startedMs > STALE_RUNNING_MS) {
       // Abandoned — mark failed so it stops blocking, don't resume mid-flight.
-      await admin
+      const { error: reclaimErr } = await admin
         .from('amazon_sync_jobs')
         .update({ status: 'failed', finished_at: nowIso, error_message: 'reclaimed_stale_running' })
         .eq('id', r.id)
+      if (reclaimErr) {
+        console.error('[catalog/refresh-listings] failed to reclaim stale running job')
+        return { status: 'failed', reason: 'stale_job_reclaim_failed' }
+      }
     } else if (!job) {
-      job = { id: r.id, metadata: (r.metadata ?? {}) as CronJobMeta }
+      job = { id: r.id, metadata: (r.metadata ?? {}) as CatalogJobMetadata }
     }
   }
 
@@ -224,7 +255,7 @@ async function refreshWorkspaceCatalog(
     if (createErr || !created) {
       return { status: 'failed', reason: 'job_create_failed' }
     }
-    job = { id: created.id, metadata: (created.metadata ?? {}) as CronJobMeta }
+    job = { id: created.id, metadata: (created.metadata ?? {}) as CatalogJobMetadata }
   }
 
   // ── Refresh access token once for this workspace ───────────────────────────
@@ -233,22 +264,21 @@ async function refreshWorkspaceCatalog(
     const refreshToken = decryptToken(conn.refresh_token_encrypted)
     const result = await refreshAccessToken(refreshToken)
     accessToken = result.access_token
-    try {
-      const enc = encryptToken(accessToken)
-      const exp = new Date(Date.now() + result.expires_in * 1000).toISOString()
-      await admin
-        .from('amazon_connections')
-        .update({ access_token_encrypted: enc, access_token_expires_at: exp, updated_at: nowIso })
-        .eq('id', conn.id)
-    } catch {
-      /* non-fatal: persisting the refreshed token is best-effort */
+    const enc = encryptToken(accessToken)
+    const exp = new Date(Date.now() + result.expires_in * 1000).toISOString()
+    const { error: tokenPersistErr } = await admin
+      .from('amazon_connections')
+      .update({ access_token_encrypted: enc, access_token_expires_at: exp, updated_at: nowIso })
+      .eq('id', conn.id)
+    if (tokenPersistErr) {
+      // Non-fatal: this invocation can continue with the in-memory token. The
+      // next run can refresh again from the stored refresh token.
+      console.warn('[catalog/refresh-listings] refreshed token persistence failed')
     }
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : 'token_refresh_failed'
-    await admin
-      .from('amazon_sync_jobs')
-      .update({ status: 'failed', finished_at: nowIso, error_message: reason })
-      .eq('id', job.id)
+  } catch {
+    const reason = 'token_refresh_failed'
+    const failed = await markJobFailed(admin, job.id, reason)
+    if (!failed.ok) return { status: 'failed', reason: failed.reason }
     return { status: 'failed', reason }
   }
 
@@ -272,79 +302,119 @@ async function refreshWorkspaceCatalog(
       })
       items = res.items ?? []
       nextPageToken = extractNextPageToken(res as typeof res & Record<string, unknown>)
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : 'spapi_failed'
+    } catch {
+      const reason = 'spapi_listings_page_failed'
       // Persist progress so a retry resumes from the same page, then fail loudly.
-      await admin
-        .from('amazon_sync_jobs')
-        .update({
-          status: 'failed',
-          finished_at: new Date().toISOString(),
-          error_message: reason,
-          metadata: { page_token: pageToken ?? null, pages, items_fetched: itemsFetched, items_upserted: itemsUpserted },
-        })
-        .eq('id', job.id)
+      const failed = await markJobFailed(
+        admin,
+        job.id,
+        reason,
+        buildFailedPageMetadata({ pages, itemsFetched, itemsUpserted }, pageToken),
+      )
+      if (!failed.ok) return { status: 'failed', reason: failed.reason }
       return { status: 'failed', reason, pages_this_run: pagesThisRun, items_upserted_this_run: upsertedThisRun }
     }
 
     const syncedAt = new Date().toISOString()
-    for (const item of items) {
-      const sku = item.sku
-      if (!sku) continue
-      const summary = item.summaries?.find(s => s.marketplaceId === marketplaceId) ?? item.summaries?.[0]
-      const row = {
-        workspace_id: conn.workspace_id,
-        connection_id: conn.id,
-        asin: summary?.asin ?? null,
-        sku,
-        marketplace_id: marketplaceId,
-        item_name: summary?.itemName ?? null,
-        brand: item.attributes?.brand?.[0]?.value ?? null,
-        product_type: summary?.productType ?? null,
-        status: summary?.status?.[0] ?? null,
-        image_url: summary?.mainImage?.link ?? null,
-        raw_data: {} as Record<string, never>,
-        last_synced_at: syncedAt,
-        updated_at: syncedAt,
-      }
-      try {
-        await admin
+    const pageUpserts = await upsertCatalogListingsPage({
+      items,
+      marketplaceId,
+      workspaceId: conn.workspace_id,
+      connectionId: conn.id,
+      syncedAt,
+      upsertListing: row =>
+        admin
           .from('amazon_listing_items')
-          .upsert(row, { onConflict: 'workspace_id,sku,marketplace_id' })
-        itemsUpserted++
-        upsertedThisRun++
-      } catch {
-        console.error('[catalog/refresh-listings] listing upsert failed')
+          .upsert(row, { onConflict: 'workspace_id,sku,marketplace_id' }),
+    })
+
+    if (!pageUpserts.ok) {
+      const confirmedThisRun = upsertedThisRun + pageUpserts.confirmedUpserts
+      const failed = await markJobFailed(
+        admin,
+        job.id,
+        pageUpserts.reason,
+        buildFailedPageMetadata({ pages, itemsFetched, itemsUpserted }, pageToken),
+      )
+      if (!failed.ok) return { status: 'failed', reason: failed.reason }
+      console.error('[catalog/refresh-listings] listing upsert failed')
+      return {
+        status: 'failed',
+        reason: pageUpserts.reason,
+        pages_this_run: pagesThisRun,
+        items_upserted_this_run: confirmedThisRun,
+        job_completed: false,
       }
     }
 
     itemsFetched += items.length
+    itemsUpserted += pageUpserts.confirmedUpserts
+    upsertedThisRun += pageUpserts.confirmedUpserts
     pages++
     pagesThisRun++
-    pageToken = nextPageToken
+    const successfulPageMetadata = buildSuccessfulPageMetadata(
+      { pages: pages - 1, itemsFetched, itemsUpserted },
+      nextPageToken,
+    )
 
     // Persist progress after every page so any interruption is resumable.
-    await admin
+    const { error: progressErr } = await admin
       .from('amazon_sync_jobs')
       .update({
-        metadata: { page_token: pageToken ?? null, pages, items_fetched: itemsFetched, items_upserted: itemsUpserted },
+        metadata: successfulPageMetadata,
       })
       .eq('id', job.id)
+    if (progressErr) {
+      console.error('[catalog/refresh-listings] failed to persist page progress')
+      const failed = await markJobFailed(admin, job.id, 'page_progress_persist_failed')
+      if (!failed.ok) return { status: 'failed', reason: failed.reason }
+      return {
+        status: 'failed',
+        reason: 'page_progress_persist_failed',
+        pages_this_run: pagesThisRun,
+        items_upserted_this_run: upsertedThisRun,
+        job_completed: false,
+      }
+    }
+
+    pageToken = nextPageToken
 
     if (!nextPageToken) {
       // Reached the end — this cycle is complete.
-      await admin
+      const { error: connectionFreshErr } = await admin
+        .from('amazon_connections')
+        .update({ last_sync_at: new Date().toISOString() })
+        .eq('id', conn.id)
+      if (connectionFreshErr) {
+        console.error('[catalog/refresh-listings] failed to persist catalog freshness marker')
+        const failed = await markJobFailed(admin, job.id, 'connection_freshness_persist_failed')
+        if (!failed.ok) return { status: 'failed', reason: failed.reason }
+        return {
+          status: 'failed',
+          reason: 'connection_freshness_persist_failed',
+          pages_this_run: pagesThisRun,
+          items_upserted_this_run: upsertedThisRun,
+          job_completed: false,
+        }
+      }
+
+      const { error: completeErr } = await admin
         .from('amazon_sync_jobs')
         .update({ status: 'completed', finished_at: new Date().toISOString() })
         .eq('id', job.id)
-      try {
-        await admin
-          .from('amazon_connections')
-          .update({ last_sync_at: new Date().toISOString() })
-          .eq('id', conn.id)
-      } catch {
-        /* non-fatal */
+      if (completeErr) {
+        console.error('[catalog/refresh-listings] failed to persist completed job state')
+        const failed = await markJobFailed(admin, job.id, 'job_complete_state_update_failed')
+        if (!failed.ok) return { status: 'failed', reason: failed.reason }
+        return {
+          status: 'failed',
+          reason: 'job_complete_state_update_failed',
+          pages_this_run: pagesThisRun,
+          items_upserted_this_run: upsertedThisRun,
+          job_completed: false,
+        }
       }
+
       return {
         status: resumed ? 'completed' : 'completed',
         pages_this_run: pagesThisRun,
