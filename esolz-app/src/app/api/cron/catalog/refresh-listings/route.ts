@@ -345,7 +345,7 @@ async function refreshWorkspaceCatalog(
         buildFailedPageMetadata({ pages, itemsFetched, itemsUpserted }, pageToken),
       )
       if (!failed.ok) return { status: 'failed', reason: failed.reason }
-      console.error('[catalog/refresh-listings] listing upsert failed')
+      console.error('[catalog/refresh-listings] listing upsert failed', pageUpserts.diagnostic)
       return {
         status: 'failed',
         reason: pageUpserts.reason,
