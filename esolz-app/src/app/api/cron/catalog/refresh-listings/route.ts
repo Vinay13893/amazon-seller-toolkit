@@ -154,9 +154,9 @@ export async function GET(request: NextRequest) {
       if (res.status !== 'skipped_fresh' && res.status !== 'skipped_no_connection') {
         workspacesProcessed++
       }
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : 'unknown_error'
-      console.error('[catalog/refresh-listings] workspace refresh threw:', reason)
+    } catch {
+      const reason = 'workspace_refresh_failed'
+      console.error('[catalog/refresh-listings] workspace refresh failed')
       results[conn.workspace_id] = { status: 'failed', reason }
     }
   }
@@ -190,13 +190,17 @@ async function refreshWorkspaceCatalog(
   const nowIso = new Date().toISOString()
 
   // ── Reclaim any abandoned in-flight cron job for this workspace ────────────
-  const { data: runningJobs } = await admin
+  const { data: runningJobs, error: runningJobErr } = await admin
     .from('amazon_sync_jobs')
     .select('id, metadata, started_at')
     .eq('workspace_id', conn.workspace_id)
     .eq('job_type', CRON_JOB_TYPE)
     .eq('status', 'running')
     .order('created_at', { ascending: false })
+
+  if (runningJobErr) {
+    return { status: 'failed', reason: 'running_job_query_failed' }
+  }
 
   let job: { id: string; metadata: CatalogJobMetadata } | null = null
 
@@ -222,7 +226,7 @@ async function refreshWorkspaceCatalog(
     resumed = true
   } else {
     // No live job — only start a new cycle if the last completed one is stale.
-    const { data: lastCompleted } = await admin
+    const { data: lastCompleted, error: completedJobErr } = await admin
       .from('amazon_sync_jobs')
       .select('finished_at')
       .eq('workspace_id', conn.workspace_id)
@@ -231,6 +235,10 @@ async function refreshWorkspaceCatalog(
       .order('finished_at', { ascending: false })
       .limit(1)
       .maybeSingle()
+
+    if (completedJobErr) {
+      return { status: 'failed', reason: 'completed_job_query_failed' }
+    }
 
     const lastMs = lastCompleted?.finished_at
       ? new Date(lastCompleted.finished_at).getTime()
@@ -381,26 +389,10 @@ async function refreshWorkspaceCatalog(
 
     if (!nextPageToken) {
       // Reached the end — this cycle is complete.
-      const { error: connectionFreshErr } = await admin
-        .from('amazon_connections')
-        .update({ last_sync_at: new Date().toISOString() })
-        .eq('id', conn.id)
-      if (connectionFreshErr) {
-        console.error('[catalog/refresh-listings] failed to persist catalog freshness marker')
-        const failed = await markJobFailed(admin, job.id, 'connection_freshness_persist_failed')
-        if (!failed.ok) return { status: 'failed', reason: failed.reason }
-        return {
-          status: 'failed',
-          reason: 'connection_freshness_persist_failed',
-          pages_this_run: pagesThisRun,
-          items_upserted_this_run: upsertedThisRun,
-          job_completed: false,
-        }
-      }
-
+      const completedAt = new Date().toISOString()
       const { error: completeErr } = await admin
         .from('amazon_sync_jobs')
-        .update({ status: 'completed', finished_at: new Date().toISOString() })
+        .update({ status: 'completed', finished_at: completedAt })
         .eq('id', job.id)
       if (completeErr) {
         console.error('[catalog/refresh-listings] failed to persist completed job state')
@@ -415,8 +407,25 @@ async function refreshWorkspaceCatalog(
         }
       }
 
+      // Job completion is authoritative. This derived marker is best-effort:
+      // its failure must never undo a successfully completed catalog cycle.
+      let freshnessWarning: string | undefined
+      try {
+        const { error: connectionFreshErr } = await admin
+          .from('amazon_connections')
+          .update({ last_sync_at: completedAt })
+          .eq('id', conn.id)
+        if (connectionFreshErr) freshnessWarning = 'connection_freshness_persist_failed'
+      } catch {
+        freshnessWarning = 'connection_freshness_persist_failed'
+      }
+      if (freshnessWarning) {
+        console.warn('[catalog/refresh-listings] completed catalog freshness marker update failed')
+      }
+
       return {
-        status: resumed ? 'completed' : 'completed',
+        status: 'completed',
+        ...(freshnessWarning ? { reason: freshnessWarning } : {}),
         pages_this_run: pagesThisRun,
         items_upserted_this_run: upsertedThisRun,
         job_completed: true,
