@@ -165,8 +165,14 @@ CREATE TABLE IF NOT EXISTS public.internal_fulfillment_sales_daily (
   source text NOT NULL DEFAULT 'unknown',
   ordered_units integer NOT NULL DEFAULT 0 CHECK (ordered_units >= 0),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- NULL-safe uniqueness must be a unique INDEX: Postgres does not accept
+-- expressions (COALESCE(...)) inside a table-level UNIQUE constraint.
+-- Matches the index that exists in production today.
+CREATE UNIQUE INDEX IF NOT EXISTS internal_fulfillment_sales_daily_uidx
+  ON public.internal_fulfillment_sales_daily (
     workspace_id,
     marketplace_id,
     COALESCE(asin, ''),
@@ -175,8 +181,7 @@ CREATE TABLE IF NOT EXISTS public.internal_fulfillment_sales_daily (
     COALESCE(state_code, ''),
     COALESCE(location_code, ''),
     source
-  )
-);
+  );
 
 CREATE TABLE IF NOT EXISTS public.internal_inventory_by_location (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -192,16 +197,20 @@ CREATE TABLE IF NOT EXISTS public.internal_inventory_by_location (
   unsellable_quantity integer NOT NULL DEFAULT 0,
   snapshot_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Same reason as above: expression-based uniqueness requires a unique INDEX.
+-- Matches the index that exists in production today.
+CREATE UNIQUE INDEX IF NOT EXISTS internal_inventory_by_location_uidx
+  ON public.internal_inventory_by_location (
     workspace_id,
     marketplace_id,
     COALESCE(asin, ''),
     COALESCE(sku, ''),
     COALESCE(location_code, ''),
     snapshot_at
-  )
-);
+  );
 
 CREATE INDEX IF NOT EXISTS internal_fulfillment_locations_workspace_idx
   ON public.internal_fulfillment_locations (workspace_id, location_type);
