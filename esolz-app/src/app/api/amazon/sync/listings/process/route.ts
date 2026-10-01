@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { decryptToken, encryptToken } from '@/lib/amazon/crypto'
 import { refreshAccessToken } from '@/lib/amazon/lwa'
 import { searchListingsItems, extractNextPageToken, type ListingItem } from '@/lib/amazon/spapi-client'
+import { upsertCatalogListingsPage } from '@/lib/amazon/catalog-refresh-listings'
 
 export const runtime     = 'nodejs'
 export const maxDuration = 25   // one page (~20 SKUs) is well within 25 s
@@ -22,23 +23,6 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
-}
-
-// ─── Upsert row type ─────────────────────────────────────────────────────────
-interface ListingRow {
-  workspace_id:   string
-  connection_id:  string
-  asin:           string | null
-  sku:            string
-  marketplace_id: string
-  item_name:      string | null
-  brand:          string | null
-  product_type:   string | null
-  status:         string | null
-  image_url:      string | null
-  raw_data:       Record<string, never>
-  last_synced_at: string
-  updated_at:     string
 }
 
 async function handlePost(req: NextRequest) {
@@ -168,53 +152,27 @@ async function handlePost(req: NextRequest) {
   }
 
   // ── 9. Upsert this page's items ────────────────────────────────────────────
-  const syncedAt   = new Date().toISOString()
-  let pageUpserted = 0
-
-  for (const item of items) {
-    const sku = item.sku
-    if (!sku) continue
-
-    const summary     = item.summaries?.find(s => s.marketplaceId === marketplaceId) ?? item.summaries?.[0]
-    const asin        = summary?.asin ?? null
-    const itemName    = summary?.itemName ?? null
-    const productType = summary?.productType ?? null
-    const imageUrl    = summary?.mainImage?.link ?? null
-    const statusArr   = summary?.status ?? []
-    const statusStr   = statusArr.length > 0 ? statusArr[0] : null
-    const brandVal    = item.attributes?.brand?.[0]?.value ?? null
-
-    const row: ListingRow = {
-      workspace_id:   member.workspace_id,
-      connection_id:  conn.id,
-      asin,
-      sku,
-      marketplace_id: marketplaceId,
-      item_name:      itemName,
-      brand:          brandVal,
-      product_type:   productType,
-      status:         statusStr,
-      image_url:      imageUrl,
-      raw_data:       {},
-      last_synced_at: syncedAt,
-      updated_at:     syncedAt,
-    }
-
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (admin as any)
-        .from('amazon_listing_items')
-        .upsert(row, { onConflict: 'workspace_id,sku,marketplace_id' })
-      pageUpserted++
-    } catch {
-      console.error('[listings/process] listing upsert failed')
-    }
+  const pageUpserts = await upsertCatalogListingsPage({
+    items,
+    marketplaceId,
+    workspaceId: member.workspace_id,
+    connectionId: conn.id,
+    syncedAt: new Date().toISOString(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    upsertListing: row => (admin as any).from('amazon_listing_items').upsert(row, {
+      onConflict: 'workspace_id,sku,marketplace_id',
+    }),
+  })
+  if (!pageUpserts.ok) {
+    console.error('[listings/process] listing upsert failed', pageUpserts.diagnostic)
+    await failJob(admin, jobId, member.workspace_id, user.id, pageUpserts.reason)
+    return NextResponse.json({ error: pageUpserts.reason }, { status: 500 })
   }
 
   // ── 10. Compute new running totals ─────────────────────────────────────────
   const newPages     = prevPages    + 1
   const newFetched   = prevFetched  + items.length
-  const newUpserted  = prevUpserted + pageUpserted
+  const newUpserted  = prevUpserted + pageUpserts.confirmedUpserts
   const hasMore      = !!nextPageToken
   const now          = new Date().toISOString()
 

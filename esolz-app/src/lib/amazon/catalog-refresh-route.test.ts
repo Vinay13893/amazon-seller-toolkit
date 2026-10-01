@@ -171,3 +171,20 @@ test('unexpected exceptions expose only a generic failure reason', async () => {
   assert.ok(!JSON.stringify(run).includes('private database details'))
   assert.ok(run.queries.every(query => query.operation === 'select'))
 })
+
+test('cron logs only sanitized database diagnostics on an upsert failure', async () => {
+  const run = await runCron(query => query.table === 'amazon_listing_items' && query.operation === 'upsert'
+    ? { data: null, error: {
+      code: '23505',
+      message: 'duplicate key value violates unique constraint "amazon_listing_items_asin_marketplace_uidx"',
+      details: 'PRIVATE-SKU PRIVATE-ASIN',
+      hint: 'PRIVATE-SELLER',
+    } } : undefined)
+  assert.equal(run.result.status, 'failed')
+  assert.equal(run.result.reason, 'listing_upsert_failed')
+  assert.equal(run.result.items_upserted_this_run, 0)
+  assert.ok(!run.queries.some(query => query.values?.status === 'completed'))
+  assert.ok(!run.queries.some(query => query.values?.last_sync_at))
+  assert.ok(JSON.stringify(run.logs).includes('asin_unique_index_conflict'))
+  assert.ok(!JSON.stringify(run.logs).includes('PRIVATE'))
+})

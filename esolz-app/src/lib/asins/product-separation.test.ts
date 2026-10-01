@@ -91,6 +91,23 @@ test('own catalog products remain eligible as my_product background jobs', () =>
   assert.equal(result.candidates[0].target_id, 'listing-own-in')
 })
 
+test('two seller SKUs sharing an ASIN keep separate listing identities and exclude competitor overlap', () => {
+  const listings = [
+    { ...ownInListing, sku: 'SKU-1' },
+    { ...ownInListing, id: 'listing-own-in-second-sku', sku: 'SKU-2' },
+  ]
+  const result = buildCandidates(listings, [
+    { id: 'tracked-own', asin: 'B0OWNIN001', marketplace: 'IN', status: 'active' },
+  ])
+
+  assert.equal(result.totalActiveMyProducts, 2)
+  assert.equal(result.totalActiveCompetitors, 0)
+  assert.deepEqual(result.candidates.map(candidate => candidate.target_id), [
+    'listing-own-in',
+    'listing-own-in-second-sku',
+  ])
+})
+
 test('own catalog overlap does not also create a competitor_asin job', () => {
   const result = buildCandidates(
     [ownInListing],
@@ -130,6 +147,7 @@ function makeFakeSupabase(rowsByTable: Record<string, FakeRow[]>) {
     from(table: string) {
       let mode: 'select' | 'update' | 'insert' = 'select'
       let patch: Partial<FakeRow> = {}
+      let rowLimit: number | null = null
       const filters: Array<[string, unknown]> = []
       const rows = rowsByTable[table] ?? []
 
@@ -143,7 +161,7 @@ function makeFakeSupabase(rowsByTable: Record<string, FakeRow[]>) {
           return builder
         },
         limit(count: number) {
-          void count
+          rowLimit = count
           return builder
         },
         update(nextPatch: Partial<FakeRow>) {
@@ -157,8 +175,12 @@ function makeFakeSupabase(rowsByTable: Record<string, FakeRow[]>) {
           return builder
         },
         async maybeSingle() {
-          const match = rows.find(row => filters.every(([col, val]) => row[col as keyof FakeRow] === val))
-          return { data: match ?? null, error: null }
+          const matches = rows.filter(row => filters.every(([col, val]) => row[col as keyof FakeRow] === val))
+          const visible = rowLimit === null ? matches : matches.slice(0, rowLimit)
+          if (visible.length > 1) {
+            return { data: null, error: { code: 'PGRST116', message: 'multiple rows' } }
+          }
+          return { data: visible[0] ?? null, error: null }
         },
         async single() {
           if (mode === 'update') {
