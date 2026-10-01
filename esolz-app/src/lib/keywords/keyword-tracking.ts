@@ -9,7 +9,7 @@ export type KeywordTargetType = 'my_product' | 'competitor_asin'
 
 export type KeywordTrackingRow = {
   id?: string | null
-  amazon_listing_item_id?: string | null
+  own_asin?: string | null
   tracked_asin_id?: string | null
   keyword?: string | null
   marketplace?: string | null
@@ -23,6 +23,7 @@ export type KeywordSourceProduct = {
   label: string
   sku?: string | null
   brand?: string | null
+  productType?: string | null
   imageUrl?: string | null
 }
 
@@ -30,22 +31,28 @@ export type KeywordSnapshotInsertTarget = {
   tracked_asin_id: string | null
 }
 
+export type KeywordRefreshTarget = {
+  asin: string
+  marketplace: string
+  trackedAsinId: string | null
+}
+
 export function keywordTargetType(row: KeywordTrackingRow): KeywordTargetType | null {
-  const hasListing = Boolean(row.amazon_listing_item_id)
+  const hasOwnAsin = Boolean(row.own_asin)
   const hasTracked = Boolean(row.tracked_asin_id)
-  if (hasListing === hasTracked) return null
-  return hasListing ? 'my_product' : 'competitor_asin'
+  if (hasOwnAsin === hasTracked) return null
+  return hasOwnAsin ? 'my_product' : 'competitor_asin'
 }
 
 export function keywordTargetSourceId(row: KeywordTrackingRow): string | null {
   const type = keywordTargetType(row)
-  if (type === 'my_product') return row.amazon_listing_item_id ?? null
+  if (type === 'my_product') return row.own_asin?.trim().toUpperCase() ?? null
   if (type === 'competitor_asin') return row.tracked_asin_id ?? null
   return null
 }
 
-export function keywordTargetKey(targetType: KeywordTargetType, sourceId: string): string {
-  return `${targetType}:${sourceId}`
+export function keywordTargetKey(targetType: KeywordTargetType, sourceId: string, marketplace: string): string {
+  return `${targetType}:${marketplace.trim().toUpperCase()}:${sourceId.trim().toUpperCase()}`
 }
 
 export function hasDuplicateKeywordForTarget(
@@ -77,20 +84,56 @@ export function keywordSourceFromListing(listing: OwnCatalogListingIdentity & {
   sku?: string | null
   item_name?: string | null
   brand?: string | null
+  product_type?: string | null
   image_url?: string | null
 }): KeywordSourceProduct | null {
   const asin = listing.asin?.trim().toUpperCase()
-  if (!listing.id || !asin || !listing.marketplace_id) return null
+  if (!asin || !listing.marketplace_id) return null
   return {
     targetType: 'my_product',
-    sourceId: listing.id,
+    sourceId: asin,
     asin,
     marketplace: marketplaceFromMarketplaceId(listing.marketplace_id),
     label: listing.item_name?.trim() || asin,
     sku: listing.sku ?? null,
     brand: listing.brand ?? null,
+    productType: listing.product_type ?? null,
     imageUrl: listing.image_url ?? null,
   }
+}
+
+export function buildKeywordOwnAsinSources(
+  listings: Array<OwnCatalogListingIdentity & {
+    sku?: string | null
+    item_name?: string | null
+    brand?: string | null
+    product_type?: string | null
+    image_url?: string | null
+  }>,
+): KeywordSourceProduct[] {
+  const sources = new Map<string, KeywordSourceProduct>()
+
+  for (const listing of listings) {
+    const source = keywordSourceFromListing(listing)
+    if (!source) continue
+    const key = keywordTargetKey(source.targetType, source.sourceId, source.marketplace)
+    const existing = sources.get(key)
+    if (!existing) {
+      sources.set(key, source)
+      continue
+    }
+
+    sources.set(key, {
+      ...existing,
+      label: existing.label === existing.asin && source.label !== source.asin ? source.label : existing.label,
+      sku: existing.sku ?? source.sku,
+      brand: existing.brand ?? source.brand,
+      productType: existing.productType ?? source.productType,
+      imageUrl: existing.imageUrl ?? source.imageUrl,
+    })
+  }
+
+  return [...sources.values()]
 }
 
 export function keywordSourceFromCompetitor(tracked: TrackedAsinIdentity & {
@@ -115,5 +158,34 @@ export function snapshotTargetForKeyword(row: KeywordTrackingRow): KeywordSnapsh
   const type = keywordTargetType(row)
   if (type === 'my_product') return { tracked_asin_id: null }
   if (type === 'competitor_asin') return { tracked_asin_id: row.tracked_asin_id ?? null }
+  return null
+}
+
+export function resolveKeywordRefreshTarget(
+  row: KeywordTrackingRow,
+  trackedAsins: Map<string, { asin: string | null; marketplace: string | null }>,
+  ownCatalogKeys: Set<string> | null,
+): KeywordRefreshTarget | null {
+  if (!ownCatalogKeys) return null
+
+  const type = keywordTargetType(row)
+  if (type === 'my_product') {
+    const asin = row.own_asin?.trim().toUpperCase()
+    const marketplace = row.marketplace?.trim().toUpperCase()
+    if (!asin || !marketplace) return null
+    if (!ownCatalogKeys.has(keywordTargetKey('my_product', asin, marketplace))) return null
+    return { asin, marketplace, trackedAsinId: null }
+  }
+
+  if (type === 'competitor_asin') {
+    const trackedAsinId = row.tracked_asin_id ?? ''
+    const tracked = trackedAsins.get(trackedAsinId)
+    const asin = tracked?.asin?.trim().toUpperCase()
+    const marketplace = tracked?.marketplace?.trim().toUpperCase()
+    if (!asin || !marketplace) return null
+    if (ownCatalogKeys.has(keywordTargetKey('my_product', asin, marketplace))) return null
+    return { asin, marketplace, trackedAsinId }
+  }
+
   return null
 }

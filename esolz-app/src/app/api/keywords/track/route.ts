@@ -10,8 +10,8 @@ export const runtime = 'nodejs'
  *
  * Saves a keyword to tracked_keywords for the user's workspace.
  *
- * Product-bound keywords should use stable source identity:
- * - targetType: 'my_product', sourceId: amazon_listing_items.id
+ * Product-bound keywords should use stable ASIN-level source identity:
+ * - targetType: 'my_product', sourceId: ASIN
  * - targetType: 'competitor_asin', sourceId: tracked_asins.id
  *
  * If targetType/sourceId are omitted, the keyword is saved as unassigned
@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   }
 
   let marketplace = (body.marketplace ?? 'IN').toUpperCase().replace('AMAZON.', '')
-  let amazonListingItemId: string | null = null
+  let ownAsin: string | null = null
   let trackedAsinId: string | null = null
 
   if (body.targetType || body.sourceId) {
@@ -67,21 +67,29 @@ export async function POST(req: NextRequest) {
     }
 
     if (body.targetType === 'my_product') {
+      const requestedAsin = body.sourceId.trim().toUpperCase()
+      const marketplaceId = marketplaceIdForMarketplace(marketplace)
+      if (!/^[A-Z0-9]{10}$/.test(requestedAsin) || !marketplaceId) {
+        return NextResponse.json({ error: 'Valid ASIN and marketplace are required.' }, { status: 400 })
+      }
+
       const { data: listing, error: listingError } = await supabase
         .from('amazon_listing_items')
-        .select('id, asin, marketplace_id')
+        .select('asin, marketplace_id')
         .eq('workspace_id', member.workspace_id)
-        .eq('id', body.sourceId)
+        .eq('asin', requestedAsin)
+        .eq('marketplace_id', marketplaceId)
+        .limit(1)
         .maybeSingle()
 
       if (listingError) {
         return NextResponse.json({ error: 'Failed to validate product ownership.' }, { status: 500 })
       }
-      if (!listing?.id || !listing.asin || !listing.marketplace_id) {
+      if (!listing?.asin || !listing.marketplace_id) {
         return NextResponse.json({ error: 'My Product not found in this workspace.' }, { status: 404 })
       }
 
-      amazonListingItemId = listing.id as string
+      ownAsin = (listing.asin as string).trim().toUpperCase()
       trackedAsinId = null
       marketplace = marketplaceFromMarketplaceId(listing.marketplace_id as string)
     } else {
@@ -124,7 +132,7 @@ export async function POST(req: NextRequest) {
         )
       }
 
-      amazonListingItemId = null
+      ownAsin = null
       trackedAsinId = tracked.id as string
       marketplace = (tracked.marketplace as string).toUpperCase()
     }
@@ -138,21 +146,24 @@ export async function POST(req: NextRequest) {
     .eq('keyword', body.keyword.trim())
     .eq('marketplace', marketplace)
 
-  if (amazonListingItemId) {
+  if (ownAsin) {
     existingQuery = existingQuery
-      .eq('amazon_listing_item_id', amazonListingItemId)
+      .eq('own_asin', ownAsin)
       .is('tracked_asin_id', null)
   } else if (trackedAsinId) {
     existingQuery = existingQuery
       .eq('tracked_asin_id', trackedAsinId)
-      .is('amazon_listing_item_id', null)
+      .is('own_asin', null)
   } else {
     existingQuery = existingQuery
       .is('tracked_asin_id', null)
-      .is('amazon_listing_item_id', null)
+      .is('own_asin', null)
   }
 
-  const { data: existing } = await existingQuery.maybeSingle()
+  const { data: existing, error: existingError } = await existingQuery.limit(1).maybeSingle()
+  if (existingError) {
+    return NextResponse.json({ error: 'Failed to check keyword tracking.' }, { status: 500 })
+  }
 
   // ── 4. Insert only when this unassigned keyword does not already exist ───
   const insertResult = existing
@@ -166,7 +177,7 @@ export async function POST(req: NextRequest) {
         search_volume:   body.search_volume  ?? null,
         cpc_estimate:    body.cpc_estimate   ?? null,
         difficulty:      body.difficulty     ?? null,
-        amazon_listing_item_id: amazonListingItemId,
+        own_asin: ownAsin,
         tracked_asin_id: trackedAsinId,
       })
       .select()
@@ -176,8 +187,8 @@ export async function POST(req: NextRequest) {
   if (error) {
     console.error('[keywords.track.save_failed]')
     return NextResponse.json(
-      { error: 'Failed to save keyword' },
-      { status: 500 },
+      { error: error.code === '23505' ? 'Keyword already tracked for this ASIN.' : 'Failed to save keyword' },
+      { status: error.code === '23505' ? 409 : 500 },
     )
   }
 

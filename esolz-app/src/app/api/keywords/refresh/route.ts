@@ -13,6 +13,7 @@ import {
   toWorkerMarketplace,
 } from '@/lib/checkers/checker-worker-client'
 import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
+import { keywordTargetKey, resolveKeywordRefreshTarget } from '@/lib/keywords/keyword-tracking'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
   // ── Keywords with product association ─────────────────────────────────────
   const { data: keywords, error: kwErr } = await supabase
     .from('tracked_keywords')
-    .select('id, keyword, marketplace, tracked_asin_id, amazon_listing_item_id')
+    .select('id, keyword, marketplace, tracked_asin_id, own_asin')
     .eq('workspace_id', workspaceId)
     .in('id', keywordIds)
 
@@ -93,25 +94,13 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  const listingIds = [...new Set(
-    keywords
-      .map(row => row.amazon_listing_item_id as string | null)
-      .filter((id): id is string => Boolean(id)),
-  )]
   const trackedAsinIds = [...new Set(
     keywords
       .map(row => row.tracked_asin_id as string | null)
       .filter((id): id is string => Boolean(id)),
   )]
 
-  const [listingRowsResult, trackedRowsResult] = await Promise.all([
-    listingIds.length
-      ? supabase
-          .from('amazon_listing_items')
-          .select('id, asin, marketplace_id')
-          .eq('workspace_id', workspaceId)
-          .in('id', listingIds)
-      : Promise.resolve({ data: [] as Array<{ id: string; asin: string | null; marketplace_id: string | null }>, error: null }),
+  const trackedRowsResult = await (
     trackedAsinIds.length
       ? supabase
           .from('tracked_asins')
@@ -119,19 +108,50 @@ export async function POST(req: NextRequest) {
           .eq('workspace_id', workspaceId)
           .in('id', trackedAsinIds)
           .neq('status', 'archived')
-      : Promise.resolve({ data: [] as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>, error: null }),
-  ])
+      : Promise.resolve({ data: [] as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>, error: null })
+  )
 
-  if (listingRowsResult.error || trackedRowsResult.error) {
+  if (trackedRowsResult.error) {
     return NextResponse.json({ error: 'Failed to resolve keyword products' }, { status: 500 })
   }
 
-  const listingById = new Map(
-    (listingRowsResult.data ?? []).map(row => [row.id as string, row]),
-  )
   const trackedById = new Map(
     (trackedRowsResult.data ?? []).map(row => [row.id as string, row]),
   )
+  const targetAsins = [...new Set(keywords.flatMap(row => {
+    const ownAsin = row.own_asin as string | null
+    const tracked = row.tracked_asin_id ? trackedById.get(row.tracked_asin_id as string) : null
+    return [ownAsin, tracked?.asin as string | null].filter((asin): asin is string => Boolean(asin))
+  }))]
+  const catalogResult = targetAsins.length
+    ? await supabase
+        .from('amazon_listing_items')
+        .select('asin, marketplace_id')
+        .eq('workspace_id', workspaceId)
+        .in('asin', targetAsins)
+    : { data: [] as Array<{ asin: string | null; marketplace_id: string | null }>, error: null }
+
+  if (catalogResult.error) {
+    return NextResponse.json({ error: 'Failed to validate product ownership.' }, { status: 500 })
+  }
+
+  const ownCatalogKeys = new Set((catalogResult.data ?? []).flatMap(row => {
+    if (!row.asin || !row.marketplace_id) return []
+    return [keywordTargetKey('my_product', row.asin, marketplaceFromMarketplaceId(row.marketplace_id))]
+  }))
+
+  const targetByKeywordId = new Map(keywords.map(row => [
+    row.id,
+    resolveKeywordRefreshTarget(row, trackedById, ownCatalogKeys),
+  ]))
+  const invalidTarget = [...targetByKeywordId.values()].some(target => target === null)
+
+  if (invalidTarget) {
+    return NextResponse.json(
+      { error: 'One or more keyword targets could not be verified for this workspace.' },
+      { status: 409 },
+    )
+  }
 
   const admin = createAdminClient()
   let runtimeUnavailableDetected = false
@@ -184,17 +204,11 @@ export async function POST(req: NextRequest) {
   }
 
   for (const kw of keywords) {
-    const listingId = kw.amazon_listing_item_id as string | null
-    const trackedAsinId = kw.tracked_asin_id as string | null
-    const listing = listingId ? listingById.get(listingId) : null
-    const tracked = trackedAsinId ? trackedById.get(trackedAsinId) : null
-    const asin = listing?.asin ?? tracked?.asin ?? null
-    const market = listing?.marketplace_id
-      ? marketplaceFromMarketplaceId(listing.marketplace_id as string)
-      : ((tracked?.marketplace as string | null) ?? kw.marketplace ?? 'IN')
+    const target = targetByKeywordId.get(kw.id)
+    if (!target) continue
+    const { asin, marketplace: market, trackedAsinId } = target
     const workerMarket = toWorkerMarketplace(market)
     const workerConfigured = isWorkerConfigured()
-    if (!asin) continue
 
     if (runtimeUnavailableDetected) {
       const checkedAt = new Date().toISOString()
