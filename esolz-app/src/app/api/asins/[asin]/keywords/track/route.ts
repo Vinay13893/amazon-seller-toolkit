@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { marketplaceFromMarketplaceId, marketplaceIdForMarketplace } from '@/lib/asins/product-separation'
 
 export const runtime = 'nodejs'
 
 /**
  * POST /api/asins/[asin]/keywords/track
  *
- * Saves a keyword to tracked_keywords linked to the specified tracked ASIN.
- * Duplicate prevention is scoped to workspace + tracked_asin_id + keyword + marketplace.
+ * Saves a keyword to tracked_keywords linked to the specified ASIN.
+ * My Products bind to workspace + marketplace + ASIN. Competitors bind to tracked_asins.
+ * Duplicate prevention is scoped to the resolved product source + keyword + marketplace.
  * Body: { keyword, marketplace?, search_volume?, cpc_estimate?, difficulty? }
  */
 export async function POST(
@@ -48,21 +50,52 @@ export async function POST(
     )
   }
 
-  // ── 3. Resolve tracked_asin_id ────────────────────────────────────────────
+  // ── 3. Resolve product source ─────────────────────────────────────────────
   const marketplace = (body.marketplace ?? 'IN').toUpperCase().replace('AMAZON.', '')
+  const marketplaceId = marketplaceIdForMarketplace(marketplace)
+  if (!marketplaceId) {
+    return NextResponse.json({ error: 'Unsupported marketplace.' }, { status: 400 })
+  }
 
-  const { data: tracked } = await supabase
-    .from('tracked_asins')
-    .select('id')
+  const normalizedAsin = asin.toUpperCase()
+  const { data: listing, error: listingError } = await supabase
+    .from('amazon_listing_items')
+    .select('asin, marketplace_id')
     .eq('workspace_id', member.workspace_id)
-    .eq('asin', asin.toUpperCase())
-    .neq('status', 'archived')
+    .eq('asin', normalizedAsin)
+    .eq('marketplace_id', marketplaceId)
+    .limit(1)
     .maybeSingle()
 
-  // ASIN must be tracked — we cannot link a keyword to an untracked ASIN
-  if (!tracked?.id) {
+  if (listingError) {
+    return NextResponse.json({ error: 'Failed to validate product ownership.' }, { status: 500 })
+  }
+
+  const ownAsin = listing?.asin ? normalizedAsin : null
+  let trackedAsinId: string | null = null
+  if (!ownAsin) {
+    const { data: tracked, error: trackedError } = await supabase
+      .from('tracked_asins')
+      .select('id, marketplace')
+      .eq('workspace_id', member.workspace_id)
+      .eq('asin', normalizedAsin)
+      .eq('marketplace', marketplace)
+      .neq('status', 'archived')
+      .maybeSingle()
+
+    if (trackedError) {
+      return NextResponse.json({ error: 'Failed to validate competitor ASIN.' }, { status: 500 })
+    }
+    trackedAsinId = tracked?.id ? tracked.id as string : null
+  }
+
+  const resolvedMarketplace = listing?.marketplace_id
+    ? marketplaceFromMarketplaceId(listing.marketplace_id as string)
+    : marketplace
+
+  if (!ownAsin && !trackedAsinId) {
     return NextResponse.json(
-      { error: `ASIN ${asin} is not tracked in this workspace. Add it to ASIN tracking first.` },
+      { error: `ASIN ${asin} is not available in My Products or tracked as a competitor in this workspace.` },
       { status: 404 },
     )
   }
@@ -70,14 +103,25 @@ export async function POST(
   const normalizedKeyword = body.keyword.trim()
 
   // ── 4. Duplicate checks ───────────────────────────────────────────────────
-  const { data: existingSameAsin } = await supabase
+  let existingQuery = supabase
     .from('tracked_keywords')
     .select('id')
     .eq('workspace_id', member.workspace_id)
-    .eq('tracked_asin_id', tracked.id)
     .eq('keyword', normalizedKeyword)
-    .eq('marketplace', marketplace)
-    .maybeSingle()
+    .eq('marketplace', resolvedMarketplace)
+
+  existingQuery = ownAsin
+    ? existingQuery
+        .eq('own_asin', ownAsin)
+        .is('tracked_asin_id', null)
+    : existingQuery
+        .eq('tracked_asin_id', trackedAsinId)
+        .is('own_asin', null)
+
+  const { data: existingSameAsin, error: existingError } = await existingQuery.limit(1).maybeSingle()
+  if (existingError) {
+    return NextResponse.json({ error: 'Failed to check keyword tracking.' }, { status: 500 })
+  }
 
   if (existingSameAsin?.id) {
     return NextResponse.json({
@@ -92,9 +136,10 @@ export async function POST(
     .from('tracked_keywords')
     .insert({
       workspace_id:    member.workspace_id,
-      tracked_asin_id: tracked.id,
+      own_asin:       ownAsin,
+      tracked_asin_id: trackedAsinId,
       keyword:         normalizedKeyword,
-      marketplace,
+      marketplace:     resolvedMarketplace,
       search_volume:   body.search_volume ?? null,
       cpc_estimate:    body.cpc_estimate  ?? null,
       difficulty:      body.difficulty    ?? null,
@@ -105,8 +150,8 @@ export async function POST(
   if (error) {
     console.error('[asin_keywords.track.save_failed]')
     return NextResponse.json(
-      { error: 'Failed to save keyword' },
-      { status: 500 },
+      { error: error.code === '23505' ? 'Keyword already tracked for this ASIN.' : 'Failed to save keyword' },
+      { status: error.code === '23505' ? 409 : 500 },
     )
   }
 

@@ -12,6 +12,8 @@ import {
   CheckerWorkerUnavailableError,
   toWorkerMarketplace,
 } from '@/lib/checkers/checker-worker-client'
+import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
+import { keywordTargetKey, resolveKeywordRefreshTarget } from '@/lib/keywords/keyword-tracking'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120
@@ -39,7 +41,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
  * POST /api/keywords/refresh
  *
  * Refreshes a caller-selected small batch of tracked keywords in the workspace.
- * Keywords without an ASIN association are skipped (rank check requires an ASIN).
+ * Keywords without a product association are skipped (rank check requires an ASIN).
  *
  * Inserts keyword_rank_snapshots rows for each checked keyword.
  */
@@ -75,13 +77,12 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // ── Keywords with ASIN association ────────────────────────────────────────
+  // ── Keywords with product association ─────────────────────────────────────
   const { data: keywords, error: kwErr } = await supabase
     .from('tracked_keywords')
-    .select('id, keyword, marketplace, tracked_asin_id, tracked_asins(asin, marketplace)')
+    .select('id, keyword, marketplace, tracked_asin_id, own_asin')
     .eq('workspace_id', workspaceId)
     .in('id', keywordIds)
-    .not('tracked_asin_id', 'is', null)
 
   if (kwErr) {
     return NextResponse.json({ error: 'Failed to load tracked keywords' }, { status: 500 })
@@ -89,8 +90,67 @@ export async function POST(req: NextRequest) {
   if (!keywords || keywords.length === 0) {
     return NextResponse.json({
       results: [],
-      message: 'No keywords with ASIN associations found. Track keywords from an ASIN detail page to enable rank refresh.',
+      message: 'No selected keywords found in this workspace.',
     })
+  }
+
+  const trackedAsinIds = [...new Set(
+    keywords
+      .map(row => row.tracked_asin_id as string | null)
+      .filter((id): id is string => Boolean(id)),
+  )]
+
+  const trackedRowsResult = await (
+    trackedAsinIds.length
+      ? supabase
+          .from('tracked_asins')
+          .select('id, asin, marketplace, status')
+          .eq('workspace_id', workspaceId)
+          .in('id', trackedAsinIds)
+          .neq('status', 'archived')
+      : Promise.resolve({ data: [] as Array<{ id: string; asin: string | null; marketplace: string | null; status: string | null }>, error: null })
+  )
+
+  if (trackedRowsResult.error) {
+    return NextResponse.json({ error: 'Failed to resolve keyword products' }, { status: 500 })
+  }
+
+  const trackedById = new Map(
+    (trackedRowsResult.data ?? []).map(row => [row.id as string, row]),
+  )
+  const targetAsins = [...new Set(keywords.flatMap(row => {
+    const ownAsin = row.own_asin as string | null
+    const tracked = row.tracked_asin_id ? trackedById.get(row.tracked_asin_id as string) : null
+    return [ownAsin, tracked?.asin as string | null].filter((asin): asin is string => Boolean(asin))
+  }))]
+  const catalogResult = targetAsins.length
+    ? await supabase
+        .from('amazon_listing_items')
+        .select('asin, marketplace_id')
+        .eq('workspace_id', workspaceId)
+        .in('asin', targetAsins)
+    : { data: [] as Array<{ asin: string | null; marketplace_id: string | null }>, error: null }
+
+  if (catalogResult.error) {
+    return NextResponse.json({ error: 'Failed to validate product ownership.' }, { status: 500 })
+  }
+
+  const ownCatalogKeys = new Set((catalogResult.data ?? []).flatMap(row => {
+    if (!row.asin || !row.marketplace_id) return []
+    return [keywordTargetKey('my_product', row.asin, marketplaceFromMarketplaceId(row.marketplace_id))]
+  }))
+
+  const targetByKeywordId = new Map(keywords.map(row => [
+    row.id,
+    resolveKeywordRefreshTarget(row, trackedById, ownCatalogKeys),
+  ]))
+  const invalidTarget = [...targetByKeywordId.values()].some(target => target === null)
+
+  if (invalidTarget) {
+    return NextResponse.json(
+      { error: 'One or more keyword targets could not be verified for this workspace.' },
+      { status: 409 },
+    )
   }
 
   const admin = createAdminClient()
@@ -112,7 +172,7 @@ export async function POST(req: NextRequest) {
 
   async function insertFailedSnapshot(params: {
     trackedKeywordId: string
-    trackedAsinId: string
+    trackedAsinId: string | null
     keyword: string
     checkedAt: string
     scrapeStatus: 'failed' | 'checker_unavailable'
@@ -136,7 +196,7 @@ export async function POST(req: NextRequest) {
         page:               null,
         position_on_page:   null,
         found:              false,
-          scrape_status:      params.scrapeStatus,
+        scrape_status:      params.scrapeStatus,
         error_message:      params.errorMessage,
         page_status:        null,
         checked_at:         params.checkedAt,
@@ -144,17 +204,11 @@ export async function POST(req: NextRequest) {
   }
 
   for (const kw of keywords) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const asinRow = Array.isArray(kw.tracked_asins)
-      ? kw.tracked_asins[0]
-      : kw.tracked_asins as { asin: string; marketplace: string } | null
-
-    const asin       = asinRow?.asin
-    const market     = kw.marketplace ?? asinRow?.marketplace ?? 'IN'
+    const target = targetByKeywordId.get(kw.id)
+    if (!target) continue
+    const { asin, marketplace: market, trackedAsinId } = target
     const workerMarket = toWorkerMarketplace(market)
-    const trackedAsinId = kw.tracked_asin_id as string
     const workerConfigured = isWorkerConfigured()
-    if (!asin) continue
 
     if (runtimeUnavailableDetected) {
       const checkedAt = new Date().toISOString()
