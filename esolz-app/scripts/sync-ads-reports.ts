@@ -227,6 +227,7 @@ async function upsertByDedupeKey(admin: SupabaseClient, table: string, workspace
       .select('id, dedupe_key')
       .eq('workspace_id', workspaceId)
       .eq('profile_id', profileId)
+      .order('id')
       .range(page * PAGE, page * PAGE + PAGE - 1)
     if (error) throw new Error(`Reading existing ${table} rows failed: ${error.message}`)
     for (const row of pageRows ?? []) existingIdByKey.set(row.dedupe_key as string, row.id as string)
