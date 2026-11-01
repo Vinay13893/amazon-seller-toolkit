@@ -6,9 +6,10 @@ export type BuyBoxDisplayInput = {
 export type BuyBoxDisplayState = 'detected' | 'not_detected' | 'blocked' | 'unknown'
 
 export function getBuyBoxDisplayState(result: BuyBoxDisplayInput): BuyBoxDisplayState {
-  if (result.buy_box_detected === true) return 'detected'
-  if (result.buy_box_detected === false && result.page_status === 'product') return 'not_detected'
   if (result.page_status === 'blocked') return 'blocked'
+  if (result.page_status !== 'product') return 'unknown'
+  if (result.buy_box_detected === true) return 'detected'
+  if (result.buy_box_detected === false) return 'not_detected'
   return 'unknown'
 }
 
