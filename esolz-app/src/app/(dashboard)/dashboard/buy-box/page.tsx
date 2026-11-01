@@ -4,6 +4,12 @@ import { useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, Play, RefreshCw, ShoppingCart, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  getBuyBoxDisplayLabel,
+  getBuyBoxDisplayState,
+  getBuyBoxReason,
+  getMissingSignalLabel,
+} from '@/lib/checkers/buy-box-display'
 import { cn } from '@/lib/utils'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed'
@@ -66,16 +72,18 @@ function parseAsins(value: string): string[] {
 }
 
 function resultTone(result: BuyBoxResult) {
-  if (result.buy_box_detected === true) return 'text-emerald-500'
-  if (result.buy_box_detected === false && result.page_status === 'product') return 'text-red-500'
-  if (result.page_status === 'blocked') return 'text-amber-500'
+  const state = getBuyBoxDisplayState(result)
+  if (state === 'detected') return 'text-emerald-500'
+  if (state === 'not_detected') return 'text-red-500'
+  if (state === 'blocked') return 'text-amber-500'
   return 'text-muted-foreground'
 }
 
 function resultIcon(result: BuyBoxResult) {
-  if (result.buy_box_detected === true) return CheckCircle2
-  if (result.buy_box_detected === false && result.page_status === 'product') return XCircle
-  if (result.page_status === 'blocked') return AlertTriangle
+  const state = getBuyBoxDisplayState(result)
+  if (state === 'detected') return CheckCircle2
+  if (state === 'not_detected') return XCircle
+  if (state === 'blocked') return AlertTriangle
   return Clock
 }
 
@@ -102,9 +110,7 @@ function formatPrice(value: string | null): string | null {
 }
 
 function reasonLabel(result: BuyBoxResult): string {
-  if (result.error_code) return result.error_code
-  if (result.page_status === 'blocked') return 'blocked_or_captcha'
-  return 'No issue reported'
+  return getBuyBoxReason(result.error_code, result.page_status)
 }
 
 export default function BuyBoxMonitorPage() {
@@ -409,11 +415,15 @@ export default function BuyBoxMonitorPage() {
                       <td className="px-4 py-3">
                         <span className={cn('inline-flex items-center gap-1.5 text-xs font-medium', resultTone(result))}>
                           <Icon className="size-3.5" />
-                          {result.buy_box_detected === true ? 'Detected' : result.buy_box_detected === false ? 'Not detected' : 'Unknown'}
+                          {getBuyBoxDisplayLabel(result)}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-foreground">{result.price_detected ? formatPrice(result.price_text) ?? 'Detected' : 'Not detected'}</td>
-                      <td className="max-w-[260px] px-4 py-3 text-xs text-muted-foreground">{cleanPipeSeparatedText(result.seller_name) ?? 'Not detected'}</td>
+                      <td className="px-4 py-3 text-xs text-foreground">
+                        {result.price_detected ? formatPrice(result.price_text) ?? 'Detected' : getMissingSignalLabel(result.page_status)}
+                      </td>
+                      <td className="max-w-[260px] px-4 py-3 text-xs text-muted-foreground">
+                        {cleanPipeSeparatedText(result.seller_name) ?? getMissingSignalLabel(result.page_status)}
+                      </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground capitalize">{result.availability_status ?? 'unknown'}</td>
                       <td className="max-w-[280px] px-4 py-3 text-xs text-muted-foreground">
                         <span className="font-medium text-foreground">{reasonLabel(result)}</span>

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getBuyBoxCsvValue, getBuyBoxReason } from '@/lib/checkers/buy-box-display'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
@@ -50,9 +51,7 @@ function formatPrice(value: unknown): string | null {
 }
 
 function reasonLabel(errorCode: string | null, pageStatus: string | null): string {
-  if (errorCode) return errorCode
-  if (pageStatus === 'blocked') return 'blocked_or_captcha'
-  return 'No issue reported'
+  return getBuyBoxReason(errorCode, pageStatus)
 }
 
 export async function GET(
@@ -114,7 +113,7 @@ export async function GET(
 
   const rows = (results ?? []).map(result => [
     result.asin,
-    result.buy_box_detected ? 'Yes' : 'No',
+    getBuyBoxCsvValue(result),
     formatPrice(result.price_text),
     cleanPipeSeparatedText(result.seller_name),
     result.availability_status,
