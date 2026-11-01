@@ -43,6 +43,12 @@ import {
   keywordTargetKey,
   type KeywordTargetType,
 } from '@/lib/keywords/keyword-tracking'
+import {
+  filterKeywordRowsByAsin,
+  getEffectiveKeywordAsinFilter,
+  getKeywordRefreshState,
+  refreshKeywordIds,
+} from '@/lib/keywords/keyword-refresh'
 import { Marketplace } from '@/types'
 import { toast } from 'sonner'
 
@@ -421,15 +427,17 @@ export default function KeywordsPage() {
       ? k.target_type === 'my_product'
       : k.target_type === 'competitor_asin'
   ))
-  const keywordAsinFilterIsValid = keywordAsinFilter === 'all' || domainTrackedData.some(k => (
-    k.source_id
-    && k.target_type !== 'research'
-    && keywordTargetKey(k.target_type as KeywordTargetType, k.source_id, k.marketplace) === keywordAsinFilter
-  ))
-  const effectiveKeywordAsinFilter = keywordAsinFilterIsValid ? keywordAsinFilter : 'all'
-  const visibleTrackedData = effectiveKeywordAsinFilter === 'all'
-    ? domainTrackedData
-    : domainTrackedData.filter(k => keywordTargetKey(k.target_type as KeywordTargetType, k.source_id ?? '', k.marketplace) === effectiveKeywordAsinFilter)
+  const effectiveKeywordAsinFilter = getEffectiveKeywordAsinFilter(
+    domainTrackedData,
+    keywordAsinFilter,
+  )
+  const visibleTrackedData = filterKeywordRowsByAsin(domainTrackedData, keywordAsinFilter)
+  const refreshState = getKeywordRefreshState({
+    loading: trackedKeywordsLoading,
+    workspaceId,
+    keywordCount: visibleTrackedData.length,
+    refreshing: isRefreshing,
+  })
   const keywordAsinOptions = [...new Map(
     domainTrackedData
       .filter(k => k.asin && k.asin !== '—' && k.source_id && k.target_type !== 'research')
@@ -1020,29 +1028,11 @@ export default function KeywordsPage() {
     toast.info('Refresh started. Checking latest ranks.')
 
     try {
-      let completed = 0
-      let partial = 0
-
-      for (const keyword of visibleTrackedData) {
-        const res = await fetch('/api/keywords/refresh', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ keywordIds: [keyword.id] }),
-        })
-        const data = await parseJsonSafe<{ checked?: number; status?: string }>(res)
-
-        if (
-          res.ok
-          && data?.status !== 'failed'
-          && data?.status !== 'checker_unavailable'
-          && data?.checked === 1
-        ) {
-          completed += 1
-        } else {
-          partial += 1
-        }
-        setRefreshProgress(`Checking latest ranks ${completed + partial}/${visibleTrackedData.length}`)
-      }
+      const { completed, partial } = await refreshKeywordIds(
+        visibleTrackedData.map(keyword => keyword.id),
+        fetch,
+        (processed, total) => setRefreshProgress(`Checking latest ranks ${processed}/${total}`),
+      )
 
       await loadTrackedKeywords(workspaceId)
       if (partial > 0) {
@@ -1743,7 +1733,7 @@ export default function KeywordsPage() {
               type="button"
               variant="outline"
               onClick={handleRefresh}
-              disabled={isRefreshing}
+              disabled={!refreshState.canRefresh}
             >
               {isRefreshing ? (
                 <><RefreshCw className="size-4 animate-spin" /> {refreshProgress || 'Checking latest ranks'}</>
