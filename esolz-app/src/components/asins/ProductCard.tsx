@@ -125,6 +125,10 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
     <div className="rounded-xl border border-border bg-card flex flex-col overflow-hidden">
       {/* ── Header ── */}
       <div className="px-4 pt-4 pb-3 flex items-start justify-between gap-2">
+        {product.image_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={product.image_url} alt={product.label} className="size-14 shrink-0 rounded-md border border-border bg-muted object-contain" />
+        )}
         <div className="flex flex-col gap-1.5 min-w-0">
           {/* ASIN chip + marketplace + status */}
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -155,6 +159,7 @@ export function ProductCard({ product, onDelete }: ProductCardProps) {
           <p className="text-sm font-semibold text-foreground leading-snug line-clamp-2">
             {product.label}
           </p>
+          {product.brand && <p className="text-xs text-muted-foreground">{product.brand}</p>}
 
           {/* Category breadcrumb */}
           {product.category && (

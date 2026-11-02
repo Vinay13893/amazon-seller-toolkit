@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { KpiCard } from '@/components/dashboard/KpiCard'
+import { SkuChips } from '@/components/asins/AsinProductSelector'
 import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -125,6 +126,7 @@ interface ProductOption {
   marketplace: Marketplace
   title: string
   sku: string | null
+  skus: string[]
   brand: string | null
   productType: string | null
   imageUrl: string | null
@@ -462,6 +464,7 @@ export default function KeywordsPage() {
       p.asin.toLowerCase().includes(q) ||
       p.title.toLowerCase().includes(q) ||
       (p.sku ?? '').toLowerCase().includes(q) ||
+      p.skus.some(sku => sku.toLowerCase().includes(q)) ||
       (p.brand ?? '').toLowerCase().includes(q) ||
       p.marketplace.toLowerCase().includes(q)
     )
@@ -541,6 +544,7 @@ export default function KeywordsPage() {
           marketplace: mp,
           title,
           sku: null,
+          skus: [],
           brand: (externalMeta?.brand as string | null) ?? (row.brand as string | null) ?? null,
           productType: category,
           imageUrl: (externalMeta?.image_url as string | null) ?? (row.image_url as string | null) ?? null,
@@ -578,6 +582,7 @@ export default function KeywordsPage() {
           marketplace: source.marketplace as Marketplace,
           title: source.label,
           sku: source.sku ?? null,
+          skus: source.skus ?? [],
           brand: source.brand ?? null,
           productType: source.productType ?? null,
           imageUrl: source.imageUrl ?? null,
@@ -634,6 +639,7 @@ export default function KeywordsPage() {
             marketplace: source.marketplace as Marketplace,
             title: source.label,
             sku: source.sku ?? null,
+            skus: source.skus ?? [],
             brand: source.brand ?? null,
             productType: source.productType ?? null,
             imageUrl: source.imageUrl ?? null,
@@ -692,6 +698,7 @@ export default function KeywordsPage() {
           marketplace: source.marketplace as Marketplace,
           title: source.label,
           sku: source.sku ?? null,
+          skus: source.skus ?? [],
           brand: source.brand ?? null,
           productType: source.productType ?? null,
           imageUrl: source.imageUrl ?? null,
@@ -706,7 +713,14 @@ export default function KeywordsPage() {
 
       setListingProductOptions(previous => {
         const merged = new Map(previous.map(product => [product.key, product]))
-        for (const product of nextOptions) merged.set(product.key, product)
+        for (const product of nextOptions) {
+          const existing = merged.get(product.key)
+          merged.set(product.key, existing ? {
+            ...existing,
+            ...product,
+            skus: [...new Set([...existing.skus, ...product.skus])].sort((a, b) => a.localeCompare(b)),
+          } : product)
+        }
         return [...merged.values()]
       })
       setListingProductTotal(data?.total ?? listingProductTotal)
@@ -1521,7 +1535,7 @@ export default function KeywordsPage() {
                             {product.asin}
                             <ExternalLink className="size-3" />
                           </Link>
-                          {product.sku && <span>SKU: {product.sku}</span>}
+                          {product.skus.length > 0 && <SkuChips skus={product.skus} />}
                           {product.brand && <span>Brand: {product.brand}</span>}
                         </div>
                         <div className="flex items-center gap-2 flex-wrap">
@@ -1615,7 +1629,7 @@ export default function KeywordsPage() {
               <p className="text-sm font-medium text-foreground line-clamp-2">{selectedProduct.title}</p>
               <div className="flex items-center gap-2 flex-wrap text-[11px] text-muted-foreground">
                 <span className="font-mono">{selectedProduct.asin}</span>
-                {selectedProduct.sku && <span>SKU: {selectedProduct.sku}</span>}
+                {selectedProduct.skus.length > 0 && <SkuChips skus={selectedProduct.skus} />}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <Badge variant="outline" className="text-[10px]">{selectedProduct.marketplace}</Badge>

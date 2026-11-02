@@ -4,6 +4,9 @@ import { useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, Play, RefreshCw, ShoppingCart, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { AsinProductSelector } from '@/components/asins/AsinProductSelector'
+import { useAsinProductDomains } from '@/hooks/use-asin-product-domains'
+import { selectedAsins } from '@/lib/asins/product-domain'
 import {
   getBuyBoxDisplayLabel,
   getBuyBoxDisplayState,
@@ -62,15 +65,6 @@ type TriggerResponse = {
 
 const MAX_ASINS = 10
 
-function parseAsins(value: string): string[] {
-  return Array.from(new Set(
-    value
-      .split(/[\s,]+/)
-      .map(item => item.trim().toUpperCase())
-      .filter(item => /^[A-Z0-9]{10}$/.test(item)),
-  ))
-}
-
 function resultTone(result: BuyBoxResult) {
   const state = getBuyBoxDisplayState(result)
   if (state === 'detected') return 'text-emerald-500'
@@ -114,7 +108,7 @@ function reasonLabel(result: BuyBoxResult): string {
 }
 
 export default function BuyBoxMonitorPage() {
-  const [asinText, setAsinText] = useState('')
+  const [selectedProductKeys, setSelectedProductKeys] = useState<string[]>([])
   const [job, setJob] = useState<BuyBoxJob | null>(null)
   const [results, setResults] = useState<BuyBoxResult[]>([])
   const [loading, setLoading] = useState(false)
@@ -124,7 +118,14 @@ export default function BuyBoxMonitorPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const asins = useMemo(() => parseAsins(asinText), [asinText])
+  const productDomains = useAsinProductDomains()
+  const myIndiaProducts = useMemo(() => productDomains.myProducts.filter(product => product.marketplace === 'IN'), [productDomains.myProducts])
+  const competitorIndiaProducts = useMemo(() => productDomains.competitorProducts.filter(product => product.marketplace === 'IN'), [productDomains.competitorProducts])
+  const allProducts = useMemo(
+    () => [...myIndiaProducts, ...competitorIndiaProducts],
+    [myIndiaProducts, competitorIndiaProducts],
+  )
+  const asins = useMemo(() => selectedAsins(allProducts, selectedProductKeys), [allProducts, selectedProductKeys])
   const limitError = asins.length > MAX_ASINS ? `Use ${MAX_ASINS} ASINs or fewer.` : null
   const progressPercent = job?.progressTotal
     ? Math.round((job.progressCurrent / job.progressTotal) * 100)
@@ -269,19 +270,19 @@ export default function BuyBoxMonitorPage() {
 
       <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-lg border border-border bg-card p-5">
-          <label className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-muted-foreground">ASINs</span>
-            <textarea
-              value={asinText}
-              onChange={event => setAsinText(event.target.value)}
-              rows={6}
-              placeholder="Enter up to 10 ASINs"
-              className="min-h-36 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-            />
-            <span className={cn('text-xs', limitError ? 'text-red-400' : 'text-muted-foreground')}>
-              {asins.length}/{MAX_ASINS} valid ASINs
-            </span>
-          </label>
+          <AsinProductSelector
+            myProducts={myIndiaProducts}
+            competitorProducts={competitorIndiaProducts}
+            selectedKeys={selectedProductKeys}
+            onSelectedKeysChange={setSelectedProductKeys}
+            maxSelected={MAX_ASINS}
+            loading={productDomains.loading}
+            catalogUnavailable={productDomains.catalogUnavailable}
+            competitorsUnavailable={productDomains.competitorsUnavailable}
+          />
+          <p className={cn('mt-3 text-xs', limitError ? 'text-red-400' : 'text-muted-foreground')}>
+            {asins.length ? `Selected: ${asins.join(', ')}` : 'Choose products above to start a check.'}
+          </p>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <Button

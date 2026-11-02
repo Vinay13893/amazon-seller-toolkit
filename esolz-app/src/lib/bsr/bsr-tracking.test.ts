@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildBsrTargetView,
+  buildBsrOwnAsinSources,
   filterBsrCompetitorCandidates,
   hasDuplicateBsrTarget,
   rankMetricsForTarget,
@@ -192,6 +193,17 @@ test('same ASIN in a different marketplace remains distinct', () => {
 
   assert.equal(competitors.length, 1)
   assert.equal(targetKey('competitor_asin', 'tracked-us'), 'competitor_asin:tracked-us')
+})
+
+test('BSR selector groups multiple seller SKUs while retaining listing identities', () => {
+  const sources = buildBsrOwnAsinSources([
+    { ...ownListing, sku: 'SKU-B', item_name: 'Own product' },
+    { ...ownListing, id: 'listing-in-2', sku: 'SKU-A' },
+  ])
+
+  assert.equal(sources.length, 1)
+  assert.deepEqual(sources[0].skus, ['SKU-A', 'SKU-B'])
+  assert.deepEqual(sources[0].sourceIds, ['listing-in', 'listing-in-2'])
 })
 
 test('duplicate active BSR tracking target is prevented by source identity', () => {

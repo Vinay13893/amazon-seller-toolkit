@@ -22,6 +22,7 @@ export type KeywordSourceProduct = {
   marketplace: string
   label: string
   sku?: string | null
+  skus?: string[]
   brand?: string | null
   productType?: string | null
   imageUrl?: string | null
@@ -96,6 +97,7 @@ export function keywordSourceFromListing(listing: OwnCatalogListingIdentity & {
     marketplace: marketplaceFromMarketplaceId(listing.marketplace_id),
     label: listing.item_name?.trim() || asin,
     sku: listing.sku ?? null,
+    skus: listing.sku?.trim() ? [listing.sku.trim()] : [],
     brand: listing.brand ?? null,
     productType: listing.product_type ?? null,
     imageUrl: listing.image_url ?? null,
@@ -127,6 +129,7 @@ export function buildKeywordOwnAsinSources(
       ...existing,
       label: existing.label === existing.asin && source.label !== source.asin ? source.label : existing.label,
       sku: existing.sku ?? source.sku,
+      skus: [...new Set([...(existing.skus ?? []), ...(source.skus ?? [])])].sort((a, b) => a.localeCompare(b)),
       brand: existing.brand ?? source.brand,
       productType: existing.productType ?? source.productType,
       imageUrl: existing.imageUrl ?? source.imageUrl,
