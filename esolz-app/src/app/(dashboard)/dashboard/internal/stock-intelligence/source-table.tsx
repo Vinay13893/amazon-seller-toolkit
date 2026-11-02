@@ -2,11 +2,13 @@
 
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, Clipboard, Minus, TriangleAlert, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { getSourceStatusTone } from '@/lib/stock-intelligence/presentation'
 import { cn } from '@/lib/utils'
 
 type Props = {
   headers: Array<string | null>
   rows: Array<Array<string | null>>
+  preambleRows?: Array<Array<string | null>>
   frozenColumns?: number
   compact?: boolean
   onSort?: (column: number) => void
@@ -35,13 +37,15 @@ function SourceValue({ header, value }: { header: string; value: string | null }
     )
   }
   if (header.toLocaleLowerCase().includes('status')) {
-    const lower = value.toLocaleLowerCase()
-    const Icon = lower.includes('error') || lower.includes('failed')
+    const tone = getSourceStatusTone(value)
+    const Icon = tone === 'danger'
       ? X
-      : lower.includes('warning') || lower.includes('blocked')
+      : tone === 'warning'
         ? TriangleAlert
-        : Check
-    return <span className="inline-flex items-center gap-1"><Icon className="size-3.5" />{value}</span>
+        : tone === 'success'
+          ? Check
+          : null
+    return <span className="inline-flex items-center gap-1">{Icon && <Icon className="size-3.5" />}{value}</span>
   }
   if (header.toLocaleLowerCase().includes('case text')) {
     return (
@@ -65,6 +69,7 @@ function SourceValue({ header, value }: { header: string; value: string | null }
 export function SourceTable({
   headers,
   rows,
+  preambleRows = [],
   frozenColumns = 0,
   compact = false,
   onSort,
@@ -76,6 +81,18 @@ export function SourceTable({
     <div className="w-full overflow-auto border-y border-border">
       <table className="min-w-max border-collapse text-xs">
         <thead className="sticky top-0 z-20 bg-muted">
+          {preambleRows.map((row, rowIndex) => (
+            <tr key={`preamble-${rowIndex}`} className="bg-background text-muted-foreground">
+              {headers.map((_, columnIndex) => (
+                <td
+                  key={columnIndex}
+                  className="max-w-80 border-b border-r border-border/70 px-2 py-1.5 align-top whitespace-normal last:border-r-0"
+                >
+                  {row[columnIndex] ?? ''}
+                </td>
+              ))}
+            </tr>
+          ))}
           <tr>
             {headers.map((header, index) => {
               const sticky = index < stickyCount

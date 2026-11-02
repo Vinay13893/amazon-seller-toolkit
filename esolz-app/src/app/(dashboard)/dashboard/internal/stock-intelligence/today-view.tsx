@@ -3,6 +3,7 @@
 import { ArrowRight, CircleAlert, Clock3, IndianRupee, PackageSearch, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { parseTodaySections } from '@/lib/stock-intelligence/config'
+import { TODAY_SHIPMENT_METRIC_LABEL } from '@/lib/stock-intelligence/presentation'
 import { SourceTable } from './source-table'
 
 type Props = {
@@ -43,7 +44,7 @@ export function TodayView({ rows, onNavigate }: Props) {
       <div className="grid border border-border sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="Under 7 days" value={findCount(sections, 'under 7 days')} icon={Clock3} />
         <Metric label="7–15 days" value={findCount(sections, '7-15 days')} icon={PackageSearch} />
-        <Metric label="Inventory exceptions" value={findCount(sections, 'shipments needing attention')} icon={CircleAlert} />
+        <Metric label={TODAY_SHIPMENT_METRIC_LABEL} value={findCount(sections, 'shipments needing attention')} icon={CircleAlert} />
         <Metric label="Reconciliation exceptions" value={findCount(sections, 'Stock Amazon lost')} icon={RefreshCw} />
         <Metric label="Claim opportunities" value={findCount(sections, 'Claims to check')} icon={IndianRupee} />
       </div>

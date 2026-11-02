@@ -56,18 +56,6 @@ export function WorksheetTableView({
   const hasFilters = Boolean(search || brand || category)
   return (
     <div className="space-y-4">
-      {data.preambleRows.length > 0 && (
-        <div className="border-y border-border bg-muted/30 px-3 py-2 text-xs">
-          {data.preambleRows.map((row, index) => (
-            <div key={index} className="flex flex-wrap gap-x-6 gap-y-1 py-1">
-              {row.filter(value => value !== null && value !== '').map((value, valueIndex) => (
-                <span key={valueIndex}>{value}</span>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-60 flex-1 sm:max-w-md">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -132,6 +120,7 @@ export function WorksheetTableView({
         <SourceTable
           headers={data.headers}
           rows={data.rows}
+          preambleRows={data.preambleRows}
           frozenColumns={data.sheet.frozenColumnCount}
           compact
           onSort={onSort}

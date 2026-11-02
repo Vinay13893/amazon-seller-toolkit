@@ -40,6 +40,28 @@ test('wide column conversion and row normalization preserve empty cell positions
   assert.equal(findLastUsedColumn([['A', null, 'C'], ['D']], 1), 3)
 })
 
+test('Hub Planner control rows retain their source column association', () => {
+  const controls = normalizeSheetRow([
+    'Hub switches',
+    'Status | Backup hub',
+    null,
+    'Open',
+    null,
+    'Delhi',
+  ], 8)
+
+  assert.deepEqual(controls, [
+    'Hub switches',
+    'Status | Backup hub',
+    null,
+    'Open',
+    null,
+    'Delhi',
+    null,
+    null,
+  ])
+})
+
 test('Today parser preserves source section order, counts, headings and values', () => {
   const sections = parseTodaySections([
     ['Today - source timestamp'],

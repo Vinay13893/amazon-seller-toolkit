@@ -13,6 +13,18 @@ type SelectRowsInput = {
   sortDirection?: 'asc' | 'desc'
 }
 
+export function findLastPopulatedSheetRow(
+  rows: Array<Array<string | number | boolean | null>>,
+  fallbackRow: number,
+): number {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    if (rows[index]?.some(value => value !== null && value !== undefined && String(value).trim() !== '')) {
+      return index + 1
+    }
+  }
+  return fallbackRow
+}
+
 function compareSourceValues(left: string | null, right: string | null): number {
   if (left === right) return 0
   if (left === null || left.trim() === '') return 1

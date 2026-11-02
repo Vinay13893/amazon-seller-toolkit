@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getInternalAccessContext } from '@/lib/internal-access'
+import { getStockIntelligenceAccessContext } from '@/lib/stock-intelligence/access'
 import { getStockWorksheet, StockSheetsError } from '@/lib/stock-intelligence/google-sheets'
 
 export const runtime = 'nodejs'
@@ -14,7 +14,7 @@ function boundedText(value: string | null, maximum: number): string {
 }
 
 export async function GET(request: Request) {
-  const access = await getInternalAccessContext()
+  const access = await getStockIntelligenceAccessContext()
   if (!access.authorized || !access.workspaceId) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   }

@@ -1,9 +1,9 @@
-import { redirect } from 'next/navigation'
-import { getInternalAccessContext } from '@/lib/internal-access'
+import { notFound } from 'next/navigation'
+import { getStockIntelligenceAccessContext } from '@/lib/stock-intelligence/access'
 import { StockIntelligenceDashboard } from './stock-intelligence-dashboard'
 
 export default async function StockIntelligencePage() {
-  const access = await getInternalAccessContext()
-  if (!access.authorized) redirect('/dashboard')
+  const access = await getStockIntelligenceAccessContext()
+  if (!access.authorized) notFound()
   return <StockIntelligenceDashboard />
 }

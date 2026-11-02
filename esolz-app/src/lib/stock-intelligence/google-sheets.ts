@@ -12,7 +12,11 @@ import {
   isHiddenWorksheet,
   normalizeSheetRow,
 } from './config'
-import { selectWorksheetRowNumbers, uniqueSourceValues } from './data-operations'
+import {
+  findLastPopulatedSheetRow,
+  selectWorksheetRowNumbers,
+  uniqueSourceValues,
+} from './data-operations'
 import type { StockWorkbookMetadata, WorksheetData, WorksheetSummary } from './types'
 
 const SHEETS_READONLY_SCOPE = 'https://www.googleapis.com/auth/spreadsheets.readonly'
@@ -22,6 +26,7 @@ const METADATA_CACHE_MS = 5 * 60 * 1000
 const VALUES_CACHE_MS = 60 * 1000
 const CACHE_TTL_SECONDS = VALUES_CACHE_MS / 1000
 const MAX_WORKSHEET_INDEX_ROWS = 5000
+const MAX_WORKSHEET_INDEX_COLUMNS = 12
 
 type CacheEntry<T> = { expiresAt: number; value: T }
 const responseCache = new Map<string, CacheEntry<unknown>>()
@@ -303,15 +308,6 @@ function columnValues(
   return rows.map(row => row[0] === null || row[0] === undefined ? null : String(row[0]))
 }
 
-function lastNonEmptyRow(rows: Array<Array<string | number | boolean | null>>, headerRow: number): number {
-  for (let index = rows.length - 1; index >= headerRow; index -= 1) {
-    if (rows[index]?.some(value => value !== null && value !== undefined && String(value).trim() !== '')) {
-      return index + 1
-    }
-  }
-  return headerRow
-}
-
 export async function getStockWorksheet(input: GetWorksheetInput): Promise<WorksheetData> {
   const metadata = await getStockWorkbookMetadata(input.refresh)
   const sheet = metadata.worksheets.find(candidate => candidate.title === input.title)
@@ -373,13 +369,15 @@ export async function getStockWorksheet(input: GetWorksheetInput): Promise<Works
   const firstDataRow = headerRow + 1
 
   const indexLastRow = Math.min(sheet.rowCount, headerRow + MAX_WORKSHEET_INDEX_ROWS)
-  const firstColumns = await readRange(
+  const indexColumnCount = Math.min(usedColumnCount, MAX_WORKSHEET_INDEX_COLUMNS)
+  const indexLastColumn = columnIndexToA1(indexColumnCount - 1)
+  const rowIndexRows = await readRange(
     metadata.spreadsheetId,
     sheet.title,
-    `A1:B${indexLastRow}`,
+    `A1:${indexLastColumn}${indexLastRow}`,
     input.refresh,
   )
-  const lastDataRow = lastNonEmptyRow(firstColumns, headerRow)
+  const lastDataRow = findLastPopulatedSheetRow(rowIndexRows, headerRow)
   const indexBoundReached = lastDataRow === indexLastRow && indexLastRow < sheet.rowCount
   const totalRows = Math.max(0, lastDataRow - headerRow)
   const brandIndex = headers.findIndex(header => header?.trim().toLocaleLowerCase() === 'brand')
