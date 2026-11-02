@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, Package, TrendingUp, Tag, MapPin,
   ShoppingCart, Users, Bell, FileText, CreditCard,
-  Settings, BarChart3, FlaskConical, Megaphone, Activity,
+  Settings, BarChart3, FlaskConical, Megaphone, Activity, Warehouse,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { SidebarPlanCard } from '@/components/layout/SidebarPlanCard'
@@ -83,6 +83,7 @@ export function Sidebar({ className }: SidebarProps) {
           section: 'Internal',
           items: [
             { href: '/dashboard/internal', icon: FlaskConical, label: 'Internal Dashboard' },
+            { href: '/dashboard/internal/stock-intelligence', icon: Warehouse, label: 'Stock Intelligence' },
             { href: '/dashboard/internal/easyhome-diagnostic', icon: Megaphone, label: 'EasyHOME Brahmastra' },
           ],
         },
