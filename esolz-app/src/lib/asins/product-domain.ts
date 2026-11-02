@@ -37,6 +37,30 @@ export type AsinProduct = {
   primarySourceId: string
 }
 
+export function selectProductForSkuContext({
+  selectedKeys,
+  productKey,
+  maxSelected,
+}: {
+  selectedKeys: string[]
+  productKey: string
+  maxSelected: number
+}): { selectedKeys: string[]; accepted: boolean } {
+  if (selectedKeys.includes(productKey)) return { selectedKeys, accepted: true }
+  if (selectedKeys.length >= maxSelected) return { selectedKeys, accepted: false }
+  return { selectedKeys: [...selectedKeys, productKey], accepted: true }
+}
+
+export function shouldToggleProductFromKeyboard({
+  key,
+  isContainerTarget,
+}: {
+  key: string
+  isContainerTarget: boolean
+}): boolean {
+  return isContainerTarget && (key === 'Enter' || key === ' ')
+}
+
 function normalized(value: string | null | undefined): string {
   return value?.trim().toUpperCase() ?? ''
 }

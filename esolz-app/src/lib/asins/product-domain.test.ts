@@ -4,7 +4,9 @@ import {
   buildCompetitorProducts,
   groupCatalogProducts,
   resolveAsinProductDomains,
+  selectProductForSkuContext,
   selectedAsins,
+  shouldToggleProductFromKeyboard,
 } from './product-domain'
 
 const catalogRows = [
@@ -57,4 +59,39 @@ test('classification failures fail closed independently', () => {
 test('SKU context never changes queue targeting from the canonical ASIN', () => {
   const products = groupCatalogProducts(catalogRows)
   assert.deepEqual(selectedAsins(products, [products[0].key]), ['B0OWN00001'])
+})
+
+test('SKU activation selects its parent product once and preserves ASIN identity', () => {
+  const product = groupCatalogProducts(catalogRows)[0]
+  const firstClick = selectProductForSkuContext({
+    selectedKeys: [],
+    productKey: product.key,
+    maxSelected: 2,
+  })
+
+  assert.equal(firstClick.accepted, true)
+  assert.deepEqual(firstClick.selectedKeys, [product.key])
+  assert.deepEqual(selectedAsins([product], firstClick.selectedKeys), ['B0OWN00001'])
+
+  const contextChange = selectProductForSkuContext({
+    selectedKeys: firstClick.selectedKeys,
+    productKey: product.key,
+    maxSelected: 2,
+  })
+  assert.equal(contextChange.accepted, true)
+  assert.equal(contextChange.selectedKeys, firstClick.selectedKeys)
+})
+
+test('SKU activation respects selection limits and nested keys do not toggle the parent', () => {
+  const blocked = selectProductForSkuContext({
+    selectedKeys: ['my:IN:OTHER'],
+    productKey: 'my:IN:B0OWN00001',
+    maxSelected: 1,
+  })
+
+  assert.equal(blocked.accepted, false)
+  assert.deepEqual(blocked.selectedKeys, ['my:IN:OTHER'])
+  assert.equal(shouldToggleProductFromKeyboard({ key: 'Enter', isContainerTarget: false }), false)
+  assert.equal(shouldToggleProductFromKeyboard({ key: ' ', isContainerTarget: false }), false)
+  assert.equal(shouldToggleProductFromKeyboard({ key: 'Enter', isContainerTarget: true }), true)
 })

@@ -1,11 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import {
+  attachCompleteListingSkus,
+  listingSkuAssociationScope,
+  type ListingSkuIdentity,
+} from '@/lib/asins/listing-sku-associations'
 import { timeAgo } from '@/lib/format'
 
 export const runtime = 'nodejs'
 
 const DEFAULT_PAGE_SIZE = 50
 const MAX_PAGE_SIZE = 100
+const SKU_ASSOCIATION_PAGE_SIZE = 1000
 const JOB_TYPE = 'product_page_snapshot'
 const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
 // Two independent schedulers process this queue: Vercel Cron (every 2h) and
@@ -215,6 +221,7 @@ export async function GET(request: NextRequest) {
     )
     .eq('workspace_id', membership.workspace_id)
     .order('item_name', { ascending: true, nullsFirst: false })
+    .order('id', { ascending: true })
     .range(offset, offset + limit - 1)
 
   if (search) {
@@ -245,7 +252,34 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unable to load Seller Central listings.' }, { status: 500 })
   }
 
-  const listingIds = (data ?? []).map(row => row.id as string)
+  const pageRows = (data ?? []) as Array<ListingSkuIdentity & Record<string, unknown>>
+  const associationScope = listingSkuAssociationScope(pageRows)
+  const skuAssociationRows: ListingSkuIdentity[] = []
+
+  if (associationScope.productKeys.size > 0) {
+    for (let associationOffset = 0; ; associationOffset += SKU_ASSOCIATION_PAGE_SIZE) {
+      const associationResult = await supabase
+        .from('amazon_listing_items')
+        .select('asin, marketplace_id, sku')
+        .eq('workspace_id', membership.workspace_id)
+        .in('asin', associationScope.asins)
+        .in('marketplace_id', associationScope.marketplaceIds)
+        .order('id', { ascending: true })
+        .range(associationOffset, associationOffset + SKU_ASSOCIATION_PAGE_SIZE - 1)
+
+      if (associationResult.error) {
+        return NextResponse.json({ error: 'Unable to load complete Seller Central SKU associations.' }, { status: 500 })
+      }
+
+      const associationPage = (associationResult.data ?? []) as ListingSkuIdentity[]
+      skuAssociationRows.push(...associationPage)
+      if (associationPage.length < SKU_ASSOCIATION_PAGE_SIZE) break
+    }
+  }
+
+  const completePageRows = attachCompleteListingSkus(pageRows, skuAssociationRows)
+
+  const listingIds = completePageRows.map(row => row.id as string)
   const snapshotsByListingId = new Map<string, ListingSnapshotRow[]>()
   let listingJobs: CheckerJobRow[] = []
 
@@ -284,7 +318,7 @@ export async function GET(request: NextRequest) {
     listingJobs = (jobs ?? []) as CheckerJobRow[]
   }
 
-  const items = (data ?? []).map(row => ({
+  const items = completePageRows.map(row => ({
     ...row,
     snapshot: (() => {
       const listingId = row.id as string
@@ -382,7 +416,7 @@ export async function GET(request: NextRequest) {
     total: count ?? 0,
     offset,
     limit,
-    hasMore: offset + (data?.length ?? 0) < (count ?? 0),
+    hasMore: offset + completePageRows.length < (count ?? 0),
     checker: { ...checkerSummary, suggestedAction },
     sync: latestJob
       ? {

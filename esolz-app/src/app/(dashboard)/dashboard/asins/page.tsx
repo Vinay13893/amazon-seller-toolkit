@@ -134,10 +134,13 @@ export default function AsinsPage() {
         : `listing:${item.id}`
       const current = grouped.get(key)
       if (!current) {
-        grouped.set(key, { ...item, skus: [item.sku] })
+        grouped.set(key, { ...item, skus: item.skus ?? [item.sku] })
         continue
       }
-      const skus = new Set([...(current.skus ?? [current.sku]), item.sku])
+      const skus = new Set([
+        ...(current.skus ?? [current.sku]),
+        ...(item.skus ?? [item.sku]),
+      ])
       current.skus = [...skus].sort((a, b) => a.localeCompare(b))
       current.item_name ??= item.item_name
       current.brand ??= item.brand

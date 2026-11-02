@@ -4,7 +4,12 @@ import { useMemo, useState } from 'react'
 import { Check, Package, Search } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import type { AsinProduct, AsinProductDomain } from '@/lib/asins/product-domain'
+import {
+  selectProductForSkuContext,
+  shouldToggleProductFromKeyboard,
+  type AsinProduct,
+  type AsinProductDomain,
+} from '@/lib/asins/product-domain'
 import { cn } from '@/lib/utils'
 
 export function AsinProductSelector({
@@ -94,7 +99,14 @@ export function AsinProductSelector({
                 role="button"
                 tabIndex={0}
                 onClick={() => toggleProduct(product)}
-                onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') toggleProduct(product) }}
+                onKeyDown={event => {
+                  if (!shouldToggleProductFromKeyboard({
+                    key: event.key,
+                    isContainerTarget: event.target === event.currentTarget,
+                  })) return
+                  event.preventDefault()
+                  toggleProduct(product)
+                }}
                 className={cn(
                   'flex min-h-28 cursor-pointer gap-3 rounded-md border p-3 transition-colors',
                   selected ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/30',
@@ -117,7 +129,21 @@ export function AsinProductSelector({
                     {product.brand && <span>{product.brand}</span>}
                   </div>
                   {product.domain === 'my' && product.skus.length > 0 && (
-                    <SkuChips skus={product.skus} className="mt-2" />
+                    <SkuChips
+                      skus={product.skus}
+                      className="mt-2"
+                      onSkuSelect={() => {
+                        const nextSelection = selectProductForSkuContext({
+                          selectedKeys,
+                          productKey: product.key,
+                          maxSelected,
+                        })
+                        if (nextSelection.selectedKeys !== selectedKeys) {
+                          onSelectedKeysChange(nextSelection.selectedKeys)
+                        }
+                        return nextSelection.accepted
+                      }}
+                    />
                   )}
                 </div>
               </div>
@@ -129,7 +155,15 @@ export function AsinProductSelector({
   )
 }
 
-export function SkuChips({ skus, className }: { skus: string[]; className?: string }) {
+export function SkuChips({
+  skus,
+  className,
+  onSkuSelect,
+}: {
+  skus: string[]
+  className?: string
+  onSkuSelect?: (sku: string) => boolean | void
+}) {
   const [expanded, setExpanded] = useState(false)
   const [contextSku, setContextSku] = useState<string | null>(null)
   const visibleSkus = expanded ? skus : skus.slice(0, 4)
@@ -141,7 +175,11 @@ export function SkuChips({ skus, className }: { skus: string[]; className?: stri
           key={sku}
           type="button"
           title="Use this seller SKU as display context"
-          onClick={event => { event.stopPropagation(); setContextSku(sku) }}
+          onClick={event => {
+            event.stopPropagation()
+            if (onSkuSelect?.(sku) !== false) setContextSku(sku)
+          }}
+          onKeyDown={event => event.stopPropagation()}
           className={cn(
             'rounded border px-1.5 py-0.5 font-mono text-[9px]',
             contextSku === sku ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-foreground',
@@ -154,6 +192,7 @@ export function SkuChips({ skus, className }: { skus: string[]; className?: stri
         <button
           type="button"
           onClick={event => { event.stopPropagation(); setExpanded(true) }}
+          onKeyDown={event => event.stopPropagation()}
           className="px-1 text-[9px] text-primary hover:underline"
         >
           +{skus.length - 4} more
