@@ -32,9 +32,10 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { DataFreshnessBadge } from '@/components/dashboard/DataFreshnessBadge'
+import { SkuChips } from '@/components/asins/AsinProductSelector'
 import {
   buildBsrTargetView,
-  marketplaceLabelForListing,
+  buildBsrOwnAsinSources,
   resolveBsrCandidateRows,
   resolveBsrSnapshotRows,
   summarizeBsrTargets,
@@ -158,19 +159,6 @@ function ChartSkeleton() {
   )
 }
 
-function sourceFromListing(row: ListingCandidateRow): BsrSourceProduct | null {
-  if (!row.id || !row.asin) return null
-  return {
-    targetType: 'my_product',
-    sourceId: row.id,
-    asin: row.asin,
-    marketplace: marketplaceLabelForListing(row.marketplace_id),
-    label: row.item_name || row.sku || row.asin,
-    sku: row.sku,
-    imageUrl: row.image_url,
-  }
-}
-
 function sourceFromTracked(row: TrackedCandidateRow): BsrSourceProduct | null {
   if (!row.id || !row.asin || !row.marketplace) return null
   return {
@@ -198,7 +186,7 @@ function rowKeyFromTarget(row: BsrTrackingTargetRow): string | null {
 function includesSearch(source: BsrSourceProduct, search: string): boolean {
   const q = search.trim().toLowerCase()
   if (!q) return true
-  return [source.label, source.asin, source.sku, source.marketplace]
+  return [source.label, source.asin, source.sku, ...(source.skus ?? []), source.marketplace]
     .filter(Boolean)
     .some(value => String(value).toLowerCase().includes(q))
 }
@@ -342,14 +330,18 @@ export default function BsrTrackerPage() {
     setCatalogUnavailable(candidateRows.catalogUnavailable)
     setTrackedUnavailable(candidateRows.trackedUnavailable)
 
-    const mySources = candidateRows.myRows.map(sourceFromListing).filter((source): source is BsrSourceProduct => Boolean(source))
+    const mySources = buildBsrOwnAsinSources(candidateRows.myRows)
     const competitorSources = candidateRows.competitorRows.map(sourceFromTracked).filter((source): source is BsrSourceProduct => Boolean(source))
 
     setMyCandidates(mySources)
     setCompetitorCandidates(competitorSources)
 
-    const allSources = [...mySources, ...competitorSources]
-    const sourceByKey = new Map(allSources.map(source => [targetKey(source.targetType, source.sourceId), source]))
+    const sourceByKey = new Map(competitorSources.map(source => [targetKey(source.targetType, source.sourceId), source]))
+    for (const source of mySources) {
+      for (const sourceId of source.sourceIds ?? [source.sourceId]) {
+        sourceByKey.set(targetKey('my_product', sourceId), { ...source, sourceId })
+      }
+    }
     const activeRows = targetRows.filter(row => row.status === 'active')
     const listingIds = candidateRows.catalogUnavailable
       ? []
@@ -662,7 +654,9 @@ export default function BsrTrackerPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 max-h-[360px] overflow-y-auto pr-1">
             {filteredCandidates.map(source => {
               const key = targetKey(source.targetType, source.sourceId)
-              const isTracking = activeTargetRowsByKey.has(key)
+              const isTracking = source.targetType === 'my_product'
+                ? (source.sourceIds ?? [source.sourceId]).some(sourceId => activeTargetRowsByKey.has(targetKey('my_product', sourceId)))
+                : activeTargetRowsByKey.has(key)
               return (
                 <div key={key} className="rounded-lg border border-border bg-muted/10 p-3 flex items-center gap-3">
                   {source.imageUrl ? (
@@ -678,7 +672,7 @@ export default function BsrTrackerPage() {
                     <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                       <span className="font-mono text-[10px] text-muted-foreground bg-background/80 rounded px-1.5 py-0.5">{source.asin}</span>
                       <Badge variant="secondary" className="text-[9px]">{source.marketplace}</Badge>
-                      {source.sku && <span className="text-[10px] text-muted-foreground truncate max-w-[120px]">{source.sku}</span>}
+                      {source.skus && <SkuChips skus={source.skus} />}
                     </div>
                   </div>
                   {isTracking ? (
@@ -748,7 +742,7 @@ export default function BsrTrackerPage() {
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-mono text-[10px] text-muted-foreground bg-muted/50 rounded px-1.5 py-0.5">{target.asin}</span>
                           <Badge variant="secondary" className="text-[9px]">{target.marketplace}</Badge>
-                          {target.sku && <span className="text-[10px] text-muted-foreground">{target.sku}</span>}
+                          {target.skus && <SkuChips skus={target.skus} />}
                         </div>
                       </div>
                     </td>

@@ -42,7 +42,7 @@ export interface TrackAsinResult {
   message: string
 }
 
-const TRACKED_ASIN_COLUMNS = 'id, asin, marketplace, product_title, category, status, created_at'
+const TRACKED_ASIN_COLUMNS = 'id, asin, marketplace, product_title, brand, category, image_url, status, created_at'
 const UNIQUE_VIOLATION = '23505'
 
 type TrackedAsinRow = {
@@ -50,7 +50,9 @@ type TrackedAsinRow = {
   asin: string
   marketplace: string
   product_title: string | null
+  brand: string | null
   category: string | null
+  image_url: string | null
   status: string
   created_at: string
 }
@@ -60,6 +62,8 @@ function mapTrackedAsinRow(row: TrackedAsinRow): ProductSnapshot {
     id:                 row.id,
     asin:               row.asin,
     label:              row.product_title || row.asin,
+    brand:              row.brand ?? null,
+    image_url:          row.image_url ?? null,
     marketplace:        row.marketplace as Marketplace,
     is_active:          row.status === 'active',
     created_at:         row.created_at,
@@ -341,7 +345,7 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
   const supabase = createClient()
   const { data: asinRows, error: asinError } = await supabase
     .from('tracked_asins')
-    .select('id, asin, marketplace, product_title, category, status, created_at')
+    .select('id, asin, marketplace, product_title, brand, category, image_url, status, created_at')
     .eq('workspace_id', workspaceId)
     .neq('status', 'archived')
     .order('created_at', { ascending: false })
@@ -418,6 +422,8 @@ export async function getTrackedAsins(workspaceId: string): Promise<ProductSnaps
       id:                 row.id,
       asin:               row.asin,
       label:              row.product_title || row.asin,
+      brand:              row.brand ?? null,
+      image_url:          row.image_url ?? null,
       marketplace:        row.marketplace as Marketplace,
       is_active:          row.status === 'active',
       created_at:         row.created_at,

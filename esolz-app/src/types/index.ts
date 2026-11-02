@@ -77,6 +77,8 @@ export interface ProductSnapshot {
   id: string
   asin: string
   label: string
+    brand?: string | null
+    image_url?: string | null
   marketplace: Marketplace
   is_active: boolean
   created_at: string

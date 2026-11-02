@@ -4,6 +4,7 @@ import {
   type OwnCatalogListingIdentity,
   type TrackedAsinIdentity,
 } from '@/lib/asins/product-separation'
+import { groupCatalogProducts, type CatalogProductRow } from '@/lib/asins/product-domain'
 
 export type BsrTargetType = 'my_product' | 'competitor_asin'
 
@@ -44,7 +45,23 @@ export type BsrSourceProduct = {
   marketplace: string
   label: string
   sku?: string | null
+  skus?: string[]
+  sourceIds?: string[]
   imageUrl?: string | null
+}
+
+export function buildBsrOwnAsinSources(listings: CatalogProductRow[]): BsrSourceProduct[] {
+  return groupCatalogProducts(listings).map(product => ({
+    targetType: 'my_product',
+    sourceId: product.primarySourceId,
+    sourceIds: product.sourceIds,
+    asin: product.asin,
+    marketplace: product.marketplace,
+    label: product.title,
+    sku: product.skus[0] ?? null,
+    skus: product.skus,
+    imageUrl: product.imageUrl,
+  }))
 }
 
 export type BsrTargetView = BsrSourceProduct & {

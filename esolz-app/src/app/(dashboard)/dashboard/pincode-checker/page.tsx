@@ -4,6 +4,9 @@ import { useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, MapPin, Play, RefreshCw, Trash2, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { AsinProductSelector } from '@/components/asins/AsinProductSelector'
+import { useAsinProductDomains } from '@/hooks/use-asin-product-domains'
+import { selectedAsins } from '@/lib/asins/product-domain'
 import { cn } from '@/lib/utils'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed'
@@ -60,15 +63,6 @@ const MAX_ASINS = 10
 const MAX_PINCODES = 20
 const MAX_CHECKS = 200
 
-function parseAsins(value: string): string[] {
-  return Array.from(new Set(
-    value
-      .split(/[\s,]+/)
-      .map(item => item.trim().toUpperCase())
-      .filter(item => /^[A-Z0-9]{10}$/.test(item)),
-  ))
-}
-
 function parsePincodes(value: string): string[] {
   return Array.from(new Set(
     value
@@ -112,7 +106,7 @@ function cleanDeliveryMessage(value: string | null): string | null {
 }
 
 export default function PincodeCheckerPage() {
-  const [asinText, setAsinText] = useState('')
+  const [selectedProductKeys, setSelectedProductKeys] = useState<string[]>([])
   const [pincodeText, setPincodeText] = useState(DEFAULT_PINCODES)
   const [job, setJob] = useState<PincodeJob | null>(null)
   const [results, setResults] = useState<PincodeResult[]>([])
@@ -123,7 +117,14 @@ export default function PincodeCheckerPage() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
-  const asins = useMemo(() => parseAsins(asinText), [asinText])
+  const productDomains = useAsinProductDomains()
+  const myIndiaProducts = useMemo(() => productDomains.myProducts.filter(product => product.marketplace === 'IN'), [productDomains.myProducts])
+  const competitorIndiaProducts = useMemo(() => productDomains.competitorProducts.filter(product => product.marketplace === 'IN'), [productDomains.competitorProducts])
+  const allProducts = useMemo(
+    () => [...myIndiaProducts, ...competitorIndiaProducts],
+    [myIndiaProducts, competitorIndiaProducts],
+  )
+  const asins = useMemo(() => selectedAsins(allProducts, selectedProductKeys), [allProducts, selectedProductKeys])
   const pincodes = useMemo(() => parsePincodes(pincodeText), [pincodeText])
   const totalChecks = asins.length * pincodes.length
   const limitError = asins.length > MAX_ASINS
@@ -280,21 +281,18 @@ export default function PincodeCheckerPage() {
 
       <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-lg border border-border bg-card p-5">
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="flex flex-col gap-2">
-              <span className="text-xs font-medium text-muted-foreground">ASINs</span>
-              <textarea
-                value={asinText}
-                onChange={event => setAsinText(event.target.value)}
-                rows={5}
-                placeholder="Enter up to 10 ASINs"
-                className="min-h-32 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-              />
-              <span className={cn('text-xs', asins.length > MAX_ASINS ? 'text-red-400' : 'text-muted-foreground')}>
-                {asins.length}/{MAX_ASINS} valid ASINs
-              </span>
-            </label>
+          <AsinProductSelector
+            myProducts={myIndiaProducts}
+            competitorProducts={competitorIndiaProducts}
+            selectedKeys={selectedProductKeys}
+            onSelectedKeysChange={setSelectedProductKeys}
+            maxSelected={MAX_ASINS}
+            loading={productDomains.loading}
+            catalogUnavailable={productDomains.catalogUnavailable}
+            competitorsUnavailable={productDomains.competitorsUnavailable}
+          />
 
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
             <label className="flex flex-col gap-2">
               <span className="text-xs font-medium text-muted-foreground">Pincodes</span>
               <textarea
@@ -308,6 +306,10 @@ export default function PincodeCheckerPage() {
                 {pincodes.length}/{MAX_PINCODES} valid pincodes
               </span>
             </label>
+            <div className="rounded-md border border-border bg-muted/20 p-4 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">Selected ASINs</p>
+              <p className="mt-1">{asins.length ? asins.join(', ') : 'Choose products above.'}</p>
+            </div>
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">

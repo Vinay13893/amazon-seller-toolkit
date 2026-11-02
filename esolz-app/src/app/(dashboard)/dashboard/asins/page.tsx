@@ -1,10 +1,11 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { AddAsinDialog } from '@/components/asins/AddAsinDialog'
 import { AsinDashboardTable } from '@/components/asins/AsinDashboardTable'
 import { ProductCard } from '@/components/asins/ProductCard'
+import { SkuChips } from '@/components/asins/AsinProductSelector'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ProductSnapshot } from '@/types'
@@ -73,6 +74,7 @@ interface AmazonListingItem {
   image_url:      string | null
   last_synced_at: string | null
   snapshot:       AmazonListingSnapshot | null
+  skus?:          string[]
 }
 
 interface ListingSyncSummary {
@@ -123,6 +125,30 @@ export default function AsinsPage() {
   const [listingsHasMore, setListingsHasMore]       = useState(false)
   const [listingSync, setListingSync]               = useState<ListingSyncSummary | null>(null)
   const [checkerSummary, setCheckerSummary]         = useState<CheckerSummary | null>(null)
+
+  const groupedAmazonListings = useMemo(() => {
+    const grouped = new Map<string, AmazonListingItem>()
+    for (const item of amazonListings) {
+      const key = item.asin
+        ? `${item.marketplace_id}:${item.asin.trim().toUpperCase()}`
+        : `listing:${item.id}`
+      const current = grouped.get(key)
+      if (!current) {
+        grouped.set(key, { ...item, skus: item.skus ?? [item.sku] })
+        continue
+      }
+      const skus = new Set([
+        ...(current.skus ?? [current.sku]),
+        ...(item.skus ?? [item.sku]),
+      ])
+      current.skus = [...skus].sort((a, b) => a.localeCompare(b))
+      current.item_name ??= item.item_name
+      current.brand ??= item.brand
+      current.product_type ??= item.product_type
+      current.image_url ??= item.image_url
+    }
+    return [...grouped.values()]
+  }, [amazonListings])
 
   const loadAmazonListings = useCallback(async (options?: { append?: boolean; search?: string; offset?: number }) => {
     const append = options?.append ?? false
@@ -617,7 +643,7 @@ export default function AsinsPage() {
             </Link>
           </div>
 
-        ) : amazonListings.length === 0 ? (
+        ) : groupedAmazonListings.length === 0 ? (
           <div className="rounded-lg border border-dashed border-border bg-muted/20 p-6 flex flex-col items-center text-center gap-3">
             {listingSearch.trim() ? (
               <>
@@ -665,7 +691,7 @@ export default function AsinsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {amazonListings.map(item => (
+                  {groupedAmazonListings.map(item => (
                     <tr key={item.id} className="hover:bg-muted/20 transition-colors">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -691,8 +717,8 @@ export default function AsinsPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
-                        {item.sku}
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        <SkuChips skus={item.skus ?? [item.sku]} className="max-w-[260px]" />
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">
                         {item.asin ?? '—'}
@@ -792,7 +818,7 @@ export default function AsinsPage() {
             </div>
             <div className="px-4 py-3 bg-muted/20 border-t border-border flex items-center justify-between gap-3 flex-wrap">
               <p className="text-xs text-muted-foreground">
-                Showing {amazonListings.length} of {listingTotal} product{listingTotal !== 1 ? 's' : ''}
+                Showing {groupedAmazonListings.length} ASIN product{groupedAmazonListings.length !== 1 ? 's' : ''} from {amazonListings.length} of {listingTotal} listing{listingTotal !== 1 ? 's' : ''}
                 {listingSearch.trim() ? ' matching your search' : ''}
               </p>
               {listingsHasMore && (

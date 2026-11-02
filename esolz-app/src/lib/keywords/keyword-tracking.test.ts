@@ -125,6 +125,7 @@ test('multiple seller SKUs produce one own ASIN rank target', () => {
 
   assert.equal(sources.length, 1)
   assert.equal(sources[0].sourceId, 'B0OWNIN001')
+  assert.deepEqual(sources[0].skus, ['OWN-IN', 'OWN-IN-2'])
 })
 
 test('the same ASIN in different marketplaces remains a distinct own target', () => {
