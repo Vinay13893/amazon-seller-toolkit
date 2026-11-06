@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getStockIntelligenceAccessContext } from '@/lib/stock-intelligence/access'
-import { getStockWorksheet, StockSheetsError } from '@/lib/stock-intelligence/google-sheets'
+import { getStockWorksheet } from '@/lib/stock-intelligence/google-sheets'
+import { stockSheetsFailure } from '@/lib/stock-intelligence/errors'
 
 export const runtime = 'nodejs'
 
@@ -46,15 +47,10 @@ export async function GET(request: Request) {
       headers: { 'cache-control': 'private, no-store' },
     })
   } catch (error) {
-    if (error instanceof StockSheetsError) {
-      return NextResponse.json({
-        status: error.code === 'configuration_required' ? 'configuration_required' : 'unavailable',
-        message: error.safeMessage,
-      }, { status: error.status })
-    }
-    return NextResponse.json({
-      status: 'unavailable',
-      message: 'This worksheet is temporarily unavailable.',
-    }, { status: 503 })
+    const failure = stockSheetsFailure(error)
+    return NextResponse.json(failure.body, {
+      status: failure.status,
+      headers: { 'cache-control': 'private, no-store' },
+    })
   }
 }

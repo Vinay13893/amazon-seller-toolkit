@@ -29,7 +29,7 @@ async function requestMetadata(refresh = false): Promise<StockWorkbookMetadataRe
     credentials: 'same-origin',
   })
   const body = await response.json() as StockWorkbookMetadataResponse
-  if (!response.ok && !isFailure(body)) {
+  if (!response.ok && (!isFailure(body) || !('message' in body))) {
     return { status: 'unavailable', message: 'Stock workbook metadata is unavailable.' }
   }
   return body
@@ -210,13 +210,15 @@ export function StockIntelligenceDashboard() {
     return (
       <div className="mx-auto max-w-2xl border-y border-border py-16 text-center">
         <WifiOff className="mx-auto size-8 text-muted-foreground" />
-        <h1 className="mt-4 text-xl font-semibold">Stock Intelligence is not connected</h1>
+        <h1 className="mt-4 text-xl font-semibold">Stock Intelligence unavailable</h1>
         <p className="mx-auto mt-2 max-w-lg text-sm text-muted-foreground">
           {metadataFailure?.message ?? 'The stock workbook is unavailable.'}
         </p>
-        <p className="mt-2 text-xs text-muted-foreground">
-          An administrator must configure a read-only Google Sheets service account. The original workbook remains unchanged.
-        </p>
+        {metadataFailure?.status === 'configuration_required' && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Ask an administrator to check the Google Sheets connection settings.
+          </p>
+        )}
         <Button variant="outline" className="mt-5" onClick={() => void loadMetadata()}>
           <RefreshCw />
           Retry

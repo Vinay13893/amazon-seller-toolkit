@@ -64,6 +64,7 @@ export type WorksheetData = {
 
 export type StockSheetsFailure = {
   status: 'configuration_required' | 'unavailable'
+  code?: 'configuration_required' | 'authentication_failed' | 'permission_denied' | 'not_found' | 'upstream_error' | 'internal_error'
   message: string
 }
 

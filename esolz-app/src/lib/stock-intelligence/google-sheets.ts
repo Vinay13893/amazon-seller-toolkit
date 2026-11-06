@@ -1,6 +1,8 @@
 import 'server-only'
 
 import { createSign } from 'node:crypto'
+import { atStockSheetsStage, StockSheetsError, type StockSheetsStage } from './errors'
+export { StockSheetsError } from './errors'
 import {
   buildWorksheetUrl,
   columnIndexToA1,
@@ -60,16 +62,6 @@ type GoogleBatchValuesResponse = {
   valueRanges?: GoogleValuesResponse[]
 }
 
-export class StockSheetsError extends Error {
-  constructor(
-    readonly code: 'configuration_required' | 'permission_denied' | 'not_found' | 'upstream_error',
-    readonly safeMessage: string,
-    readonly status: number,
-  ) {
-    super(safeMessage)
-  }
-}
-
 function base64Url(value: string | Buffer): string {
   return Buffer.from(value).toString('base64url')
 }
@@ -87,6 +79,7 @@ function getGoogleConfiguration() {
       'configuration_required',
       'Google Sheets access is not configured for this environment.',
       503,
+      'configuration',
     )
   }
 
@@ -106,12 +99,14 @@ async function getAccessToken(): Promise<string> {
     exp: now + 3600,
   }))
   const unsignedJwt = `${header}.${claims}`
-  const signer = createSign('RSA-SHA256')
-  signer.update(unsignedJwt)
-  signer.end()
-  const assertion = `${unsignedJwt}.${signer.sign(privateKey, 'base64url')}`
+  const assertion = await atStockSheetsStage('jwt_signing', () => {
+    const signer = createSign('RSA-SHA256')
+    signer.update(unsignedJwt)
+    signer.end()
+    return `${unsignedJwt}.${signer.sign(privateKey, 'base64url')}`
+  })
 
-  const response = await fetch(GOOGLE_TOKEN_URL, {
+  const response = await atStockSheetsStage('google_token_exchange', () => fetch(GOOGLE_TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -119,17 +114,22 @@ async function getAccessToken(): Promise<string> {
       assertion,
     }),
     cache: 'no-store',
-  })
+  }))
 
   if (!response.ok) {
     throw new StockSheetsError(
-      response.status === 401 || response.status === 403 ? 'permission_denied' : 'upstream_error',
-      'Google Sheets authentication failed. Check the server-side service account configuration.',
+      response.status >= 500 || response.status === 429 ? 'upstream_error' : 'authentication_failed',
+      response.status >= 500 || response.status === 429
+        ? 'Google authentication is temporarily unavailable. Please retry.'
+        : 'Google Sheets authentication failed. Ask an administrator to check the service account configuration.',
       503,
+      'google_token_exchange',
+      'google_token_rejected',
+      response.status,
     )
   }
 
-  const body = await response.json() as { access_token?: string; expires_in?: number }
+  const body = await atStockSheetsStage('response_processing', () => response.json()) as { access_token?: string; expires_in?: number }
   if (!body.access_token) {
     throw new StockSheetsError('upstream_error', 'Google Sheets authentication returned no access token.', 503)
   }
@@ -140,12 +140,12 @@ async function getAccessToken(): Promise<string> {
   return body.access_token
 }
 
-async function googleGet<T>(url: string): Promise<T> {
+async function googleGet<T>(url: string, stage: StockSheetsStage): Promise<T> {
   const token = await getAccessToken()
-  const response = await fetch(url, {
+  const response = await atStockSheetsStage(stage, () => fetch(url, {
     headers: { authorization: `Bearer ${token}` },
     cache: 'no-store',
-  })
+  }))
 
   if (!response.ok) {
     if (response.status === 403) {
@@ -153,14 +153,19 @@ async function googleGet<T>(url: string): Promise<T> {
         'permission_denied',
         'The configured Google service account cannot read the stock workbook.',
         503,
+        stage,
+        'google_access_denied',
+        response.status,
       )
     }
     if (response.status === 404) {
-      throw new StockSheetsError('not_found', 'The configured stock workbook was not found.', 404)
+      throw new StockSheetsError('not_found', 'The configured stock workbook was not found.', 404,
+        stage, 'google_not_found', response.status)
     }
-    throw new StockSheetsError('upstream_error', 'Google Sheets data is temporarily unavailable.', 503)
+    throw new StockSheetsError('upstream_error', 'Google Sheets data is temporarily unavailable.', 503,
+      stage, 'google_request_rejected', response.status)
   }
-  return response.json() as Promise<T>
+  return atStockSheetsStage('response_processing', () => response.json() as Promise<T>)
 }
 
 async function cached<T>(key: string, ttlMs: number, refresh: boolean, loader: () => Promise<T>): Promise<T> {
@@ -191,6 +196,7 @@ async function readRange(
     })
     const response = await googleGet<GoogleValuesResponse>(
       `${GOOGLE_SHEETS_API}/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(a1)}?${params}`,
+      'google_worksheet_values',
     )
     return response.values ?? []
   })
@@ -215,6 +221,7 @@ async function readRanges(
     }
     const response = await googleGet<GoogleBatchValuesResponse>(
       `${GOOGLE_SHEETS_API}/${encodeURIComponent(spreadsheetId)}/values:batchGet?${params}`,
+      'google_worksheet_values',
     )
     return (response.valueRanges ?? []).map(valueRange => valueRange.values?.[0] ?? [])
   })
@@ -229,6 +236,7 @@ async function loadRawMetadata(spreadsheetId: string, refresh: boolean): Promise
   return cached(`metadata:${spreadsheetId}`, METADATA_CACHE_MS, refresh, () =>
     googleGet<GoogleMetadataResponse>(
       `${GOOGLE_SHEETS_API}/${encodeURIComponent(spreadsheetId)}?includeGridData=false&fields=${encodeURIComponent(fields)}`,
+      'google_spreadsheet_metadata',
     ),
   )
 }
