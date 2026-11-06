@@ -16,6 +16,17 @@ type Props = {
   sortDirection?: 'asc' | 'desc' | null
 }
 
+const STICKY_COLUMN_WIDTH = 180
+
+function stickyColumnStyle(index: number) {
+  return {
+    left: `${index * STICKY_COLUMN_WIDTH}px`,
+    width: `${STICKY_COLUMN_WIDTH}px`,
+    minWidth: `${STICKY_COLUMN_WIDTH}px`,
+    maxWidth: `${STICKY_COLUMN_WIDTH}px`,
+  }
+}
+
 function differenceClass(header: string, value: string | null): string {
   if (!header.toLocaleLowerCase().includes('difference') || !value) return ''
   const number = Number(value.replace(/[,+]/g, ''))
@@ -101,10 +112,10 @@ export function SourceTable({
               return (
                 <th
                   key={`${header ?? 'column'}-${index}`}
-                  style={sticky ? { left: `${index * 180}px` } : undefined}
+                  style={sticky ? stickyColumnStyle(index) : undefined}
                   className={cn(
                     'min-w-32 border-b border-r border-border px-2 py-2 text-left font-semibold text-foreground last:border-r-0',
-                    sticky && 'sticky z-30 min-w-[180px] bg-muted',
+                    sticky && 'sticky z-30 overflow-hidden whitespace-normal break-words bg-muted',
                   )}
                 >
                   {onSort ? (
@@ -131,11 +142,11 @@ export function SourceTable({
                 return (
                   <td
                     key={columnIndex}
-                    style={sticky ? { left: `${columnIndex * 180}px` } : undefined}
+                    style={sticky ? stickyColumnStyle(columnIndex) : undefined}
                     className={cn(
                       'max-w-80 border-b border-r border-border/70 px-2 align-top last:border-r-0',
                       compact ? 'py-1.5' : 'py-2',
-                      sticky && 'sticky z-10 min-w-[180px] bg-inherit',
+                      sticky && 'sticky z-10 overflow-hidden whitespace-normal break-words bg-inherit',
                       differenceClass(header ?? '', value),
                     )}
                   >
