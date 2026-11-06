@@ -50,14 +50,21 @@ test('Google adapter classifies failures and signs read-only requests', async t 
   await assert.rejects(getStockWorkbookMetadata(true), { stage: 'configuration', code: 'configuration_required' })
   process.env.GOOGLE_STOCK_SHEETS_CLIENT_EMAIL = email
   process.env.GOOGLE_STOCK_SHEETS_PRIVATE_KEY = 'truncated test fixture'
-  await assert.rejects(getStockWorkbookMetadata(true), { stage: 'jwt_signing', safeCode: 'invalid_pem_boundaries' })
+  await assert.rejects(getStockWorkbookMetadata(true), { stage: 'jwt_signing', safeCode: 'invalid_private_key' })
   assert.equal(signed, 0)
 
-  for (const encoded of [pem, pem.replaceAll('\n', '\\n'), pem.replaceAll('\n', '\r\n'), pem.replaceAll('\n', '\\r\\n')]) {
+  for (const encoded of [
+    pem,
+    pem.replaceAll('\n', '\\n'),
+    pem.replaceAll('\n', '\r\n'),
+    pem.replaceAll('\n', '\\r\\n'),
+    JSON.stringify(pem),
+    JSON.stringify({ private_key: pem }),
+  ]) {
     process.env.GOOGLE_STOCK_SHEETS_PRIVATE_KEY = encoded
     await assert.rejects(getStockWorkbookMetadata(true), { stage: 'google_token_exchange', code: 'authentication_failed', upstreamStatus: 400 })
   }
-  assert.equal(signed, 4)
+  assert.equal(signed, 6)
   assert.equal(reads, 0)
   oauthStatus = 503
   await assert.rejects(getStockWorkbookMetadata(true), { stage: 'google_token_exchange', code: 'upstream_error', upstreamStatus: 503 })

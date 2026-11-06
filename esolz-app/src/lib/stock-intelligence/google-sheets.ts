@@ -1,6 +1,6 @@
 import 'server-only'
 
-import { createSign } from 'node:crypto'
+import { createPrivateKey, createSign } from 'node:crypto'
 import { atStockSheetsStage, StockSheetsError, type StockSheetsStage } from './errors'
 import {
   buildWorksheetUrl,
@@ -65,12 +65,27 @@ function base64Url(value: string | Buffer): string {
   return Buffer.from(value).toString('base64url')
 }
 
+function normalizePrivateKey(rawValue: string): string {
+  let value = rawValue.trim()
+
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (typeof parsed === 'string') value = parsed
+    else if (parsed && typeof parsed === 'object' && 'private_key' in parsed &&
+      typeof parsed.private_key === 'string') value = parsed.private_key
+  } catch {
+    // A PEM value is not JSON. Continue with the value as entered.
+  }
+
+  return value.replace(/\\r\\n|\\n|\r\n/g, '\n').trim()
+}
+
 function getGoogleConfiguration() {
   const clientEmail = (process.env.GOOGLE_STOCK_SHEETS_CLIENT_EMAIL
     ?? process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL)?.trim()
   const privateKeyRaw = process.env.GOOGLE_STOCK_SHEETS_PRIVATE_KEY
     ?? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-  const privateKey = privateKeyRaw?.replace(/\\r\\n|\\n|\r\n/g, '\n').trim()
+  const privateKey = privateKeyRaw ? normalizePrivateKey(privateKeyRaw) : undefined
   const spreadsheetId = (process.env.GOOGLE_STOCK_SHEETS_ID ?? DEFAULT_STOCK_SPREADSHEET_ID).trim()
 
   if (!clientEmail || !privateKey) {
@@ -86,10 +101,12 @@ function getGoogleConfiguration() {
     throw new StockSheetsError('configuration_required', 'The Google Sheets connection settings are invalid.',
       503, 'configuration', 'invalid_identifier')
   }
-  if (!/^-----BEGIN (RSA )?PRIVATE KEY-----\n[\s\S]+\n-----END \1PRIVATE KEY-----$/.test(privateKey)) {
+  try {
+    createPrivateKey(privateKey)
+  } catch {
     throw new StockSheetsError('configuration_required',
       'The Google Sheets signing key is incomplete or incorrectly formatted. Ask an administrator to check it.',
-      503, 'jwt_signing', 'invalid_pem_boundaries')
+      503, 'jwt_signing', 'invalid_private_key')
   }
   return { clientEmail, privateKey, spreadsheetId }
 }
