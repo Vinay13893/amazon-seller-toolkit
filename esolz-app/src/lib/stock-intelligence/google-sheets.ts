@@ -2,7 +2,6 @@ import 'server-only'
 
 import { createSign } from 'node:crypto'
 import { atStockSheetsStage, StockSheetsError, type StockSheetsStage } from './errors'
-export { StockSheetsError } from './errors'
 import {
   buildWorksheetUrl,
   columnIndexToA1,
@@ -67,12 +66,12 @@ function base64Url(value: string | Buffer): string {
 }
 
 function getGoogleConfiguration() {
-  const clientEmail = process.env.GOOGLE_STOCK_SHEETS_CLIENT_EMAIL
-    ?? process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL
+  const clientEmail = (process.env.GOOGLE_STOCK_SHEETS_CLIENT_EMAIL
+    ?? process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL)?.trim()
   const privateKeyRaw = process.env.GOOGLE_STOCK_SHEETS_PRIVATE_KEY
     ?? process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY
-  const privateKey = privateKeyRaw?.replace(/\\n/g, '\n')
-  const spreadsheetId = process.env.GOOGLE_STOCK_SHEETS_ID ?? DEFAULT_STOCK_SPREADSHEET_ID
+  const privateKey = privateKeyRaw?.replace(/\\r\\n|\\n|\r\n/g, '\n').trim()
+  const spreadsheetId = (process.env.GOOGLE_STOCK_SHEETS_ID ?? DEFAULT_STOCK_SPREADSHEET_ID).trim()
 
   if (!clientEmail || !privateKey) {
     throw new StockSheetsError(
@@ -83,6 +82,15 @@ function getGoogleConfiguration() {
     )
   }
 
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clientEmail) || !/^[\w-]+$/.test(spreadsheetId)) {
+    throw new StockSheetsError('configuration_required', 'The Google Sheets connection settings are invalid.',
+      503, 'configuration', 'invalid_identifier')
+  }
+  if (!/^-----BEGIN (RSA )?PRIVATE KEY-----\n[\s\S]+\n-----END \1PRIVATE KEY-----$/.test(privateKey)) {
+    throw new StockSheetsError('configuration_required',
+      'The Google Sheets signing key is incomplete or incorrectly formatted. Ask an administrator to check it.',
+      503, 'jwt_signing', 'invalid_pem_boundaries')
+  }
   return { clientEmail, privateKey, spreadsheetId }
 }
 
@@ -130,8 +138,9 @@ async function getAccessToken(): Promise<string> {
   }
 
   const body = await atStockSheetsStage('response_processing', () => response.json()) as { access_token?: string; expires_in?: number }
-  if (!body.access_token) {
-    throw new StockSheetsError('upstream_error', 'Google Sheets authentication returned no access token.', 503)
+  if (!body || typeof body.access_token !== 'string' || !body.access_token) {
+    throw new StockSheetsError('upstream_error', 'Google authentication returned an incomplete response.',
+      503, 'google_token_exchange', 'invalid_token_response', response.status)
   }
   tokenCache = {
     value: body.access_token,
@@ -148,6 +157,10 @@ async function googleGet<T>(url: string, stage: StockSheetsStage): Promise<T> {
   }))
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new StockSheetsError('authentication_failed', 'Google Sheets authentication failed.',
+        503, stage, 'google_authentication_failed', response.status)
+    }
     if (response.status === 403) {
       throw new StockSheetsError(
         'permission_denied',
@@ -269,7 +282,11 @@ function parseRunHealthFreshness(rows: Array<Array<string | number | boolean | n
 export async function getStockWorkbookMetadata(refresh = false): Promise<StockWorkbookMetadata> {
   const { spreadsheetId } = getGoogleConfiguration()
   const raw = await loadRawMetadata(spreadsheetId, refresh)
-  const properties = raw.sheets?.map(sheet => sheet.properties) ?? []
+  if (!Array.isArray(raw?.sheets) || !raw.properties?.title || raw.spreadsheetId !== spreadsheetId) {
+    throw new StockSheetsError('internal_error', 'Google Sheets returned incomplete workbook information.',
+      502, 'response_processing', 'invalid_metadata_response')
+  }
+  const properties = raw.sheets.map(sheet => sheet.properties)
   const runHealthTitle = properties.find(sheet => sheet.title === 'Run Health' && !isHiddenWorksheet(sheet.title, sheet.hidden))?.title
   const todayTitle = properties.find(sheet => sheet.title === 'Today' && !isHiddenWorksheet(sheet.title, sheet.hidden))?.title
   const [runHealthRows, todayRows] = await Promise.all([
