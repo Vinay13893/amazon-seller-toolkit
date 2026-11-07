@@ -1,0 +1,125 @@
+name: CI
+
+# Runs on PRs into master, plus manual dispatch.
+# No secrets are used. The database job runs an entirely ephemeral local
+# Supabase stack on the runner and never touches any hosted project.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migrations:
+    name: Migration chain replay (ephemeral Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: esolz-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Initialise local Supabase config
+        run: supabase init --force < /dev/null
+
+      - name: Replay every migration from scratch
+        # `supabase start` applies supabase/migrations in filename order against
+        # a fresh database. If any migration is invalid, this step fails -- which
+        # is the entire point of this job.
+        run: supabase start -x studio,realtime,storage-api,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor
+
+      - name: Report applied migrations
+        run: supabase migration list --local || true
+
+      - name: Assert expression-based unique indexes exist (migration 028)
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "
+            DO \$\$
+            BEGIN
+              IF to_regclass('public.internal_fulfillment_sales_daily_uidx') IS NULL THEN
+                RAISE EXCEPTION 'missing internal_fulfillment_sales_daily_uidx';
+              END IF;
+              IF to_regclass('public.internal_inventory_by_location_uidx') IS NULL THEN
+                RAISE EXCEPTION 'missing internal_inventory_by_location_uidx';
+              END IF;
+            END
+            \$\$;"
+
+      - name: Assert SKU Performance RPCs exist (migrations 065/066)
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -c "
+            DO \$\$
+            DECLARE missing text;
+            BEGIN
+              SELECT string_agg(fn, ', ') INTO missing
+              FROM unnest(ARRAY[
+                'get_sku_performance_summary',
+                'get_sku_performance_daily',
+                'get_sku_performance_sales_freshness_date',
+                '_sku_perf_sales_day_confirmed',
+                '_sku_perf_window_coverage'
+              ]) AS fn
+              WHERE NOT EXISTS (
+                SELECT 1 FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'public' AND p.proname = fn
+              );
+              IF missing IS NOT NULL THEN
+                RAISE EXCEPTION 'missing functions: %', missing;
+              END IF;
+            END
+            \$\$;"
+
+      - name: SKU Performance SQL fixture suite
+        env:
+          DB_URL: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+        run: psql "$DB_URL" -v ON_ERROR_STOP=1 -f supabase/tests/sku-performance-p1b/sequential.sql
+
+  app:
+    name: Types, lint, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: esolz-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: esolz-app/package-lock.json
+
+      - run: npm ci
+
+      - name: TypeScript
+        run: npx tsc --noEmit
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        # Placeholder values only -- the build reads these at module scope.
+        # These are not credentials and grant no access to anything.
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+          SUPABASE_SERVICE_ROLE_KEY: placeholder-service-role-key
+        run: npm run build
