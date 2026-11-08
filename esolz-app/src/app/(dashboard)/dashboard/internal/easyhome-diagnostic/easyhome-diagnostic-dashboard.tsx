@@ -23,6 +23,7 @@ import { BrahmastraTrendsSection } from './brahmastra-trends-section'
 import { BrahmastraCategorySection } from './brahmastra-category-section'
 import { BrahmastraDataHealthSection } from './brahmastra-data-health-section'
 import { BrahmastraSyncHealthSection } from './brahmastra-sync-health-section'
+import { AdsReadinessPanel } from './ads-readiness-panel'
 import { BrahmastraChangeHistorySection } from './brahmastra-change-history-section'
 import { BrahmastraSettingsMappingSection } from './brahmastra-settings-mapping-section'
 import { BrahmastraThresholdsSection } from './brahmastra-thresholds-section'
@@ -102,6 +103,7 @@ function EasyhomeDiagnosticDashboardInner() {
           <p className="text-sm text-red-400">{error}</p>
         )}
         <BrahmastraSyncHealthSection />
+        <AdsReadinessPanel />
       </div>
     )
   }
@@ -182,6 +184,7 @@ function EasyhomeDiagnosticDashboardInner() {
       </div>
 
       <BrahmastraSyncHealthSection />
+      <AdsReadinessPanel />
 
       <BrahmastraSectionNav active={view} />
 

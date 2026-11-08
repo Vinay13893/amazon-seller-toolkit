@@ -214,7 +214,8 @@ export async function downloadAdsReportRows(downloadUrl: string): Promise<Array<
   const gzipped = Buffer.from(await res.arrayBuffer())
   const json = gunzipSync(gzipped).toString('utf8')
   const parsed = JSON.parse(json)
-  return Array.isArray(parsed) ? parsed : []
+  if (!Array.isArray(parsed)) throw new Error('Report document is not a row array.')
+  return parsed
 }
 
 export type { AdsApiContext }

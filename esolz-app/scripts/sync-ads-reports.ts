@@ -596,7 +596,7 @@ async function resolveInternalWorkspaceId(admin: SupabaseClient): Promise<string
 
 async function main() {
   const args = parseArgs()
-  const days = args.has('days') ? Number(args.get('days')) : 7
+  const days = args.has('days') ? Number(args.get('days')) : 14
   const endDate = args.get('to') ?? addDays(todayIso(), -1)
   const startDate = args.get('from') ?? addDays(endDate, -(Math.max(1, days) - 1))
   const reportTimeoutMs = resolveReportTimeoutMs(args)

@@ -28,10 +28,12 @@ change is a reliability improvement, not proof that live throttling is resolved.
 
 1. Verify protected Preview and worker rollout for these changes separately
    from the stock-reconciliation PR. Complete that PR's outstanding UI gate.
-2. Compare three days against freshly generated Amazon reports using matching
-   profile, currency and attribution. Persist reconciliation evidence and
-   enforce the discrepancy threshold. The existing structural audit alone
-   does not satisfy this requirement.
+2. Run the newly implemented independent verifier in the configured worker.
+   It compares three random dates across the six reports, preserving existing
+   attribution definitions and the selected profile's currency and timezone.
+   Five metrics per dataset/date must agree within 2%. Evidence is saved in
+   internal_data_refresh_runs under brahmastra_ads_reconciliation. The existing
+   structural audit alone does not satisfy this requirement.
 3. Observe seven consecutive verified days. No historical green run count
    substitutes for this independent evidence.
 4. Implement Ads Bleed and Top 5 with acceptance/dismissal reasons, then Capped
@@ -40,3 +42,32 @@ change is a reliability improvement, not proof that live throttling is resolved.
 
 No live Ads reports were requested, profile selections changed, database writes
 performed, or campaign/bid/budget changes made during this implementation.
+
+## Reconciliation implementation
+
+- `npm run verify:ads-reconciliation -- --workspace-id=<workspace UUID>`
+  requests fresh reports and stores aggregate verification results only.
+- Add `--check-config` to validate credentials and the selected profile without
+  requesting reports or writing evidence. This local checkout has no runtime
+  database/Amazon credentials, so that check currently fails safely.
+- Run in the configured worker after the nightly Ads sync completes. Do not
+  overlap it with a sync. Allow up to 25 minutes per report, six reports.
+- The daily sync default is now 14 days. Existing explicit `--days` arguments
+  still take precedence, so inspect the deployed worker command before rollout.
+- Authenticated `/api/internal/ads-readiness` reads only the caller's workspace
+  and selected profile. The dashboard displays consecutive verified days.
+- No schema migration is needed. Live inspection confirmed the existing table
+  has the required JSON evidence column and authenticated users have a SELECT
+  policy only. The worker uses its existing server credentials for evidence.
+- Seven consecutive days are counted by profile calendar date. Repeated runs
+  do not advance the streak. A latest failed/running attempt or a gap blocks it.
+- The readiness panel is a prerequisite indicator, not an enabled Ads Bleed
+  engine. Ads Bleed, Capped Winner, action outcomes and rollout remain pending
+  the approved build-order gates.
+
+## Verification
+
+The new reconciliation and reliability suites passed 12 tests. Production build
+and targeted lint passed. The build reports an existing tracing warning from
+the stock cost-master import route. Live authenticated UI verification and an
+independent Amazon comparison have not yet run for this branch.
