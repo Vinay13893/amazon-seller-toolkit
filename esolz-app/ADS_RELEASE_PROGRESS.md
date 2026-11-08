@@ -71,3 +71,19 @@ The new reconciliation and reliability suites passed 12 tests. Production build
 and targeted lint passed. The build reports an existing tracing warning from
 the stock cost-master import route. Live authenticated UI verification and an
 independent Amazon comparison have not yet run for this branch.
+
+## Preview follow-up
+
+- Copied the existing stock branch's public Supabase configuration and workbook
+  identifier to this Ads branch's Preview scope. No Production values changed.
+- A protected Preview of c45b018 returned 404 for unsigned-in readiness requests
+  after the configuration fix; the earlier missing-configuration 500 is resolved.
+- Readiness now uses the authenticated Supabase client. Live SELECT policies on
+  both required tables restrict reads to workspace membership; no service-role
+  key is needed by this read-only endpoint. Explicit workspace/profile filters
+  remain in place.
+- The Render Ads cron still deploys master at 3af7a88 and runs a 14-day sync at
+  08:00 IST. Sign-in succeeded, but its web shell remained on Connecting. No
+  worker command, deployment, schedule or credentials were changed.
+- Latest local production build and all 12 reconciliation/reliability tests pass.
+  Signed-in Preview verification and live independent comparisons remain pending.
