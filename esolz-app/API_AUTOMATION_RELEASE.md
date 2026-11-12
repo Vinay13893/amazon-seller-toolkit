@@ -1,5 +1,9 @@
 # API automation transition — 12 November 2026
 
+## Release authorization update
+
+The user subsequently requested "update this and stock also live", authorizing the dashboard and Stock Reconciliation Production release. Earlier no-Production notes below describe the previous gate. Finance activation remains separate and unavailable in this website release. Production Stock credentials are scoped to the same existing read-only Google service account; the release build runs `scripts/verify-stock-release.mjs` before Next.js to fail closed on a broken source connection. No PR merge or worker redeployment is needed for this exact-commit website release.
+
 ## Implemented for Preview
 
 - Eleven manual import HTTP endpoints now authorize the workspace then return 410. Unauthorized callers still receive 404. They no longer parse files, read local report directories or write rows. Historical data is retained.
