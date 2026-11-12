@@ -13,6 +13,7 @@
     "preview:sku-cost-master": "tsx scripts/preview-sku-cost-master.ts",
     "preview:payment-transactions": "tsx scripts/preview-payment-transactions.ts",
     "sync:ads-reports": "tsx scripts/sync-ads-reports.ts",
+    "sync:finance-transactions": "tsx scripts/sync-finance-transactions.ts",
     "verify:ads-reconciliation": "tsx scripts/verify-ads-reconciliation.ts"
   },
   "dependencies": {

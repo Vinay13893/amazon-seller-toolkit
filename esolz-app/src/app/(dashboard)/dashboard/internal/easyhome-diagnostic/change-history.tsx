@@ -102,9 +102,7 @@ export function ChangeHistorySection({
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No Change History JSON has been imported yet. Save the Console&apos;s event-history response as a .json file into{' '}
-            <code className="text-xs bg-muted px-1 rounded">C:\Vinay\Emount Profitability Calculator\Change History</code>{' '}
-            and import via POST /api/internal/ads-change-history/import. This is a manual export only — never an automated browser call.
+            Change history is unavailable. Its API integration has not been verified for this account. Manual imports are retired; Ads performance reports do not substitute for change-history evidence.
           </p>
         )}
       </div>

@@ -47,6 +47,7 @@ SAAS_CONTEXT.txt
 
 # vercel
 .vercel
+/supabase/.temp/
 
 # typescript
 *.tsbuildinfo
