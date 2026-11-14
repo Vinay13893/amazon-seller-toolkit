@@ -1,7 +1,7 @@
 // Build item #2 (APPROVED_BACKLOG.md): read-only verification that the Ads
 // warehouse's trailing 14-day window is being re-upserted correctly, not
-// left stale or duplicated. This is the gate that must be green before Ads
-// Bleed (build item #3) can start.
+// left stale or duplicated. These structural checks are only one part of
+// the gate; independent Amazon reconciliation and seven verified days remain.
 //
 // Read-only in every sense: no writes to any table, no calls to the Amazon
 // Ads API. Reports aggregate counts only — no raw search terms, no order
@@ -112,6 +112,8 @@ async function fetchWindowRowsPaged(admin: SupabaseClient, table: string, worksp
       .eq('workspace_id', workspaceId)
       .eq('profile_id', profileId)
       .gte('report_date', windowStart)
+      .lt('report_date', new Date().toISOString().slice(0, 10))
+      .order('id')
       .range(offset, offset + PAGE - 1)
     if (error) throw new Error(`${table}: ${error.message}`)
     all.push(...((data ?? []) as typeof all))
@@ -234,14 +236,17 @@ async function main() {
 
   // Sync-run overlap evidence — is the nightly re-upsert actually happening,
   // not just a one-time backfill?
-  const { data: recentRuns } = await admin
+  const { data: recentRuns, error: runsError } = await admin
     .from('internal_data_refresh_runs')
     .select('source, date_from, date_to, status, started_at')
     .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .eq('status', 'success')
     .like('source', 'ads_%')
     .gte('started_at', new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000).toISOString())
     .order('started_at', { ascending: false })
     .limit(200)
+  if (runsError) throw new Error('Unable to read Ads refresh evidence.')
   const runsBySource = new Map<string, Array<{ date_from: string; date_to: string; started_at: string }>>()
   for (const run of recentRuns ?? []) {
     const list = runsBySource.get(run.source as string) ?? []
@@ -287,7 +292,11 @@ async function main() {
     windowStart,
     windowEnd: todayIso,
     overallStatus,
-    adsBleedUnblocked: overallStatus === 'pass',
+    // Structural checks cannot substitute for an independent Amazon comparison
+    // or seven consecutive days of persisted verification evidence.
+    adsBleedUnblocked: false,
+    independentAmazonComparison: 'not_performed',
+    consecutiveVerifiedDays: 'not_verified',
     syncOverlapEvidence: { status: overlapStatus, sourcesWithRepeatCoverage, sourcesChecked: runsBySource.size },
     tables: tableChecks.map(c => ({
       table: c.table,
@@ -301,7 +310,7 @@ async function main() {
 
   console.log('\n' + '='.repeat(78))
   console.log(`OVERALL STATUS: ${overallStatus.toUpperCase()}`)
-  console.log('Ads Bleed (build item #3) unblocked by this check: ' + (summary.adsBleedUnblocked ? 'YES' : 'NO — see warnings/failures above'))
+  console.log('Ads Bleed remains blocked pending independent Amazon comparison and seven consecutive verified days.')
   console.log('\nJSON summary:')
   console.log(JSON.stringify(summary, null, 2))
 }

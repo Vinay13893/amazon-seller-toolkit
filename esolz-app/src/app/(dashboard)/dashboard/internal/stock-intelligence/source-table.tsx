@@ -146,7 +146,7 @@ export function SourceTable({
                     className={cn(
                       'max-w-80 border-b border-r border-border/70 px-2 align-top last:border-r-0',
                       compact ? 'py-1.5' : 'py-2',
-                      sticky && 'sticky z-10 overflow-hidden whitespace-normal break-words bg-inherit',
+                      sticky && 'sticky z-10 overflow-hidden whitespace-normal break-words bg-background',
                       differenceClass(header ?? '', value),
                     )}
                   >

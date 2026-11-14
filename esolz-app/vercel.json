@@ -2,6 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
+      "path": "/api/cron/pincode-monitoring",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/asins/process-product-snapshots",
       "schedule": "0 */2 * * *"
     },

@@ -71,6 +71,7 @@ import {
 } from '../src/lib/internal/ads-deep-report-parser'
 import { campaignDailyRowFor, deepReportRowFor } from '../src/lib/internal/ads-report-row-mappers'
 import { resolveReportTimeoutMs } from '../src/lib/internal/ads-report-timeout'
+import { adsRetryDelay } from '../src/lib/internal/ads-api-error'
 import { decideReportReuse, AMAZON_REPORT_RETENTION_MS as REUSE_RETENTION_MS } from '../src/lib/internal/ads-report-reuse'
 import { splitRowsForUpsert } from '../src/lib/internal/ads-upsert-split'
 
@@ -198,7 +199,8 @@ async function requestAdsReportWithRetry(ctx: AdsApiContext, reportType: AdsRepo
         if (attempt > 1) console.log(`  ${source}: giving up after ${attempt} attempt(s) creating report for ${startDate}..${endDate} — ${message}`)
         throw err
       }
-      const backoffMs = REPORT_CREATE_BACKOFF_MS[attempt - 1]
+      const backoffMs = adsRetryDelay(err, REPORT_CREATE_BACKOFF_MS[attempt - 1])
+      if (backoffMs === null) throw err
       console.log(`  ${source}: rate limited (429) creating report for ${startDate}..${endDate} (attempt ${attempt}/${REPORT_CREATE_MAX_ATTEMPTS}) — backing off ${backoffMs}ms before retry`)
       await sleep(backoffMs)
     }
@@ -594,7 +596,7 @@ async function resolveInternalWorkspaceId(admin: SupabaseClient): Promise<string
 
 async function main() {
   const args = parseArgs()
-  const days = args.has('days') ? Number(args.get('days')) : 7
+  const days = args.has('days') ? Number(args.get('days')) : 14
   const endDate = args.get('to') ?? addDays(todayIso(), -1)
   const startDate = args.get('from') ?? addDays(endDate, -(Math.max(1, days) - 1))
   const reportTimeoutMs = resolveReportTimeoutMs(args)

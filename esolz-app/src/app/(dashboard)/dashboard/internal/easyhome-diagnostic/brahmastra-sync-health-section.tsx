@@ -51,9 +51,9 @@ function overallMessage(health: BrahmastraDataHealth): string {
   const nonBlockingWarnings = health.sources.filter(s => s.status !== 'healthy' && !s.blocksActions)
   switch (health.overallLevel) {
     case 'healthy':
-      return 'All sources are healthy — action recommendations can be trusted.'
+      return 'All sources are current. Ads recommendations also require independent data reconciliation and the validation period.'
     case 'healthy_with_warnings':
-      return `Healthy — ${nonBlockingWarnings.length} warning${nonBlockingWarnings.length === 1 ? '' : 's'}: ${nonBlockingWarnings.map(s => s.label).join(', ')}. This does not block action recommendations.`
+      return `Sources are current with ${nonBlockingWarnings.length} warning${nonBlockingWarnings.length === 1 ? '' : 's'}: ${nonBlockingWarnings.map(s => s.label).join(', ')}. Ads recommendations also require independent data reconciliation and the validation period.`
     case 'warning':
       return 'Some sources need attention. Recommendations tied to those sources should wait until they recover.'
     case 'critical':
