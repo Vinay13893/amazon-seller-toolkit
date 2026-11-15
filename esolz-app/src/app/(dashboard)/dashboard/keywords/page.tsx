@@ -1,4 +1,5 @@
 'use client'
+import { DailyTrackerPanel } from '@/components/checkers/DailyTrackerPanel'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
@@ -1320,6 +1321,7 @@ export default function KeywordsPage() {
         </Button>
       </div>
 
+      <DailyTrackerPanel kind="keyword" />
       {/* ── 2. KPI cards ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-4">
         <KpiCard label="Total Tracked" value={trackedKeywordsLoading ? '—' : visibleTrackedData.length} icon={Tag} />

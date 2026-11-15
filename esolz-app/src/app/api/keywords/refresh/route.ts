@@ -14,6 +14,7 @@ import {
 } from '@/lib/checkers/checker-worker-client'
 import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
 import { keywordTargetKey, resolveKeywordRefreshTarget } from '@/lib/keywords/keyword-tracking'
+import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
 
 export const runtime    = 'nodejs'
 export const maxDuration = 120
@@ -46,26 +47,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
  * Inserts keyword_rank_snapshots rows for each checked keyword.
  */
 export async function POST(req: NextRequest) {
-  const supabase = await createClient()
-
-  // ── Auth ───────────────────────────────────────────────────────────────────
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  // ── Workspace ──────────────────────────────────────────────────────────────
-  const { data: member } = await supabase
-    .from('workspace_members')
-    .select('workspace_id')
-    .eq('user_id', user.id)
-    .limit(1)
-    .maybeSingle()
-
-  if (!member?.workspace_id) {
-    return NextResponse.json({ error: 'No workspace found' }, { status: 404 })
+  const auth = await resolveJobsAuth(req)
+  if (!auth.ok) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const body = await req.json().catch(() => null) as { keywordIds?: unknown; workspaceId?: unknown } | null
+  const workspaceId = auth.mode === 'session' ? auth.workspaceId : body?.workspaceId
+  if (typeof workspaceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(workspaceId)) {
+    return NextResponse.json({ error: 'Workspace required' }, { status: 400 })
   }
-  const workspaceId = member.workspace_id
-
-  const body = await req.json().catch(() => null) as { keywordIds?: unknown } | null
+  const supabase = auth.mode === 'system' ? createAdminClient() : await createClient()
   const keywordIds = Array.isArray(body?.keywordIds)
     ? body.keywordIds.filter((value): value is string => typeof value === 'string' && value.length > 0)
     : []
@@ -178,7 +167,7 @@ export async function POST(req: NextRequest) {
     scrapeStatus: 'failed' | 'checker_unavailable'
     errorMessage: string
   }) {
-    await admin
+    const { error } = await admin
       .from('keyword_rank_snapshots')
       .insert({
         workspace_id:       workspaceId,
@@ -201,6 +190,7 @@ export async function POST(req: NextRequest) {
         page_status:        null,
         checked_at:         params.checkedAt,
       })
+    if (error) throw new Error('failed_snapshot_not_saved')
   }
 
   for (const kw of keywords) {
@@ -251,6 +241,9 @@ export async function POST(req: NextRequest) {
           KEYWORD_CHECK_TIMEOUT_MS,
           'keyword rank check timed out',
         )
+        if (!['success', 'not_found'].includes(workerRes.status)) {
+          throw new Error('keyword_check_not_confirmed')
+        }
         res = {
           organic_rank:   workerRes.organic_rank,
           organic_page:   workerRes.organic_page,
@@ -365,5 +358,6 @@ export async function POST(req: NextRequest) {
     })
   }
 
-  return NextResponse.json({ checked: results.length, results })
+  const failed = results.filter(row => !['success', 'not_found'].includes(row.scan_status)).length
+  return NextResponse.json({ checked: results.length, status: failed ? 'failed' : 'success', results })
 }

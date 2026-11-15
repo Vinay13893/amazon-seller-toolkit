@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, Play, RefreshCw,
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AsinProductSelector } from '@/components/asins/AsinProductSelector'
+import { DailyTrackerPanel } from '@/components/checkers/DailyTrackerPanel'
 import { useAsinProductDomains } from '@/hooks/use-asin-product-domains'
 import { selectedAsins } from '@/lib/asins/product-domain'
 import {
@@ -258,7 +259,7 @@ export default function BuyBoxMonitorPage() {
         <div className="flex items-center gap-2">
           <ShoppingCart className="size-5 text-primary" />
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Buy Box Monitor</h1>
-          <Badge variant="secondary" className="h-5 text-[10px]">Queue beta</Badge>
+          <Badge variant="secondary" className="h-5 text-[10px]">Daily monitoring</Badge>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Check whether tracked Amazon products show a buy box, visible price, seller, and availability signal.
@@ -342,6 +343,8 @@ export default function BuyBoxMonitorPage() {
           </div>
         </div>
       </section>
+
+      <DailyTrackerPanel kind="buybox" selectedAsins={asins} />
 
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">

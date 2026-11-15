@@ -34,11 +34,11 @@ export async function resolveJobsAuth(request: Request): Promise<JobsAuthResult>
 
   const { data: member, error: memberError } = await supabase
     .from('workspace_members')
-    .select('workspace_id')
+    .select('workspace_id, role')
     .eq('user_id', user.id)
     .limit(1)
     .maybeSingle()
 
-  if (memberError || !member?.workspace_id) return { ok: false }
+  if (memberError || !member?.workspace_id || !['owner','admin','member'].includes(member.role)) return { ok: false }
   return { ok: true, mode: 'session', workspaceId: member.workspace_id }
 }

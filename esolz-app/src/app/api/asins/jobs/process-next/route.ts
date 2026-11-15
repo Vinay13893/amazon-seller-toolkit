@@ -162,8 +162,16 @@ export async function POST(request: Request) {
   let failed = 0
   let skippedNoConnection = 0
   let pricingCooldownActive = await isPricingCoolingDown(admin)
+  const processingStarted = Date.now()
+  let recovery = admin.from('background_jobs').update({status:'queued',locked_at:null,locked_by:null,run_after:new Date().toISOString()})
+    .eq('job_type',JOB_TYPE).eq('status','running').lt('locked_at',new Date(Date.now()-10*60_000).toISOString())
+  if (auth.mode === 'session') recovery = recovery.eq('workspace_id',auth.workspaceId)
+  const {error:recoveryError} = await recovery
+  if(recoveryError) return NextResponse.json({error:'Could not recover interrupted checks'},{status:503})
 
   for (let i = 0; i < batchSize; i += 1) {
+    if(Date.now()-processingStarted>65_000) break
+    if(i>0) await new Promise(resolve=>setTimeout(resolve,2500))
     let dueQuery = admin
       .from('background_jobs')
       .select('id, workspace_id, target_type, target_id, marketplace_id, attempt_count, max_attempts, payload_json')

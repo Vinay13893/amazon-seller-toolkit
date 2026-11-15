@@ -399,6 +399,8 @@ export default function BsrTrackerPage() {
 
   useEffect(() => {
     queueMicrotask(() => { void loadData() })
+    const timer = setInterval(() => { if (!document.hidden) void loadData() }, 60000)
+    return () => clearInterval(timer)
   }, [loadData])
 
   const loadHistory = useCallback(async (target: BsrTargetView | null, days: number) => {
@@ -492,7 +494,7 @@ export default function BsrTrackerPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">BSR Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-4xl">
-            Select catalog products or confirmed competitors for BSR monitoring. BSR history comes from asin_snapshots and remains available after a target is selected.
+            Select a product below and click Track BSR. Its first check is prioritised in the next five-minute processing cycle. Automatic refreshes aim for a daily check, subject to Amazon rate limits. Select a tracked product to see its saved BSR Trend history.
           </p>
         </div>
         <Button render={<Link href="/dashboard/asins" />} variant="outline" className="gap-2 shrink-0">
