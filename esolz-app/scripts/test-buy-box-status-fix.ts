@@ -21,7 +21,7 @@ import {
   findPricingSnapshot,
   buyBoxStatusLabel,
   type ListingSnapshotRow,
-} from '../src/app/api/asins/listings/route'
+} from '../src/lib/asins/listing-snapshot-display'
 
 const tests: Array<[string, () => void]> = []
 function test(name: string, fn: () => void) {

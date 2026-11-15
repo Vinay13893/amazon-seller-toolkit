@@ -5,7 +5,7 @@ import {
   listingSkuAssociationScope,
   type ListingSkuIdentity,
 } from '@/lib/asins/listing-sku-associations'
-import { timeAgo } from '@/lib/format'
+import { findPriceSnapshot, findBsrSnapshot, findPricingSnapshot, findConfirmedBuyBoxSnapshot, resolveSuggestedAction, buyBoxStatusLabel, type ListingSnapshotRow } from '@/lib/asins/listing-snapshot-display'
 
 export const runtime = 'nodejs'
 
@@ -14,12 +14,6 @@ const MAX_PAGE_SIZE = 100
 const SKU_ASSOCIATION_PAGE_SIZE = 1000
 const JOB_TYPE = 'product_page_snapshot'
 const PRICING_RATE_LIMITED_RETRY_MINUTES = 30
-// Two independent schedulers process this queue: Vercel Cron (every 2h) and
-// Render Cron (every 4h) -- see BRAHMASTRA_MASTER_TRACKER.md sec16/sec19.
-// A generous multiple of the slower cadence, so a normal gap between ticks
-// (or a deep backlog that simply hasn't reached a given job yet) never
-// triggers a false "stalled" reading.
-const STALLED_QUEUE_HOURS = 6
 
 const RATE_LIMIT_REASONS = new Set([
   'amazon_pricing_rate_limited',
@@ -32,17 +26,6 @@ function safeSearch(value: string | null): string {
     .trim()
     .replace(/[^a-zA-Z0-9 ._-]/g, '')
     .slice(0, 100)
-}
-
-export type ListingSnapshotRow = {
-  amazon_listing_item_id: string | null
-  price: number | null
-  bsr: number | null
-  buy_box_owner: string | null
-  buy_box_status: string | null
-  availability_score: number | null
-  scrape_status: string | null
-  checked_at: string
 }
 
 type CheckerJobRow = {
@@ -77,94 +60,6 @@ function catalogStatusLabel(latest: ListingSnapshotRow | null, bsrSnapshot: List
   }
   if (latest.scrape_status === 'partial_catalog_unavailable') return 'Catalog source unavailable'
   return 'BSR unavailable from Catalog source'
-}
-
-/**
- * Only ever called with a snapshot whose buy_box_status is 'won' or 'lost'
- * (see confirmedBuyBoxSnapshot below) -- never an 'unknown'/'no_buybox'/
- * 'partial_success' status, and never a rate-limited/unavailable attempt
- * (those now write null, not a fake status string -- see
- * BRAHMASTRA_MASTER_TRACKER.md sec19). This function never infers a loss
- * from an unconfirmed/unknown result; absence of a confirmed snapshot always
- * returns 'Not confirmed', never 'Lost'.
- */
-export function findPriceSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
-  return snapshots.find(snapshot => snapshot.price !== null) ?? null
-}
-
-export function findBsrSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
-  return snapshots.find(snapshot => snapshot.bsr !== null) ?? null
-}
-
-export function findPricingSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
-  return snapshots.find(snapshot =>
-    snapshot.price !== null ||
-    snapshot.buy_box_owner !== null ||
-    snapshot.buy_box_status !== null ||
-    snapshot.availability_score !== null
-  ) ?? null
-}
-
-/**
- * Buy Box display fix (BRAHMASTRA_MASTER_TRACKER.md sec19): coalesce ONLY a
- * genuinely confirmed 'won'/'lost' snapshot -- ignore null (rate-limited/
- * unavailable, now written correctly by resolveBuyBoxStatusToStore in
- * process-next/route.ts) and ignore 'unknown'/'no_buybox'/'partial_success'
- * too. Deliberately narrower than findPricingSnapshot above, which still
- * feeds Price and Availability unchanged.
- */
-export function findConfirmedBuyBoxSnapshot(snapshots: ListingSnapshotRow[]): ListingSnapshotRow | null {
-  return snapshots.find(
-    snapshot => snapshot.buy_box_status === 'won' || snapshot.buy_box_status === 'lost'
-  ) ?? null
-}
-
-export interface CheckerSummaryForAction {
-  processing: number
-  queueDueNow: number
-  queueWaiting: number
-  queued: number
-  succeeded: number
-  rateLimited: number
-  lastAttemptedAt: string | null
-}
-
-/**
- * Replaces the old "Cron not configured" heuristic (BRAHMASTRA_MASTER_TRACKER.md
- * sec19), which inferred "no cron exists" from processing=0 at the exact
- * instant this API request ran -- true almost continuously by design, since
- * both schedulers only run for a few seconds every 2-4h. This version asks
- * a question the data can actually answer: has ANY worker touched ANY job
- * recently? lastAttemptedAt already reflects the most recent updated_at/
- * completed_at across every job in the workspace, so staleness here means
- * neither scheduler has run in a long time -- not "the queue has a backlog"
- * (which is normal and expected) and not "nothing is running this instant"
- * (also normal, most of the time).
- */
-export function resolveSuggestedAction(summary: CheckerSummaryForAction, nowIso: string): string | null {
-  if (summary.processing > 0) return 'Processing active'
-
-  if (summary.queueDueNow > 0) {
-    const hoursSinceLastAttempt = summary.lastAttemptedAt
-      ? (new Date(nowIso).getTime() - new Date(summary.lastAttemptedAt).getTime()) / (60 * 60 * 1000)
-      : null
-    if (hoursSinceLastAttempt === null || hoursSinceLastAttempt > STALLED_QUEUE_HOURS) {
-      return `No checks have run in over ${STALLED_QUEUE_HOURS}h — automation may be stalled`
-    }
-    return 'Checks queued — next automatic run within a few hours'
-  }
-
-  if (summary.rateLimited > 0 && summary.queueWaiting > 0) return 'Pricing API cooldown active'
-  if (summary.queued === 0 && summary.succeeded > 0) return 'Queue healthy'
-  return null
-}
-
-export function buyBoxStatusLabel(latest: ListingSnapshotRow | null, confirmedSnapshot: ListingSnapshotRow | null): string {
-  if (!latest) return 'Not checked yet'
-  if (!confirmedSnapshot) return 'Not confirmed'
-  const label = confirmedSnapshot.buy_box_status === 'won' ? 'Won' : 'Lost'
-  const isFresh = confirmedSnapshot.checked_at === latest.checked_at
-  return isFresh ? label : `${label} — last confirmed ${timeAgo(confirmedSnapshot.checked_at)}`
 }
 
 function availabilityStatusLabel(latest: ListingSnapshotRow | null, pricingSnapshot: ListingSnapshotRow | null): string {

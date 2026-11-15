@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "vercel-build": "node --import tsx scripts/check-stock-sheets.mjs && next build",
+    "build": "next build --webpack",
+    "vercel-build": "node --import tsx scripts/check-stock-sheets.mjs && next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "test": "node --import tsx --test 'src/**/*.test.ts'",
