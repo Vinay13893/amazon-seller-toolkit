@@ -69,7 +69,7 @@ export function PincodeMonitor() {
   }, [context, tab, offset, search, from, to])
   useEffect(() => {
     const delay = setTimeout(() => { void reload() }, 250)
-    const timer = setInterval(() => { if (!document.hidden) void reload() }, 30_000)
+    const timer = setInterval(() => { if (!document.hidden) void reload() }, 120_000)
     return () => { clearTimeout(delay); clearInterval(timer) }
   }, [reload])
 

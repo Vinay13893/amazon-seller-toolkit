@@ -42,7 +42,7 @@ export function DailyTrackerPanel({kind,selectedAsins=[]}:{kind:'buybox'|'keywor
   useEffect(()=>{
     const controller=new AbortController()
     const delay=setTimeout(()=>void load(controller.signal),250)
-    const timer=setInterval(()=>{if(!document.hidden)void load(controller.signal)},30000)
+    const timer=setInterval(()=>{if(!document.hidden)void load(controller.signal)},120000)
     return()=>{controller.abort();clearTimeout(delay);clearInterval(timer)}
   },[load])
   async function change(body:object,method='PATCH'){
@@ -61,7 +61,7 @@ export function DailyTrackerPanel({kind,selectedAsins=[]}:{kind:'buybox'|'keywor
   }
   return <section className="space-y-4 rounded-xl border border-border bg-card p-5">
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="font-semibold">Daily monitoring & history</h2>
-      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{enabled?'Checks run every 24 hours with the browser closed. New requests are picked up every five minutes.':'Daily monitoring is not enabled for this workspace.'} {kind==='keyword'?'Adding a tracked keyword also starts daily monitoring.':'Select products above, then save them for daily checks.'}</p>
+      <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{enabled?'Checks run every 24 hours with the browser closed. New requests are picked up within 15 minutes.':'Daily monitoring is not enabled for this workspace.'} {kind==='keyword'?'Adding a tracked keyword also starts daily monitoring.':'Select products above, then save them for daily checks.'}</p>
       {kind==='buybox'&&<p className="mt-1 text-xs text-muted-foreground">A detected Buy Box does not mean your seller account won it. Seller and price observations are saved in History.</p>}</div>
       <Button variant="outline" disabled={loading} onClick={()=>{setNotice('');void load()}}>Refresh saved data</Button></div>
     <div className="flex flex-wrap gap-2"><Button variant={view==='watchlist'?'default':'outline'} onClick={()=>{setView('watchlist');setOffset(0)}}>Daily watchlist</Button><Button variant={view==='history'?'default':'outline'} onClick={()=>{setView('history');setOffset(0)}}>History</Button>

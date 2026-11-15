@@ -3,15 +3,15 @@
   "crons": [
     {
       "path": "/api/cron/daily-trackers",
-      "schedule": "2-59/5 * * * *"
+      "schedule": "2,17,32,47 * * * *"
     },
     {
       "path": "/api/cron/pincode-monitoring",
-      "schedule": "*/5 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/asins/process-product-snapshots",
-      "schedule": "*/5 * * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/cron/review-requests/daily-ingest",

@@ -399,7 +399,7 @@ export default function BsrTrackerPage() {
 
   useEffect(() => {
     queueMicrotask(() => { void loadData() })
-    const timer = setInterval(() => { if (!document.hidden) void loadData() }, 60000)
+    const timer = setInterval(() => { if (!document.hidden) void loadData() }, 120000)
     return () => clearInterval(timer)
   }, [loadData])
 
@@ -494,7 +494,7 @@ export default function BsrTrackerPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">BSR Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-4xl">
-            Select a product below and click Track BSR. Its first check is prioritised in the next five-minute processing cycle. Automatic refreshes aim for a daily check, subject to Amazon rate limits. Select a tracked product to see its saved BSR Trend history.
+            Select a product below and click Track BSR. Its first check is prioritised in the next ten-minute processing cycle. Automatic refreshes aim for a daily check, subject to Amazon rate limits. Select a tracked product to see its saved BSR Trend history.
           </p>
         </div>
         <Button render={<Link href="/dashboard/asins" />} variant="outline" className="gap-2 shrink-0">

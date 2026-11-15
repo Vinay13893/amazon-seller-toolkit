@@ -56,7 +56,7 @@ export function resolveSuggestedAction(summary: CheckerSummaryForAction, nowIso:
     if (hoursSinceLastAttempt === null || hoursSinceLastAttempt > STALLED_QUEUE_HOURS) {
       return `No checks have run in over ${STALLED_QUEUE_HOURS}h — automation may be stalled`
     }
-    return 'Checks queued — processing runs every five minutes'
+    return 'Checks queued — processing runs every ten minutes'
   }
 
   if (summary.rateLimited > 0 && summary.queueWaiting > 0) return 'Pricing API cooldown active'
