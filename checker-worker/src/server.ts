@@ -21,6 +21,7 @@ import {
   scrapingJobStatusRequestSchema,
   scrapingRunNextRequestSchema,
 } from './scraping/queue'
+import { getBrowserWorkloadStats } from './utils/browser'
 // productPageOrchestrator is intentionally NOT started anymore. Its 3-minute
 // loop only pinged Vercel's /api/asins/jobs/enqueue and /api/asins/jobs/process-next
 // routes, which do all the real work via Amazon SP-API. That responsibility now
@@ -65,6 +66,7 @@ app.get('/health', (_req: Request, res: Response) => {
     version: '0.1.0',
     buildMarker: 'ba-debug-health-marker-20260616-d007072',
     keywordCheckerVersion: 'validated-search-pages-20261115',
+    browserWorkload: getBrowserWorkloadStats(),
     availableRoutes: [
       'GET /health',
       'POST /brand-analytics/status',
