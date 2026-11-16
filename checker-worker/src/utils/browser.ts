@@ -67,6 +67,7 @@ export async function createBrowser(): Promise<Browser> {
       '--no-first-run',
       '--no-zygote',
       '--renderer-process-limit=1',
+      '--single-process',
     ],
   })
 }
