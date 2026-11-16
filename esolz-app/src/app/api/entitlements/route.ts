@@ -5,6 +5,7 @@ import {
   INTERNAL_TEST_PLAN_NAME,
   isInternalTestAccount,
 } from '@/lib/internal-test-entitlement'
+import { getWorkspaceTrackerEntitlements } from '@/lib/subscriptions/workspace-entitlements'
 
 export const runtime = 'nodejs'
 
@@ -20,6 +21,15 @@ export async function GET(request: Request) {
       planName: INTERNAL_TEST_PLAN_NAME,
       asinLimit: INTERNAL_TEST_ASIN_LIMIT,
       internalTest: true,
+      keywordLimit: 999999,
+      keywordAsinLimit: 999999,
+      keywordsPerAsin: 999999,
+      pincodeCheckLimit: 999999,
+      buyBoxAsinLimit: 999999,
+      bsrEnabled: true,
+      keywordsEnabled: true,
+      pincodeEnabled: true,
+      buyBoxEnabled: true,
     })
   }
 
@@ -43,24 +53,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ planName: 'Free', asinLimit: 5, internalTest: false })
   }
 
-  const { data: subscriptions } = await supabase
-    .from('workspace_subscriptions')
-    .select('workspace_id, status, subscription_plans(name, asin_limit)')
-    .in('workspace_id', workspaceIds)
-
-  const activeSubscription = requestedWorkspaceId
-    ? subscriptions?.find(subscription => subscription.workspace_id === requestedWorkspaceId)
-    : (subscriptions ?? []).find(
-        subscription => subscription.status === 'active' || subscription.status === 'trialing',
-      ) ?? subscriptions?.[0]
-
-  const embeddedPlan = activeSubscription?.subscription_plans
-  const plan = Array.isArray(embeddedPlan) ? embeddedPlan[0] : embeddedPlan
-  const internalTest = plan?.name === 'Internal Tester'
+  const workspaceId = requestedWorkspaceId ?? workspaceIds[0]
+  const plan = await getWorkspaceTrackerEntitlements(workspaceId)
+  const internalTest = plan.planName === 'Internal Tester'
 
   return NextResponse.json({
-    planName: plan?.name ?? 'Free',
-    asinLimit: plan?.asin_limit ?? 5,
+    ...plan,
     internalTest,
   })
 }

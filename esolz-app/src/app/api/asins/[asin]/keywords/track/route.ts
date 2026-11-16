@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { marketplaceFromMarketplaceId, marketplaceIdForMarketplace } from '@/lib/asins/product-separation'
+import { checkKeywordCapacity } from '@/lib/subscriptions/keyword-capacity'
 
 export const runtime = 'nodejs'
 
@@ -129,6 +130,13 @@ export async function POST(
       isNew: false,
       message: 'Keyword already tracked for this ASIN.',
     })
+  }
+
+  try {
+    const capacity = await checkKeywordCapacity(member.workspace_id, { ownAsin, trackedAsinId })
+    if (!capacity.ok) return NextResponse.json({ error: capacity.error }, { status: capacity.status })
+  } catch {
+    return NextResponse.json({ error: 'Could not verify your keyword allowance.' }, { status: 503 })
   }
 
   // ── 5. Insert ─────────────────────────────────────────────────────────────

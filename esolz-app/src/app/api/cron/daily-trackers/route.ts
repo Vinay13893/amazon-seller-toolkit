@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { timingSafeEqual } from 'node:crypto'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { POST as refreshKeywords } from '@/app/api/keywords/refresh/route'
+import { getTrackerEnabledWorkspaceIds } from '@/lib/subscriptions/workspace-entitlements'
 
 export const runtime = 'nodejs'
 export const maxDuration = 240
@@ -13,7 +14,9 @@ export async function GET(request: NextRequest) {
   if (!secret || Buffer.byteLength(actual)!==Buffer.byteLength(expected) || !timingSafeEqual(Buffer.from(actual),Buffer.from(expected))) {
     return NextResponse.json({error:'Unauthorized'},{status:401})
   }
-  const workspaces = (process.env.DAILY_TRACKER_WORKSPACE_IDS ?? '').split(',').map(s=>s.trim()).filter(s=>/^[0-9a-f-]{36}$/i.test(s))
+  const configured = (process.env.DAILY_TRACKER_WORKSPACE_IDS ?? '').split(',').map(s=>s.trim()).filter(s=>/^[0-9a-f-]{36}$/i.test(s))
+  const entitled = await getTrackerEnabledWorkspaceIds().catch(()=>[])
+  const workspaces = Array.from(new Set([...configured, ...entitled]))
   if (!workspaces.length) return NextResponse.json({status:'disabled'})
   if (!process.env.CHECKER_WORKER_URL || !process.env.CHECKER_WORKER_SECRET || !process.env.BACKGROUND_WORKER_SECRET) {
     return NextResponse.json({error:'Checker configuration unavailable'},{status:503})

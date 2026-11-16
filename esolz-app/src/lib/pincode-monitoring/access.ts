@@ -39,6 +39,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getPincodeMonitoringConfig, isWorkspaceAllowlisted } from './config'
 import { jsonError } from './responses'
 import { isValidUuid } from './validation'
+import { getWorkspaceTrackerEntitlements } from '@/lib/subscriptions/workspace-entitlements'
 
 export type PincodeRole = 'owner' | 'admin' | 'member' | 'viewer'
 
@@ -175,12 +176,15 @@ export async function resolvePincodeAccess(args: {
   }
 
   const config = getPincodeMonitoringConfig()
+  const planEnabled = user && membershipRole !== null
+    ? await getWorkspaceTrackerEntitlements(workspaceId).then(plan => plan.pincodeEnabled).catch(() => false)
+    : false
   const decision = decidePincodeAccess({
     authenticated: Boolean(user),
     membershipRole,
     requireWriteRole: args.requireWriteRole,
     featureEnabled: config.enabled,
-    workspaceAllowlisted: isWorkspaceAllowlisted(config, workspaceId),
+    workspaceAllowlisted: isWorkspaceAllowlisted(config, workspaceId) || planEnabled,
     marketplaceAuthorized,
   })
 

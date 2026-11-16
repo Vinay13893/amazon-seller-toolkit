@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { getPincodeMonitoringConfig } from '@/lib/pincode-monitoring/config'
 import { mapWorkerResult } from '@/lib/pincode-monitoring/scheduler-result'
+import { getPincodeEnabledWorkspaceIds } from '@/lib/subscriptions/workspace-entitlements'
 
 export const runtime = 'nodejs'
 export const maxDuration = 240
@@ -16,12 +17,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
   const config = getPincodeMonitoringConfig()
-  if (!config.enabled || !config.allowedWorkspaceIds.size) return NextResponse.json({ status: 'disabled' })
+  if (!config.enabled) return NextResponse.json({ status: 'disabled' })
   if (!process.env.CHECKER_WORKER_URL || !process.env.CHECKER_WORKER_SECRET) {
     return NextResponse.json({ error: 'Checker unavailable' }, { status: 503 })
   }
   const admin = createAdminClient()
-  const allowed = Array.from(config.allowedWorkspaceIds)
+  const entitled = await getPincodeEnabledWorkspaceIds().catch(() => [])
+  const allowed = Array.from(new Set([...config.allowedWorkspaceIds, ...entitled]))
+  if (!allowed.length) return NextResponse.json({ status: 'disabled' })
   let completed = 0
   let recovered = 0
   try {

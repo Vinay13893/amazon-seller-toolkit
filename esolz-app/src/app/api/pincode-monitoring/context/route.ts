@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getPincodeMonitoringConfig, isWorkspaceAllowlisted } from '@/lib/pincode-monitoring/config'
+import { getWorkspaceTrackerEntitlements } from '@/lib/subscriptions/workspace-entitlements'
 
 export async function GET() {
   const db = await createClient()
@@ -12,8 +13,9 @@ export async function GET() {
   const { data: connection } = await db.from('amazon_connections').select('marketplace_id')
     .eq('workspace_id', member.workspace_id).maybeSingle()
   const config = getPincodeMonitoringConfig()
+  const plan = await getWorkspaceTrackerEntitlements(member.workspace_id).catch(() => null)
   return NextResponse.json({ workspaceId: member.workspace_id, marketplaceId: connection?.marketplace_id ?? null,
     canEdit: ['owner', 'admin', 'member'].includes(member.role),
-    monitoringEnabled: isWorkspaceAllowlisted(config, member.workspace_id) && connection?.marketplace_id === 'A21TJRUUN4KGV',
-    quota: config.quotaPerWorkspaceMarketplace }, { headers: { 'Cache-Control': 'no-store' } })
+    monitoringEnabled: config.enabled && (isWorkspaceAllowlisted(config, member.workspace_id) || plan?.pincodeEnabled === true) && connection?.marketplace_id === 'A21TJRUUN4KGV',
+    quota: plan?.pincodeCheckLimit ?? config.quotaPerWorkspaceMarketplace }, { headers: { 'Cache-Control': 'no-store' } })
 }

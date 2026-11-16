@@ -15,6 +15,7 @@ import {
   getMissingSignalLabel,
 } from '@/lib/checkers/buy-box-display'
 import { cn } from '@/lib/utils'
+import { FeatureGuide } from '@/components/onboarding/FeatureGuide'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed'
 
@@ -255,6 +256,12 @@ export default function BuyBoxMonitorPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      <FeatureGuide guideKey="buy-box" title="Buy Box Checker" steps={[
+        { title: 'Select up to 10 products', description: 'Your own and competitor ASINs share one 10-ASIN allowance, so the limit matches what you actually monitor.' },
+        { title: 'Run an immediate check', description: 'Start a check to confirm Buy Box presence, visible price, seller and availability without changing Amazon data.' },
+        { title: 'Save important ASINs', description: 'Add selected products to Daily Tracking. Brahmastra checks them automatically without keeping this page open.' },
+        { title: 'Review History', description: 'Use the history view to see confirmed wins, losses and unavailable checks without erasing previous results.' },
+      ]} />
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <ShoppingCart className="size-5 text-primary" />
