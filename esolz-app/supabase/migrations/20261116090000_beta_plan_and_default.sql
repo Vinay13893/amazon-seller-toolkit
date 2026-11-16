@@ -177,3 +177,8 @@ DROP TRIGGER IF EXISTS trg_enforce_plan_buybox_limits ON public.daily_tracker_ta
 CREATE TRIGGER trg_enforce_plan_buybox_limits
 BEFORE INSERT ON public.daily_tracker_targets
 FOR EACH ROW EXECUTE FUNCTION public.enforce_plan_buybox_limits();
+
+-- Trigger functions and the onboarding trigger are not public RPC endpoints.
+REVOKE ALL ON FUNCTION public.enforce_plan_keyword_limits() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.enforce_plan_buybox_limits() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.fn_handle_new_profile() FROM PUBLIC, anon, authenticated;
