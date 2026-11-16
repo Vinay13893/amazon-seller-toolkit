@@ -65,7 +65,7 @@ app.get('/health', (_req: Request, res: Response) => {
     service: 'sociomonkey-checker-worker',
     version: '0.1.0',
     buildMarker: 'ba-debug-health-marker-20260616-d007072',
-    keywordCheckerVersion: 'validated-search-pages-20261115',
+    keywordCheckerVersion: 'five-page-sponsored-signals-20261116',
     browserWorkload: getBrowserWorkloadStats(),
     availableRoutes: [
       'GET /health',
