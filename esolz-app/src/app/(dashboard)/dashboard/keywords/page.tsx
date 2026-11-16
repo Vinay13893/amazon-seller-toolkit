@@ -1,4 +1,5 @@
 'use client'
+import { DailyTrackerPanel } from '@/components/checkers/DailyTrackerPanel'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
@@ -52,6 +53,7 @@ import {
 } from '@/lib/keywords/keyword-refresh'
 import { Marketplace } from '@/types'
 import { toast } from 'sonner'
+import { FeatureGuide } from '@/components/onboarding/FeatureGuide'
 
 interface KeywordSnapshotRow {
   tracked_keyword_id: string
@@ -1303,6 +1305,12 @@ export default function KeywordsPage() {
 
   return (
     <div className="flex flex-col gap-8">
+      <FeatureGuide guideKey="keywords" title="Keyword Tracker" steps={[
+        { title: 'Select a product first', description: 'Choose one of your own or competitor ASINs. Beta includes up to 10 ASINs across both groups.' },
+        { title: 'Add focused keywords', description: 'Track a maximum of 3 keywords for each selected ASIN, so every alert and ranking chart stays actionable.' },
+        { title: 'Run the first check', description: 'Refresh the selected product to capture organic and sponsored positions. An honest “not found” is preserved as a result.' },
+        { title: 'Use Daily Tracking and History', description: 'Saved keywords are checked automatically each day. Open History to see movement instead of replacing yesterday’s result.' },
+      ]} />
       {/* ── 1. Header ─────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
@@ -1320,6 +1328,7 @@ export default function KeywordsPage() {
         </Button>
       </div>
 
+      <DailyTrackerPanel kind="keyword" />
       {/* ── 2. KPI cards ──────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-4">
         <KpiCard label="Total Tracked" value={trackedKeywordsLoading ? '—' : visibleTrackedData.length} icon={Tag} />

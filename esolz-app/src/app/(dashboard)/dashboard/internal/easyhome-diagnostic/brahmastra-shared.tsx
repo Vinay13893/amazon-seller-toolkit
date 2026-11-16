@@ -19,7 +19,7 @@ import type { ManualReviewCandidate } from '@/lib/internal/easyhome-manual-revie
 import type { ManualReviewCase } from '@/lib/internal/easyhome-manual-review-cases'
 import type { FindingRow, GoodWorkingRow } from '@/lib/internal/easyhome-findings-table'
 import type { BlendedPeriodMetrics } from '@/lib/internal/easyhome-blended-metrics'
-import { DEFAULT_RANGE_B, autoBaselineFor, type DateRange } from '@/lib/internal/date-range'
+import { recentAnalysisRange, autoBaselineFor, type DateRange } from '@/lib/internal/date-range'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import type { ControlPanelQuery } from './brahmastra-control-panel'
 
@@ -451,13 +451,11 @@ export function SkuLoserTable({
   )
 }
 
-// Default: Single Range Analysis on the June 15+ window, auto-baselined
-// against the immediately preceding equal-length period. The old 14d-vs-9d
-// pairing is only reachable via the explicit "Legacy June 15 Diagnostic" preset.
+// Current marketplace dates by default; historical investigations remain explicit presets.
 export const DEFAULT_QUERY: ControlPanelQuery = {
   mode: 'single',
-  rangeA: DEFAULT_RANGE_B,
-  rangeB: autoBaselineFor(DEFAULT_RANGE_B),
+  rangeA: recentAnalysisRange(),
+  rangeB: autoBaselineFor(recentAnalysisRange()),
   portfolio: null,
   campaign: null,
   allowUnequalLengths: false,

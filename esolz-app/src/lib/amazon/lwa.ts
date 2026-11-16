@@ -41,13 +41,8 @@ export async function refreshAccessToken(refreshToken: string): Promise<LWARefre
   })
 
   if (!res.ok) {
-    // In dev, log the LWA error body for debugging — never log in production (may contain hints)
-    if (process.env.NODE_ENV !== 'production') {
-      const errBody = await res.text().catch(() => '<unreadable>')
-      console.error('[lwa] Token refresh HTTP error:', res.status, errBody)
-    } else {
-      console.error('[lwa] Token refresh HTTP error:', res.status)
-    }
+    // Response bodies may contain sensitive authentication details, including on workers.
+    console.error('[lwa] Token refresh HTTP error:', res.status)
     throw new Error(`LWA token refresh failed with HTTP ${res.status}`)
   }
 

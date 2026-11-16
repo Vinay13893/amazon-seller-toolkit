@@ -6,6 +6,7 @@
 // SECURITY: never log refresh_token/access_token values.
 
 import { gunzipSync } from 'node:zlib'
+import { AdsApiError, parseRetryAfter } from './ads-api-error'
 
 const LWA_TOKEN_URL = 'https://api.amazon.com/auth/o2/token'
 
@@ -162,8 +163,7 @@ export async function requestAdsReport(ctx: AdsApiContext, reportType: AdsReport
     }),
   })
   if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`Report request for ${reportType} failed: HTTP ${res.status} ${body.slice(0, 300)}`)
+    throw new AdsApiError(`Report request for ${reportType} failed: HTTP ${res.status}`, res.status, parseRetryAfter(res.headers.get('retry-after')))
   }
   const data = await res.json() as { reportId: string }
   if (!data.reportId) throw new Error(`Report request for ${reportType} did not return a reportId.`)
@@ -214,7 +214,8 @@ export async function downloadAdsReportRows(downloadUrl: string): Promise<Array<
   const gzipped = Buffer.from(await res.arrayBuffer())
   const json = gunzipSync(gzipped).toString('utf8')
   const parsed = JSON.parse(json)
-  return Array.isArray(parsed) ? parsed : []
+  if (!Array.isArray(parsed)) throw new Error('Report document is not a row array.')
+  return parsed
 }
 
 export type { AdsApiContext }

@@ -22,6 +22,7 @@ type RefreshFetcher = (input: string, init: RequestInit) => Promise<RefreshRespo
 type RefreshResponseBody = {
   checked?: number
   status?: string
+  results?: Array<{ scan_status?: string }>
 }
 
 export function filterKeywordRowsByAsin<T extends KeywordRefreshRow>(
@@ -93,6 +94,7 @@ export async function refreshKeywordIds(
       && body?.status !== 'failed'
       && body?.status !== 'checker_unavailable'
       && body?.checked === 1
+      && (!body.results || body.results.every(row => row.scan_status === 'success' || row.scan_status === 'not_found'))
     ) {
       completed += 1
     } else {

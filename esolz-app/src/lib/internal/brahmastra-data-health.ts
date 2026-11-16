@@ -127,9 +127,8 @@ const BUYBOX_CONFIRMED_WINDOW_HOURS = 24 * 7
 const BUYBOX_MIN_CONFIRMED_COVERAGE_PCT = 30
 
 // Amazon Ads sync writes one internal_data_refresh_runs row per report type,
-// not one row per "Ads sync". A single flaky/rate-limited report type must
-// never make the whole Ads card look broken while the others are fine — so
-// health is evaluated per source below, not from a single "most recent" row.
+// not one row per "Ads sync". Every required report must be current before
+// the combined source is trustworthy. Details identify the affected report.
 const ADS_SOURCES = [
   'ads_campaign_daily',
   'ads_sb_campaign_daily',
@@ -238,7 +237,7 @@ function evaluateSyncedSource(params: {
   }
 }
 
-function evaluateAdsSource(params: {
+export function evaluateAdsSource(params: {
   latestDataDate: string | null
   profileSelected: boolean
   runsBySource: Map<string, RefreshRunRow>
@@ -266,12 +265,16 @@ function evaluateAdsSource(params: {
   const hasEverRun = perSourceRuns.some(Boolean)
   const authFailures = perSourceRuns.filter(r => r && looksLikeAuthError(r.error_message)).length
   const rateLimitFailures = perSourceRuns.filter(r => r && looksLikeRateLimit(r.error_message)).length
-  // "Persistent" = the majority of report types show the same problem on
-  // their own latest attempt — one flaky report type recovering on its own
-  // must not make an otherwise-working re-auth look broken.
+  // Only suggest reconnecting when most reports show an authorization
+  // problem. Any incomplete report still blocks the combined trust signal.
   const majority = Math.ceil(ADS_SOURCES.length / 2)
   const persistentAuthIssue = authFailures >= majority
-  const persistentRateLimit = !persistentAuthIssue && rateLimitFailures >= majority
+  const persistentRateLimit = !persistentAuthIssue && rateLimitFailures > 0
+  const incomplete = perSourceRuns.some(r => !r || r.status !== 'success')
+  const staleRun = perSourceRuns.some(r => {
+    const timestamp = r?.finished_at ? Date.parse(r.finished_at) : NaN
+    return !Number.isFinite(timestamp) || nowMs - timestamp > 36 * 60 * 60 * 1000
+  })
   const age = daysAgo(latestDataDate, nowMs)
   const mostRecentAttempt = perSourceRuns
     .filter((r): r is RefreshRunRow => Boolean(r?.started_at))
@@ -288,7 +291,13 @@ function evaluateAdsSource(params: {
     message = `${label} needs to be reconnected — most recent syncs couldn't sign in.`
   } else if (persistentRateLimit) {
     status = 'rate_limited'
-    message = `${label} is being slowed down by Amazon across most report types; using the last good data where available.`
+    message = `${label} has ${rateLimitFailures} report type(s) slowed down by Amazon. Recommendations are waiting for complete data.`
+  } else if (incomplete) {
+    status = 'failed'
+    message = `${label} has missing or incomplete report refreshes. Recommendations are waiting for all required reports.`
+  } else if (staleRun) {
+    status = 'stale'
+    message = `${label} has report refreshes older than 36 hours. Recommendations are waiting for fresh data.`
   } else if (age !== null && age > staleAfterDays) {
     status = 'stale'
     message = `${label} hasn't updated in ${age} day${age === 1 ? '' : 's'} (expected within ${staleAfterDays}).`
@@ -504,7 +513,9 @@ export async function buildBrahmastraDataHealth(
           admin.from('internal_ads_search_term_daily_rows').select('report_date').eq('workspace_id', workspaceId).eq('profile_id', profileId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
         ])
       : Promise.resolve([{ data: null }, { data: null }, { data: null }, { data: null }] as { data: { report_date?: string } | null }[]),
-    admin.from('internal_data_refresh_runs').select('source, status, started_at, finished_at, error_message').eq('workspace_id', workspaceId).like('source', 'ads_%').order('started_at', { ascending: false }).limit(ADS_RUN_HISTORY_SCAN),
+    profileId
+      ? admin.from('internal_data_refresh_runs').select('source, status, started_at, finished_at, error_message').eq('workspace_id', workspaceId).eq('profile_id', profileId).like('source', 'ads_%').neq('status', 'skipped').order('started_at', { ascending: false }).limit(ADS_RUN_HISTORY_SCAN)
+      : Promise.resolve({ data: [] }),
     admin.from('internal_business_report_sales_traffic_daily').select('report_date').eq('workspace_id', workspaceId).order('report_date', { ascending: false }).limit(1).maybeSingle(),
     admin.from('internal_data_refresh_runs').select('status, started_at, finished_at, error_message').eq('workspace_id', workspaceId).eq('source', 'business_report_sp_api').order('started_at', { ascending: false }).limit(1).maybeSingle(),
     admin.from('internal_payment_transactions').select('transaction_date').eq('workspace_id', workspaceId).order('transaction_date', { ascending: false }).limit(1).maybeSingle(),
@@ -522,7 +533,6 @@ export async function buildBrahmastraDataHealth(
   ])
 
   const adsDates = (adsDateRows as { data: { report_date?: string } | null }[]).map(r => r.data?.report_date ?? null).filter((d): d is string => Boolean(d))
-  const latestAdsDate = adsDates.length > 0 ? adsDates.sort().reverse()[0] : null
   // Conservative: Ads is only "complete through" the EARLIEST of the four
   // per-report-type latest dates, mirroring the existing minDate() convention
   // used by the main diagnostic route for the same four tables.
@@ -536,7 +546,7 @@ export async function buildBrahmastraDataHealth(
   }
 
   const ads = evaluateAdsSource({
-    latestDataDate: profileId ? (earliestOfLatestAdsDates ?? latestAdsDate) : null,
+    latestDataDate: profileId ? earliestOfLatestAdsDates : null,
     profileSelected: Boolean(profileId),
     runsBySource: adsRunsBySource,
     staleAfterDays: ADS_STALE_AFTER_DAYS,

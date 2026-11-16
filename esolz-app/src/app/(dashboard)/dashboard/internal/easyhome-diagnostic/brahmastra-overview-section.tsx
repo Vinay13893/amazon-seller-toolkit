@@ -6,7 +6,7 @@ import { KpiCard } from '@/components/dashboard/KpiCard'
 import type { ApiResponse } from './brahmastra-shared'
 import { formatInr, formatInrCompact, pctStr, roasStr, rangeLabel, shortSourceLabel } from './brahmastra-shared'
 import { BrahmastraControlPanel, type ControlPanelQuery } from './brahmastra-control-panel'
-import { AccuracyAuditPanel, BusinessReportVsSettlementCard, PrimarySalesSourceBadge } from './brahmastra-data-health-section'
+import { AccuracyAuditPanel, PrimarySalesSourceBadge } from './brahmastra-data-health-section'
 
 /**
  * Overview is intentionally the only tab that carries the full Control
@@ -36,10 +36,9 @@ export function BrahmastraOverviewSection({
   loadedQuery: ControlPanelQuery
   loadedAt: Date | null
 }) {
-  const { controlPanel, sourceAccuracyAudit, blendedMetrics, businessReportBlended, actionQueue, diagnostic, findingsTable, goodWorkingRows } = data
-  const { after } = diagnostic.accountSummary
+  const { controlPanel, sourceAccuracyAudit, blendedMetrics, businessReportBlended, actionQueue, findingsTable, goodWorkingRows } = data
   const isBusinessReportPrimary = data.primarySalesSource === 'business_report'
-  const primaryInsights = isBusinessReportPrimary ? businessReportBlended.insights : blendedMetrics.insights
+  const primaryInsights = isBusinessReportPrimary ? businessReportBlended.insights : []
   const isSingle = controlPanel.mode === 'single'
 
   type TopActionItem = { actionKey: string; entityName: string; portfolio: string; priority: string }
@@ -54,6 +53,7 @@ export function BrahmastraOverviewSection({
   return (
     <div className="space-y-6">
       <BrahmastraControlPanel
+        initialQuery={loadedQuery}
         portfolios={portfolioOptions}
         campaigns={campaignOptions}
         onRun={onRun}
@@ -89,7 +89,10 @@ export function BrahmastraOverviewSection({
         </div>
       )}
 
-      <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
+      <details className="rounded-xl border border-border p-3">
+        <summary className="cursor-pointer text-sm font-medium">Data coverage and historical source details</summary>
+        <AccuracyAuditPanel controlPanel={controlPanel} sourceAccuracyAudit={sourceAccuracyAudit} />
+      </details>
 
       <div className="flex items-center gap-2">
         <PrimarySalesSourceBadge data={data} />
@@ -97,7 +100,7 @@ export function BrahmastraOverviewSection({
 
       {!isBusinessReportPrimary && (
         <p className="text-sm text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl p-3">
-          Business Report data is missing for this range. Showing Settlement Net Sales view.
+          Sales &amp; Traffic coverage is incomplete for this range. Sales-based metrics are unavailable; check Data &amp; Sync for the latest run.
         </p>
       )}
 
@@ -116,28 +119,16 @@ export function BrahmastraOverviewSection({
         </div>
       )}
 
-      {/* Secondary / reconciliation — Settlement, kept separate from the primary view above. */}
-      <div>
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">{isBusinessReportPrimary ? 'Secondary — Settlement (reconciliation)' : 'Settlement'}</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          <KpiCard label="Settlement Net Sales" value={formatInrCompact(blendedMetrics.after.totalSalesNet)} valueTitle={formatInr(blendedMetrics.after.totalSalesNet)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
-          <KpiCard label="Settlement Gross Product Sales" value={formatInrCompact(blendedMetrics.after.grossSales)} valueTitle={formatInr(blendedMetrics.after.grossSales)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
-          <KpiCard label="Settlement Refunds" value={formatInrCompact(blendedMetrics.after.refunds)} valueTitle={formatInr(blendedMetrics.after.refunds)} sub={shortSourceLabel('Source: Payment Transactions')} subTitle="Source: Payment Transactions" />
-          <KpiCard label="Settlement Orders" value={after.orderCount.toLocaleString('en-IN')} sub="Payment Txns" subTitle="Distinct orders · Payment Transactions" />
-          {!isBusinessReportPrimary && (
-            <KpiCard label="Total Amazon Ads Spend" value={formatInrCompact(blendedMetrics.after.adSpend)} valueTitle={formatInr(blendedMetrics.after.adSpend)} sub={shortSourceLabel('SP + SD + SB campaign reports')} subTitle="Source: SP + SD + SB campaign reports — matches Amazon Ads Console spend" />
-          )}
-          <KpiCard label="Settlement Blended ROAS" value={roasStr(blendedMetrics.after.blendedRoas)} sub="Net Sales ÷ Ads Spend" subTitle="Settlement Net Sales ÷ Amazon Ads Spend" />
-          <KpiCard label="Settlement TACOS" value={pctStr(blendedMetrics.after.tacos)} sub="Ads Spend ÷ Net Sales" subTitle="Amazon Ads Spend ÷ Settlement Net Sales" />
-        </div>
+      <div className="rounded-xl border border-border bg-card p-4">
+        <p className="text-sm font-semibold">Settlement analysis: Unavailable</p>
+        <p className="mt-1 text-xs text-muted-foreground">Finance API ingestion must be activated and reconciled before settlement sales, fees and refunds can be used here. Historical CSV figures are not substituted for current API results.</p>
       </div>
-      {!blendedMetrics.complete && (
-        <p className="text-xs text-amber-600 dark:text-amber-300">
-          Settlement-based metrics above may be incomplete for the selected range until both Ads and payment-transaction data catch up. See Data Health &amp; Imports for details.
-        </p>
+      {!isBusinessReportPrimary && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <KpiCard label="Ordered Product Sales" value="Unavailable" sub="Waiting for complete Sales & Traffic coverage" subWrap />
+          <KpiCard label="Amazon Ads Spend" value={controlPanel.dataFreshness?.adsDataIncomplete ? 'Unavailable' : formatInrCompact(blendedMetrics.after.adSpend)} sub="Amazon Ads API" />
+        </div>
       )}
-
-      <BusinessReportVsSettlementCard data={data} />
 
       {/* Top 3 insights / single-mode daily action summary */}
       {isSingle ? (

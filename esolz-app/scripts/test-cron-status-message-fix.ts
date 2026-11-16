@@ -11,7 +11,7 @@
  *   npx tsx scripts/test-cron-status-message-fix.ts
  */
 import assert from 'node:assert/strict'
-import { resolveSuggestedAction, type CheckerSummaryForAction } from '../src/app/api/asins/listings/route'
+import { resolveSuggestedAction, type CheckerSummaryForAction } from '../src/lib/asins/listing-snapshot-display'
 
 const NOW = '2026-07-14T12:00:00.000Z'
 
@@ -47,12 +47,12 @@ test('never returns the old "Cron not configured" message under any input, inclu
 
 test('a healthy backlog with recent activity reports queued, not stalled', () => {
   const result = resolveSuggestedAction(summary({ queueDueNow: 451, lastAttemptedAt: hoursAgo(1.5) }), NOW)
-  assert.equal(result, 'Checks queued — next automatic run within a few hours')
+  assert.equal(result, 'Checks queued — processing runs every ten minutes')
 })
 
 test('activity right at the cron cadence boundary (just under the threshold) is still healthy', () => {
   const result = resolveSuggestedAction(summary({ queueDueNow: 5, lastAttemptedAt: hoursAgo(5.99) }), NOW)
-  assert.equal(result, 'Checks queued — next automatic run within a few hours')
+  assert.equal(result, 'Checks queued — processing runs every ten minutes')
 })
 
 test('genuinely stale activity (beyond both known cron cadences) is correctly flagged', () => {

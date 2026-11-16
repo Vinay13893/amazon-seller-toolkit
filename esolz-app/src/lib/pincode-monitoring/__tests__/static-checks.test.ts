@@ -65,7 +65,15 @@ describe('static safety checks', () => {
       const content = readFileSync(file, 'utf8')
       const usesAccessGateDirectly = content.includes('resolvePincodeAccess')
       const delegatesToASharedHandler = content.includes('pause-resume-handler') // pause/resume routes delegate to a shared handler that itself calls resolvePincodeAccess (see rpc.test.ts's sibling handler coverage and pause-resume-handler.ts itself)
-      assert.ok(usesAccessGateDirectly || delegatesToASharedHandler, `${file} does not appear to call the access gate`)
+      // Historical reads remain accessible when daily monitoring is disabled.
+      const historyRead = ['context', 'history'].includes(path.basename(path.dirname(file)))
+      if (historyRead) {
+        assert.ok(content.includes('auth.getUser()'))
+        assert.ok(content.includes(".eq('user_id', user.id)"))
+        assert.ok(content.includes("from('workspace_members')"))
+        assert.equal(/export async function (POST|PATCH|DELETE|PUT)/.test(content), false)
+      }
+      assert.ok(usesAccessGateDirectly || delegatesToASharedHandler || historyRead, `${file} does not appear to call the access gate`)
     }
   })
 
@@ -76,6 +84,11 @@ describe('static safety checks', () => {
       const adminIdx = content.indexOf("from '@/lib/supabase/admin'")
       const accessIdx = content.indexOf('resolvePincodeAccess')
       if (adminIdx === -1) continue // this route doesn't touch the admin client directly (e.g. delegates to a lib handler) -- nothing to check here
+      if (path.basename(path.dirname(file)) === 'history') {
+        assert.ok(content.indexOf('if (error || !member') < content.indexOf('createAdminClient().from('))
+        assert.ok(content.includes(".eq('workspace_id', workspaceId)"))
+        continue
+      }
       assert.ok(accessIdx !== -1, `${file} imports the admin client but never references resolvePincodeAccess`)
     }
   })

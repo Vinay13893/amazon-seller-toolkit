@@ -5,6 +5,7 @@ import { AlertTriangle, CheckCircle2, Clock, Download, Loader2, Play, RefreshCw,
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AsinProductSelector } from '@/components/asins/AsinProductSelector'
+import { DailyTrackerPanel } from '@/components/checkers/DailyTrackerPanel'
 import { useAsinProductDomains } from '@/hooks/use-asin-product-domains'
 import { selectedAsins } from '@/lib/asins/product-domain'
 import {
@@ -14,6 +15,7 @@ import {
   getMissingSignalLabel,
 } from '@/lib/checkers/buy-box-display'
 import { cn } from '@/lib/utils'
+import { FeatureGuide } from '@/components/onboarding/FeatureGuide'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed'
 
@@ -254,11 +256,17 @@ export default function BuyBoxMonitorPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
+      <FeatureGuide guideKey="buy-box" title="Buy Box Checker" steps={[
+        { title: 'Select up to 10 products', description: 'Your own and competitor ASINs share one 10-ASIN allowance, so the limit matches what you actually monitor.' },
+        { title: 'Run an immediate check', description: 'Start a check to confirm Buy Box presence, visible price, seller and availability without changing Amazon data.' },
+        { title: 'Save important ASINs', description: 'Add selected products to Daily Tracking. Brahmastra checks them automatically without keeping this page open.' },
+        { title: 'Review History', description: 'Use the history view to see confirmed wins, losses and unavailable checks without erasing previous results.' },
+      ]} />
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <ShoppingCart className="size-5 text-primary" />
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">Buy Box Monitor</h1>
-          <Badge variant="secondary" className="h-5 text-[10px]">Queue beta</Badge>
+          <Badge variant="secondary" className="h-5 text-[10px]">Daily monitoring</Badge>
         </div>
         <p className="max-w-3xl text-sm text-muted-foreground">
           Check whether tracked Amazon products show a buy box, visible price, seller, and availability signal.
@@ -342,6 +350,8 @@ export default function BuyBoxMonitorPage() {
           </div>
         </div>
       </section>
+
+      <DailyTrackerPanel kind="buybox" selectedAsins={asins} />
 
       {error && (
         <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">

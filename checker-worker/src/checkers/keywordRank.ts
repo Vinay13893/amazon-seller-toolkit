@@ -26,6 +26,8 @@ export type KeywordRankResponse = {
   sponsored_found: boolean
   status: 'success' | 'not_found' | 'blocked' | 'failed'
   error_message: string | null
+  scanned_results?: number
+  pages_checked?: number
 }
 
 type SearchResultRow = {
@@ -33,6 +35,8 @@ type SearchResultRow = {
   sponsored: boolean
   positionOnPage: number
 }
+
+const MAX_SEARCH_PAGES = 5
 
 function normalizeAsin(asin: string): string {
   return asin.trim().toUpperCase()
@@ -69,8 +73,9 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
       let sponsoredRank: number | null = null
       let sponsoredPage: number | null = null
       let sponsoredSlot: number | null = null
+      let pagesChecked = 0
 
-      for (let pageIndex = 1; pageIndex <= 3; pageIndex += 1) {
+      for (let pageIndex = 1; pageIndex <= MAX_SEARCH_PAGES; pageIndex += 1) {
         const searchUrl = `https://www.amazon.in/s?k=${encodeURIComponent(keyword)}&page=${pageIndex}`
 
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
@@ -92,6 +97,9 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
           }
         }
 
+        // A loaded page is not proof that Amazon returned readable search cards.
+        // Fail closed on empty/changed layouts instead of inventing a negative rank.
+        await page.waitForSelector('div.s-main-slot div[data-component-type="s-search-result"][data-asin]', { timeout: 5000 })
         const rows = await page.evaluate(() => {
           const cards = Array.from(document.querySelectorAll<HTMLElement>('div.s-main-slot div[data-component-type="s-search-result"][data-asin]'))
           return cards
@@ -100,7 +108,21 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
               if (!asin) return null
 
               const rowText = (card.textContent || '').toLowerCase()
-              const sponsored = rowText.includes('sponsored') || !!card.closest('[data-component-type="sp-sponsored-result"]')
+              const sponsoredSelector = [
+                '[data-component-type="sp-sponsored-result"]',
+                '[data-ad-id]',
+                '[data-ad-feedback]',
+                '.puis-sponsored-label-text',
+                '[aria-label*="sponsored" i]',
+                '[title*="sponsored" i]',
+                'a[href*="/sspa/click"]',
+                'a[href*="adId="]',
+              ].join(',')
+              const sponsored =
+                rowText.includes('sponsored') ||
+                card.matches(sponsoredSelector) ||
+                !!card.querySelector(sponsoredSelector) ||
+                !!card.closest('[data-component-type="sp-sponsored-result"]')
 
               return {
                 asin,
@@ -110,6 +132,9 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
             })
             .filter((item): item is { asin: string; sponsored: boolean; positionOnPage: number } => !!item)
         }) as SearchResultRow[]
+
+        if (!rows.length) throw new Error('search_results_not_readable')
+        pagesChecked += 1
 
         for (const row of rows) {
           if (row.sponsored) {
@@ -136,6 +161,7 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
         }
 
         if (organicRank !== null && sponsoredRank !== null) break
+        if (await page.locator('a.s-pagination-next:not(.s-pagination-disabled)').count() === 0) break
       }
 
       const found = organicRank !== null || sponsoredRank !== null
@@ -152,6 +178,8 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
         sponsored_found: sponsoredRank !== null,
         status: found ? 'success' : 'not_found',
         error_message: null,
+        scanned_results: organicCounter + sponsoredCounter,
+        pages_checked: pagesChecked,
       }
     })
   } catch {

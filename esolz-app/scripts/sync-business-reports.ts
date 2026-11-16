@@ -53,9 +53,8 @@
 //   - 429s are backed off (see waitForSalesAndTrafficReport).
 //   - Days are processed strictly sequentially (never in parallel) —
 //     bounded, predictable load on Amazon's low-quota Reports API.
-//   - Manual CSV import (src/lib/internal/business-report-sales-traffic-parser.ts)
-//     remains available as a backup path — this script only adds automation
-//     on top of it; it does not replace or remove the manual importer.
+//   - The manual CSV HTTP importer is retired. Historical rows remain for audit;
+//     this worker owns new Sales & Traffic ingestion.
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'

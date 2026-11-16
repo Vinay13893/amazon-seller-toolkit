@@ -89,9 +89,9 @@ Request JSON:
 ```
 
 Behavior:
-- Searches Amazon India and scans first 3 pages.
+- Searches Amazon India and scans up to the first 5 readable pages.
 - Collects product cards with ASIN.
-- Attempts to classify sponsored vs organic rows.
+- Classifies sponsored rows using Amazon ad containers, ad links, labels and accessibility markers while retaining separate organic and sponsored ranks.
 - Returns rank fields and page/position.
 - Returns blocked status on CAPTCHA/robot checks.
 

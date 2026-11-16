@@ -84,6 +84,7 @@ export function addDays(dateStr: string, delta: number): string {
 }
 
 export type PresetId =
+  | 'last14_single'
   | 'yesterday_vs_previous_day'
   | 'yesterday_vs_last_week'
   | 'last3_vs_previous3'
@@ -93,11 +94,12 @@ export type PresetId =
   | 'custom'
 
 export const PRESET_LABELS: Record<PresetId, string> = {
+  last14_single: 'Last 14 days',
   yesterday_vs_previous_day: 'Yesterday vs previous day',
   yesterday_vs_last_week: 'Yesterday vs same day last week',
   last3_vs_previous3: 'Last 3 days vs previous 3 days',
   last7_vs_previous7: 'Last 7 days vs previous 7 days',
-  june15_single_default: 'June 15 Investigation (default)',
+  june15_single_default: 'June 15 Investigation (historical)',
   legacy_june15_compare: 'Legacy June 15 Diagnostic (14d vs 9d)',
   custom: 'Custom',
 }
@@ -123,6 +125,10 @@ export function buildPreset(presetId: PresetId, today: Date = new Date()): Prese
   const yesterday = addDays(todayStr, -1)
 
   switch (presetId) {
+    case 'last14_single': {
+      const rangeA = recentAnalysisRange(today)
+      return { rangeA, rangeB: autoBaselineFor(rangeA), mode: 'single' }
+    }
     case 'yesterday_vs_previous_day': {
       const dayBefore = addDays(yesterday, -1)
       return { rangeA: { startDate: dayBefore, endDate: dayBefore }, rangeB: { startDate: yesterday, endDate: yesterday } }
@@ -148,6 +154,16 @@ export function buildPreset(presetId: PresetId, today: Date = new Date()): Prese
     default:
       return null
   }
+}
+
+/** India marketplace calendar days; independent of browser/server timezone. */
+export function recentAnalysisRange(now = new Date()): DateRange {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(now)
+  const value = (type: string) => parts.find(p => p.type === type)!.value
+  const endDate = addDays(`${value('year')}-${value('month')}-${value('day')}`, -1)
+  return { startDate: addDays(endDate, -13), endDate }
 }
 
 /** Auto baseline for Single Range mode: the immediately preceding period of equal length. */

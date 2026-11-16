@@ -7,7 +7,7 @@ import {
   daysInRange,
   validateCompareRanges,
   validateRange,
-  DEFAULT_RANGE_B,
+  recentAnalysisRange,
   autoBaselineFor,
   PRESET_LABELS,
   buildPreset,
@@ -27,6 +27,7 @@ export type ControlPanelQuery = {
 }
 
 const PRESET_OPTIONS: PresetId[] = [
+  'last14_single',
   'june15_single_default',
   'yesterday_vs_previous_day',
   'yesterday_vs_last_week',
@@ -36,7 +37,7 @@ const PRESET_OPTIONS: PresetId[] = [
   'custom',
 ]
 
-const DEFAULT_INVESTIGATED_RANGE: DateRange = DEFAULT_RANGE_B // 2026-06-15 -> 2026-06-23
+const DEFAULT_INVESTIGATED_RANGE: DateRange = recentAnalysisRange()
 
 function DateInput({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
@@ -61,6 +62,7 @@ export function BrahmastraControlPanel({
   onExportAll,
   loading,
   dataFreshness,
+  initialQuery,
 }: {
   portfolios: string[]
   campaigns: string[]
@@ -70,14 +72,15 @@ export function BrahmastraControlPanel({
   onExportAll: () => void
   loading: boolean
   dataFreshness?: { latestAdsDate: string | null; latestSalesDate: string | null }
+  initialQuery?: ControlPanelQuery
 }) {
-  const [mode, setMode] = useState<AnalysisMode>('single')
-  const [preset, setPreset] = useState<PresetId>('june15_single_default')
-  const [rangeA, setRangeA] = useState<DateRange>(DEFAULT_INVESTIGATED_RANGE)
-  const [rangeB, setRangeB] = useState<DateRange>(autoBaselineFor(DEFAULT_INVESTIGATED_RANGE))
-  const [portfolio, setPortfolio] = useState<string>('All')
-  const [campaign, setCampaign] = useState<string>('All')
-  const [allowUnequalLengths, setAllowUnequalLengths] = useState(false)
+  const [mode, setMode] = useState<AnalysisMode>(initialQuery?.mode ?? 'single')
+  const [preset, setPreset] = useState<PresetId>(initialQuery ? 'custom' : 'last14_single')
+  const [rangeA, setRangeA] = useState<DateRange>(initialQuery?.rangeA ?? DEFAULT_INVESTIGATED_RANGE)
+  const [rangeB, setRangeB] = useState<DateRange>(initialQuery?.rangeB ?? autoBaselineFor(DEFAULT_INVESTIGATED_RANGE))
+  const [portfolio, setPortfolio] = useState<string>(initialQuery?.portfolio ?? 'All')
+  const [campaign, setCampaign] = useState<string>(initialQuery?.campaign ?? 'All')
+  const [allowUnequalLengths, setAllowUnequalLengths] = useState(initialQuery?.allowUnequalLengths ?? false)
 
   useEffect(() => {
     if (preset === 'custom') return
@@ -132,21 +135,21 @@ export function BrahmastraControlPanel({
   }
 
   const latestCompleteDate = useMemo(() => {
-    const dates = [dataFreshness?.latestAdsDate, dataFreshness?.latestSalesDate].filter((d): d is string => Boolean(d))
-    if (dates.length === 0) return null
-    return dates.sort()[0]
+    return dataFreshness?.latestAdsDate ?? null
   }, [dataFreshness])
 
   function handleUseLatestCompleteRange() {
     if (!latestCompleteDate) return
-    const days = daysInRange(rangeA)
-    const startDate = addDays(latestCompleteDate, -(days - 1))
-    setRangeA({ startDate, endDate: latestCompleteDate })
-    if (mode === 'compare') {
-      const daysB = daysInRange(rangeB)
-      setRangeB({ startDate: addDays(latestCompleteDate, -(daysB - 1)), endDate: latestCompleteDate })
-    }
+    const current = { startDate: addDays(latestCompleteDate, -13), endDate: latestCompleteDate }
+    const previous = autoBaselineFor(current)
+    const nextA = mode === 'compare' ? previous : current
+    const nextB = mode === 'compare' ? current : previous
+    setRangeA(nextA)
+    setRangeB(nextB)
+    setAllowUnequalLengths(false)
     setPreset('custom')
+    onRun({ mode, rangeA: nextA, rangeB: nextB, portfolio: portfolio === 'All' ? null : portfolio,
+      campaign: campaign === 'All' ? null : campaign, allowUnequalLengths: false })
   }
 
   function handleRun() {
@@ -163,7 +166,7 @@ export function BrahmastraControlPanel({
 
   return (
     <div className="bg-card border border-border rounded-xl p-4 mb-6 shadow-lg">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex flex-wrap gap-3 items-center justify-between mb-3">
         <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
           <CalendarRange className="w-4 h-4 text-primary" /> Brahmastra Control Panel
           {isDirty && (
@@ -172,15 +175,16 @@ export function BrahmastraControlPanel({
             </span>
           )}
         </h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {latestCompleteDate && (
             <button
               type="button"
               onClick={handleUseLatestCompleteRange}
-              title={`Latest complete date: ${latestCompleteDate}`}
+              disabled={loading}
+              title={`Ads data through ${latestCompleteDate}. Reads saved Amazon reports.`}
               className="inline-flex items-center gap-1 text-xs text-primary border border-border rounded-md px-2 py-1 hover:bg-muted"
             >
-              Use latest complete range
+              View latest Ads data
             </button>
           )}
           <button

@@ -2,8 +2,16 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
+      "path": "/api/cron/daily-trackers",
+      "schedule": "2,17,32,47 * * * *"
+    },
+    {
+      "path": "/api/cron/pincode-monitoring",
+      "schedule": "*/15 * * * *"
+    },
+    {
       "path": "/api/cron/asins/process-product-snapshots",
-      "schedule": "0 */2 * * *"
+      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/cron/review-requests/daily-ingest",

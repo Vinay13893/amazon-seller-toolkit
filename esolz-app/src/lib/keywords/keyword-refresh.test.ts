@@ -8,6 +8,14 @@ import {
   type KeywordRefreshRow,
 } from './keyword-refresh'
 
+test('HTTP success never counts a failed or blocked scan as refreshed', async () => {
+  for (const scan_status of ['failed', 'blocked', 'checker_unavailable']) {
+    const result = await refreshKeywordIds(['test-id'], async () => ({ ok: true,
+      json: async () => ({ checked: 1, results: [{ scan_status }] }) }))
+    assert.deepEqual(result, { completed: 0, partial: 1 })
+  }
+})
+
 const rows: KeywordRefreshRow[] = [
   {
     id: 'own-a',

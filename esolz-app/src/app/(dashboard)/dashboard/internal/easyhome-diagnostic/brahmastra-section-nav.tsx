@@ -25,7 +25,7 @@ export const BRAHMASTRA_VIEWS: Array<{ id: BrahmastraView; label: string }> = [
   { id: 'findings', label: 'Findings' },
   { id: 'trends', label: 'Trends & Charts' },
   { id: 'category', label: 'Category Performance' },
-  { id: 'data-health', label: 'Data Health & Imports' },
+  { id: 'data-health', label: 'Data & Sync' },
   { id: 'change-history', label: 'Change History' },
   { id: 'settings', label: 'Settings / Mapping' },
   { id: 'thresholds', label: 'Thresholds & Assumptions' },

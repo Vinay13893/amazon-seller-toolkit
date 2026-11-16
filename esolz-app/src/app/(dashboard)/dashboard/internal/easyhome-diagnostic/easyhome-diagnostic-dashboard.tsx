@@ -23,6 +23,8 @@ import { BrahmastraTrendsSection } from './brahmastra-trends-section'
 import { BrahmastraCategorySection } from './brahmastra-category-section'
 import { BrahmastraDataHealthSection } from './brahmastra-data-health-section'
 import { BrahmastraSyncHealthSection } from './brahmastra-sync-health-section'
+import { AdsReadinessPanel } from './ads-readiness-panel'
+import { AmazonDataPanel } from './amazon-data-panel'
 import { BrahmastraChangeHistorySection } from './brahmastra-change-history-section'
 import { BrahmastraSettingsMappingSection } from './brahmastra-settings-mapping-section'
 import { BrahmastraThresholdsSection } from './brahmastra-thresholds-section'
@@ -85,6 +87,7 @@ function EasyhomeDiagnosticDashboardInner() {
           <p className="text-sm text-muted-foreground mt-1">Read-only Amazon Ads investigation tool.</p>
         </div>
         <BrahmastraControlPanel
+          initialQuery={query}
           portfolios={[]}
           campaigns={[]}
           onRun={q => setQuery(q)}
@@ -102,6 +105,8 @@ function EasyhomeDiagnosticDashboardInner() {
           <p className="text-sm text-red-400">{error}</p>
         )}
         <BrahmastraSyncHealthSection />
+        <AmazonDataPanel />
+        <AdsReadinessPanel />
       </div>
     )
   }
@@ -182,6 +187,8 @@ function EasyhomeDiagnosticDashboardInner() {
       </div>
 
       <BrahmastraSyncHealthSection />
+      <AmazonDataPanel />
+      <AdsReadinessPanel />
 
       <BrahmastraSectionNav active={view} />
 

@@ -1,7 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
-import { AlertTriangle, Database, Megaphone, Upload } from 'lucide-react'
+import { AlertTriangle, Database, Megaphone } from 'lucide-react'
 import { KpiCard } from '@/components/dashboard/KpiCard'
 import { portfolioDisplayLabel } from '@/lib/internal/portfolio-labels'
 import type { ApiResponse, AdsWarehouseHealth, ControlPanelMeta, SourceAccuracyAudit } from './brahmastra-shared'
@@ -156,14 +155,13 @@ export function PrimarySalesSourceBadge({ data }: { data: ApiResponse }) {
           : 'inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300'
       }
     >
-      Primary Sales Source: {isBusinessReport ? 'Business Report Ordered Product Sales' : 'Settlement fallback'}
+      Sales source: {isBusinessReport ? 'Amazon Sales & Traffic' : 'Unavailable for this range'}
     </span>
   )
 }
 
 /**
- * Phase R8: SP-API auto-sync status — primary path. Manual CSV upload
- * (below) remains available as a backup only; it is never removed.
+ * Scheduled SP-API sync status. Historical uploads are audit records only.
  */
 export function BusinessReportAutoSyncCard({ data }: { data: ApiResponse }) {
   const sync = data.businessReport.syncStatus
@@ -183,7 +181,7 @@ export function BusinessReportAutoSyncCard({ data }: { data: ApiResponse }) {
         </span>
       </div>
       <p className="text-xs text-muted-foreground mb-3">
-        Source: SP-API {sync?.report_type ?? 'GET_SALES_AND_TRAFFIC_REPORT'}. Manual CSV import below remains as backup only.
+        Sales &amp; Traffic is collected automatically from Amazon. Check the last run and available date below; no CSV upload is needed.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         <KpiCard label="Last run" value={sync ? new Date(sync.started_at).toLocaleString('en-IN') : 'Never run'} sub={sync ? `${sync.date_from} → ${sync.date_to}` : 'No auto sync yet'} subWrap />
@@ -238,74 +236,19 @@ export function BusinessReportSkuMappingCard({ data }: { data: ApiResponse }) {
   )
 }
 
-export function BusinessReportImportPanel({ data, onImported }: { data: ApiResponse; onImported?: () => void }) {
-  const { businessReport } = data
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [uploading, setUploading] = useState(false)
-  const [result, setResult] = useState<{ acceptedRows: number; rejectedRows: number } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setUploading(true)
-    setError(null)
-    setResult(null)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await fetch('/api/internal/business-report/sales-traffic/import', { method: 'POST', body: formData })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? 'Import failed.')
-      setResult({ acceptedRows: json.acceptedRows, rejectedRows: json.rejectedRows })
-      onImported?.()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed.')
-    } finally {
-      setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
-  }
-
-  const status = businessReport.importStatus
-
+export function BusinessReportImportPanel({ data }: { data: ApiResponse }) {
+  const status = data.businessReport.importStatus
+  if (!status) return null
   return (
-    <div className="bg-card border border-border rounded-xl p-5">
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <h2 className="text-sm font-bold text-foreground flex items-center gap-2">
-          Manual CSV import backup
-          <span className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">Backup only — Auto Sync above is primary</span>
-        </h2>
-        <div>
-          <input ref={fileInputRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} disabled={uploading} />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="inline-flex items-center gap-1 text-xs text-primary-foreground bg-primary rounded-md px-3 py-1.5 disabled:opacity-50"
-          >
-            <Upload className="w-3 h-3" /> {uploading ? 'Uploading…' : 'Upload CSV'}
-          </button>
-        </div>
-      </div>
-      <p className="text-xs text-muted-foreground mb-3">
-        Source: Seller Central Business Reports → Sales and Traffic → By Date. This is Ordered Product Sales and can differ from Settlement Net Sales. Use this only if Auto Sync above is unavailable.
+    <details className="bg-card border border-border rounded-xl p-4">
+      <summary className="cursor-pointer text-sm font-semibold">Historical import record</summary>
+      <p className="text-xs text-muted-foreground mt-2">
+        Previous uploads are retained for audit. New Sales &amp; Traffic data comes from the scheduled Amazon API sync.
       </p>
-      {error && <p className="text-sm text-red-400 mb-2">{error}</p>}
-      {result && (
-        <p className="text-sm text-foreground mb-2">
-          Imported {result.acceptedRows} day(s), {result.rejectedRows} row(s) rejected.
-        </p>
-      )}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        <KpiCard label="Last upload" value={status?.filename ?? 'None yet'} sub={status ? new Date(status.created_at).toLocaleString('en-IN') : 'No import yet'} subWrap />
-        <KpiCard label="Accepted / Rejected rows" value={status ? `${status.accepted_rows} / ${status.rejected_rows}` : '—'} sub={status?.status ?? '—'} />
-        <KpiCard label="Latest Business Report date" value={businessReport.latestBusinessReportDate ?? '—'} sub="Business Reports" />
-      </div>
-      {status?.error_summary && (
-        <p className="text-xs text-amber-600 dark:text-amber-300 mt-3">{status.error_summary}</p>
-      )}
-    </div>
+      <p className="text-xs text-muted-foreground mt-2">
+        Last historical import: {new Date(status.created_at).toLocaleString('en-IN')} · {status.accepted_rows} accepted rows.
+      </p>
+    </details>
   )
 }
 
@@ -357,7 +300,7 @@ export function AccuracyAuditPanel({
         <KpiCard label="Latest Ads Date" value={sourceAccuracyAudit.latestAdsDate ?? '—'} sub="Ads Reports" subTitle="Amazon Ads Reports" />
         <KpiCard label="Latest Payment Transaction Date" value={sourceAccuracyAudit.latestSalesDate ?? '—'} sub="Payment Txns" subTitle="Payment Transactions (settlement)" />
         <KpiCard label="Blended metrics complete" value={sourceAccuracyAudit.blendedMetricsComplete ? 'Yes' : 'No'} sub="Both sources required" subWrap />
-        <KpiCard label="Business Report" value="SP-API Connected" sub="Ordered Product Sales" subTitle="Business Report Ordered Product Sales via SP-API — sessions/page-views not in this diagnostic" />
+        <KpiCard label="Business Report" value={controlPanel.latestBusinessReportDate ?? 'Unavailable'} sub="Latest stored date; see Data & Sync for coverage" subWrap />
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
         <KpiCard label="Settlement Net Sales (B)" value={formatInrCompact(sourceAccuracyAudit.rangeB.settlementNetSales)} valueTitle={formatInr(sourceAccuracyAudit.rangeB.settlementNetSales)} sub="Payment Txns" subTitle="Payment Transactions" />
@@ -484,7 +427,7 @@ export function AmazonAdsWarehouseCard({ health }: { health: AdsWarehouseHealth 
   )
 }
 
-export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusinessReportImported }: { data: ApiResponse; loadedRangeSuffix: string; onBusinessReportImported?: () => void }) {
+export function BrahmastraDataHealthSection({ data, loadedRangeSuffix }: { data: ApiResponse; loadedRangeSuffix: string; onBusinessReportImported?: () => void }) {
   const { controlPanel, sourceAccuracyAudit, paymentImportStatus, campaignDiagnostic, latestCampaignUploadBatch, latestDeepReportBatches, deepDiagnostic, adsWarehouseHealth } = data
 
   return (
@@ -566,7 +509,7 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
 
       <BusinessReportAutoSyncCard data={data} />
 
-      <BusinessReportImportPanel data={data} onImported={onBusinessReportImported} />
+      <BusinessReportImportPanel data={data} />
 
       <SourceComparisonCards data={data} />
 
@@ -581,7 +524,7 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
       {/* Ads campaign import status */}
       <div className="bg-card border border-border rounded-xl p-5">
         <h2 className="text-sm font-bold text-foreground mb-4 flex items-center gap-2">
-          <Megaphone className="w-4 h-4 text-primary" /> Ads campaign CSV import
+          <Megaphone className="w-4 h-4 text-primary" /> Historical Ads imports
         </h2>
         {latestCampaignUploadBatch ? (
           <div className="text-sm text-foreground space-y-1">
@@ -598,8 +541,7 @@ export function BrahmastraDataHealthSection({ data, loadedRangeSuffix, onBusines
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            No campaign CSV has been imported yet. Export a <strong>daily</strong> Sponsored Products campaign report from Amazon Ads
-            Console (not a period-aggregate report) and import it via POST /api/internal/ads-campaign-daily/import.
+            Ads reports are collected by the scheduled Amazon Ads API sync. No file upload is needed.
           </p>
         )}
       </div>

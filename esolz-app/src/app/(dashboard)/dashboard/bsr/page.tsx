@@ -51,6 +51,7 @@ import { createClient } from '@/lib/supabase/client'
 import { getWorkspaceId } from '@/lib/supabase/asins'
 import { timeAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { FeatureGuide } from '@/components/onboarding/FeatureGuide'
 
 type BsrPoint = { date: string; rank: number }
 
@@ -399,6 +400,8 @@ export default function BsrTrackerPage() {
 
   useEffect(() => {
     queueMicrotask(() => { void loadData() })
+    const timer = setInterval(() => { if (!document.hidden) void loadData() }, 120000)
+    return () => clearInterval(timer)
   }, [loadData])
 
   const loadHistory = useCallback(async (target: BsrTargetView | null, days: number) => {
@@ -488,11 +491,17 @@ export default function BsrTrackerPage() {
 
   return (
     <div className="p-6 w-full max-w-[1800px] mx-auto space-y-7">
+      <FeatureGuide guideKey="bsr" title="BSR Tracker" steps={[
+        { title: 'Your catalogue is ready', description: 'Connected Amazon products appear automatically. You can also select competitor ASINs saved in Brahmastra.' },
+        { title: 'Choose what to follow', description: 'Add any owned or competitor ASIN to BSR tracking. BSR is available for all ASINs in your workspace.' },
+        { title: 'Read movement, not just rank', description: 'Use the current rank, trend chart and gainers or decliners to understand whether a product is improving.' },
+        { title: 'Come back to history', description: 'Brahmastra refreshes tracked ranks automatically and retains past snapshots for comparison.' },
+      ]} />
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-foreground">BSR Tracker</h1>
           <p className="text-sm text-muted-foreground mt-1 max-w-4xl">
-            Select catalog products or confirmed competitors for BSR monitoring. BSR history comes from asin_snapshots and remains available after a target is selected.
+            Select a product below and click Track BSR. Its first check is prioritised in the next ten-minute processing cycle. Automatic refreshes aim for a daily check, subject to Amazon rate limits. Select a tracked product to see its saved BSR Trend history.
           </p>
         </div>
         <Button render={<Link href="/dashboard/asins" />} variant="outline" className="gap-2 shrink-0">

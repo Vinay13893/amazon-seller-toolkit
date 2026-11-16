@@ -331,20 +331,26 @@ async function collectDiagnostics(page: Page, previous: PincodeDiagnostics): Pro
     '#desktop_buybox',
     '#buybox',
   ])
-  const visibleSignalText = await collectText(page, [
-    'body',
-  ])
-  const visibleSignalLower = visibleSignalText.toLowerCase()
-  const textDeliveryFound = [
-    'delivery',
-    'delivered',
-    'in stock',
-    'currently unavailable',
-    'out of stock',
-    'cannot be delivered',
-    'not deliverable',
-  ].some(phrase => visibleSignalLower.includes(phrase))
-  const textBuyBoxFound = visibleSignalLower.includes('add to cart') || visibleSignalLower.includes('buy now')
+  // Keep the full Amazon page text inside Chromium. Returning the entire body
+  // through Playwright duplicated a large string in Node and caused a sharp
+  // container-memory spike on every Buy Box/pincode check.
+  const { textDeliveryFound, textBuyBoxFound } = await page.evaluate(() => {
+    const visibleSignalLower = (document.body?.innerText || document.body?.textContent || '').toLowerCase()
+    const deliveryFound = [
+      'delivery',
+      'delivered',
+      'in stock',
+      'currently unavailable',
+      'out of stock',
+      'cannot be delivered',
+      'not deliverable',
+    ].some(phrase => visibleSignalLower.includes(phrase))
+
+    return {
+      textDeliveryFound: deliveryFound,
+      textBuyBoxFound: visibleSignalLower.includes('add to cart') || visibleSignalLower.includes('buy now'),
+    }
+  })
 
   return {
     ...previous,

@@ -9,7 +9,7 @@ const INTERNAL_CALL_TIMEOUT_MS = 90_000
 /**
  * GET /api/cron/asins/process-product-snapshots
  *
- * Vercel Cron entry point (see vercel.json, schedule: every 2 hours).
+ * Vercel Cron entry point (see vercel.json, schedule: every ten minutes).
  * Replaces the checker-worker productPageOrchestrator loop that previously
  * pinged these same two routes every 3 minutes from Render. Behavior is
  * unchanged: this only enqueues + processes product_page_snapshot jobs via
