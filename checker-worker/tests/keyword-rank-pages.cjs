@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
 const { test } = require('node:test')
 const browser = require('../dist/utils/browser')
 const { runKeywordRankCheck } = require('../dist/checkers/keywordRank')
@@ -24,9 +26,13 @@ test('a card-loading timeout is not a negative rank', async()=>{
 test('an unreadable later page invalidates an incomplete scan', async()=>{
   assert.equal((await scan([[card()],[]])).status,'failed')
 })
-test('three readable pages can confirm not-found within that scan', async()=>{
-  const result=await scan([[card()],[card()],[card()]])
-  assert.equal(result.status,'not_found'); assert.equal(result.pages_checked,3); assert.equal(result.scanned_results,3)
+test('five readable pages can confirm not-found within that scan', async()=>{
+  const result=await scan([[card()],[card()],[card()],[card()],[card()]])
+  assert.equal(result.status,'not_found'); assert.equal(result.pages_checked,5); assert.equal(result.scanned_results,5)
+})
+test('the checker never requests a sixth page', async()=>{
+  const result=await scan([[card()],[card()],[card()],[card()],[card()],[card('TEST000001')]])
+  assert.equal(result.status,'not_found'); assert.equal(result.pages_checked,5)
 })
 test('last readable page ends scanning without requesting nonexistent pages', async()=>{
   const result=await scan([[card()]],{next:false})
@@ -35,6 +41,12 @@ test('last readable page ends scanning without requesting nonexistent pages', as
 test('organic and sponsored discoveries retain their separate ranks', async()=>{
   const result=await scan([[card('TEST000001'),card('TEST000001',true)]])
   assert.equal(result.status,'success'); assert.equal(result.organic_rank,1); assert.equal(result.sponsored_rank,1)
+})
+test('Amazon sponsored-card signals include ad links, labels and accessibility markers',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'../src/checkers/keywordRank.ts'),'utf8')
+  for (const marker of ['/sspa/click','data-ad-id','data-ad-feedback','puis-sponsored-label-text','aria-label*="sponsored"','card.matches(sponsoredSelector)']) {
+    assert.ok(source.includes(marker),`missing sponsored marker: ${marker}`)
+  }
 })
 test('blocked pages remain blocked', async()=>{
   assert.equal((await scan([[]],{blocked:true})).status,'blocked')

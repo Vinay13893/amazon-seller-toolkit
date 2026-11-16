@@ -36,6 +36,8 @@ type SearchResultRow = {
   positionOnPage: number
 }
 
+const MAX_SEARCH_PAGES = 5
+
 function normalizeAsin(asin: string): string {
   return asin.trim().toUpperCase()
 }
@@ -73,7 +75,7 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
       let sponsoredSlot: number | null = null
       let pagesChecked = 0
 
-      for (let pageIndex = 1; pageIndex <= 3; pageIndex += 1) {
+      for (let pageIndex = 1; pageIndex <= MAX_SEARCH_PAGES; pageIndex += 1) {
         const searchUrl = `https://www.amazon.in/s?k=${encodeURIComponent(keyword)}&page=${pageIndex}`
 
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
@@ -106,7 +108,21 @@ export async function runKeywordRankCheck(input: KeywordRankRequest): Promise<Ke
               if (!asin) return null
 
               const rowText = (card.textContent || '').toLowerCase()
-              const sponsored = rowText.includes('sponsored') || !!card.closest('[data-component-type="sp-sponsored-result"]')
+              const sponsoredSelector = [
+                '[data-component-type="sp-sponsored-result"]',
+                '[data-ad-id]',
+                '[data-ad-feedback]',
+                '.puis-sponsored-label-text',
+                '[aria-label*="sponsored" i]',
+                '[title*="sponsored" i]',
+                'a[href*="/sspa/click"]',
+                'a[href*="adId="]',
+              ].join(',')
+              const sponsored =
+                rowText.includes('sponsored') ||
+                card.matches(sponsoredSelector) ||
+                !!card.querySelector(sponsoredSelector) ||
+                !!card.closest('[data-component-type="sp-sponsored-result"]')
 
               return {
                 asin,
