@@ -26,8 +26,7 @@ ON CONFLICT (name) DO UPDATE SET
   pincode_check_limit = EXCLUDED.pincode_check_limit,
   competitor_limit = EXCLUDED.competitor_limit,
   report_limit = EXCLUDED.report_limit,
-  features = EXCLUDED.features,
-  updated_at = NOW();
+  features = EXCLUDED.features;
 
 CREATE OR REPLACE FUNCTION public.fn_handle_new_profile()
 RETURNS TRIGGER
