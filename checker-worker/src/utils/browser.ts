@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { chromium, type Browser, type Page } from 'playwright'
 
 const DEFAULT_OPERATION_TIMEOUT_MS = 45_000
@@ -9,6 +10,17 @@ const DEFAULT_OPERATION_TIMEOUT_MS = 45_000
 let browserOperationTail: Promise<void> = Promise.resolve()
 let browserOperationActive = false
 let browserOperationsWaiting = 0
+let currentOperationPeakBytes: number | null = null
+let lastOperationPeakBytes: number | null = null
+
+function readContainerMemoryBytes(): number | null {
+  try {
+    const value = Number.parseInt(readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim(), 10)
+    return Number.isFinite(value) ? value : null
+  } catch {
+    return null
+  }
+}
 
 async function acquireBrowserOperationSlot(): Promise<() => void> {
   const previousOperation = browserOperationTail
@@ -36,11 +48,15 @@ export function getBrowserWorkloadStats(): {
   active: number
   waiting: number
   maxConcurrent: number
+  containerMemoryBytes: number | null
+  operationPeakBytes: number | null
 } {
   return {
     active: browserOperationActive ? 1 : 0,
     waiting: browserOperationsWaiting,
     maxConcurrent: 1,
+    containerMemoryBytes: readContainerMemoryBytes(),
+    operationPeakBytes: browserOperationActive ? currentOperationPeakBytes : lastOperationPeakBytes,
   }
 }
 
@@ -78,6 +94,12 @@ export async function withBrowserPage<T>(
 ): Promise<T> {
   const releaseBrowserOperationSlot = await acquireBrowserOperationSlot()
   let browser: Browser | null = null
+  currentOperationPeakBytes = readContainerMemoryBytes()
+  const memorySampler = setInterval(() => {
+    const currentBytes = readContainerMemoryBytes()
+    if (currentBytes === null) return
+    currentOperationPeakBytes = Math.max(currentOperationPeakBytes ?? 0, currentBytes)
+  }, 250)
 
   try {
     browser = await createBrowser()
@@ -104,6 +126,13 @@ export async function withBrowserPage<T>(
     return await run(page)
   } finally {
     await browser?.close().catch(() => undefined)
+    clearInterval(memorySampler)
+    const finalBytes = readContainerMemoryBytes()
+    if (finalBytes !== null) {
+      currentOperationPeakBytes = Math.max(currentOperationPeakBytes ?? 0, finalBytes)
+    }
+    lastOperationPeakBytes = currentOperationPeakBytes
+    currentOperationPeakBytes = null
     releaseBrowserOperationSlot()
   }
 }
