@@ -109,17 +109,17 @@ export async function POST(request: Request) {
   if (auth.mode === 'session') {
     workspaceIds.push(auth.workspaceId)
   } else {
-    const { data: connections, error: connectionsError } = await admin
-      .from('amazon_connections')
-      .select('workspace_id')
-      .eq('status', 'active')
-      .limit(MAX_WORKSPACES_PER_SYSTEM_RUN)
+    const [connectionsResult, competitorsResult] = await Promise.all([
+      admin.from('amazon_connections').select('workspace_id').eq('status', 'active').limit(MAX_WORKSPACES_PER_SYSTEM_RUN),
+      admin.from('tracked_asins').select('workspace_id').neq('status', 'archived').limit(1000),
+    ])
 
-    if (connectionsError) {
+    if (connectionsResult.error || competitorsResult.error) {
       return NextResponse.json({ error: 'Unable to read eligible workspaces.' }, { status: 503 })
     }
-    for (const row of connections ?? []) {
-      if (row.workspace_id) workspaceIds.push(row.workspace_id as string)
+    for (const row of [...(connectionsResult.data ?? []), ...(competitorsResult.data ?? [])]) {
+      if (row.workspace_id && !workspaceIds.includes(row.workspace_id as string)) workspaceIds.push(row.workspace_id as string)
+      if (workspaceIds.length >= MAX_WORKSPACES_PER_SYSTEM_RUN) break
     }
   }
 

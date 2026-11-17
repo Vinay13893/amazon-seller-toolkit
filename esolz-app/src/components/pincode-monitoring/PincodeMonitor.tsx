@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { AsinProductSelector } from '@/components/asins/AsinProductSelector'
 import { useAsinProductDomains } from '@/hooks/use-asin-product-domains'
 import type { TrackerProductRow } from '@/lib/pincode-monitoring/tracker'
+import { deliverySummaryText, summarizeDeliveryMessage } from '@/lib/pincode-monitoring/delivery-presentation'
 
 type Context = { workspaceId: string; marketplaceId: string | null; monitoringEnabled: boolean; canEdit: boolean; quota: number }
 type HistoryRow = { id: string; asin: string; pincode: string; checked_at: string | null; check_status: string | null;
@@ -17,6 +18,14 @@ function Result({ status }: { status: string | null }) {
   const tone = status === 'available' ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' :
     status === 'unavailable' ? 'bg-red-500/10 text-red-700 dark:text-red-400' : 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
   return <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-medium capitalize ${tone}`}>{label(status)}</span>
+}
+function DeliveryDetails({ message, availability }: { message: string | null; availability: string | null }) {
+  const summary = summarizeDeliveryMessage(message, availability)
+  return <div className="mt-2 space-y-1 text-xs">
+    <p className="font-medium text-foreground">{summary.headline}</p>
+    {summary.detail && <p className="text-muted-foreground">{summary.detail}</p>}
+    {summary.location && <p className="text-muted-foreground">{summary.location}</p>}
+  </div>
 }
 async function read<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...init })
@@ -98,7 +107,7 @@ export function PincodeMonitor() {
     const cell = (value: unknown) => { let text = String(value ?? ''); if (/^[=+@\-\t\r\n]/.test(text)) text = `'${text}`; return `"${text.replaceAll('"', '""')}"` }
     const rows = [['ASIN', 'Pincode', 'Checked at', 'Result', 'Delivery', 'Source'], ...history.items.map(row => [row.asin, row.pincode,
       row.checked_at, row.check_status === 'failed' || row.check_status === 'blocked' ? row.check_status : row.availability_status ?? 'not confirmed',
-      row.delivery_message, row.tracking_target_id ? 'Watchlist' : 'Earlier one-time check'])]
+      deliverySummaryText(row.delivery_message, row.availability_status), row.tracking_target_id ? 'Watchlist' : 'Earlier one-time check'])]
     const url = URL.createObjectURL(new Blob(['\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }))
     const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'pincode-history.csv'; anchor.click(); URL.revokeObjectURL(url)
   }
@@ -131,7 +140,7 @@ export function PincodeMonitor() {
             if (await mutate(`products/${product.id}/${action}`, {}, 'PATCH')) setNotice(action === 'pause' ? 'Daily checks paused. History is retained.' : 'Daily checks resumed.')
           }}>{product.trackerState === 'paused' || product.trackerState === 'failed' ? 'Resume daily checks' : 'Pause daily checks'}</Button>}</div>
         <div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead className="bg-muted/50 text-xs text-muted-foreground"><tr>{['Pincode', 'Latest result', 'Last checked', 'Next check', ''].map((name, i) => <th key={i} className="p-3 font-medium">{name}</th>)}</tr></thead>
-          <tbody>{product.targets.map(target => <tr key={target.id} className="border-t align-top"><td className="p-3 font-medium">{target.pincode}</td><td className="max-w-72 p-3"><Result status={target.availabilityState} /><p className="mt-2 break-words text-xs text-muted-foreground">{target.deliveryMessage ?? target.errorMessage}</p>
+          <tbody>{product.targets.map(target => <tr key={target.id} className="border-t align-top"><td className="p-3 font-medium">{target.pincode}</td><td className="max-w-80 p-3"><Result status={target.availabilityState} />{target.deliveryMessage ? <DeliveryDetails message={target.deliveryMessage} availability={target.availabilityStatus} /> : target.errorMessage ? <p className="mt-2 text-xs text-muted-foreground">Check could not confirm delivery. It will retry automatically.</p> : <DeliveryDetails message={null} availability={target.availabilityStatus} />}
             {target.lastConfirmedAvailability && ['blocked', 'check_failed'].includes(target.availabilityState) && <p className="mt-1 text-xs">Previously {target.lastConfirmedAvailability.availabilityStatus} · {date(target.lastConfirmedAvailability.checkedAt)}</p>}</td>
             <td className="p-3 text-xs">{date(target.lastCheckedAt)}</td><td className="p-3 text-xs">{target.status === 'checking' ? 'Checking now' : target.status === 'paused' ? 'Paused' : target.status === 'failed' ? 'Paused after failures — resume to retry' : target.nextCheckAt && new Date(target.nextCheckAt).getTime() <= Date.now() ? 'Queued for next available run' : target.nextCheckAt ? date(target.nextCheckAt) : 'Not scheduled'}</td>
             <td className="p-3">{context?.canEdit && <Button variant="outline" size="sm" disabled={busy || target.status !== 'active'} onClick={async () => { if (await mutate('check-now', { targetId: target.id })) setNotice('Check queued. Results update automatically when the checker finishes.') }}>Check now</Button>}</td></tr>)}</tbody></table></div>
@@ -144,7 +153,7 @@ export function PincodeMonitor() {
         <Button variant="outline" onClick={() => { setSearch(''); setFrom(''); setTo(''); setOffset(0) }}>All dates</Button><Button variant="outline" disabled={loading || !history.items.length} onClick={exportPage}>Export this page</Button></div>
       <div className="flex flex-wrap justify-between gap-2 text-sm text-muted-foreground"><span>{history.total} saved results · newest first · local timezone</span><Link className="underline" href="/dashboard/pincode">Older legacy checker records</Link></div>
       <div className="overflow-x-auto rounded-xl border bg-card"><table className="w-full min-w-[800px] text-left text-sm"><thead className="bg-muted/50"><tr>{['Checked at', 'ASIN', 'Pincode', 'Result', 'Delivery / check details', 'Source'].map(name => <th key={name} className="p-3 text-xs font-medium">{name}</th>)}</tr></thead>
-        <tbody>{history.items.map(row => <tr key={row.id} className="border-t align-top"><td className="whitespace-nowrap p-3 text-xs">{date(row.checked_at)}</td><td className="p-3 font-mono text-xs">{row.asin}</td><td className="p-3">{row.pincode}</td><td className="p-3"><Result status={row.check_status === 'failed' || row.check_status === 'blocked' ? row.check_status : row.availability_status} /></td><td className="max-w-sm break-words p-3 text-xs text-muted-foreground">{row.delivery_message || (row.error_code ? 'Check could not confirm availability' : 'No delivery message recorded')}</td><td className="p-3 text-xs">{row.tracking_target_id ? 'Watchlist' : 'Earlier one-time check'}</td></tr>)}</tbody></table>
+        <tbody>{history.items.map(row => <tr key={row.id} className="border-t align-top"><td className="whitespace-nowrap p-3 text-xs">{date(row.checked_at)}</td><td className="p-3 font-mono text-xs">{row.asin}</td><td className="p-3">{row.pincode}</td><td className="p-3"><Result status={row.check_status === 'failed' || row.check_status === 'blocked' ? row.check_status : row.availability_status} /></td><td className="max-w-sm p-3">{row.delivery_message ? <DeliveryDetails message={row.delivery_message} availability={row.availability_status} /> : <p className="text-xs text-muted-foreground">{row.error_code ? 'Check could not confirm availability' : 'No delivery promise was recorded'}</p>}</td><td className="p-3 text-xs">{row.tracking_target_id ? 'Watchlist' : 'Earlier one-time check'}</td></tr>)}</tbody></table>
         {!history.items.length && <p className="p-10 text-center text-sm text-muted-foreground">{loading ? 'Loading saved checks…' : 'No saved results match these filters.'}</p>}</div>
       <div className="flex items-center justify-between"><Button variant="outline" disabled={loading || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>Previous</Button><span className="text-xs">Page {Math.floor(offset / 50) + 1}</span><Button variant="outline" disabled={loading || offset + 50 >= history.total} onClick={() => setOffset(offset + 50)}>Next</Button></div>
     </section>}

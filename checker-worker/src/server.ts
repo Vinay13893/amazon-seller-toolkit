@@ -11,6 +11,7 @@ import {
   pincodeAvailabilityRequestSchema,
   runPincodeAvailabilityCheck,
 } from './checkers/pincodeAvailability'
+import { bsrRequestSchema, runBsrCheck } from './checkers/bsr'
 import { runBrandAnalyticsSync } from './brand-analytics/sync'
 import {
   getBrandAnalyticsStatus,
@@ -72,6 +73,7 @@ app.get('/health', (_req: Request, res: Response) => {
       'POST /brand-analytics/status',
       'POST /scraping/run-next',
       'POST /scraping/job-status',
+      'POST /bsr-check',
     ],
   })
 })
@@ -141,6 +143,20 @@ app.post('/pincode-availability', async (req: Request, res: Response) => {
       status: 'failed',
       error_message: 'Pincode availability check failed unexpectedly.',
     })
+  }
+})
+
+app.post('/bsr-check', async (req: Request, res: Response) => {
+  try {
+    const payload = bsrRequestSchema.parse(req.body)
+    const result = await runBsrCheck(payload)
+    res.status(200).json(result)
+  } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).json({ ok: false, status: 'failed', error_message: 'Invalid request payload for /bsr-check.', details: error.flatten() })
+      return
+    }
+    res.status(500).json({ ok: false, status: 'failed', error_message: 'Public product check failed unexpectedly.' })
   }
 })
 

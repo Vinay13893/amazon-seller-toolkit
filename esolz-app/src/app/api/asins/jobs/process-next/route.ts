@@ -6,6 +6,7 @@ import { getCatalogItemForAsin } from '@/lib/amazon/catalog'
 import { getItemOffersForAsin, type BuyBoxOfferStatus } from '@/lib/amazon/pricing'
 import { resolveBuyBoxStatusToStore } from '@/lib/amazon/buy-box-status'
 import { resolveJobsAuth } from '@/lib/internal/background-worker-auth'
+import { runBsrFallbackCheck } from '@/lib/checkers/checker-worker-client'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -132,6 +133,26 @@ async function loadWorkspaceConnection(
   }
 }
 
+/**
+ * Competitor catalogue/pricing is public marketplace data, so a customer must
+ * not be forced to connect Seller Central just to monitor another ASIN. Use the
+ * platform's designated SP-API connection for those public reads only. The
+ * source seller id is deliberately removed so it can never be used to label a
+ * customer's competitor Buy Box as the platform seller's own offer.
+ */
+async function loadPlatformCatalogConnection(
+  admin: ReturnType<typeof createAdminClient>,
+): Promise<WorkspaceConnection | null> {
+  const sourceWorkspaceId = (
+    process.env.PUBLIC_CATALOG_SOURCE_WORKSPACE_ID
+    ?? process.env.DAILY_TRACKER_WORKSPACE_IDS?.split(',')[0]
+    ?? ''
+  ).trim()
+  if (!sourceWorkspaceId) return null
+  const connection = await loadWorkspaceConnection(admin, sourceWorkspaceId)
+  return connection ? { ...connection, sellingPartnerId: null } : null
+}
+
 export async function POST(request: Request) {
   const auth = await resolveJobsAuth(request)
   if (!auth.ok) {
@@ -144,11 +165,17 @@ export async function POST(request: Request) {
   const workerId = isSystem ? WORKER_ID_SYSTEM : WORKER_ID_SESSION
 
   const connectionCache = new Map<string, WorkspaceConnection | null>()
+  let platformCatalogConnectionPromise: Promise<WorkspaceConnection | null> | null = null
   async function connectionFor(workspaceId: string): Promise<WorkspaceConnection | null> {
     if (!connectionCache.has(workspaceId)) {
       connectionCache.set(workspaceId, await loadWorkspaceConnection(admin, workspaceId))
     }
     return connectionCache.get(workspaceId) ?? null
+  }
+  async function platformConnectionFor(marketplaceId: string | null): Promise<WorkspaceConnection | null> {
+    if (marketplaceId && marketplaceId !== 'A21TJRUUN4KGV') return null
+    platformCatalogConnectionPromise ??= loadPlatformCatalogConnection(admin)
+    return platformCatalogConnectionPromise
   }
 
   let claimed = 0
@@ -161,6 +188,7 @@ export async function POST(request: Request) {
   let retried = 0
   let failed = 0
   let skippedNoConnection = 0
+  let publicFallbackCompleted = 0
   let pricingCooldownActive = await isPricingCoolingDown(admin)
   const processingStarted = Date.now()
   let recovery = admin.from('background_jobs').update({status:'queued',locked_at:null,locked_by:null,run_after:new Date().toISOString()})
@@ -206,7 +234,69 @@ export async function POST(request: Request) {
     claimed += 1
 
     const asin = job.payload_json?.asin
-    const connection = await connectionFor(job.workspace_id)
+    const customerConnection = await connectionFor(job.workspace_id)
+    const connection = customerConnection
+      ?? (job.target_type === 'competitor_asin' ? await platformConnectionFor(job.marketplace_id) : null)
+
+    if (!connection && job.target_type === 'competitor_asin' && asin) {
+      let fallbackReason = 'Public product checker did not return a confirmed result.'
+      try {
+        const fallback = await runBsrFallbackCheck({
+          workspace_id: job.workspace_id,
+          tracked_asin_id: job.target_id,
+          asin,
+          marketplace: job.marketplace_id === 'ATVPDKIKX0DER' ? 'amazon.com' : 'amazon.in',
+        })
+        if (fallback.ok) {
+          const checkedAt = new Date().toISOString()
+          const insertResult = await admin.from('asin_snapshots').insert({
+            workspace_id: job.workspace_id,
+            tracked_asin_id: job.target_id,
+            amazon_listing_item_id: null,
+            bsr: fallback.bsr,
+            bsr_category: fallback.category,
+            bsr_source: fallback.bsr !== null ? 'amazon_public_page' : null,
+            bsr_ranks: null,
+            price: fallback.price,
+            list_price: null,
+            discount_percent: null,
+            rating: fallback.rating,
+            review_count: fallback.review_count,
+            buy_box_owner: fallback.buy_box_owner,
+            buy_box_status: fallback.buy_box_owner ? 'unknown' : null,
+            availability_score: fallback.availability_score,
+            scrape_status: fallback.status === 'success' ? 'success' : 'partial_success',
+            checked_at: checkedAt,
+          })
+          if (!insertResult.error) {
+            await admin.from('background_jobs').update({
+              status: 'completed', last_error_safe: null, locked_at: null, locked_by: null, completed_at: checkedAt,
+            }).eq('id', job.id)
+            completed += 1
+            publicFallbackCompleted += 1
+            continue
+          }
+          fallbackReason = 'Public product snapshot could not be saved.'
+        } else {
+          fallbackReason = fallback.error_message ?? fallbackReason
+        }
+      } catch {
+        fallbackReason = 'Public product checker is temporarily unavailable.'
+      }
+
+      const canRetry = job.attempt_count + 1 < job.max_attempts
+      await admin.from('background_jobs').update({
+        status: canRetry ? 'queued' : 'failed',
+        last_error_safe: fallbackReason.slice(0, 180),
+        run_after: canRetry ? new Date(Date.now() + RETRY_DELAY_MINUTES * 60 * 1000).toISOString() : undefined,
+        locked_at: null,
+        locked_by: null,
+        completed_at: canRetry ? null : new Date().toISOString(),
+      }).eq('id', job.id)
+      if (canRetry) retried += 1
+      else failed += 1
+      continue
+    }
 
     if (!connection) {
       skippedNoConnection += 1
@@ -439,6 +529,7 @@ export async function POST(request: Request) {
     retried,
     failed,
     skippedNoConnection,
+    publicFallbackCompleted,
   }
   console.log(JSON.stringify(summary))
   return NextResponse.json(summary)

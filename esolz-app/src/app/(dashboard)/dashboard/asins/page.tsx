@@ -266,6 +266,8 @@ export default function AsinsPage() {
         completed?: number
         retried?: number
         failed?: number
+        skippedNoConnection?: number
+        publicFallbackCompleted?: number
         pricingRateLimited?: number
         message?: string
       }
@@ -314,7 +316,8 @@ export default function AsinsPage() {
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('asin:usage-changed'))
     }
-    toast.success(result.message)
+    toast.success(`${result.message} Starting its first public check now.`)
+    void handleCheckNow()
     return {}
   }
 
@@ -424,6 +427,11 @@ export default function AsinsPage() {
 
       {activeAsinTab === 'competitors' && (
       <>
+      {amazonConnected === false && (
+        <div role="status" className="rounded-lg border border-border bg-muted/20 p-4 text-sm text-muted-foreground">
+          Competitor monitoring works without connecting Amazon. Connecting Seller Central is optional and only adds your private catalogue, SKU, inventory and account data.
+        </div>
+      )}
       {/* ── Plan quota bar ── */}
       <div className="rounded-lg border border-border bg-card p-4 flex flex-col sm:flex-row sm:items-center gap-3">
         <div className="flex-1 flex flex-col gap-1.5">

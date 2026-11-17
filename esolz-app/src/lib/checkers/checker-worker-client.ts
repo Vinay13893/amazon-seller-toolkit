@@ -221,6 +221,8 @@ export interface BsrResponse {
   price:         number | null
   rating:        number | null
   review_count:  number | null
+  buy_box_owner: string | null
+  availability_score: number | null
   status:        string
   error_message: string | null
 }
