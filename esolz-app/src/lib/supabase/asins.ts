@@ -11,7 +11,7 @@ import { ProductSnapshot, Marketplace } from '@/types'
 // ── Shared input type (used by dialog + page) ─────────────────────────────
 export interface AddAsinInput {
   asin:         string
-  productTitle: string
+  productTitle?: string
   marketplace:  Marketplace
   brand:        string
   category:     string
@@ -148,6 +148,7 @@ export async function addOrRestoreTrackedAsin(
   supabaseClient?: TrackAsinSupabase,
 ): Promise<TrackAsinResult> {
   const asin = input.asin.trim().toUpperCase()
+  const productTitle = input.productTitle?.trim() || null
   if (!isValidAsinFormat(asin)) {
     return {
       outcome: 'invalid_asin',
@@ -170,7 +171,7 @@ export async function addOrRestoreTrackedAsin(
       .from('tracked_asins')
       .update({
         status:        'active',
-        product_title: input.productTitle,
+        product_title: productTitle,
         brand:         input.brand   || null,
         category:      input.category || null,
         image_url:     input.imageUrl || null,
@@ -193,7 +194,7 @@ export async function addOrRestoreTrackedAsin(
       workspace_id:  workspaceId,
       asin,
       marketplace:   input.marketplace,
-      product_title: input.productTitle,
+      product_title: productTitle,
       brand:         input.brand   || null,
       category:      input.category || null,
       image_url:     input.imageUrl || null,

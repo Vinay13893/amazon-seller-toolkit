@@ -26,10 +26,10 @@ const ASIN_REGEX = /^[A-Z0-9]{10}$/
 const URL_REGEX  = /^https?:\/\/.+/i
 
 const MARKETPLACES: { value: Marketplace; label: string }[] = [
-  { value: 'IN', label: 'ðŸ‡®ðŸ‡³ Amazon India (IN)' },
-  { value: 'US', label: 'ðŸ‡ºðŸ‡¸ Amazon US (US)' },
-  { value: 'UK', label: 'ðŸ‡¬ðŸ‡§ Amazon UK (UK)' },
-  { value: 'DE', label: 'ðŸ‡©ðŸ‡ª Amazon Germany (DE)' },
+  { value: 'IN', label: 'Amazon India (IN)' },
+  { value: 'US', label: 'Amazon US (US)' },
+  { value: 'UK', label: 'Amazon UK (UK)' },
+  { value: 'DE', label: 'Amazon Germany (DE)' },
 ]
 
 type FieldErrors = {
@@ -70,9 +70,7 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
     } else if (!ASIN_REGEX.test(asin.trim().toUpperCase())) {
       errs.asin = 'ASIN must be exactly 10 uppercase alphanumeric characters (e.g. B0BN5NZCGH)'
     }
-    if (!productTitle.trim()) {
-      errs.productTitle = 'Product title is required'
-    } else if (productTitle.trim().length > 150) {
+    if (productTitle.trim().length > 150) {
       errs.productTitle = 'Title must be 150 characters or fewer'
     }
     if (imageUrl.trim() && !URL_REGEX.test(imageUrl.trim())) {
@@ -175,10 +173,10 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
               )}
             </div>
 
-            {/* Product Title */}
+            {/* Product name */}
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="title-input">
-                Product Title <span className="text-destructive">*</span>
+                Product Name <span className="text-xs text-muted-foreground font-normal">(optional)</span>
               </Label>
               <Input
                 id="title-input"
@@ -196,7 +194,7 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  A friendly name to identify this listing in your dashboard.
+                  Leave blank to use the ASIN as the dashboard name.
                 </p>
               )}
             </div>
@@ -271,7 +269,7 @@ export function AddAsinDialog({ onAdd, currentCount, maxCount }: AddAsinDialogPr
                 {submitting ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    Addingâ€¦
+                    Adding…
                   </>
                 ) : (
                   'Start Competitor Tracking'

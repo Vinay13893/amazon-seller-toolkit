@@ -196,7 +196,7 @@ function makeFakeSupabase(rowsByTable: Record<string, FakeRow[]>) {
               workspace_id: String(patch.workspace_id),
               asin: String(patch.asin),
               marketplace: String(patch.marketplace),
-              product_title: String(patch.product_title),
+              product_title: (patch.product_title as string | null) ?? null,
               brand: (patch.brand as string | null) ?? null,
               category: (patch.category as string | null) ?? null,
               image_url: (patch.image_url as string | null) ?? null,
@@ -264,6 +264,26 @@ test('add-competitor path refuses an ASIN when multiple own SKUs share the same 
   const result = await addOrRestoreCompetitorAsin(WORKSPACE_ID, addInput, supabase)
 
   assert.equal(result.outcome, 'own_product')
+})
+
+test('add-competitor path accepts a blank optional product name', async () => {
+  const trackedAsins: FakeRow[] = []
+  const supabase = makeFakeSupabase({
+    amazon_listing_items: [],
+    tracked_asins: trackedAsins,
+  })
+
+  const result = await addOrRestoreCompetitorAsin(WORKSPACE_ID, {
+    asin: 'B0EXTERNAL',
+    marketplace: 'IN',
+    brand: '',
+    category: '',
+    imageUrl: '',
+  }, supabase)
+
+  assert.equal(result.outcome, 'added')
+  assert.equal(trackedAsins[0].product_title, null)
+  assert.equal(result.product?.label, 'B0EXTERNAL')
 })
 
 test('catalog classification unavailable fails closed and returns no confirmed competitors', () => {
