@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
+import { resolveAsinProductDomains } from '@/lib/asins/product-domain'
 
 export const runtime = 'nodejs'
 async function context(write = false) {
@@ -37,10 +39,46 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ items:data,total:count,canEdit:ctx.canEdit,enabled:allowed(ctx.workspaceId) },{headers:{'Cache-Control':'no-store'}})
   }
   const { data,error,count } = await db.from('daily_tracker_targets')
-    .select('id,asin,source_key,paused,next_check_at,last_checked_at,last_status,last_error,claimed_at,tracked_keywords(keyword)',{count:'exact'})
+    .select('id,asin,source_key,marketplace_id,paused,next_check_at,last_checked_at,last_status,last_error,claimed_at,tracked_keywords(keyword)',{count:'exact'})
     .eq('workspace_id',ctx.workspaceId).eq('kind',kind).order('created_at').range(offset,offset+49)
   if (error) return fail('Daily tracking could not be loaded',503)
-  return NextResponse.json({items:data,total:count,canEdit:ctx.canEdit,enabled:allowed(ctx.workspaceId)},{headers:{'Cache-Control':'no-store'}})
+  const targets = data ?? []
+  if (!targets.length) {
+    return NextResponse.json({items:targets,total:count,canEdit:ctx.canEdit,enabled:allowed(ctx.workspaceId)},{headers:{'Cache-Control':'no-store'}})
+  }
+
+  const asins = [...new Set(targets.map(row=>row.asin))]
+  const marketplaceIds = [...new Set(targets.map(row=>row.marketplace_id))]
+  const [catalogResult,trackedResult] = await Promise.all([
+    db.from('amazon_listing_items')
+      .select('id,asin,marketplace_id,sku,item_name,brand,product_type,image_url')
+      .eq('workspace_id',ctx.workspaceId).in('asin',asins).in('marketplace_id',marketplaceIds),
+    db.from('tracked_asins')
+      .select('id,asin,marketplace,status,product_title,brand,category,image_url')
+      .eq('workspace_id',ctx.workspaceId).in('asin',asins).neq('status','archived'),
+  ])
+  const products = resolveAsinProductDomains({
+    catalogRows: catalogResult.data ?? [],
+    trackedRows: trackedResult.data ?? [],
+    catalogUnavailable: Boolean(catalogResult.error),
+    trackedUnavailable: Boolean(trackedResult.error),
+  })
+  const ownByKey = new Map(products.myProducts.map(product=>[`${product.marketplaceId}:${product.asin}`,product]))
+  const competitorByKey = new Map(products.competitorProducts.map(product=>[`${product.marketplace}:${product.asin}`,product]))
+  const items = targets.map(target=>{
+    const own = ownByKey.get(`${target.marketplace_id}:${target.asin}`)
+    const competitor = competitorByKey.get(`${marketplaceFromMarketplaceId(target.marketplace_id)}:${target.asin}`)
+    const product = own ?? competitor
+    return {
+      ...target,
+      product_title: product?.title ?? null,
+      product_image_url: product?.imageUrl ?? null,
+      product_source: product?.domain ?? null,
+      skus: product?.domain === 'my' ? product.skus : [],
+      product_identity_status: catalogResult.error || (!own && trackedResult.error) ? 'unavailable' : product ? 'found' : 'not_found',
+    }
+  })
+  return NextResponse.json({items,total:count,canEdit:ctx.canEdit,enabled:allowed(ctx.workspaceId)},{headers:{'Cache-Control':'no-store'}})
 }
 
 export async function POST(request: NextRequest) {

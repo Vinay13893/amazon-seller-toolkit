@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { getBuyBoxDisplayLabel } from '@/lib/checkers/buy-box-display'
+import { Package } from 'lucide-react'
 
 type Row = {
   id:string; asin?:string; keyword?:string; paused?:boolean; claimed_at?:string|null;
@@ -9,10 +10,46 @@ type Row = {
   checked_at?:string; buy_box_detected?:boolean|null; page_status?:string|null; error_code?:string|null; price_text?:string|null;
   seller_name?:string|null; scrape_status?:string; organic_rank?:number|null; sponsored_rank?:number|null;
   tracked_keywords?:{keyword:string}|null;
+  product_title?:string|null; product_image_url?:string|null; product_source?:'my'|'competitor'|null;
+  product_identity_status?:'found'|'not_found'|'unavailable'; skus?:string[];
 }
 const stamp=(value?:string|null)=>value ? new Date(value).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}) : 'Not checked yet'
 const words=(value?:string|null)=>(value??'Not confirmed').replaceAll('_',' ')
 const field='rounded-md border border-input bg-background px-3 py-2 text-sm'
+
+function ProductIdentity({row,kind}:{row:Row;kind:'buybox'|'keyword'}) {
+  const keyword = row.tracked_keywords?.keyword ?? row.keyword
+  const skus = row.skus ?? []
+  const visibleSkus = skus.slice(0,3)
+  return <div className="flex min-w-72 max-w-96 items-start gap-3">
+    {row.product_image_url ? (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={row.product_image_url} alt={row.product_title??row.asin??'Product'} className="size-11 shrink-0 rounded-md border border-border bg-muted object-contain" />
+    ) : (
+      <div className="flex size-11 shrink-0 items-center justify-center rounded-md border border-border bg-muted/50"><Package className="size-4 text-muted-foreground" /></div>
+    )}
+    <div className="min-w-0 space-y-1">
+      {kind==='keyword'&&keyword&&<p className="font-medium text-foreground">{keyword}</p>}
+      {row.product_title&&<p className="line-clamp-2 text-xs text-muted-foreground" title={row.product_title}>{row.product_title}</p>}
+      <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+        <span className="font-mono text-foreground">{row.asin??'ASIN unavailable'}</span>
+        {row.product_source==='competitor'&&<span className="rounded border border-border px-1.5 py-0.5">Competitor</span>}
+      </div>
+      {row.product_source==='my'&&skus.length>0 ? (
+        <div className="flex flex-wrap gap-1" title={skus.join(', ')}>
+          {visibleSkus.map(sku=><span key={sku} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">SKU: {sku}</span>)}
+          {skus.length>visibleSkus.length&&<span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">+{skus.length-visibleSkus.length} more</span>}
+        </div>
+      ) : row.product_source==='my' ? (
+        <p className="text-[10px] text-muted-foreground">SKU unavailable in the synced catalogue</p>
+      ) : row.product_source==='competitor' ? (
+        <p className="text-[10px] text-muted-foreground">Seller SKU unavailable for competitor ASIN</p>
+      ) : row.product_identity_status==='unavailable' ? (
+        <p className="text-[10px] text-amber-600">Product details temporarily unavailable</p>
+      ) : null}
+    </div>
+  </div>
+}
 
 export function DailyTrackerPanel({kind,selectedAsins=[]}:{kind:'buybox'|'keyword';selectedAsins?:string[]}) {
   const [view,setView]=useState<'watchlist'|'history'>('watchlist')
@@ -71,7 +108,7 @@ export function DailyTrackerPanel({kind,selectedAsins=[]}:{kind:'buybox'|'keywor
     {view==='history'&&<div className="flex flex-wrap items-end gap-2"><label className="grid gap-1 text-xs">{kind==='buybox'?'ASIN':'Keyword'}<input className={field} value={search} onChange={e=>{setSearch(e.target.value);setOffset(0)}} /></label><label className="grid gap-1 text-xs">From<input className={field} type="date" value={from} onChange={e=>{setFrom(e.target.value);setOffset(0)}} /></label><label className="grid gap-1 text-xs">Through<input className={field} type="date" min={from} value={through} onChange={e=>{setThrough(e.target.value);setOffset(0)}} /></label><Button variant="outline" onClick={()=>{setSearch('');setFrom('');setThrough('');setOffset(0)}}>All dates</Button><Button variant="outline" disabled={loading||!rows.length} onClick={exportRows}>Export this page</Button></div>}
     <p className="text-xs text-muted-foreground">{total} {view==='history'?'saved results · newest first':'saved targets'} · times in your local timezone</p>
     <div className="overflow-x-auto"><table className="w-full min-w-[750px] text-left text-sm"><thead className="bg-muted/50"><tr>{[kind==='keyword'?'Keyword / product':'Product',view==='history'?'Checked at':'Last checked','Result',view==='history'?'Details':'Next check',view==='history'?'':'Actions'].map((h,i)=><th key={i} className="p-3 text-xs font-medium">{h}</th>)}</tr></thead><tbody>
-      {rows.map(r=><tr key={r.id} className="border-t align-top"><td className="max-w-60 break-words p-3">{r.tracked_keywords?.keyword??r.keyword??r.asin}{r.tracked_keywords&&<p className="text-xs text-muted-foreground">{r.asin}</p>}</td><td className="p-3 text-xs">{stamp(view==='history'?r.checked_at:r.last_checked_at)}</td><td className="p-3 capitalize">{result(r)}{r.last_error&&<p className="max-w-60 text-xs text-muted-foreground">{r.last_error}</p>}</td>
+      {rows.map(r=><tr key={r.id} className="border-t align-top"><td className="p-3">{view==='watchlist'?<ProductIdentity row={r} kind={kind}/>:<div className="max-w-60 break-words">{r.keyword??r.asin}</div>}</td><td className="p-3 text-xs">{stamp(view==='history'?r.checked_at:r.last_checked_at)}</td><td className="p-3 capitalize">{result(r)}{r.last_error&&<p className="max-w-60 text-xs text-muted-foreground">{r.last_error}</p>}</td>
         <td className="p-3 text-xs">{view==='watchlist'?(r.claimed_at?'Checking now':r.paused?'Paused':r.next_check_at&&Date.parse(r.next_check_at)<=observedAt?'Queued for next available run':stamp(r.next_check_at)):kind==='keyword'?`Organic: ${r.organic_rank??'Not confirmed'} · Sponsored: ${r.sponsored_rank??'Not confirmed'}`:`${r.price_text??'Price not confirmed'} · ${r.seller_name??'Seller not confirmed'}`}</td>
         <td className="p-3">{view==='watchlist'&&canEdit&&enabled&&<div className="flex gap-2"><Button variant="outline" size="sm" disabled={busy||!!r.claimed_at} onClick={()=>void change({id:r.id,action:r.paused?'resume':'pause'})}>{r.paused?'Resume':'Pause'}</Button><Button variant="outline" size="sm" disabled={busy||!!r.claimed_at||r.paused} onClick={()=>void change({id:r.id,action:'check'})}>Check now</Button></div>}</td></tr>)}
     </tbody></table>{!rows.length&&<p className="p-6 text-center text-sm text-muted-foreground">{loading?'Loading…':view==='history'?'No saved results match these filters.':kind==='keyword'?'Add a keyword to a product to start daily tracking.':'Select products above and save them for daily checks.'}</p>}</div>
