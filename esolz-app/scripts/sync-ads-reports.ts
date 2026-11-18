@@ -506,6 +506,7 @@ async function runSyncForProfile(
   forceRefresh: boolean,
   bfOpts: BackfillOptions,
   getAccessToken?: () => Promise<string>,
+  defsOverride?: ReportDef[],
 ): Promise<boolean> {
   const outcomes: ReportOutcome[] = []
 
@@ -552,12 +553,12 @@ async function runSyncForProfile(
       }
     }
   } else {
-    const defs = bfOpts.adProducts.length > 0
+    const defs = defsOverride ?? (bfOpts.adProducts.length > 0
       ? [
           ...campaignDefsFor(bfOpts.adProducts),
           ...(bfOpts.noDeep ? [] : deepReportDefs()),
         ]
-      : REPORT_DEFS
+      : REPORT_DEFS)
     // Same per-request refresh the backfill path already does above — a
     // single token fetched once at script start can expire before later
     // reports run (campaign reports alone can take ~1h+ on this account),
@@ -688,27 +689,47 @@ async function main() {
         return refreshed.accessToken
       }
 
-      for (const profileId of selection.profileIds) {
-        if (await isSyncLocked(admin, workspaceId, profileId)) {
-          console.log(`Workspace ${workspaceId}, profile ${profileId}: Another Amazon Ads sync is already running for this profile. Skipping.`)
-          continue
+      // In the normal daily run, finish the three campaign-level reports for
+      // every enabled advertiser before starting the slower SP deep reports.
+      // This prevents one profile's long report queue from starving all later
+      // profiles of their essential daily campaign data.
+      const phases: Array<{ label: string; defs?: ReportDef[] }> = backfill
+        ? [{ label: 'backfill' }]
+        : [
+            {
+              label: 'campaigns',
+              defs: adProducts.length > 0
+                ? campaignDefsFor(adProducts)
+                : REPORT_DEFS.filter(def => def.kind === null),
+            },
+            ...(!noDeep ? [{ label: 'deep', defs: deepReportDefs() }] : []),
+          ]
+
+      for (const phase of phases) {
+        if (phase.defs?.length === 0) continue
+        console.log(`Workspace ${workspaceId}: ${phase.label} phase for ${selection.profileIds.length} enabled profile(s).`)
+        for (const profileId of selection.profileIds) {
+          if (await isSyncLocked(admin, workspaceId, profileId)) {
+            console.log(`Workspace ${workspaceId}, profile ${profileId}: Another Amazon Ads sync is already running for this profile. Skipping.`)
+            continue
+          }
+
+          const profile = profiles.find(p => p.profile_id === profileId)!
+          const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? profileId
+
+          let accessToken: string
+          try {
+            accessToken = await getAccessToken()
+          } catch (error) {
+            console.error(`Workspace ${workspaceId}, profile ${profileId} (${profileLabel}): Ads token refresh failed — ${error instanceof Error ? error.message : error}`)
+            process.exitCode = 1
+            continue
+          }
+
+          const ctx: AdsApiContext = { region, accessToken, profileId }
+          console.log(`Workspace ${workspaceId}, profile ${profileId} (${profileLabel}), ${phase.label}:`)
+          if (await runSyncForProfile(admin, ctx, workspaceId, profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts, getAccessToken, phase.defs)) process.exitCode = 1
         }
-
-        const profile = profiles.find(p => p.profile_id === profileId)!
-        const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? profileId
-
-        let accessToken: string
-        try {
-          accessToken = await getAccessToken()
-        } catch (error) {
-          console.error(`Workspace ${workspaceId}, profile ${profileId} (${profileLabel}): Ads token refresh failed — ${error instanceof Error ? error.message : error}`)
-          process.exitCode = 1
-          continue
-        }
-
-        const ctx: AdsApiContext = { region, accessToken, profileId }
-        console.log(`Workspace ${workspaceId}, profile ${profileId} (${profileLabel}):`)
-        if (await runSyncForProfile(admin, ctx, workspaceId, profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts, getAccessToken)) process.exitCode = 1
       }
     }
     return

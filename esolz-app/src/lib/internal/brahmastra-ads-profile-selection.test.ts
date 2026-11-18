@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
 import {
   resolveBrahmastraProfile,
@@ -37,4 +39,14 @@ test('sync never falls back to disabled profiles', () => {
 test('dashboard single-profile selection is unchanged', () => {
   const result = resolveBrahmastraProfile([p('emount', true, true), p('sra', true)])
   assert.deepEqual(result, { ok: true, profileId: 'emount' })
+})
+
+test('daily worker completes campaign reports for all enabled profiles before deep reports', () => {
+  const source = readFileSync(path.resolve('scripts/sync-ads-reports.ts'), 'utf8')
+  const campaignPhase = source.indexOf("label: 'campaigns'")
+  const deepPhase = source.indexOf("label: 'deep'", campaignPhase)
+  const profileLoop = source.indexOf('for (const profileId of selection.profileIds)', campaignPhase)
+  assert.ok(campaignPhase >= 0)
+  assert.ok(deepPhase > campaignPhase)
+  assert.ok(profileLoop > deepPhase)
 })
