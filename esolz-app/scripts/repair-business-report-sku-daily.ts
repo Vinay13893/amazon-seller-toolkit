@@ -270,6 +270,9 @@ async function liveDate(
   const completeness = classifyStructuralCompleteness({
     byDateMatchCount: byDateMatches.length,
     byDateOrderedProductSales: byDateMatches[0]?.orderedProductSales ?? null,
+    byDateSessions: byDateMatches[0]?.sessions ?? null,
+    byDatePageViews: byDateMatches[0]?.pageViews ?? null,
+    byDateBuyBoxPercentage: byDateMatches[0]?.buyBoxPercentage ?? null,
     skuRowsFetched: parsed.byAsin.length,
     skuRowsRejected: rejected.length,
   })

@@ -11,6 +11,18 @@ const routeCode = ts.transpileModule(
   readFileSync(path.resolve('src/app/api/cron/catalog/refresh-listings/route.ts'), 'utf8'),
   { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } },
 ).outputText
+const routeSource = readFileSync(path.resolve('src/app/api/cron/catalog/refresh-listings/route.ts'), 'utf8')
+const vercelConfig = JSON.parse(readFileSync(path.resolve('vercel.json'), 'utf8')) as {
+  crons: Array<{ path: string; schedule: string }>
+}
+
+test('listing cron resumes hourly and judges staleness from the latest saved progress', () => {
+  assert.match(routeSource, /metadata\.last_progress_at/)
+  assert.equal(
+    vercelConfig.crons.find(cron => cron.path === '/api/cron/catalog/refresh-listings')?.schedule,
+    '0 * * * *',
+  )
+})
 
 type Query = {
   table: string

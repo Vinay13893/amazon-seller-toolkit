@@ -5,6 +5,7 @@ export interface CatalogJobMetadata {
   pages?: number
   items_fetched?: number
   items_upserted?: number
+  last_progress_at?: string
 }
 
 export interface CatalogPageCounters {
@@ -52,6 +53,7 @@ export function buildSuccessfulPageMetadata(
     pages: counters.pages + 1,
     items_fetched: counters.itemsFetched,
     items_upserted: counters.itemsUpserted,
+    last_progress_at: new Date().toISOString(),
   }
 }
 
@@ -64,6 +66,7 @@ export function buildFailedPageMetadata(
     pages: counters.pages,
     items_fetched: counters.itemsFetched,
     items_upserted: counters.itemsUpserted,
+    last_progress_at: new Date().toISOString(),
   }
 }
 

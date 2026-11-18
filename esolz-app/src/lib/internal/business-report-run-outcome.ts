@@ -78,6 +78,7 @@ export type IngestionStatus = 'success' | 'partial_success' | 'failed'
 export type StructuralCompletenessReason =
   | 'missing_by_date_row_for_requested_date'
   | 'multiple_by_date_rows_for_single_day_request'
+  | 'positive_sales_but_traffic_zero'
   | 'sku_rows_rejected'
   | 'positive_sales_but_no_sku_breakdown'
 
@@ -86,6 +87,10 @@ export type StructuralCompletenessInput = {
   byDateMatchCount: number
   /** The matched by-date row's orderedProductSales, when byDateMatchCount === 1. */
   byDateOrderedProductSales: number | null
+  /** Traffic totals from the one matching by-date row. Null and zero are both incomplete when sales are positive. */
+  byDateSessions: number | null
+  byDatePageViews: number | null
+  byDateBuyBoxPercentage: number | null
   /** Total salesAndTrafficByAsin rows Amazon returned for this single-day request, before validation. */
   skuRowsFetched: number
   /** How many of those rows validateSkuRows() rejected. */
@@ -93,6 +98,18 @@ export type StructuralCompletenessInput = {
 }
 
 export type StructuralCompletenessResult = { status: IngestionStatus; reason: StructuralCompletenessReason | null }
+
+export function hasPositiveSalesWithZeroTraffic(input: {
+  orderedProductSales: number | null
+  sessions: number | null
+  pageViews: number | null
+  buyBoxPercentage: number | null
+}): boolean {
+  return (input.orderedProductSales ?? 0) > 0
+    && (input.sessions ?? 0) === 0
+    && (input.pageViews ?? 0) === 0
+    && (input.buyBoxPercentage ?? 0) === 0
+}
 
 /**
  * Decides whether a single calendar day's ingestion attempt may be
@@ -122,6 +139,14 @@ export function classifyStructuralCompleteness(input: StructuralCompletenessInpu
   }
   if (input.byDateMatchCount > 1) {
     return { status: 'failed', reason: 'multiple_by_date_rows_for_single_day_request' }
+  }
+  if (hasPositiveSalesWithZeroTraffic({
+    orderedProductSales: input.byDateOrderedProductSales,
+    sessions: input.byDateSessions,
+    pageViews: input.byDatePageViews,
+    buyBoxPercentage: input.byDateBuyBoxPercentage,
+  })) {
+    return { status: 'failed', reason: 'positive_sales_but_traffic_zero' }
   }
   if (input.skuRowsRejected > 0) {
     return { status: 'partial_success', reason: 'sku_rows_rejected' }

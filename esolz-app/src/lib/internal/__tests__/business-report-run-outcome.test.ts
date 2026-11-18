@@ -66,6 +66,9 @@ describe('classifyStructuralCompleteness', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 1,
       byDateOrderedProductSales: 500,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
       skuRowsFetched: 3,
       skuRowsRejected: 0,
     })
@@ -76,6 +79,9 @@ describe('classifyStructuralCompleteness', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 0,
       byDateOrderedProductSales: null,
+      byDateSessions: null,
+      byDatePageViews: null,
+      byDateBuyBoxPercentage: null,
       skuRowsFetched: 0,
       skuRowsRejected: 0,
     })
@@ -87,6 +93,9 @@ describe('classifyStructuralCompleteness', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 2,
       byDateOrderedProductSales: 500,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
       skuRowsFetched: 3,
       skuRowsRejected: 0,
     })
@@ -98,6 +107,9 @@ describe('classifyStructuralCompleteness', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 1,
       byDateOrderedProductSales: 500,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
       skuRowsFetched: 3,
       skuRowsRejected: 1,
     })
@@ -109,6 +121,9 @@ describe('classifyStructuralCompleteness', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 1,
       byDateOrderedProductSales: 250,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
       skuRowsFetched: 0,
       skuRowsRejected: 0,
     })
@@ -120,10 +135,26 @@ describe('classifyStructuralCompleteness', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 1,
       byDateOrderedProductSales: 0,
+      byDateSessions: 0,
+      byDatePageViews: 0,
+      byDateBuyBoxPercentage: 0,
       skuRowsFetched: 0,
       skuRowsRejected: 0,
     })
     assert.deepEqual(result, { status: 'success', reason: null })
+  })
+
+  test('positive sales with all traffic signals zero is failed and must be retried', () => {
+    const result = classifyStructuralCompleteness({
+      byDateMatchCount: 1,
+      byDateOrderedProductSales: 250,
+      byDateSessions: 0,
+      byDatePageViews: 0,
+      byDateBuyBoxPercentage: 0,
+      skuRowsFetched: 3,
+      skuRowsRejected: 0,
+    })
+    assert.deepEqual(result, { status: 'failed', reason: 'positive_sales_but_traffic_zero' })
   })
 })
 

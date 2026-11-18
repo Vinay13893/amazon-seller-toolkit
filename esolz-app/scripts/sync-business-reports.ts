@@ -82,6 +82,7 @@ import { resolveSkuReportDate } from '../src/lib/internal/business-report-grain-
 import {
   validateSkuRows,
   classifyStructuralCompleteness,
+  hasPositiveSalesWithZeroTraffic,
   shouldSkipAlreadyConfirmedDate,
 } from '../src/lib/internal/business-report-run-outcome'
 import { computeDateScopeReplacement, skuScopeKey } from '../src/lib/internal/business-report-date-scope-replace'
@@ -329,6 +330,34 @@ async function replaceSkuDateScope(
 
 type DayOutcome = { day: string; status: 'success' | 'partial_success' | 'failed' | 'skipped'; reason: string | null; skuInserted: number; skuUpdated: number; skuDeleted: number }
 
+const MAX_TRAFFIC_REPAIR_DAYS_PER_RUN = 30
+
+async function findTrafficRepairDays(
+  admin: SupabaseClient,
+  workspaceId: string,
+  marketplaceId: string,
+): Promise<string[]> {
+  const { data, error } = await admin
+    .from(BY_DATE_TABLE)
+    .select('report_date, ordered_product_sales, sessions, page_views, buy_box_percentage')
+    .eq('workspace_id', workspaceId)
+    .eq('marketplace_id', marketplaceId)
+    .gt('ordered_product_sales', 0)
+    .order('report_date', { ascending: true })
+    .limit(10000)
+  if (error) throw new Error(`Reading ${BY_DATE_TABLE} traffic repair candidates failed: ${error.message}`)
+
+  return (data ?? [])
+    .filter(row => hasPositiveSalesWithZeroTraffic({
+      orderedProductSales: row.ordered_product_sales === null ? null : Number(row.ordered_product_sales),
+      sessions: row.sessions === null ? null : Number(row.sessions),
+      pageViews: row.page_views === null ? null : Number(row.page_views),
+      buyBoxPercentage: row.buy_box_percentage === null ? null : Number(row.buy_box_percentage),
+    }))
+    .slice(0, MAX_TRAFFIC_REPAIR_DAYS_PER_RUN)
+    .map(row => row.report_date as string)
+}
+
 async function syncOneDay(
   admin: SupabaseClient,
   accessToken: string,
@@ -416,6 +445,9 @@ async function syncOneDay(
     const completeness = classifyStructuralCompleteness({
       byDateMatchCount: byDateMatches.length,
       byDateOrderedProductSales: byDateMatches[0]?.orderedProductSales ?? null,
+      byDateSessions: byDateMatches[0]?.sessions ?? null,
+      byDatePageViews: byDateMatches[0]?.pageViews ?? null,
+      byDateBuyBoxPercentage: byDateMatches[0]?.buyBoxPercentage ?? null,
       skuRowsFetched: parsed.byAsin.length,
       skuRowsRejected: rejectedSkuRows.length,
     })
@@ -532,14 +564,16 @@ async function main() {
 
   const dateEnd = args.get('date-end') ?? marketplaceYesterdayIso(timeZone) // yesterday (marketplace-local) by default — today's Business Report data is partial
   const dateStart = args.get('date-start') ?? addCalendarDays(dateEnd, -(args.has('days') ? Number(args.get('days')) : 14) + 1)
-  const days = enumerateCalendarDays(dateStart, dateEnd)
-  if (days.length === 0) {
+  const requestedDays = enumerateCalendarDays(dateStart, dateEnd)
+  if (requestedDays.length === 0) {
     console.error(`Missing requirement: invalid date range ${dateStart} → ${dateEnd} (date-start after date-end).`)
     process.exitCode = 1
     return
   }
 
-  console.log(`Business Report SP-API sync — workspace ${workspaceId}, marketplace ${marketplaceId} (${timeZone}), range ${dateStart} → ${dateEnd} (${days.length} day(s), one Amazon report per day)${dryRun ? ' (dry run)' : ''}. Marketplace "today" is ${marketplaceTodayIso(timeZone)}.`)
+  const trafficRepairDays = await findTrafficRepairDays(admin, workspaceId, marketplaceId)
+  const days = [...new Set([...trafficRepairDays, ...requestedDays])].sort()
+  console.log(`Business Report SP-API sync — workspace ${workspaceId}, marketplace ${marketplaceId} (${timeZone}), range ${dateStart} → ${dateEnd} (${requestedDays.length} scheduled day(s), ${trafficRepairDays.length} traffic repair day(s), one Amazon report per day)${dryRun ? ' (dry run)' : ''}. Marketplace "today" is ${marketplaceTodayIso(timeZone)}.`)
 
   await cleanupStaleRuns(admin)
   if (await isSyncLocked(admin, workspaceId, marketplaceId)) {

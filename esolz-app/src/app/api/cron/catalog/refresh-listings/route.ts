@@ -70,7 +70,7 @@ const TIME_BUDGET_MS = 170_000
 const REFRESH_INTERVAL_MS = 20 * 60 * 60 * 1000 // 20h → comfortably once/day
 // A 'running' cron job older than this is treated as abandoned (prior crash /
 // timeout) and reclaimed rather than blocking future runs forever.
-const STALE_RUNNING_MS = 60 * 60 * 1000 // 1h
+const STALE_RUNNING_MS = 2 * 60 * 60 * 1000 // 2h; cron resumes hourly
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = any
@@ -205,8 +205,11 @@ async function refreshWorkspaceCatalog(
   let job: { id: string; metadata: CatalogJobMetadata } | null = null
 
   for (const r of runningJobs ?? []) {
-    const startedMs = r.started_at ? new Date(r.started_at).getTime() : 0
-    if (Date.now() - startedMs > STALE_RUNNING_MS) {
+    const metadata = (r.metadata ?? {}) as CatalogJobMetadata
+    const activityMs = metadata.last_progress_at
+      ? new Date(metadata.last_progress_at).getTime()
+      : r.started_at ? new Date(r.started_at).getTime() : 0
+    if (!Number.isFinite(activityMs) || Date.now() - activityMs > STALE_RUNNING_MS) {
       // Abandoned — mark failed so it stops blocking, don't resume mid-flight.
       const { error: reclaimErr } = await admin
         .from('amazon_sync_jobs')
@@ -217,7 +220,7 @@ async function refreshWorkspaceCatalog(
         return { status: 'failed', reason: 'stale_job_reclaim_failed' }
       }
     } else if (!job) {
-      job = { id: r.id, metadata: (r.metadata ?? {}) as CatalogJobMetadata }
+      job = { id: r.id, metadata }
     }
   }
 

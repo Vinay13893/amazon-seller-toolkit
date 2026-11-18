@@ -55,6 +55,8 @@ test('successful page counts confirmed writes and advances the page token', asyn
   assert.equal(metadata.page_token, 'NEXT-PAGE')
   assert.equal(metadata.pages, 1)
   assert.equal(metadata.items_upserted, 2)
+  assert.ok(metadata.last_progress_at)
+  assert.ok(Number.isFinite(new Date(metadata.last_progress_at).getTime()))
 })
 
 test('failed listing upsert counts only confirmed writes and keeps the current page token', async () => {
