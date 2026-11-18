@@ -31,7 +31,7 @@ import {
 } from '../src/lib/internal/amazon-ads-reporting-client'
 import { jsonRowsToCsv } from '../src/lib/internal/json-rows-to-csv'
 import { resolveDirectAdsCredentials } from '../src/lib/internal/amazon-ads-direct-credentials'
-import { resolveBrahmastraProfile } from '../src/lib/internal/brahmastra-ads-profile-selection'
+import { resolveBrahmastraSyncProfiles } from '../src/lib/internal/brahmastra-ads-profile-selection'
 import { parseAdsCampaignDailyReport } from '../src/lib/internal/ads-campaign-daily-parser'
 import {
   parseDeepReport,
@@ -141,7 +141,7 @@ async function main() {
       .select('profile_id, brahmastra_sync_enabled, is_primary')
       .eq('amazon_ads_connection_id', conn.id)
       .eq('status', 'active')
-    const selection = resolveBrahmastraProfile((profiles ?? []).map(p => ({
+    const selection = resolveBrahmastraSyncProfiles((profiles ?? []).map(p => ({
       profileId: p.profile_id as string,
       brahmastraSyncEnabled: p.brahmastra_sync_enabled as boolean,
       isPrimary: p.is_primary as boolean,
@@ -150,7 +150,8 @@ async function main() {
     const refreshToken = decryptToken(conn.refresh_token_encrypted as string)
     const { accessToken } = await refreshAdsAccessToken(refreshToken)
     refreshTokenForReuse = refreshToken
-    ctx = { region: conn.region as string, accessToken, profileId: selection.profileId }
+    // Initial scope only — re-pointed at each run's own profile_id below.
+    ctx = { region: conn.region as string, accessToken, profileId: selection.profileIds[0] }
   } else {
     const directCreds = resolveDirectAdsCredentials()
     if (!directCreds) { console.error('No Amazon Ads credentials found.'); process.exitCode = 1; return }
@@ -181,6 +182,10 @@ async function main() {
         console.log('  [token refreshed]')
       } catch { /* non-fatal */ }
     }
+
+    // Reports belong to whichever profile requested them; Amazon scopes the
+    // poll/download by profile, so use the run's own profile when it has one.
+    if (connections && connections.length > 0 && run.profile_id) ctx.profileId = run.profile_id as string
 
     // Quick status check first (one poll, no wait)
     try {
