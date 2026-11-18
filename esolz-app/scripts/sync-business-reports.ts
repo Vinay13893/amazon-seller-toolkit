@@ -367,17 +367,19 @@ async function syncOneDay(
   timeZone: string,
   dryRun: boolean,
   forceRefresh: boolean,
+  repairTraffic: boolean,
   reportTimeoutMs: number,
 ): Promise<DayOutcome> {
   const requestKey = `${workspaceId}|${marketplaceId}|${SALES_AND_TRAFFIC_REPORT_TYPE}|${day}|${day}|DAY|SKU`
+  const effectiveForceRefresh = forceRefresh || repairTraffic
 
   const latestRun = await findLatestRunForDate(admin, workspaceId, marketplaceId, day)
-  if (!dryRun && shouldSkipAlreadyConfirmedDate(latestRun, forceRefresh)) {
+  if (!dryRun && shouldSkipAlreadyConfirmedDate(latestRun, effectiveForceRefresh)) {
     console.log(`  ${day}: SKIPPED — already confirmed complete (use --force-refresh to redo).`)
     return { day, status: 'skipped', reason: 'already_confirmed_complete', skuInserted: 0, skuUpdated: 0, skuDeleted: 0 }
   }
 
-  const reusable = await findReusableReport(admin, requestKey, forceRefresh)
+  const reusable = await findReusableReport(admin, requestKey, effectiveForceRefresh)
   if (reusable?.alreadySucceeded) {
     console.log(`  ${day}: SKIPPED — already synced successfully within the last 6h (use --force-refresh to redo).`)
     await admin.from('internal_data_refresh_runs').insert({
@@ -585,11 +587,12 @@ async function main() {
   const tokenResult = await refreshAccessToken(refreshToken)
 
   const outcomes: DayOutcome[] = []
+  const trafficRepairDaySet = new Set(trafficRepairDays)
   for (const day of days) {
     // Sequential, never parallel — bounded load on Amazon's low-quota
     // Reports API, and each day's failure is independent of the others
     // (a bad day doesn't abort the whole run).
-    const outcome = await syncOneDay(admin, tokenResult.access_token, day, workspaceId, marketplaceId, timeZone, dryRun, forceRefresh, reportTimeoutMs)
+    const outcome = await syncOneDay(admin, tokenResult.access_token, day, workspaceId, marketplaceId, timeZone, dryRun, forceRefresh, trafficRepairDaySet.has(day), reportTimeoutMs)
     outcomes.push(outcome)
   }
 
