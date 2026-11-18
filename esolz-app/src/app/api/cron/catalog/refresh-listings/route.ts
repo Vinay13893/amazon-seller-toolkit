@@ -70,7 +70,7 @@ const TIME_BUDGET_MS = 170_000
 const REFRESH_INTERVAL_MS = 20 * 60 * 60 * 1000 // 20h → comfortably once/day
 // A 'running' cron job older than this is treated as abandoned (prior crash /
 // timeout) and reclaimed rather than blocking future runs forever.
-const STALE_RUNNING_MS = 2 * 60 * 60 * 1000 // 2h; cron resumes hourly
+const STALE_RUNNING_MS = 2 * 60 * 60 * 1000 // 2h; cron resumes every 15 minutes
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Admin = any

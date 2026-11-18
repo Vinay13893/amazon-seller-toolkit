@@ -23,11 +23,11 @@
     },
     {
       "path": "/api/cron/catalog/refresh-listings",
-      "schedule": "0 * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/stock/sync-amazon-data",
-      "schedule": "20 * * * *"
+      "schedule": "5,20,35,50 * * * *"
     }
   ]
 }

@@ -16,11 +16,11 @@ const vercelConfig = JSON.parse(readFileSync(path.resolve('vercel.json'), 'utf8'
   crons: Array<{ path: string; schedule: string }>
 }
 
-test('listing cron resumes hourly and judges staleness from the latest saved progress', () => {
+test('listing cron resumes every 15 minutes and judges staleness from the latest saved progress', () => {
   assert.match(routeSource, /metadata\.last_progress_at/)
   assert.equal(
     vercelConfig.crons.find(cron => cron.path === '/api/cron/catalog/refresh-listings')?.schedule,
-    '0 * * * *',
+    '*/15 * * * *',
   )
 })
 

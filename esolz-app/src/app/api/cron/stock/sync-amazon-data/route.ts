@@ -24,7 +24,7 @@ export const maxDuration = 200
  * This route runs the SAME step logic (shared via internal-stock-sync-runner)
  * server-side, with no browser. A full cycle (listings -> inventory -> ~5 SKUs
  * of sales per step) takes far longer than one invocation, so progress lives in
- * the amazon_sync_jobs row and each hourly run resumes it. A new cycle starts
+ * the amazon_sync_jobs row and each 15-minute run resumes it. A new cycle starts
  * only once the last completed one is older than REFRESH_INTERVAL_MS.
  *
  * Auth: Vercel Cron sends `Authorization: Bearer <CRON_SECRET>`.
