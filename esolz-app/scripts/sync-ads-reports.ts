@@ -364,7 +364,14 @@ async function syncOneReport(
     let updatedCount = 0
     let rejectedCount = 0
 
-    if (def.kind === null) {
+    // A completed Amazon report may legitimately contain zero rows (for
+    // example, a profile with no Sponsored Brands activity in this window).
+    // An empty JSON array has no header, so sending it through the CSV parser
+    // incorrectly labels it a period aggregate. Record it as a successful,
+    // confirmed zero-row report; non-empty malformed reports still fail.
+    if (jsonRows.length === 0) {
+      // Counts remain zero and the run is finalized as success below.
+    } else if (def.kind === null) {
       const result = parseAdsCampaignDailyReport(csv)
       if (!result.ok) throw new Error(result.error)
       rejectedCount = result.rejected.length

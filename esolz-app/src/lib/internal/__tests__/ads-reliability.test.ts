@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { AdsApiError, adsRetryDelay, parseRetryAfter } from '../ads-api-error'
 import { evaluateAdsSource } from '../brahmastra-data-health'
 
@@ -57,4 +59,13 @@ test('retry waits at least the server cooldown and defers excessive delays', () 
   assert.equal(adsRetryDelay(new AdsApiError('HTTP 429', 429, 120_000), 30_000), 120_000)
   assert.equal(adsRetryDelay(new AdsApiError('HTTP 429', 429, 1000), 30_000), 30_000)
   assert.equal(adsRetryDelay(new AdsApiError('HTTP 429', 429, 600_000), 30_000), null)
+})
+
+test('completed empty Ads reports are accepted before the daily CSV parser', () => {
+  const source = readFileSync(path.resolve('scripts/sync-ads-reports.ts'), 'utf8')
+  const emptyGuard = source.indexOf('if (jsonRows.length === 0)')
+  const parser = source.indexOf('parseAdsCampaignDailyReport(csv)', emptyGuard)
+  assert.ok(emptyGuard >= 0)
+  assert.ok(parser > emptyGuard)
+  assert.match(source.slice(emptyGuard, parser), /else if \(def\.kind === null\)/)
 })
