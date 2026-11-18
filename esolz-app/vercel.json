@@ -24,6 +24,10 @@
     {
       "path": "/api/cron/catalog/refresh-listings",
       "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/stock/sync-amazon-data",
+      "schedule": "20 * * * *"
     }
   ]
 }

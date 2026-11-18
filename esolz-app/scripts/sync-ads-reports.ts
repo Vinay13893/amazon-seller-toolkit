@@ -62,7 +62,7 @@ import {
 } from '../src/lib/internal/amazon-ads-reporting-client'
 import { jsonRowsToCsv } from '../src/lib/internal/json-rows-to-csv'
 import { resolveDirectAdsCredentials } from '../src/lib/internal/amazon-ads-direct-credentials'
-import { resolveBrahmastraProfile } from '../src/lib/internal/brahmastra-ads-profile-selection'
+import { resolveBrahmastraSyncProfiles } from '../src/lib/internal/brahmastra-ads-profile-selection'
 import { parseAdsCampaignDailyReport } from '../src/lib/internal/ads-campaign-daily-parser'
 import {
   parseDeepReport,
@@ -650,12 +650,12 @@ async function main() {
         continue
       }
 
-      // Never default to "every profile" — a connection can carry many
-      // advertiser profiles for unrelated businesses under the same Amazon
-      // login. Only the one profile explicitly selected for Brahmastra in
-      // Settings (or the designated primary, if more than one is enabled)
-      // may be synced.
-      const selection = resolveBrahmastraProfile(profiles.map(p => ({
+      // A connection can carry many advertiser profiles for unrelated
+      // businesses under the same Amazon login, so we never default to "every
+      // profile on the connection". Only profiles explicitly opted in via
+      // brahmastra_sync_enabled (Settings -> Amazon Ads) are synced — and ALL
+      // of them are synced every run, not just one.
+      const selection = resolveBrahmastraSyncProfiles(profiles.map(p => ({
         profileId: p.profile_id as string,
         brahmastraSyncEnabled: p.brahmastra_sync_enabled as boolean,
         isPrimary: p.is_primary as boolean,
@@ -666,22 +666,11 @@ async function main() {
         continue
       }
 
-      if (await isSyncLocked(admin, workspaceId, selection.profileId)) {
-        console.log(`Workspace ${workspaceId}, profile ${selection.profileId}: Another Amazon Ads sync is already running for this profile. Skipping.`)
-        continue
-      }
-
-      const profile = profiles.find(p => p.profile_id === selection.profileId)!
-      const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? selection.profileId
-
-      let accessToken: string
       let refreshToken: string
       try {
         refreshToken = decryptToken(connection.refresh_token_encrypted as string)
-        const refreshed = await refreshAdsAccessToken(refreshToken)
-        accessToken = refreshed.accessToken
       } catch (error) {
-        console.error(`Workspace ${workspaceId}: Ads token refresh failed — ${error instanceof Error ? error.message : error}`)
+        console.error(`Workspace ${workspaceId}: Ads token decrypt failed — ${error instanceof Error ? error.message : error}`)
         process.exitCode = 1
         continue
       }
@@ -691,9 +680,29 @@ async function main() {
         const refreshed = await refreshAdsAccessToken(refreshToken)
         return refreshed.accessToken
       }
-      const ctx: AdsApiContext = { region, accessToken, profileId: selection.profileId }
-      console.log(`Workspace ${workspaceId}, profile ${selection.profileId} (${profileLabel}):`)
-      if (await runSyncForProfile(admin, ctx, workspaceId, selection.profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts, getAccessToken)) process.exitCode = 1
+
+      for (const profileId of selection.profileIds) {
+        if (await isSyncLocked(admin, workspaceId, profileId)) {
+          console.log(`Workspace ${workspaceId}, profile ${profileId}: Another Amazon Ads sync is already running for this profile. Skipping.`)
+          continue
+        }
+
+        const profile = profiles.find(p => p.profile_id === profileId)!
+        const profileLabel = (profile.display_name as string | null) ?? (profile.account_name as string | null) ?? profileId
+
+        let accessToken: string
+        try {
+          accessToken = await getAccessToken()
+        } catch (error) {
+          console.error(`Workspace ${workspaceId}, profile ${profileId} (${profileLabel}): Ads token refresh failed — ${error instanceof Error ? error.message : error}`)
+          process.exitCode = 1
+          continue
+        }
+
+        const ctx: AdsApiContext = { region, accessToken, profileId }
+        console.log(`Workspace ${workspaceId}, profile ${profileId} (${profileLabel}):`)
+        if (await runSyncForProfile(admin, ctx, workspaceId, profileId, profileLabel, startDate, endDate, reportTimeoutMs, forceRefresh, bfOpts, getAccessToken)) process.exitCode = 1
+      }
     }
     return
   }
