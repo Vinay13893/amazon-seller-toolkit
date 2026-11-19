@@ -78,18 +78,24 @@ export type IngestionStatus = 'success' | 'partial_success' | 'failed'
 export type StructuralCompletenessReason =
   | 'missing_by_date_row_for_requested_date'
   | 'multiple_by_date_rows_for_single_day_request'
+  | 'sku_sales_total_mismatch'
+  | 'positive_sales_but_traffic_zero'
   | 'sku_rows_rejected'
   | 'positive_sales_but_no_sku_breakdown'
 
 export type StructuralCompletenessInput = {
   /** How many salesAndTrafficByDate rows matched the single requested date exactly. Must be exactly 1 for a well-formed single-day report. */
   byDateMatchCount: number
+  /** Total by-date rows in the document, including rows for a different date. */
+  byDateRowsFetched?: number
   /** The matched by-date row's orderedProductSales, when byDateMatchCount === 1. */
   byDateOrderedProductSales: number | null
   /** Total salesAndTrafficByAsin rows Amazon returned for this single-day request, before validation. */
   skuRowsFetched: number
   /** How many of those rows validateSkuRows() rejected. */
   skuRowsRejected: number
+  /** Sum of accepted by-ASIN/SKU ordered sales. When supplied it must reconcile to the one by-date total. */
+  skuOrderedProductSalesSum?: number
 }
 
 export type StructuralCompletenessResult = { status: IngestionStatus; reason: StructuralCompletenessReason | null }
@@ -120,7 +126,7 @@ export function classifyStructuralCompleteness(input: StructuralCompletenessInpu
   if (input.byDateMatchCount === 0) {
     return { status: 'failed', reason: 'missing_by_date_row_for_requested_date' }
   }
-  if (input.byDateMatchCount > 1) {
+  if (input.byDateMatchCount > 1 || (input.byDateRowsFetched ?? input.byDateMatchCount) > 1) {
     return { status: 'failed', reason: 'multiple_by_date_rows_for_single_day_request' }
   }
   if (input.skuRowsRejected > 0) {
@@ -128,6 +134,14 @@ export function classifyStructuralCompleteness(input: StructuralCompletenessInpu
   }
   if ((input.byDateOrderedProductSales ?? 0) > 0 && input.skuRowsFetched === 0) {
     return { status: 'partial_success', reason: 'positive_sales_but_no_sku_breakdown' }
+  }
+  if (input.skuOrderedProductSalesSum !== undefined) {
+    const accountSales = input.byDateOrderedProductSales ?? 0
+    const absoluteDiff = Math.abs(input.skuOrderedProductSalesSum - accountSales)
+    const allowedDiff = Math.max(1, Math.abs(accountSales) * 0.01)
+    if (absoluteDiff > allowedDiff) {
+      return { status: 'failed', reason: 'sku_sales_total_mismatch' }
+    }
   }
   return { status: 'success', reason: null }
 }

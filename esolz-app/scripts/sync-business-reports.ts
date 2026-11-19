@@ -77,7 +77,7 @@ import {
   marketplaceYesterdayIso,
   addCalendarDays,
   enumerateCalendarDays,
-  marketplaceCalendarDayWindow,
+  amazonSalesAndTrafficReportDayWindow,
 } from '../src/lib/internal/business-report-marketplace-time'
 import { resolveSkuReportDate } from '../src/lib/internal/business-report-grain-guard'
 import {
@@ -379,7 +379,7 @@ async function syncOneDay(
       reportId = reusable.amazonReportId
       console.log(`  ${day}: reusing in-flight Amazon report ${reportId}.`)
     } else {
-      const window = marketplaceCalendarDayWindow(day, timeZone)
+      const window = amazonSalesAndTrafficReportDayWindow(day)
       const created = await createAmazonReport(accessToken, {
         reportType: SALES_AND_TRAFFIC_REPORT_TYPE,
         marketplaceIds: [marketplaceId],
@@ -414,11 +414,14 @@ async function syncOneDay(
 
     const byDateMatches = parsed.byDate.filter(r => r.date === day)
     const { accepted: acceptedSkuRows, rejected: rejectedSkuRows } = validateSkuRows(parsed.byAsin)
+    const skuOrderedProductSalesSum = acceptedSkuRows.reduce((sum, row) => sum + row.orderedProductSales, 0)
     const completeness = classifyStructuralCompleteness({
       byDateMatchCount: byDateMatches.length,
+      byDateRowsFetched: parsed.byDate.length,
       byDateOrderedProductSales: byDateMatches[0]?.orderedProductSales ?? null,
       skuRowsFetched: parsed.byAsin.length,
       skuRowsRejected: rejectedSkuRows.length,
+      skuOrderedProductSalesSum,
     })
 
     if (completeness.status === 'failed') {

@@ -94,6 +94,51 @@ describe('classifyStructuralCompleteness', () => {
     assert.equal(result.reason, 'multiple_by_date_rows_for_single_day_request')
   })
 
+  test('one matching row plus another date row is failed before the aggregate ASIN total can be written', () => {
+    const result = classifyStructuralCompleteness({
+      byDateMatchCount: 1,
+      byDateRowsFetched: 2,
+      byDateOrderedProductSales: 500,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
+      skuRowsFetched: 3,
+      skuRowsRejected: 0,
+      skuOrderedProductSalesSum: 1000,
+    })
+    assert.deepEqual(result, { status: 'failed', reason: 'multiple_by_date_rows_for_single_day_request' })
+  })
+
+  test('a materially inflated SKU sum is failed even when the report has one by-date row', () => {
+    const result = classifyStructuralCompleteness({
+      byDateMatchCount: 1,
+      byDateRowsFetched: 1,
+      byDateOrderedProductSales: 500,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
+      skuRowsFetched: 3,
+      skuRowsRejected: 0,
+      skuOrderedProductSalesSum: 1000,
+    })
+    assert.deepEqual(result, { status: 'failed', reason: 'sku_sales_total_mismatch' })
+  })
+
+  test('a small rounding difference within one percent is accepted', () => {
+    const result = classifyStructuralCompleteness({
+      byDateMatchCount: 1,
+      byDateRowsFetched: 1,
+      byDateOrderedProductSales: 500,
+      byDateSessions: 100,
+      byDatePageViews: 150,
+      byDateBuyBoxPercentage: 90,
+      skuRowsFetched: 3,
+      skuRowsRejected: 0,
+      skuOrderedProductSalesSum: 503,
+    })
+    assert.deepEqual(result, { status: 'success', reason: null })
+  })
+
   test('any rejected SKU row makes the day partial_success, never success -- rows_rejected must never be silently zeroed', () => {
     const result = classifyStructuralCompleteness({
       byDateMatchCount: 1,

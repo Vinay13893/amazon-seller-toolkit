@@ -10,6 +10,7 @@ import {
   addCalendarDays,
   enumerateCalendarDays,
   marketplaceCalendarDayWindow,
+  amazonSalesAndTrafficReportDayWindow,
 } from '../business-report-marketplace-time'
 
 describe('resolveMarketplaceTimezone', () => {
@@ -111,5 +112,14 @@ describe('marketplaceCalendarDayWindow', () => {
     const window = marketplaceCalendarDayWindow('2026-01-01', 'Asia/Kolkata')
     const spanMs = new Date(window.dataEndTime).getTime() - new Date(window.dataStartTime).getTime()
     assert.equal(spanMs, 24 * 60 * 60 * 1000 - 1)
+  })
+})
+
+describe('amazonSalesAndTrafficReportDayWindow', () => {
+  test('uses exactly one named UTC date so Amazon cannot aggregate two date buckets into one ASIN total', () => {
+    assert.deepEqual(amazonSalesAndTrafficReportDayWindow('2026-11-17'), {
+      dataStartTime: '2026-11-17T00:00:00.000Z',
+      dataEndTime: '2026-11-17T23:59:59.999Z',
+    })
   })
 })
