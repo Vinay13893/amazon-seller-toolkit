@@ -136,6 +136,26 @@ export function enumerateCalendarDays(dateStart: string, dateEnd: string): strin
 export type MarketplaceDayWindow = { dataStartTime: string; dataEndTime: string }
 
 /**
+ * GET_SALES_AND_TRAFFIC_REPORT names its `salesAndTrafficByDate` buckets by
+ * the UTC calendar date supplied to the Reports API.  Do not shift this
+ * request window to marketplace midnight: for India that crosses two UTC
+ * dates, so Amazon returns two by-date buckets while the by-ASIN section is
+ * one aggregate for the whole window.  Persisting that aggregate under only
+ * one report_date inflated SKU/ASIN sales by roughly 2x in production.
+ *
+ * Marketplace time is still the authority for deciding which date is the
+ * last complete date (`marketplaceYesterdayIso`).  Once that date has been
+ * chosen, the report request itself must use one named UTC date so both
+ * sections have the same single-day grain.
+ */
+export function amazonSalesAndTrafficReportDayWindow(dayIso: string): MarketplaceDayWindow {
+  return {
+    dataStartTime: `${dayIso}T00:00:00.000Z`,
+    dataEndTime: `${dayIso}T23:59:59.999Z`,
+  }
+}
+
+/**
  * The exact UTC instant range Amazon's dataStartTime/dataEndTime must span
  * to request exactly one MARKETPLACE-LOCAL calendar day — i.e.
  * [local 00:00:00.000, local 23:59:59.999] on `dayIso`, expressed as UTC

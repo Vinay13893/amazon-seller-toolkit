@@ -61,7 +61,7 @@ import {
 import {
   resolveMarketplaceTimezone,
   enumerateCalendarDays,
-  marketplaceCalendarDayWindow,
+  amazonSalesAndTrafficReportDayWindow,
   marketplaceTodayIso,
 } from '../src/lib/internal/business-report-marketplace-time'
 import { resolveSkuReportDate } from '../src/lib/internal/business-report-grain-guard'
@@ -247,7 +247,7 @@ async function liveDate(
   confirmPhrase: string | null,
 ): Promise<DateReport> {
   const requestedAt = new Date().toISOString()
-  const window = marketplaceCalendarDayWindow(day, timeZone)
+  const window = amazonSalesAndTrafficReportDayWindow(day)
   const created = await createAmazonReport(accessToken, {
     reportType: SALES_AND_TRAFFIC_REPORT_TYPE,
     marketplaceIds: [marketplaceId],
@@ -267,19 +267,21 @@ async function liveDate(
   const skuReportDate = resolveSkuReportDate(day, day) // fail-closed grain guard, always day===day here
   const byDateMatches = parsed.byDate.filter(r => r.date === day)
   const { accepted, rejected } = validateSkuRows(parsed.byAsin)
+  const summedSkuOrderedSales = accepted.reduce((sum, r) => sum + r.orderedProductSales, 0)
   const completeness = classifyStructuralCompleteness({
     byDateMatchCount: byDateMatches.length,
+    byDateRowsFetched: parsed.byDate.length,
     byDateOrderedProductSales: byDateMatches[0]?.orderedProductSales ?? null,
     byDateSessions: byDateMatches[0]?.sessions ?? null,
     byDatePageViews: byDateMatches[0]?.pageViews ?? null,
     byDateBuyBoxPercentage: byDateMatches[0]?.buyBoxPercentage ?? null,
     skuRowsFetched: parsed.byAsin.length,
     skuRowsRejected: rejected.length,
+    skuOrderedProductSalesSum: summedSkuOrderedSales,
   })
 
   const accountOrderedSales = byDateMatches[0]?.orderedProductSales ?? null
   const accountUnits = byDateMatches[0]?.unitsOrdered ?? null
-  const summedSkuOrderedSales = accepted.reduce((sum, r) => sum + r.orderedProductSales, 0)
   const summedSkuUnits = accepted.reduce((sum, r) => sum + r.unitsOrdered, 0)
   const diff = computeReconciliationDiff({
     accountOrderedSales: accountOrderedSales ?? 0,
