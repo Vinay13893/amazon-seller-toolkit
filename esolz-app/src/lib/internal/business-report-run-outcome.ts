@@ -90,6 +90,10 @@ export type StructuralCompletenessInput = {
   byDateRowsFetched?: number
   /** The matched by-date row's orderedProductSales, when byDateMatchCount === 1. */
   byDateOrderedProductSales: number | null
+  /** Optional traffic evidence retained for callers/tests that audit the full matched by-date row. */
+  byDateSessions?: number | null
+  byDatePageViews?: number | null
+  byDateBuyBoxPercentage?: number | null
   /** Total salesAndTrafficByAsin rows Amazon returned for this single-day request, before validation. */
   skuRowsFetched: number
   /** How many of those rows validateSkuRows() rejected. */

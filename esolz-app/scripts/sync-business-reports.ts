@@ -51,6 +51,9 @@
 //     the in-flight/just-finished Amazon report instead of requesting a
 //     new one, unless --force-refresh is passed.
 //   - 429s are backed off (see waitForSalesAndTrafficReport).
+//   - Report creation is paced to Amazon's low createReport quota and
+//     retries 429s with bounded backoff. Polling backoff alone is not
+//     enough because createReport has its own, much lower quota.
 //   - Days are processed strictly sequentially (never in parallel) —
 //     bounded, predictable load on Amazon's low-quota Reports API.
 //   - Manual CSV import (src/lib/internal/business-report-sales-traffic-parser.ts)
@@ -103,6 +106,55 @@ const BY_DATE_TABLE = 'internal_business_report_sales_traffic_daily'
 const SKU_TABLE = 'internal_business_report_sku_sales_traffic'
 const STALE_RUN_MS = 2 * 60 * 60 * 1000
 const REPORT_REUSE_WINDOW_MS = 6 * 60 * 60 * 1000
+const REPORT_CREATE_MIN_INTERVAL_MS = Math.max(
+  1_000,
+  Number(process.env.BUSINESS_REPORT_CREATE_INTERVAL_MS ?? '65000'),
+)
+const REPORT_CREATE_MAX_ATTEMPTS = 6
+
+let lastReportCreateAttemptAt = 0
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isRateLimitError(error: unknown): boolean {
+  return (error instanceof Error ? error.message : String(error)).includes('HTTP 429')
+}
+
+async function createSalesAndTrafficReport(
+  accessToken: string,
+  input: Parameters<typeof createAmazonReport>[1],
+  day: string,
+): Promise<Awaited<ReturnType<typeof createAmazonReport>>> {
+  for (let attempt = 1; attempt <= REPORT_CREATE_MAX_ATTEMPTS; attempt += 1) {
+    const intervalWaitMs = Math.max(
+      0,
+      REPORT_CREATE_MIN_INTERVAL_MS - (Date.now() - lastReportCreateAttemptAt),
+    )
+    if (intervalWaitMs > 0) {
+      console.log(`  ${day}: pacing createReport for ${Math.ceil(intervalWaitMs / 1000)}s.`)
+      await sleep(intervalWaitMs)
+    }
+
+    lastReportCreateAttemptAt = Date.now()
+    try {
+      return await createAmazonReport(accessToken, input)
+    } catch (error) {
+      if (!isRateLimitError(error) || attempt === REPORT_CREATE_MAX_ATTEMPTS) throw error
+      const backoffMs = Math.min(
+        REPORT_CREATE_MIN_INTERVAL_MS * 2 ** (attempt - 1),
+        5 * 60 * 1000,
+      )
+      console.log(
+        `  ${day}: Amazon rate-limited report creation (attempt ${attempt}/${REPORT_CREATE_MAX_ATTEMPTS}); ` +
+        `retrying in ${Math.ceil(backoffMs / 1000)}s.`,
+      )
+      await sleep(backoffMs)
+    }
+  }
+  throw new Error(`Report creation retry loop exited unexpectedly for ${day}.`)
+}
 
 function parseArgs(): Map<string, string> {
   const args = new Map<string, string>()
@@ -380,13 +432,13 @@ async function syncOneDay(
       console.log(`  ${day}: reusing in-flight Amazon report ${reportId}.`)
     } else {
       const window = amazonSalesAndTrafficReportDayWindow(day)
-      const created = await createAmazonReport(accessToken, {
+      const created = await createSalesAndTrafficReport(accessToken, {
         reportType: SALES_AND_TRAFFIC_REPORT_TYPE,
         marketplaceIds: [marketplaceId],
         dataStartTime: window.dataStartTime,
         dataEndTime: window.dataEndTime,
         reportOptions,
-      })
+      }, day)
       reportId = created.reportId
       console.log(`  ${day}: report requested (${reportId}).`)
     }
