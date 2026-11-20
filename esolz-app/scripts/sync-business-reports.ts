@@ -604,14 +604,27 @@ async function main() {
   }
 
   const refreshToken = decryptToken(connection.refresh_token_encrypted as string)
-  const tokenResult = await refreshAccessToken(refreshToken)
+  let accessToken: string | null = null
+  let accessTokenRefreshAt = 0
+
+  const getAccessToken = async (): Promise<string> => {
+    if (accessToken && Date.now() < accessTokenRefreshAt) return accessToken
+
+    const tokenResult = await refreshAccessToken(refreshToken)
+    accessToken = tokenResult.access_token
+    // Refresh well before Amazon's expiry so a report can finish polling and
+    // downloading without its credentials expiring in the middle of the day.
+    const safeLifetimeSeconds = Math.max(60, tokenResult.expires_in - 10 * 60)
+    accessTokenRefreshAt = Date.now() + safeLifetimeSeconds * 1000
+    return accessToken
+  }
 
   const outcomes: DayOutcome[] = []
   for (const day of days) {
     // Sequential, never parallel — bounded load on Amazon's low-quota
     // Reports API, and each day's failure is independent of the others
     // (a bad day doesn't abort the whole run).
-    const outcome = await syncOneDay(admin, tokenResult.access_token, day, workspaceId, marketplaceId, timeZone, dryRun, forceRefresh, reportTimeoutMs)
+    const outcome = await syncOneDay(admin, await getAccessToken(), day, workspaceId, marketplaceId, timeZone, dryRun, forceRefresh, reportTimeoutMs)
     outcomes.push(outcome)
   }
 
