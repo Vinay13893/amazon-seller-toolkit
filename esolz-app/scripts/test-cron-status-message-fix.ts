@@ -11,7 +11,7 @@
  *   npx tsx scripts/test-cron-status-message-fix.ts
  */
 import assert from 'node:assert/strict'
-import { resolveSuggestedAction, type CheckerSummaryForAction } from '../src/app/api/asins/listings/route'
+import { resolveSuggestedAction, type CheckerSummaryForAction } from '../src/lib/asins/listing-snapshot-status'
 
 const NOW = '2026-07-14T12:00:00.000Z'
 
