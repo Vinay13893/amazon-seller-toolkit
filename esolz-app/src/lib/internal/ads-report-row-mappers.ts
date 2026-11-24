@@ -90,8 +90,9 @@ export function deepReportRowFor(record: DeepReportRecord, kind: DeepReportKind,
 // deep reports (ads_advertised_product/ads_targeting/ads_search_term),
 // meaning a timeout on any of them could never self-heal via that recovery
 // path even though Amazon kept generating the report in the background.
-export const ADS_REPORT_SOURCES: Record<string, { table: string; batchTable: string; kind: DeepReportKind | null }> = {
+export const ADS_REPORT_SOURCES: Record<string, { table: string; batchTable: string | null; kind: DeepReportKind | 'placement' | null }> = {
   ads_campaign_daily: { table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
+  ads_sp_campaign_placement_daily: { table: 'internal_ads_placement_daily_rows', batchTable: null, kind: 'placement' },
   ads_sd_campaign_daily: { table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
   ads_sb_campaign_daily: { table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
   ads_advertised_product: { table: 'internal_ads_advertised_product_daily_rows', batchTable: 'internal_ads_deep_report_upload_batches', kind: 'advertised_product' },

@@ -56,19 +56,31 @@ export async function refreshAdsAccessToken(
 // Campaign-level report types (all go into internal_ads_campaign_daily_rows).
 // Deep-report types (spAdvertisedProduct, spTargeting, spSearchTerm) are SP-only
 // because SD/SB don't offer equivalent SKU/keyword/search-term breakdown APIs.
-export type AdsReportType = 'spCampaigns' | 'spAdvertisedProduct' | 'spTargeting' | 'spSearchTerm' | 'sdCampaigns' | 'sbCampaigns'
+export type AdsReportType = 'spCampaigns' | 'spCampaignPlacement' | 'spAdvertisedProduct' | 'spTargeting' | 'spSearchTerm' | 'sdCampaigns' | 'sbCampaigns'
 
-const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[]; columns: string[] }> = {
+const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; reportTypeId: string; groupBy: string[]; columns: string[] }> = {
   spCampaigns: {
     adProduct: 'SPONSORED_PRODUCTS',
+    reportTypeId: 'spCampaigns',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'campaignBudgetAmount',
       'impressions', 'clicks', 'cost', 'purchases1d', 'sales1d', 'unitsSoldClicks1d',
     ],
   },
+  spCampaignPlacement: {
+    adProduct: 'SPONSORED_PRODUCTS',
+    reportTypeId: 'spCampaigns',
+    groupBy: ['campaign', 'campaignPlacement'],
+    columns: [
+      'date', 'campaignId', 'campaignName', 'campaignStatus', 'campaignBudgetAmount',
+      'placementClassification', 'impressions', 'clicks', 'cost', 'purchases1d',
+      'sales1d', 'unitsSoldClicks1d', 'topOfSearchImpressionShare',
+    ],
+  },
   spAdvertisedProduct: {
     adProduct: 'SPONSORED_PRODUCTS',
+    reportTypeId: 'spAdvertisedProduct',
     groupBy: ['advertiser'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'adGroupId', 'adGroupName',
@@ -77,6 +89,7 @@ const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[
   },
   spTargeting: {
     adProduct: 'SPONSORED_PRODUCTS',
+    reportTypeId: 'spTargeting',
     groupBy: ['targeting'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'adGroupId', 'adGroupName',
@@ -86,6 +99,7 @@ const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[
   },
   spSearchTerm: {
     adProduct: 'SPONSORED_PRODUCTS',
+    reportTypeId: 'spSearchTerm',
     groupBy: ['searchTerm'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus', 'adGroupId', 'adGroupName',
@@ -104,6 +118,7 @@ const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[
   // granularity in the v3 API. unitsSold is click+view combined.
   sdCampaigns: {
     adProduct: 'SPONSORED_DISPLAY',
+    reportTypeId: 'sdCampaigns',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus',
@@ -115,6 +130,7 @@ const REPORT_CONFIG: Record<AdsReportType, { adProduct: string; groupBy: string[
   // SALES_ALIASES already include 'purchases' and 'sales' as the first aliases.
   sbCampaigns: {
     adProduct: 'SPONSORED_BRANDS',
+    reportTypeId: 'sbCampaigns',
     groupBy: ['campaign'],
     columns: [
       'date', 'campaignId', 'campaignName', 'campaignStatus',
@@ -155,7 +171,7 @@ export async function requestAdsReport(ctx: AdsApiContext, reportType: AdsReport
         adProduct: config.adProduct,
         groupBy: config.groupBy,
         columns: config.columns,
-        reportTypeId: reportType,
+        reportTypeId: config.reportTypeId,
         timeUnit: 'DAILY',
         format: 'GZIP_JSON',
       },
