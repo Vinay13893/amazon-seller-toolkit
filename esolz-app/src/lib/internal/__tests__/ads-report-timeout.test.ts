@@ -24,17 +24,17 @@ describe('ADS_REPORT_SOURCES', () => {
   // had the 3 campaign-daily-family sources and silently skipped the 3 SP
   // deep reports, so a timeout on any of them could never self-heal via
   // that recovery path. This asserts recovery covers all 6, not 3.
-  test('covers exactly the 6 known Ads sources', () => {
+  test('covers exactly the 7 known Ads sources', () => {
     assert.deepEqual(
       Object.keys(ADS_REPORT_SOURCES).sort(),
-      ['ads_advertised_product', 'ads_campaign_daily', 'ads_sb_campaign_daily', 'ads_sd_campaign_daily', 'ads_search_term', 'ads_targeting'],
+      ['ads_advertised_product', 'ads_campaign_daily', 'ads_sb_campaign_daily', 'ads_sd_campaign_daily', 'ads_search_term', 'ads_sp_campaign_placement_daily', 'ads_targeting'],
     )
   })
 
-  test('every source has a non-empty table and batch table', () => {
+  test('every source has a table and non-placement sources have a batch table', () => {
     for (const [source, info] of Object.entries(ADS_REPORT_SOURCES)) {
       assert.ok(info.table.length > 0, `${source} is missing a table`)
-      assert.ok(info.batchTable.length > 0, `${source} is missing a batchTable`)
+      if (info.kind !== 'placement') assert.ok((info.batchTable?.length ?? 0) > 0, `${source} is missing a batchTable`)
     }
   })
 
@@ -45,5 +45,6 @@ describe('ADS_REPORT_SOURCES', () => {
     assert.equal(ADS_REPORT_SOURCES.ads_campaign_daily.kind, null)
     assert.equal(ADS_REPORT_SOURCES.ads_sd_campaign_daily.kind, null)
     assert.equal(ADS_REPORT_SOURCES.ads_sb_campaign_daily.kind, null)
+    assert.equal(ADS_REPORT_SOURCES.ads_sp_campaign_placement_daily.kind, 'placement')
   })
 })

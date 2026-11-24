@@ -70,6 +70,7 @@ import {
   type DeepReportKind,
 } from '../src/lib/internal/ads-deep-report-parser'
 import { campaignDailyRowFor, deepReportRowFor } from '../src/lib/internal/ads-report-row-mappers'
+import { parseAdsPlacementRows, placementDailyRowFor } from '../src/lib/internal/ads-placement-report'
 import { resolveReportTimeoutMs } from '../src/lib/internal/ads-report-timeout'
 import { decideReportReuse, AMAZON_REPORT_RETENTION_MS as REUSE_RETENTION_MS } from '../src/lib/internal/ads-report-reuse'
 import { splitRowsForUpsert } from '../src/lib/internal/ads-upsert-split'
@@ -121,8 +122,8 @@ function dateChunks(startDate: string, endDate: string, chunkDays: number): Arra
 
 function campaignDefsFor(adProducts: string[]): ReportDef[] {
   return REPORT_DEFS.filter(d => {
-    if (d.kind !== null) return false
-    if (d.type === 'spCampaigns') return adProducts.includes('SP')
+    if (d.kind !== null && d.kind !== 'placement') return false
+    if (d.type === 'spCampaigns' || d.type === 'spCampaignPlacement') return adProducts.includes('SP')
     if (d.type === 'sdCampaigns') return adProducts.includes('SD')
     if (d.type === 'sbCampaigns') return adProducts.includes('SB')
     return false
@@ -130,7 +131,7 @@ function campaignDefsFor(adProducts: string[]): ReportDef[] {
 }
 
 function deepReportDefs(): ReportDef[] {
-  return REPORT_DEFS.filter(d => d.kind !== null)
+  return REPORT_DEFS.filter(d => d.kind !== null && d.kind !== 'placement')
 }
 
 const STALE_RUN_MS = 2 * 60 * 60 * 1000 // 2 hours — anything "running" longer than this is a crashed/abandoned attempt
@@ -159,12 +160,14 @@ type ReportDef =
   // Campaign-level reports: SP, SD, and SB all go into the same table so
   // top-level totals match the Amazon Ads Console across all campaign types.
   | { type: 'spCampaigns' | 'sdCampaigns' | 'sbCampaigns'; source: string; table: string; batchTable: string; kind: null; timeoutMs?: number }
+  | { type: 'spCampaignPlacement'; source: string; table: string; kind: 'placement'; timeoutMs?: number }
   // SP deep reports only (SD/SB don't offer equivalent granular breakdown APIs).
   | { type: AdsReportType; source: string; table: string; batchTable: string; kind: DeepReportKind; timeoutMs?: number }
 
 const REPORT_DEFS: ReportDef[] = [
   // ── Campaign-level (SP + SD + SB) — all into internal_ads_campaign_daily_rows ──
   { type: 'spCampaigns', source: 'ads_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
+  { type: 'spCampaignPlacement', source: 'ads_sp_campaign_placement_daily', table: 'internal_ads_placement_daily_rows', kind: 'placement' },
   { type: 'sdCampaigns', source: 'ads_sd_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null, timeoutMs: SD_CAMPAIGN_TIMEOUT_MS },
   { type: 'sbCampaigns', source: 'ads_sb_campaign_daily', table: 'internal_ads_campaign_daily_rows', batchTable: 'internal_ads_campaign_upload_batches', kind: null },
   // ── SP deep reports ──────────────────────────────────────────────────────────
@@ -362,7 +365,18 @@ async function syncOneReport(
     let updatedCount = 0
     let rejectedCount = 0
 
-    if (def.kind === null) {
+    if (def.kind === 'placement') {
+      const result = parseAdsPlacementRows(jsonRows)
+      rejectedCount = result.rejectedCount
+      const dedupedRows = new Map<string, ReturnType<typeof placementDailyRowFor>>()
+      for (const record of result.accepted) {
+        const row = placementDailyRowFor(record, workspaceId, profileId)
+        dedupedRows.set(row.dedupe_key, row)
+      }
+      const upsertResult = await upsertByDedupeKey(admin, def.table, workspaceId, profileId, [...dedupedRows.values()])
+      insertedCount = upsertResult.insertedCount
+      updatedCount = upsertResult.updatedCount
+    } else if (def.kind === null) {
       const result = parseAdsCampaignDailyReport(csv)
       if (!result.ok) throw new Error(result.error)
       rejectedCount = result.rejected.length

@@ -39,6 +39,7 @@ import {
   type DeepReportRecord,
 } from '../src/lib/internal/ads-deep-report-parser'
 import { campaignDailyRowFor, deepReportRowFor, ADS_REPORT_SOURCES } from '../src/lib/internal/ads-report-row-mappers'
+import { parseAdsPlacementRows, placementDailyRowFor } from '../src/lib/internal/ads-placement-report'
 import { splitRowsForUpsert } from '../src/lib/internal/ads-upsert-split'
 
 try {
@@ -209,14 +210,25 @@ async function main() {
       let updatedCount = 0
       let rejectedCount = 0
 
-      if (tableInfo.kind === null) {
+      if (tableInfo.kind === 'placement') {
+        const result = parseAdsPlacementRows(jsonRows)
+        rejectedCount = result.rejectedCount
+        const dedupedRows = new Map<string, ReturnType<typeof placementDailyRowFor>>()
+        for (const record of result.accepted) {
+          const row = placementDailyRowFor(record, workspaceId, profileId)
+          dedupedRows.set(row.dedupe_key, row)
+        }
+        const upsertResult = await upsertByDedupeKey(admin, tableInfo.table, workspaceId, profileId, [...dedupedRows.values()])
+        insertedCount = upsertResult.insertedCount
+        updatedCount = upsertResult.updatedCount
+      } else if (tableInfo.kind === null) {
         const result = parseAdsCampaignDailyReport(csv)
         if (!result.ok) throw new Error(result.error)
         rejectedCount = result.rejected.length
 
         if (result.accepted.length > 0) {
           const { data: batch, error: batchError } = await admin
-            .from(tableInfo.batchTable)
+            .from(tableInfo.batchTable!)
             .insert({
               workspace_id: workspaceId, profile_id: profileId,
               original_filename: `ads-api-poll-recovered-${source}-${run.date_from}-${run.date_to}`,
@@ -241,7 +253,7 @@ async function main() {
           const upserted = await upsertByDedupeKey(admin, tableInfo.table, workspaceId, profileId, [...dedupedRows.values()])
           insertedCount = upserted.insertedCount
           updatedCount = upserted.updatedCount
-          await admin.from(tableInfo.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
+          await admin.from(tableInfo.batchTable!).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
           console.log(`  ✅ recovered: fetched ${jsonRows.length}, inserted ${insertedCount}, updated ${updatedCount}, rejected ${result.rejected.length}`)
         } else {
           console.log(`  ✅ recovered: 0 accepted rows (empty date range)`)
@@ -270,7 +282,7 @@ async function main() {
           })
 
           const { data: batch, error: batchError } = await admin
-            .from(tableInfo.batchTable)
+            .from(tableInfo.batchTable!)
             .insert({
               workspace_id: workspaceId, profile_id: profileId,
               report_kind: kind,
@@ -298,7 +310,7 @@ async function main() {
           const upserted = await upsertByDedupeKey(admin, tableInfo.table, workspaceId, profileId, [...dedupedRows.values()])
           insertedCount = upserted.insertedCount
           updatedCount = upserted.updatedCount
-          await admin.from(tableInfo.batchTable).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
+          await admin.from(tableInfo.batchTable!).update({ inserted_count: insertedCount, updated_count: updatedCount }).eq('id', batch.id)
           console.log(`  ✅ recovered: fetched ${jsonRows.length}, inserted ${insertedCount}, updated ${updatedCount}, rejected ${result.rejected.length}`)
         } else {
           console.log(`  ✅ recovered: 0 accepted rows (empty date range)`)
