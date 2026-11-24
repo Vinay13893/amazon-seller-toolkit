@@ -5482,3 +5482,25 @@ necessary.
 
 **Incident status: closed.** No code, UI, Render schedule, Catalog, or Pincode changes were made
 outside the merged PR #61 fix itself.
+
+
+## 25. Shadow Agent Readiness and scoped implementation — 2026-11-24
+
+See `docs/SHADOW_AGENT_READINESS_AUDIT_2026-11-24.md` for production evidence and rollout.
+The selected Ads profile passes a 14-day duplicate/re-upsert audit and seven clean daily
+syncs (Nov 18–24). No Ads ingestion change was justified. Audit pagination/profile/status
+checks are corrected. Brand Analytics is actually empty despite historical success
+summaries: fixed count-based resume, optimistic stored counts, zero-count status precedence,
+and bounded timeout retries; historical disappearance remains unproven and no sync ran.
+
+Extended the existing `ads_agent_*` foundation with accepted report-window gates, scoped
+rank/pincode evidence, conservative organic-trend adjustment, invalid-input guards,
+idempotent keys, and an authenticated daily shadow cron. Initialized the verified primary
+profile in shadow with emergency stop still true. Only proposed actions can be written.
+Deployment is pending review; production shadow runs are not yet verified.
+
+Keyword/pincode recurring consumers are absent on master; both pincode targets are overdue.
+Recent manual observations do not prove automated health. New decision inputs preserve
+unknown/blocked/stale states and ambiguous product mappings. These scheduler consumers,
+Brand Analytics recovery, profit/inventory/Buy Box inputs, and the two-week observation
+period remain rollout gates. No live Amazon bid or budget writes enabled.

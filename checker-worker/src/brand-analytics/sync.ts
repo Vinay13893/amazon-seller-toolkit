@@ -1,3 +1,4 @@
+import { writeSearchTermsBatch } from './storage'
 import {
   AmazonReportDocumentStageError,
   BRAND_ANALYTICS_REPORT_TYPES,
@@ -25,7 +26,6 @@ type SyncInput = {
 }
 
 const SEARCH_TERMS_INSERT_BATCH_SIZE = 500
-const SEARCH_TERMS_RESUME_OVERLAP_ROWS = 1000
 
 type BrandAnalyticsSyncErrorCode =
   | 'read_job_failed'
@@ -256,6 +256,7 @@ export type BrandAnalyticsSyncResult = {
 
 async function countExistingSearchTermsRows(
   supabase: ReturnType<typeof createSupabaseAdminClient>,
+  workspaceId: string,
   reportId: string | null,
   reportDocumentId: string,
 ): Promise<number | null> {
@@ -263,6 +264,7 @@ async function countExistingSearchTermsRows(
     const { count, error } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
+      .eq('workspace_id', workspaceId)
       .eq('report_document_id', reportDocumentId)
 
     if (!error && typeof count === 'number') return count
@@ -272,6 +274,7 @@ async function countExistingSearchTermsRows(
     const { count, error } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
+      .eq('workspace_id', workspaceId)
       .eq('report_id', reportId)
 
     if (!error && typeof count === 'number') return count
@@ -592,13 +595,13 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
     if (reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT') {
       diagnostics.existingRowCountBeforeSync = await countExistingSearchTermsRows(
         supabase,
+        job.workspace_id,
         job.report_id,
         job.report_document_id,
       )
-      diagnostics.resumeFromIndex = Math.max(
-        0,
-        (diagnostics.existingRowCountBeforeSync ?? 0) - SEARCH_TERMS_RESUME_OVERLAP_ROWS,
-      )
+      // Row counts are not input offsets: duplicates, gaps, or reordering
+      // make count-based resume skip valid records. Replay idempotently.
+      diagnostics.resumeFromIndex = 0
       diagnostics.cumulativeStoredRowCount = diagnostics.existingRowCountBeforeSync ?? 0
       totalStoredRows = diagnostics.cumulativeStoredRowCount
     }
@@ -633,7 +636,8 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
       if (chunk.length === 0) continue
       const query = supabase.from(mapped.targetTable)
       const { error: upsertError } = reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT'
-        ? await query.upsert(chunk, { onConflict: mapped.onConflict, ignoreDuplicates: true })
+        ? await writeSearchTermsBatch(chunk, batch => supabase.from(mapped.targetTable)
+          .upsert(batch, { onConflict: mapped.onConflict, ignoreDuplicates: true }))
         : await query.upsert(chunk, { onConflict: mapped.onConflict })
 
       if (upsertError) {
@@ -663,7 +667,7 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         throw new BrandAnalyticsSyncError('store_rows_failed')
       }
 
-      totalStoredRows = Math.max(totalStoredRows, i + chunk.length)
+      if (reportType !== 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT') totalStoredRows = i + chunk.length
       diagnostics.cumulativeStoredRowCount = totalStoredRows
       diagnostics.lastSuccessfulBatchIndex = batchIndex
 
@@ -676,6 +680,14 @@ export async function runBrandAnalyticsSync(input: SyncInput): Promise<BrandAnal
         }),
         updated_at: new Date().toISOString(),
       })
+    }
+
+    if (reportType === 'GET_BRAND_ANALYTICS_SEARCH_TERMS_REPORT') {
+      const actualCount = await countExistingSearchTermsRows(supabase, job.workspace_id, job.report_id, job.report_document_id)
+      if (actualCount === null) throw new BrandAnalyticsSyncError('count_rows_failed')
+      if (mapped.rowsToUpsert.length > 0 && actualCount === 0) throw new BrandAnalyticsSyncError('store_rows_failed')
+      totalStoredRows = actualCount
+      diagnostics.cumulativeStoredRowCount = actualCount
     }
 
     const mergedSummary = {

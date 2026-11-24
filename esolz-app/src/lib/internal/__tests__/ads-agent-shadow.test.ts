@@ -52,9 +52,11 @@ describe('evaluateAdsTarget', () => {
     assert.equal(evaluateAdsTarget({ ...evidence, spend: 299.99 }, settings, now), null)
   })
 
-  test('does nothing with stale data or when the emergency stop is on', () => {
+  test('rejects stale data and allows shadow analysis with execution stopped', () => {
     assert.equal(evaluateAdsTarget({ ...evidence, dataThrough: '2026-11-19' }, settings, now), null)
-    assert.equal(evaluateAdsTarget(evidence, { ...settings, emergencyStop: true }, now), null)
+    assert.ok(evaluateAdsTarget(evidence, { ...settings, emergencyStop: true }, now))
+    assert.equal(evaluateAdsTarget(evidence, { ...settings, mode: 'autopilot' }, now), null)
+    assert.equal(evaluateAdsTarget(evidence, { ...settings, mode: 'approval' }, now), null)
   })
 
   test('refuses an entity without reliable Amazon identifiers or a current bid', () => {
@@ -75,4 +77,12 @@ describe('evaluateAdsTarget', () => {
     assert.equal(result?.actionType, 'pause_target')
     assert.equal(result?.proposedValue, null)
   })
+})
+
+test('rejects malformed dates, metrics and bid increases caused by the minimum bid floor', () => {
+  for (const dataThrough of ['bad-date', '2026-11-23', '2026-11-24'])
+    assert.equal(evaluateAdsTarget({ ...evidence, dataThrough }, settings, now), null)
+  assert.equal(evaluateAdsTarget({ ...evidence, clicks: NaN }, settings, now), null)
+  assert.equal(evaluateAdsTarget({ ...evidence, currentBid: 0.01 }, settings, now), null)
+  assert.equal(evaluateAdsTarget(evidence, { ...settings, targetAcosPercent: NaN }, now), null)
 })
