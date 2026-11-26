@@ -1,3 +1,4 @@
+import { rowsAppearStored } from './storage'
 import {
   createSupabaseAdminClient,
   getBrandAnalyticsJob,
@@ -223,6 +224,7 @@ export async function getBrandAnalyticsStatus(
       const { count, error } = await supabase
         .from('brand_analytics_search_terms_rows')
         .select('*', { head: true, count: 'exact' })
+        .eq('workspace_id', job.workspace_id)
         .eq('report_id', job.report_id)
 
       if (error) {
@@ -249,6 +251,7 @@ export async function getBrandAnalyticsStatus(
       const { count, error } = await supabase
         .from('brand_analytics_search_terms_rows')
         .select('*', { head: true, count: 'exact' })
+        .eq('workspace_id', job.workspace_id)
         .eq('report_document_id', job.report_document_id)
 
       if (error) {
@@ -405,6 +408,7 @@ export async function getBrandAnalyticsStatusDebug(
     const { count, error } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
+      .eq('workspace_id', job.workspace_id)
       .eq('report_id', job.report_id)
 
     if (!error) {
@@ -419,6 +423,7 @@ export async function getBrandAnalyticsStatusDebug(
     const { count, error } = await supabase
       .from('brand_analytics_search_terms_rows')
       .select('*', { head: true, count: 'exact' })
+      .eq('workspace_id', job.workspace_id)
       .eq('report_document_id', job.report_document_id)
 
     if (error) {
@@ -436,11 +441,10 @@ export async function getBrandAnalyticsStatusDebug(
         ? 'sync_summary'
         : 'unavailable'
 
-  const brandAnalyticsRowsAppearStored =
-    (storedRowCount ?? 0) > 0 ||
-    (documentStoredRowCount ?? 0) > 0 ||
-    (rowCountByReportId ?? 0) > 0 ||
-    (rowCountByReportDocumentId ?? 0) > 0
+  const brandAnalyticsRowsAppearStored = rowsAppearStored(
+    rowCountByReportDocumentId ?? rowCountByReportId,
+    storedRowCount ?? documentStoredRowCount,
+  )
 
   return {
     ...baseResult,

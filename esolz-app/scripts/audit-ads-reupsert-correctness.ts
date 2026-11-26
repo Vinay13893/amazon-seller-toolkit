@@ -66,7 +66,7 @@ try {
   for (const rawLine of envText.split('\n')) {
     const line = rawLine.replace(/\r$/, '')
     const m = line.match(/^([A-Z0-9_]+)=(.*)$/)
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim()
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim().replace(/^(['"])(.*)\1$/, '$2')
   }
 } catch {
   // no .env.local present — fine outside local dev
@@ -112,6 +112,7 @@ async function fetchWindowRowsPaged(admin: SupabaseClient, table: string, worksp
       .eq('workspace_id', workspaceId)
       .eq('profile_id', profileId)
       .gte('report_date', windowStart)
+      .order('id')
       .range(offset, offset + PAGE - 1)
     if (error) throw new Error(`${table}: ${error.message}`)
     all.push(...((data ?? []) as typeof all))
@@ -234,14 +235,18 @@ async function main() {
 
   // Sync-run overlap evidence — is the nightly re-upsert actually happening,
   // not just a one-time backfill?
-  const { data: recentRuns } = await admin
+  const { data: recentRuns, error: runsError } = await admin
     .from('internal_data_refresh_runs')
     .select('source, date_from, date_to, status, started_at')
     .eq('workspace_id', workspaceId)
+    .eq('profile_id', profileId)
+    .eq('status', 'success')
+    .eq('rows_rejected', 0)
     .like('source', 'ads_%')
     .gte('started_at', new Date(Date.now() - days * 2 * 24 * 60 * 60 * 1000).toISOString())
     .order('started_at', { ascending: false })
     .limit(200)
+  if (runsError) throw new Error('refresh_run_audit_read_failed')
   const runsBySource = new Map<string, Array<{ date_from: string; date_to: string; started_at: string }>>()
   for (const run of recentRuns ?? []) {
     const list = runsBySource.get(run.source as string) ?? []
@@ -255,7 +260,7 @@ async function main() {
     if (overlapping.length > 1) sourcesWithRepeatCoverage += 1
     console.log(`  ${source}: ${runs.length} run(s) total, ${overlapping.length} overlapping the trailing window`)
   }
-  const overlapStatus: 'pass' | 'warn' = sourcesWithRepeatCoverage > 0 ? 'pass' : 'warn'
+  const overlapStatus: 'pass' | 'warn' = ['ads_campaign_daily', 'ads_advertised_product', 'ads_targeting', 'ads_search_term'].every(source => (runsBySource.get(source) ?? []).filter(r => r.date_to >= windowStart && r.date_from <= todayIso).length > 1) ? 'pass' : 'warn'
   console.log(`  Repeat-coverage status: ${overlapStatus.toUpperCase()} (${sourcesWithRepeatCoverage} source(s) show repeat coverage of the trailing window)`)
 
   const tableChecks: TableCheck[] = []
