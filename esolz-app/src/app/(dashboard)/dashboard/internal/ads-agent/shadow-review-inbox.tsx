@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 
 type Evidence = {
   clicks?: number; spend?: number; purchases?: number; sales?: number
@@ -58,6 +59,7 @@ export function ShadowReviewInbox() {
     <div>
       <h1 className="text-2xl font-semibold">Ads shadow recommendations</h1>
       <p className="mt-2 text-sm text-slate-600">Review decisions are feedback only. They do not change Amazon bids or budgets.</p>
+      <Link href="/dashboard/internal/ads-agent/explorer" className="mt-2 inline-block text-sm text-blue-700 underline">Explore campaigns, targets and search terms</Link>
     </div>
     {error && <p role="alert" className="rounded border border-red-200 bg-red-50 p-3 text-red-700">{error}</p>}
     {!data && !error && <p>Loading recommendations…</p>}
