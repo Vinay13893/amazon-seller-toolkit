@@ -141,7 +141,7 @@ export interface KeywordRankPayload {
 
 /**
  * Worker response for POST /keyword-rank.
- * `status` values: 'success' | 'checker_unavailable' | 'failed'
+ * `status` values from the worker: 'success' | 'not_found' | 'blocked' | 'failed'
  */
 export interface KeywordRankResponse {
   ok:               boolean
