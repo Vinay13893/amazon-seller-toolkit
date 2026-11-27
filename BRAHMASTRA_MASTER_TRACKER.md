@@ -30,6 +30,12 @@
   14-day report windows with the most recent three days excluded. It fails
   visibly if report rows exceed its completeness limit or required metrics are
   missing. Live automation, dayparting and public beta are still gated work.
+- The first natural keyword cron at 10:30 UTC returned worker status
+  `not_found` (HTTP 200), but the route incorrectly stored it as
+  `checker_unavailable`. This is a classification defect, not evidence that the
+  checker was down. The targeted follow-up treats `not_found` as a completed
+  scan while retaining failed/blocked scans as unknown. Verify the next cycle
+  before marking keyword scheduler green.
 
 ---
 

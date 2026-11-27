@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { runKeywordRankCheck, toWorkerMarketplace } from '@/lib/checkers/checker-worker-client'
 import { marketplaceFromMarketplaceId } from '@/lib/asins/product-separation'
 import { keywordTargetKey, resolveKeywordRefreshTarget } from '@/lib/keywords/keyword-tracking'
+import { isConfirmedKeywordScan } from '@/lib/internal/keyword-cron-status'
 
 export const runtime = 'nodejs'
 export const maxDuration = 120
@@ -69,7 +70,7 @@ export async function GET(request: Request): Promise<Response> {
         marketplace: toWorkerMarketplace(target.marketplace),
       })
     } catch { /* Unknown checker state must never become a rank result. */ }
-    const success = result?.status === 'success'
+    const success = isConfirmedKeywordScan(result?.status)
     const organicFound = success && result?.organic_found === true
     const sponsoredFound = success && result?.sponsored_found === true
     const { error: insertError } = await admin.from('keyword_rank_snapshots').insert({
@@ -88,7 +89,7 @@ export async function GET(request: Request): Promise<Response> {
       page: success ? result?.organic_page ?? result?.sponsored_page : null,
       position_on_page: success ? result?.organic_slot ?? result?.sponsored_slot : null,
       found: organicFound || sponsoredFound,
-      scrape_status: success ? 'success'
+      scrape_status: success ? result?.status
         : result?.status === 'failed' || result?.status === 'blocked' ? 'failed' : 'checker_unavailable',
       error_message: success ? null : result ? 'Keyword rank check failed' : 'Keyword rank checker unavailable',
       page_status: organicFound
