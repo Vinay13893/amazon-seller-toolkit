@@ -8,6 +8,15 @@
 
 ## 27 November 2026 — Shadow rollout and review workflow
 
+- PR #85 (`c1fc53e`) was merged and deployed as
+  `dpl_3YfSNzVcAGbQerNnrhbjvjJ18sSn`; production health returned 200.
+  Its first natural 12:30 UTC keyword cycle saved two completed `not_found`
+  scans (not checker failures). The 14:00 UTC pincode cycle saved a second
+  confirmed available result; both configured targets are active, current,
+  and have no consecutive failures. Keyword/pincode scheduling and the
+  `not_found` classification are verified for these cycles. Continue daily
+  monitoring; a completed `not_found` scan means rank absent in the scanned
+  pages, not an available rank position.
 - PR #84 (`90cc2b4`) was merged and deployed to production at
   `dpl_FkhVifnZVCKj133jvBXpF9r2WR8S`. The app health endpoint passed.
   The inbox now exposes rank and pincode evidence on proposals; its first
@@ -18,14 +27,14 @@
   05:30 UTC; no agent output is claimed before that run.
 - The 12:00 UTC pincode cron recorded one confirmed available result at
   12:01 UTC, with no failed claim. The claim RPC deliberately selects at most
-  one target per workspace per cycle; the other configured target remains due
-  for the 14:00 UTC cycle. Full coverage is not yet verified.
+  one target per workspace per cycle; the other configured target was checked
+  at 14:01 UTC, completing this cycle's configured coverage.
 - The keyword consumer had a bounded-slot defect: it selected the two oldest
   due rows before resolving product ownership, so an untargetable row could
   consume a slot indefinitely. It now scans at most 20 due candidates and
   invokes the checker for at most two valid targets. One of the five oldest
-  due keywords had no target in the read-only audit. Verify the next natural
-  cycle after deploying this change.
+  due keywords had no target in the read-only audit. The next natural cycle
+  verified two completed scans after deployment.
 - Further decision-input audit: SKU-level Business Reports reached 25 November
   (9,828 historical rows); 100 of 162 recent advertised ASIN/SKU pairs have
   a positive active cost price. Inventory summaries last synced 23 November
@@ -44,8 +53,8 @@
 - The review inbox now displays the stored organic/sponsored rank, rank trend,
   pincode coverage, and product mapping on each proposed action. Unknown data is
   shown explicitly. This is evidence presentation only; the recommendation
-  rules and Amazon Ads write gate are unchanged. Production verification and
-  the first natural shadow run remain pending.
+  rules and Amazon Ads write gate are unchanged. The first natural shadow run
+  remains pending.
 - PR #79 was merged as `584b4f1` and deployed to production. The new shadow
   cron endpoint returns 401 without its secret; the app health check passes.
   No Ads write path was enabled. The scheduled run, proposals, and two-week
@@ -58,12 +67,12 @@
   approve/reject feedback. These decisions never change `ads_agent_actions`
   execution status and cannot trigger Amazon Ads writes. Projected sales impact
   and statistical confidence remain unavailable until validated models exist.
-- Migration 071 preceded the inbox release. Verify the next natural keyword
-  cycle, first pincode cycle, and shadow run before marking unattended health green.
+- Migration 071 preceded the inbox release. Keyword and pincode natural cycles
+  have now been observed; the first shadow run remains pending.
 - PR #80 was merged as `242b12e` and deployed on 27 November. Migration 071
   was applied and its RLS/grants checked. The new endpoints reject anonymous
-  requests. Natural cron cycles have not yet been verified, so scheduler health
-  remains pending. PR #81 (`a6468cd`) was merged and deployed with a read-only
+  requests. At the time of release, natural cron cycles had not yet been
+  verified. PR #81 (`a6468cd`) was merged and deployed with a read-only
   explorer for campaign → target →
   ad-group search-term drilldowns from the selected profile, using complete
   14-day report windows with the most recent three days excluded. It fails
@@ -74,7 +83,7 @@
   `checker_unavailable`. This is a classification defect, not evidence that the
   checker was down. PR #82 (`fa31801`) was merged and deployed; it treats
   `not_found` as a completed scan while retaining failed/blocked scans as
-  unknown. Verify the next cycle before marking keyword scheduler green.
+  unknown. The 12:30 UTC cycle later verified this classification.
 
 ---
 
