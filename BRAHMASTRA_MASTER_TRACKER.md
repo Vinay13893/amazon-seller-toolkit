@@ -8,6 +8,11 @@
 
 ## 27 November 2026 — Shadow rollout and review workflow
 
+- The review inbox now displays the stored organic/sponsored rank, rank trend,
+  pincode coverage, and product mapping on each proposed action. Unknown data is
+  shown explicitly. This is evidence presentation only; the recommendation
+  rules and Amazon Ads write gate are unchanged. Production verification and
+  the first natural shadow run remain pending.
 - PR #79 was merged as `584b4f1` and deployed to production. The new shadow
   cron endpoint returns 401 without its secret; the app health check passes.
   No Ads write path was enabled. The scheduled run, proposals, and two-week

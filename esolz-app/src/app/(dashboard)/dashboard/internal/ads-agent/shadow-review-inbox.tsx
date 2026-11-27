@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import type { DecisionSignals } from '@/lib/internal/ads-agent-signals'
 
 type Evidence = {
   clicks?: number; spend?: number; purchases?: number; sales?: number
   acosPercent?: number | null; lookbackDays?: number
-  signals?: { rank?: unknown; pincode?: unknown }
+  signals?: DecisionSignals
 }
 type Action = {
   id: string; profile_id: string; action_type: string; reason_code: string
@@ -89,6 +90,10 @@ export function ShadowReviewInbox() {
               <div><dt className="text-slate-500">Bid proposal</dt><dd>{action.current_value ?? '—'} → {action.proposed_value ?? '—'} ({action.change_percent ?? '—'}%)</dd></div>
               <div><dt className="text-slate-500">Evidence</dt><dd>{evidence.clicks ?? '—'} clicks · ₹{evidence.spend ?? '—'} spend · {evidence.purchases ?? '—'} orders</dd></div>
               <div><dt className="text-slate-500">ACOS</dt><dd>{evidence.acosPercent == null ? 'Unknown' : `${evidence.acosPercent.toFixed(1)}%`}</dd></div>
+              <div><dt className="text-slate-500">Organic rank</dt><dd>{evidence.signals?.rankStatus === 'fresh' ? (evidence.signals.organicRank == null ? 'Not found' : `#${evidence.signals.organicRank}`) : 'Unknown'} · {evidence.signals?.organicTrend ?? 'unknown'} trend</dd></div>
+              <div><dt className="text-slate-500">Sponsored rank</dt><dd>{evidence.signals?.rankStatus === 'fresh' ? (evidence.signals.sponsoredRank == null ? 'Not found' : `#${evidence.signals.sponsoredRank}`) : 'Unknown'}</dd></div>
+              <div><dt className="text-slate-500">Pincode availability</dt><dd>{evidence.signals?.availability ?? 'unknown'} · {evidence.signals?.confirmedPincodes ?? 0}/{evidence.signals?.configuredPincodes ?? 0} confirmed{evidence.signals?.unavailablePincodes ? ` · ${evidence.signals.unavailablePincodes} unavailable` : ''}</dd></div>
+              <div><dt className="text-slate-500">Product match</dt><dd>{evidence.signals?.mapping === 'single_product' ? 'One advertised product' : 'Unknown or multiple products'}</dd></div>
               <div><dt className="text-slate-500">Projected sales impact / confidence</dt><dd>Not estimated from available evidence</dd></div>
             </dl>
             {action.status === 'proposed' && <div className="mt-4 flex gap-2">
