@@ -20,10 +20,16 @@
   approve/reject feedback. These decisions never change `ads_agent_actions`
   execution status and cannot trigger Amazon Ads writes. Projected sales impact
   and statistical confidence remain unavailable until validated models exist.
-- These follow-up changes are not deployed yet. Apply migration 071 before
-  releasing the inbox. Verify the first natural scheduler cycles and shadow run
-  before marking unattended health green. Campaign/target/search-term drilldowns,
-  any live automation, dayparting, and a public free beta remain separate work.
+- Migration 071 had to precede the inbox release. Verify the first natural
+  scheduler cycles and shadow run before marking unattended health green.
+- PR #80 was merged as `242b12e` and deployed on 27 November. Migration 071
+  was applied and its RLS/grants checked. The new endpoints reject anonymous
+  requests. Natural cron cycles have not yet been verified, so scheduler health
+  remains pending. A follow-up read-only explorer adds campaign → target →
+  ad-group search-term drilldowns from the selected profile, using complete
+  14-day report windows with the most recent three days excluded. It fails
+  visibly if report rows exceed its completeness limit or required metrics are
+  missing. Live automation, dayparting and public beta are still gated work.
 
 ---
 
