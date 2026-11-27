@@ -6,6 +6,27 @@
 
 ---
 
+## 27 November 2026 — Shadow rollout and review workflow
+
+- PR #79 was merged as `584b4f1` and deployed to production. The new shadow
+  cron endpoint returns 401 without its secret; the app health check passes.
+  No Ads write path was enabled. The scheduled run, proposals, and two-week
+  review window still require live observation.
+- This follow-up branch adds bounded Vercel cron consumers for due keyword rank
+  checks and pincode targets. Pincode claims are finalized with unknown/failed
+  status on checker errors, and interrupted claims are recovered. Keyword
+  snapshots distinguish checker failure from a confirmed missing rank.
+- A separate `ads_agent_shadow_reviews` table and internal inbox record human
+  approve/reject feedback. These decisions never change `ads_agent_actions`
+  execution status and cannot trigger Amazon Ads writes. Projected sales impact
+  and statistical confidence remain unavailable until validated models exist.
+- These follow-up changes are not deployed yet. Apply migration 071 before
+  releasing the inbox. Verify the first natural scheduler cycles and shadow run
+  before marking unattended health green. Campaign/target/search-term drilldowns,
+  any live automation, dayparting, and a public free beta remain separate work.
+
+---
+
 ## 1. Standing Project Rules
 
 1. Brahmastra is a **daily decision engine**, not another dashboard.

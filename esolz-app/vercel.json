@@ -20,6 +20,14 @@
     {
       "path": "/api/cron/ads-agent/shadow",
       "schedule": "30 5 * * *"
+    },
+    {
+      "path": "/api/cron/pincode/check-due",
+      "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/keywords/check-due",
+      "schedule": "30 */2 * * *"
     }
   ]
 }
