@@ -8,6 +8,39 @@
 
 ## 27 November 2026 — Shadow rollout and review workflow
 
+- PR #84 (`90cc2b4`) was merged and deployed to production at
+  `dpl_FkhVifnZVCKj133jvBXpF9r2WR8S`. The app health endpoint passed.
+  The inbox now exposes rank and pincode evidence on proposals; its first
+  populated production view still depends on the scheduled shadow run.
+- At 12:14 UTC, the last seven days contained 28 clean targeting and 28 clean
+  advertised-product refresh runs, zero other runs, with both sources covering
+  through 26 November. The first scheduled agent evaluation is 28 November at
+  05:30 UTC; no agent output is claimed before that run.
+- The 12:00 UTC pincode cron recorded one confirmed available result at
+  12:01 UTC, with no failed claim. The claim RPC deliberately selects at most
+  one target per workspace per cycle; the other configured target remains due
+  for the 14:00 UTC cycle. Full coverage is not yet verified.
+- The keyword consumer had a bounded-slot defect: it selected the two oldest
+  due rows before resolving product ownership, so an untargetable row could
+  consume a slot indefinitely. It now scans at most 20 due candidates and
+  invokes the checker for at most two valid targets. One of the five oldest
+  due keywords had no target in the read-only audit. Verify the next natural
+  cycle after deploying this change.
+- Further decision-input audit: SKU-level Business Reports reached 25 November
+  (9,828 historical rows); 100 of 162 recent advertised ASIN/SKU pairs have
+  a positive active cost price. Inventory summaries last synced 23 November
+  and have zero rows fresh within 48 hours. Therefore margin/break-even ACOS
+  and stock risk are not trusted as universal shadow inputs yet. Recent
+  confirmed Buy Box observations exist, but per-product mapping/freshness must
+  still be checked before use. Unknown remains unknown; no bid increase path.
+- Shadow observation starts only after the first successful scheduled agent run.
+  For 14 consecutive days, record run status, accepted Ads data-through date,
+  number of evaluated targets/proposals, reviewer approve/reject feedback,
+  rank and pincode evidence coverage, and any stale/unknown signals. Investigate
+  every failed/skipped run and any recommendation contradicted by stock, Buy Box,
+  margin or later sales evidence. Do not graduate to executable approval mode
+  until this evidence has been reviewed and the missing decision inputs have
+  trustworthy product-level joins. Amazon Ads bid/budget writes remain disabled.
 - The review inbox now displays the stored organic/sponsored rank, rank trend,
   pincode coverage, and product mapping on each proposed action. Unknown data is
   shown explicitly. This is evidence presentation only; the recommendation
