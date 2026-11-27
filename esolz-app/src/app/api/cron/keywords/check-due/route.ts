@@ -36,12 +36,15 @@ export async function GET(request: Request): Promise<Response> {
   const dueBefore = Date.now() - 24 * 3600_000
   const due = (keywords as Keyword[])
     .filter(row => !latest.has(row.id) || new Date(latest.get(row.id)!).getTime() < dueBefore)
+    .filter(row => row.own_asin || row.tracked_asin_id)
     .sort((a, b) => (latest.get(a.id) ?? '').localeCompare(latest.get(b.id) ?? ''))
-    .slice(0, 2)
+    .slice(0, 20)
 
   let checked = 0
   let failed = 0
+  let selected = 0
   for (const keyword of due) {
+    if (selected >= 2) break
     const tracked = keyword.tracked_asin_id
       ? await admin.from('tracked_asins').select('id,asin,marketplace,status')
         .eq('id', keyword.tracked_asin_id).eq('workspace_id', keyword.workspace_id).maybeSingle()
@@ -58,6 +61,7 @@ export async function GET(request: Request): Promise<Response> {
       ? [[tracked.data.id, tracked.data]] : [])
     const target = resolveKeywordRefreshTarget(keyword, trackedById, ownKeys)
     if (!target) continue
+    selected += 1
 
     const checkedAt = new Date().toISOString()
     let result: Awaited<ReturnType<typeof runKeywordRankCheck>> | null = null
@@ -101,5 +105,5 @@ export async function GET(request: Request): Promise<Response> {
     else if (success) checked += 1
     else failed += 1
   }
-  return Response.json({ selected: due.length, checked, failed }, { status: failed ? 503 : 200 })
+  return Response.json({ selected, checked, failed }, { status: failed ? 503 : 200 })
 }
