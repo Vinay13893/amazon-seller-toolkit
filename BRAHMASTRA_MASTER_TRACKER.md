@@ -12,7 +12,7 @@
   cron endpoint returns 401 without its secret; the app health check passes.
   No Ads write path was enabled. The scheduled run, proposals, and two-week
   review window still require live observation.
-- This follow-up branch adds bounded Vercel cron consumers for due keyword rank
+- PR #80 added bounded Vercel cron consumers for due keyword rank
   checks and pincode targets. Pincode claims are finalized with unknown/failed
   status on checker errors, and interrupted claims are recovered. Keyword
   snapshots distinguish checker failure from a confirmed missing rank.
@@ -20,12 +20,13 @@
   approve/reject feedback. These decisions never change `ads_agent_actions`
   execution status and cannot trigger Amazon Ads writes. Projected sales impact
   and statistical confidence remain unavailable until validated models exist.
-- Migration 071 had to precede the inbox release. Verify the first natural
-  scheduler cycles and shadow run before marking unattended health green.
+- Migration 071 preceded the inbox release. Verify the next natural keyword
+  cycle, first pincode cycle, and shadow run before marking unattended health green.
 - PR #80 was merged as `242b12e` and deployed on 27 November. Migration 071
   was applied and its RLS/grants checked. The new endpoints reject anonymous
   requests. Natural cron cycles have not yet been verified, so scheduler health
-  remains pending. A follow-up read-only explorer adds campaign → target →
+  remains pending. PR #81 (`a6468cd`) was merged and deployed with a read-only
+  explorer for campaign → target →
   ad-group search-term drilldowns from the selected profile, using complete
   14-day report windows with the most recent three days excluded. It fails
   visibly if report rows exceed its completeness limit or required metrics are
@@ -33,9 +34,9 @@
 - The first natural keyword cron at 10:30 UTC returned worker status
   `not_found` (HTTP 200), but the route incorrectly stored it as
   `checker_unavailable`. This is a classification defect, not evidence that the
-  checker was down. The targeted follow-up treats `not_found` as a completed
-  scan while retaining failed/blocked scans as unknown. Verify the next cycle
-  before marking keyword scheduler green.
+  checker was down. PR #82 (`fa31801`) was merged and deployed; it treats
+  `not_found` as a completed scan while retaining failed/blocked scans as
+  unknown. Verify the next cycle before marking keyword scheduler green.
 
 ---
 
