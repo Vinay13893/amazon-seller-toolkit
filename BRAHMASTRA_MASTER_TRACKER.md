@@ -6,6 +6,18 @@
 
 ---
 
+## 28 November 2026 — First shadow run
+
+- At 05:30 UTC the first shadow cron created one failed run
+  (`agent_input_read_failed:internal_ads_advertised_product_daily_rows`),
+  evaluated zero targets, and created zero proposals. Supabase logs show
+  PostgREST `57014` statement timeout on the product-report read. The ID-only
+  order scanned 9,638 irrelevant rows before returning the first 1,000;
+  `EXPLAIN ANALYZE` took 8.3 seconds on that first page. The repair orders
+  product pages by report date and ID, with profile-scoped indexes for product
+  and targeting rows. Re-run the shadow evaluation after deployment and verify
+  the database run record before starting the 14-day observation window.
+
 ## 27 November 2026 — Shadow rollout and review workflow
 
 - PR #85 (`c1fc53e`) was merged and deployed as

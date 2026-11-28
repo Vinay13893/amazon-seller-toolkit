@@ -4,11 +4,13 @@ import { buildDecisionSignals, type RankObservation, type AvailabilityObservatio
 // Every paginated read has a unique ordering and an explicit tenant predicate.
 export async function readAgentRows<T>(
   admin: SupabaseClient, table: string, columns: string, workspaceId: string,
-  filters: Record<string, string> = {}, from?: { column: string; value: string },
+  filters: Record<string, string> = {}, from?: { column: string; value: string }, orderBy?: string,
 ): Promise<T[]> {
   const rows: T[] = []
   for (let offset = 0; ; offset += 1000) {
-    let query = admin.from(table).select(columns).eq('workspace_id', workspaceId).order('id')
+    let query = admin.from(table).select(columns).eq('workspace_id', workspaceId)
+    if (orderBy && orderBy !== 'id') query = query.order(orderBy)
+    query = query.order('id')
     for (const [column, value] of Object.entries(filters)) query = query.eq(column, value)
     if (from) query = query.gte(from.column, from.value)
     const { data, error } = await query.range(offset, offset + 999)
@@ -47,7 +49,8 @@ export async function loadDecisionSignals(admin: SupabaseClient, workspaceId: st
   marketplaceId: string, from: string, through: string, now = new Date()) {
   // Only own-product keywords are joined; competitor/research keywords cannot leak into a bid decision.
   const products = await readAgentRows<Product>(admin, 'internal_ads_advertised_product_daily_rows',
-    'campaign_id,ad_group_id,advertised_asin,report_date', workspaceId, { profile_id: profileId }, { column: 'report_date', value: from })
+    'campaign_id,ad_group_id,advertised_asin,report_date', workspaceId, { profile_id: profileId },
+    { column: 'report_date', value: from }, 'report_date')
   const keywords = await readAgentRows<Keyword>(admin, 'tracked_keywords', 'id,own_asin,keyword', workspaceId,
     { marketplace: marketplaceId === 'A21TJRUUN4KGV' ? 'IN' : marketplaceId })
   const ranks = await readAgentRows<Rank>(admin, 'keyword_rank_snapshots',
