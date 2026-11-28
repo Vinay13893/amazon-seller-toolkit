@@ -58,7 +58,8 @@ export async function getFbaInventoryPage(params: {
   const summaries = Array.isArray(payload.inventorySummaries)
     ? payload.inventorySummaries
     : []
-  const pagination = asRecord(payload.pagination)
+  // Amazon's GetInventorySummariesResponse places pagination beside payload.
+  const pagination = asRecord(data.pagination) ?? asRecord(payload.pagination)
 
   const rows: InventorySummaryNormalized[] = []
   for (const value of summaries) {
