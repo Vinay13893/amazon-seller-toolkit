@@ -8,6 +8,16 @@
 
 ## 28 November 2026 — First shadow run
 
+- PR #87 (`6080aa7`) was merged and deployed to production as
+  `dpl_2hcbjmwo62qYv38x7UF3RA69qwqj`; `/api/health` returned 200.
+  Migration 072 is live. The production query plan now uses the new
+  profile/date indexes: a late advertised-product page completed in 0.87
+  seconds and a late targeting page in 2.43 seconds. The next scheduled
+  shadow evaluation is 29 November at 05:30 UTC. No successful run or
+  proposals are claimed until its database record is verified. Focused agent
+  tests (14), TypeScript, targeted lint, and a low-memory local production
+  build passed. A concurrent full-suite attempt exceeded local memory; no
+  assertion failure was established. Vercel built the committed config.
 - At 05:30 UTC the first shadow cron created one failed run
   (`agent_input_read_failed:internal_ads_advertised_product_daily_rows`),
   evaluated zero targets, and created zero proposals. Supabase logs show
