@@ -8,6 +8,21 @@
 
 ## 28 November 2026 — First shadow run
 
+- Decision-input gap audit for the selected Ads profile: 145 recent advertised
+  ASIN/SKU pairs, 100 with a positive current cost and 45 without. An older
+  September stock sheet offers costs for 18 missing pairs but disagrees by
+  over 10% on 21 of 140 overlapping existing prices, so it was not imported.
+  The founder is supplying the latest cost sheet. Of 129 advertised ASINs,
+  116 have a recent SKU-level Business Report row, 16 map to FBA inventory,
+  zero have inventory refreshed within 48 hours, and 23 have a confirmed
+  Buy Box observation within 48 hours. Missing coverage stays unknown.
+  Brand Analytics has zero rows but is not used by the current shadow runner;
+  per the founder's conditional decision, no Brand Analytics sync was run.
+- Inventory refresh root cause: the Amazon FBA inventory response exposes
+  `pagination` beside `payload`, while `getFbaInventoryPage` looked inside
+  `payload`. Recent syncs consequently refreshed exactly 50 inventory rows.
+  The parser now reads the documented top-level token; verify the next full
+  refresh before claiming inventory freshness or coverage.
 - PR #87 (`6080aa7`) was merged and deployed to production as
   `dpl_2hcbjmwo62qYv38x7UF3RA69qwqj`; `/api/health` returned 200.
   Migration 072 is live. The production query plan now uses the new
