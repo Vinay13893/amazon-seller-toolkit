@@ -8,6 +8,7 @@ import { refreshAccessToken } from '@/lib/amazon/lwa'
 import {
   extractNextPageToken,
   searchListingsItems,
+  sellerFulfilledQuantity,
   type ListingItem,
 } from '@/lib/amazon/spapi-client'
 import { getInternalAccessContext } from '@/lib/internal-access'
@@ -206,6 +207,7 @@ export async function POST(request: Request) {
           marketplaceId,
           pageSize: 20,
           pageToken: metadata.listings_page_token ?? undefined,
+          includeFulfillmentAvailability: true,
         })
         const items = result.items ?? []
         const rows = items
@@ -213,6 +215,7 @@ export async function POST(request: Request) {
             const summary = item.summaries?.find(value => value.marketplaceId === marketplaceId)
               ?? item.summaries?.[0]
             if (!item.sku) return null
+            const mfnQuantity = sellerFulfilledQuantity(item)
             return {
               workspace_id: access.workspaceId,
               connection_id: connection.id,
@@ -225,6 +228,8 @@ export async function POST(request: Request) {
               status: summary?.status?.[0] ?? null,
               image_url: summary?.mainImage?.link ?? null,
               raw_data: {},
+              mfn_available_quantity: mfnQuantity,
+              mfn_inventory_checked_at: mfnQuantity === null ? null : now,
               last_synced_at: now,
               updated_at: now,
             }

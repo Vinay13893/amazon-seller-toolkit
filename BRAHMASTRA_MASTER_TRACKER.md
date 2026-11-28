@@ -23,6 +23,13 @@
   `payload`. Recent syncs consequently refreshed exactly 50 inventory rows.
   The parser now reads the documented top-level token; verify the next full
   refresh before claiming inventory freshness or coverage.
+- The FBA feed only mapped 16 of 129 advertised ASINs (about 7% of recent ad
+  spend), so FBA alone cannot provide a universal stock signal. The existing
+  Listings Items refresh now requests the read-only fulfillment-availability
+  dataset and stores only one confirmed `DEFAULT` (seller-fulfilled) quantity
+  per SKU. Missing, FBA-only, negative, or ambiguous quantities remain null.
+  Migration 073 adds nullable observation columns. No stock quantity is used
+  for Ads decisions until the refresh and per-product joins are verified.
 - PR #87 (`6080aa7`) was merged and deployed to production as
   `dpl_2hcbjmwo62qYv38x7UF3RA69qwqj`; `/api/health` returned 200.
   Migration 072 is live. The production query plan now uses the new
