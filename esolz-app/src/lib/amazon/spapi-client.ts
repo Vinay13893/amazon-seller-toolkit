@@ -97,6 +97,15 @@ export interface ListingItem {
   summaries?:   ListingItemSummary[]
   attributes?:  ListingItemAttributes
   issues?:      unknown[]
+  fulfillmentAvailability?: Array<{ fulfillmentChannelCode?: string; quantity?: number | null }>
+}
+
+// A missing or ambiguous seller-fulfilled quantity is unknown, never zero.
+export function sellerFulfilledQuantity(item: ListingItem): number | null {
+  const merchant = item.fulfillmentAvailability?.filter(row => row.fulfillmentChannelCode === 'DEFAULT') ?? []
+  if (merchant.length !== 1) return null
+  const quantity = merchant[0].quantity
+  return typeof quantity === 'number' && Number.isInteger(quantity) && quantity >= 0 ? quantity : null
 }
 
 export interface SearchListingsPagination {
@@ -142,6 +151,7 @@ export interface SearchListingsParams {
   pageSize?:     number
   pageToken?:    string
   endpoint?:     string
+  includeFulfillmentAvailability?: boolean
 }
 
 /**
@@ -161,11 +171,13 @@ export async function searchListingsItems(
     pageSize  = 20,
     pageToken,
     endpoint  = SPAPI_EU_ENDPOINT,
+    includeFulfillmentAvailability = false,
   } = params
 
   const qs = new URLSearchParams({
     marketplaceIds: marketplaceId,
-    includedData:   'summaries,attributes,issues',
+    includedData:   includeFulfillmentAvailability
+      ? 'summaries,attributes,issues,fulfillmentAvailability' : 'summaries,attributes,issues',
     pageSize:       String(pageSize),
   })
   if (pageToken) qs.set('pageToken', pageToken)
