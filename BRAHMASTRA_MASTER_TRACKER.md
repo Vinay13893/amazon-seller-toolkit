@@ -8,6 +8,15 @@
 
 ## 28 November 2026 — First shadow run
 
+- PR #89 (`28e80e8`) repaired top-level FBA pagination and was deployed as
+  `dpl_A7YfTmkKamnkfcjuP8drPMuZC6GY`. PR #90 (`04c8dfe`) added the
+  seller-fulfilled availability read and migration 073; it was deployed as
+  `dpl_96JKshHZk9xDU6cR5qZvZ7c3GnPd`. Production health returned 200.
+  The authenticated stock refresh has not yet been run after these releases,
+  so neither full FBA pagination nor MFN coverage is claimed live. The founder
+  is signing into the production app for this validation and supplying the
+  latest cost sheet. No guessed prices, stock quantities, or Ads writes were
+  introduced.
 - Decision-input gap audit for the selected Ads profile: 145 recent advertised
   ASIN/SKU pairs, 100 with a positive current cost and 45 without. An older
   September stock sheet offers costs for 18 missing pairs but disagrees by
